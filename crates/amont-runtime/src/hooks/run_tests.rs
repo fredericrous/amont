@@ -40,8 +40,7 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 /// to guess at `npm` vs `pnpm` vs `yarn`, at `--silent`, at a wrapper script,
 /// and would answer "no" to things that plainly are the same check.
 ///
-/// **Only a declaration that would actually run counts**, and both halves of
-/// that matter:
+/// **Only a declaration that would actually run, and actually block, counts**:
 ///
 ///   * `Kind::Runnable` excludes an unusable line and — through
 ///     [`crate::manifest::gate`] — an UNTRUSTED manifest. A repository could
@@ -49,23 +48,54 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 ///     have types checked at neither end.
 ///   * `hook.skip` is honoured for the same reason, one layer up: a declaration
 ///     the author has switched off is not a check.
+///   * The EFFECTIVE severity must be `block`, overrides included. A `warn`
+///     declaration lets the commit through on failure, so treating it as
+///     commit-time coverage would replace a blocking push check with a
+///     non-blocking commit one.
 ///
-/// Get either wrong and the result is the failure this project is arranged
-/// against — a push that reports a green gate having run nothing.
-fn gated_at_commit() -> Vec<&'static str> {
+/// The declaration's scope rides along rather than being judged here: whether
+/// it covered a given push depends on which files that push changed, which is
+/// a per-ref question `run` answers with [`scope_covers`].
+///
+/// Get any of these wrong and the result is the failure this project is
+/// arranged against — a push that reports a green gate having run nothing.
+/// One gap remains open by design: a commit created with `--no-verify` never
+/// ran the check, and nothing here can see that. `docs/checks.md` says so out
+/// loud instead of this code pretending otherwise.
+fn gated_at_commit() -> Vec<(&'static str, crate::check::Scope)> {
     let skips = crate::configured_skips();
+    let severities = crate::registry::Overrides::read();
     let declared = crate::manifest::externals();
     GATE.iter()
-        .copied()
-        .filter(|script| {
-            declared.iter().any(|ext| {
-                ext.stage == crate::check::Stage::PreCommit
-                    && matches!(ext.kind, crate::manifest::Kind::Runnable { .. })
+        .filter_map(|script| {
+            declared.iter().find_map(|ext| {
+                let crate::manifest::Kind::Runnable { scope, .. } = &ext.kind else {
+                    return None;
+                };
+                (ext.stage == crate::check::Stage::PreCommit
                     && ext.short_name == *script
-                    && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s))
+                    && severities.of(ext) == crate::check::Severity::Block
+                    && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s)))
+                .then_some((*script, *scope))
             })
         })
         .collect()
+}
+
+/// Did the commit-time declaration see EVERYTHING this push changes?
+///
+/// The commit-time check fires when ANY staged file matches its scope, so a
+/// push whose JS changes fall only partly inside that scope carries commits
+/// the check never judged — a `*.ts,*.tsx` declaration says nothing about a
+/// `.js` change. All-match, not any-match, because the question here is
+/// coverage, and under-approximating is the safe direction: an uncovered file
+/// re-runs a script that would have passed, a wrongly-covered one skips the
+/// suite.
+pub fn scope_covers(scope_exts: &[&str], changed_js: &[String]) -> bool {
+    scope_exts.is_empty()
+        || changed_js
+            .iter()
+            .all(|f| scope_exts.iter().any(|ext| f.ends_with(ext)))
 }
 
 /// The extensions this check treats as "JS worth testing". Exported so
@@ -239,21 +269,11 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         .map(|f| package_dirs(&f))
         .unwrap_or_default();
 
-    // Resolved ONCE, ahead of the loop: it is a property of the repository, not
-    // of a ref or a package, and `externals()` caches on first call anyway.
-    let already = gated_at_commit();
-    // Said out loud, every time, and not folded into the pass line. A check
-    // that stops running is exactly what this project refuses to let happen
-    // quietly — the reader has to be able to see that `typecheck` moved rather
-    // than discover later that nothing ran it.
-    if !already.is_empty() {
-        println!(
-            "{} {} gated at commit instead — not repeating {} here",
-            crate::ui::valid_sign(),
-            already.join(", "),
-            if already.len() == 1 { "it" } else { "them" },
-        );
-    }
+    // The DECLARATIONS are a property of the repository, resolved once; whether
+    // one covers a given push is a property of that ref's changed files, judged
+    // inside the loop.
+    let declared_gate = gated_at_commit();
+    let mut announced: Vec<&'static str> = Vec::new();
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -276,15 +296,25 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // Every one of those let a push proceed GREEN with the suite never
         // having run. `rust_tools::test` was already the model.
         let changed = crate::pushrefs::changed_files_for(r, &zero);
-        let changed_dirs: Vec<String> = changed
+        let js_changed: Vec<String> = changed.iter().filter(|f| is_js(f)).cloned().collect();
+        let changed_dirs: Vec<String> = js_changed
             .iter()
-            .map(String::as_str)
-            .filter(|f| is_js(f))
             .map(|f| parent_of(f).to_string())
             .collect();
         if changed_dirs.is_empty() {
             continue;
         }
+
+        // A declaration only stands in for this push if its scope saw every JS
+        // file the push changes — and only for the ROOT package, because that
+        // is where the declared command runs. A sub-package's gate is a
+        // different command in a different directory, and no root declaration
+        // has judged it.
+        let already: Vec<&'static str> = declared_gate
+            .iter()
+            .filter(|(_, scope)| scope_covers(scope.files, &js_changed))
+            .map(|(script, _)| *script)
+            .collect();
 
         // Same question as cargo-test: the suite should be answering about
         // the commits being pushed, not about whatever is open in the
@@ -293,8 +323,36 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // second ref's tests against a first ref's tree.
         let (run_in, _guard) = crate::pushed_tree::where_to_run(local_oid, &root);
         let where_ = run_in.to_string_lossy().into_owned();
-        for folder in packages_to_test(&pkg_dirs, &changed_dirs) {
-            if !run_gate(&where_, &folder, &already) {
+        let folders = packages_to_test(&pkg_dirs, &changed_dirs);
+
+        // Said out loud, and not folded into the pass line. A check that stops
+        // running is exactly what this project refuses to let happen quietly —
+        // the reader has to be able to see that `typecheck` moved rather than
+        // discover later that nothing ran it. Announced only when the skip is
+        // actually applied to this ref: claiming suppression that severity,
+        // scope or a missing root package disqualified would be the same lie
+        // in the other direction.
+        if folders.iter().any(|f| f.is_empty()) {
+            let newly: Vec<&'static str> = already
+                .iter()
+                .copied()
+                .filter(|s| !announced.contains(s))
+                .collect();
+            if !newly.is_empty() {
+                println!(
+                    "{} {} gated at commit instead — not repeating {} here",
+                    crate::ui::valid_sign(),
+                    newly.join(", "),
+                    if newly.len() == 1 { "it" } else { "them" },
+                );
+                announced.extend(newly);
+            }
+        }
+
+        for folder in folders {
+            // Root only: the declared command runs at the repo root.
+            let already_here: &[&str] = if folder.is_empty() { &already } else { &[] };
+            if !run_gate(&where_, &folder, already_here) {
                 return Outcome::Failed;
             }
         }
@@ -321,6 +379,23 @@ mod tests {
         // A name the package does not define is not a script to skip, and
         // naming one must not disturb the rest.
         assert_eq!(gate_for(pkg, &["test:unit"]), vec!["typecheck", "test"]);
+    }
+
+    /// Coverage is all-match: one changed file outside the declaration's scope
+    /// means commits this push carries were never judged by it.
+    #[test]
+    fn a_scope_covers_only_when_every_changed_file_matches() {
+        let ts_only = &[".ts", ".tsx"];
+        let all_ts: Vec<String> = vec!["src/a.ts".into(), "src/b.tsx".into()];
+        let mixed: Vec<String> = vec!["src/a.ts".into(), "src/legacy.js".into()];
+        let js_only: Vec<String> = vec!["src/legacy.js".into()];
+        assert!(scope_covers(ts_only, &all_ts));
+        assert!(!scope_covers(ts_only, &mixed));
+        assert!(!scope_covers(ts_only, &js_only));
+        // An empty scope is `*` — it saw everything.
+        assert!(scope_covers(&[], &mixed));
+        // Nothing relevant changed: nothing was missed.
+        assert!(scope_covers(ts_only, &[]));
     }
 
     #[test]
