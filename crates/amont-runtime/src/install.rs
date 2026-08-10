@@ -497,10 +497,21 @@ pub fn init() -> Result<(), String> {
 
     let me =
         std::env::current_exe().map_err(|e| format!("cannot locate the running binary: {e}"))?;
-    // `absolute` rather than `canonicalize`: the shim needs an absolute path and
-    // nothing more, and resolving symlinks here would bake pnpm's
-    // `.pnpm/amont-<target>@<version>/…` store path in place of the stable link
-    // the package manager maintains.
+    // `absolute` rather than `canonicalize`: the shim needs an absolute path
+    // and nothing more, so there is no reason to touch the filesystem again.
+    //
+    // It does NOT keep us off pnpm's `.pnpm/<pkg>@<version>/…` store path, and
+    // an earlier version of this comment claimed it did. By the time this runs,
+    // the JS wrapper has already resolved the binary through `require.resolve`,
+    // which returns the REAL path — and `current_exe()` resolves symlinks
+    // besides. A pnpm install bakes the versioned store path, verified.
+    //
+    // Which is fine, and worth saying why rather than leaving the next reader
+    // to worry about it: `prepare` runs on every install, so a version bump
+    // re-bakes before anything can dispatch against the old path — and if one
+    // ever does go missing, the shim's resolution order falls through to
+    // `~/.local/bin` and then `PATH`, and fails LOUDLY rather than skipping a
+    // check, which is the property that actually matters.
     let binary = absolute(&me);
     let binary = binary.to_string_lossy().into_owned();
     if !is_bakeable(&binary) {

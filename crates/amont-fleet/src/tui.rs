@@ -386,6 +386,10 @@ fn shim_glyphs(r: &Repo) -> String {
 fn bake_word(b: &BakeState) -> &'static str {
     match b {
         BakeState::Current => "current",
+        // Not "stale": the repository ships its own binary and the package
+        // manager keeps it current. The BAKE column saying "stale" is what
+        // would send somebody to run the fix that breaks it.
+        BakeState::SelfManaged { .. } => "npm",
         BakeState::Stale { .. } => "stale",
         BakeState::Unbaked => "unbaked",
         BakeState::Mixed => "mixed",
