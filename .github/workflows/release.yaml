@@ -307,6 +307,19 @@ jobs:
             exit 1
           fi
 
+          # Say WHO the token is before using it. A publish that 403s tells you
+          # nothing about whether the token was rejected outright or accepted
+          # and then refused a particular action — and those have completely
+          # different fixes. One call separates them, before anything is
+          # written.
+          if who=$(npm whoami 2>&1); then
+            echo "authenticated as $who"
+          else
+            echo "::error::the token does not authenticate: $who"
+            echo "::error::Create a new one and re-run: gh secret set NPM_TOKEN --repo ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
           # ORDER IS LOAD-BEARING. `amont` declares each platform package at this
           # exact version, and npm validates that a dependency version exists at
           # publish time — so publishing `amont` first fails the whole job, and
@@ -324,6 +337,19 @@ jobs:
               printf '%s\n' "$out"
               if printf '%s' "$out" | grep -qiE "cannot publish over|previously published|EPUBLISHCONFLICT"; then
                 echo "  already published — continuing"
+              elif printf '%s' "$out" | grep -q "E403"; then
+                # Every one of these packages is created by its FIRST publish,
+                # and creating a package is a different permission from updating
+                # one. npm says only "You may not perform that action with these
+                # credentials", which sends people to check the secret is set —
+                # it is, or `npm whoami` above would have failed.
+                echo "::error::403 creating $(basename "$dir"). The token authenticates but may not CREATE packages."
+                echo "::error::These are all first publishes, so that is the permission being refused:"
+                echo "::error::  · granular token — 'Packages and scopes' must be Read and write on ALL packages."
+                echo "::error::    Selecting individual packages cannot work here: they do not exist yet."
+                echo "::error::  · classic token — must be Automation (Read-only cannot publish; Publish prompts for 2FA)."
+                echo "::error::Then re-run without a new tag: gh workflow run release.yaml --ref ${GITHUB_REF_NAME}"
+                exit 1
               else
                 echo "::error::publishing $(basename "$dir") failed"
                 exit 1
