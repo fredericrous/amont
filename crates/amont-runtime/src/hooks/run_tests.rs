@@ -18,7 +18,55 @@ use std::process::{Command, Stdio};
 /// `lint` is deliberately absent: pre-commit-lint-js already lints staged files
 /// with the repo's pinned eslint, so repeating it here costs time and catches
 /// nothing new.
+///
+/// That argument is not special to `lint`. Any entry here can be moved earlier
+/// by a repository — see [`gated_at_commit`] — and once it runs on every commit,
+/// running it again on push is the same pure repetition. `typecheck` is the one
+/// people move: push is too late to hear about a type error you introduced an
+/// hour ago.
 const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
+
+/// GATE entries this repository already runs at COMMIT time, and so must not
+/// run again here.
+///
+/// A repository moves one earlier by declaring it in `amont.conf` under the
+/// name of the script:
+///
+/// ```text
+/// pre-commit  typecheck  .ts .tsx  block  npm run typecheck
+/// ```
+///
+/// The name is the contract, deliberately — matching on the command would have
+/// to guess at `npm` vs `pnpm` vs `yarn`, at `--silent`, at a wrapper script,
+/// and would answer "no" to things that plainly are the same check.
+///
+/// **Only a declaration that would actually run counts**, and both halves of
+/// that matter:
+///
+///   * `Kind::Runnable` excludes an unusable line and — through
+///     [`crate::manifest::gate`] — an UNTRUSTED manifest. A repository could
+///     otherwise declare `pre-commit typecheck`, never be trusted, and silently
+///     have types checked at neither end.
+///   * `hook.skip` is honoured for the same reason, one layer up: a declaration
+///     the author has switched off is not a check.
+///
+/// Get either wrong and the result is the failure this project is arranged
+/// against — a push that reports a green gate having run nothing.
+fn gated_at_commit() -> Vec<&'static str> {
+    let skips = crate::configured_skips();
+    let declared = crate::manifest::externals();
+    GATE.iter()
+        .copied()
+        .filter(|script| {
+            declared.iter().any(|ext| {
+                ext.stage == crate::check::Stage::PreCommit
+                    && matches!(ext.kind, crate::manifest::Kind::Runnable { .. })
+                    && ext.short_name == *script
+                    && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s))
+            })
+        })
+        .collect()
+}
 
 /// The extensions this check treats as "JS worth testing". Exported so
 /// `registry.rs` declares the scope from the same constant — see
@@ -136,8 +184,19 @@ pub fn packages_to_test(pkg_dirs: &[String], changed_dirs: &[String]) -> Vec<Str
         .collect()
 }
 
+/// The GATE, minus what a `pre-commit` declaration already covers.
+///
+/// Split from `run_gate` so the rule can be tested without a package on disk
+/// and without spawning npm — `run_gate` reaches for both.
+pub fn gate_for(pkg_json: &str, already: &[&str]) -> Vec<&'static str> {
+    GATE.iter()
+        .copied()
+        .filter(|s| defines_script(pkg_json, s) && !already.contains(s))
+        .collect()
+}
+
 /// True when the gate passed (or there was none to run).
-fn run_gate(root: &str, folder: &str) -> bool {
+fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
     let dir = if folder.is_empty() {
         root.to_string()
     } else {
@@ -146,7 +205,7 @@ fn run_gate(root: &str, folder: &str) -> bool {
     let Ok(pkg) = std::fs::read_to_string(format!("{dir}/package.json")) else {
         return true;
     };
-    for script in GATE.iter().filter(|s| defines_script(&pkg, s)) {
+    for script in gate_for(&pkg, already) {
         // Same hazard as cargo test: git exports GIT_DIR to hooks, and a JS
         // test that shells out to git would then operate on this repo rather
         // than its own fixture.
@@ -179,6 +238,22 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
     let pkg_dirs = git::stdout_paths(&["ls-files"])
         .map(|f| package_dirs(&f))
         .unwrap_or_default();
+
+    // Resolved ONCE, ahead of the loop: it is a property of the repository, not
+    // of a ref or a package, and `externals()` caches on first call anyway.
+    let already = gated_at_commit();
+    // Said out loud, every time, and not folded into the pass line. A check
+    // that stops running is exactly what this project refuses to let happen
+    // quietly — the reader has to be able to see that `typecheck` moved rather
+    // than discover later that nothing ran it.
+    if !already.is_empty() {
+        println!(
+            "{} {} gated at commit instead — not repeating {} here",
+            crate::ui::valid_sign(),
+            already.join(", "),
+            if already.len() == 1 { "it" } else { "them" },
+        );
+    }
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -219,7 +294,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         let (run_in, _guard) = crate::pushed_tree::where_to_run(local_oid, &root);
         let where_ = run_in.to_string_lossy().into_owned();
         for folder in packages_to_test(&pkg_dirs, &changed_dirs) {
-            if !run_gate(&where_, &folder) {
+            if !run_gate(&where_, &folder, &already) {
                 return Outcome::Failed;
             }
         }
@@ -230,6 +305,23 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The filter itself, without a package on disk or an npm to spawn.
+    ///
+    /// Order is part of the contract and is asserted: GATE is cheapest-first so
+    /// a type error costs seconds rather than a full suite, and removing an
+    /// entry must not disturb what is left.
+    #[test]
+    fn the_gate_drops_only_what_commit_already_covers() {
+        let pkg = r#"{"scripts":{"typecheck":"tsc","test":"vitest run"}}"#;
+        assert_eq!(gate_for(pkg, &[]), vec!["typecheck", "test"]);
+        assert_eq!(gate_for(pkg, &["typecheck"]), vec!["test"]);
+        assert_eq!(gate_for(pkg, &["test"]), vec!["typecheck"]);
+        assert!(gate_for(pkg, &["typecheck", "test"]).is_empty());
+        // A name the package does not define is not a script to skip, and
+        // naming one must not disturb the rest.
+        assert_eq!(gate_for(pkg, &["test:unit"]), vec!["typecheck", "test"]);
+    }
 
     #[test]
     fn finds_scripts_only_inside_the_scripts_object() {
