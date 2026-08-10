@@ -160,6 +160,28 @@ Outside a git repository `init` exits 0 in silence, because `npm install`
 legitimately runs from a tarball, inside a Docker build and in CI. It stays loud
 about everything else.
 
+#### If anything ever installs without your dev dependencies
+
+`npm` runs `prepare` on `npm ci` too — including `npm ci --omit=dev`, which is
+the usual second stage of a Dockerfile. `amont` is a **dev** dependency, so it
+is not there, and `prepare` fails on a command that does not exist. The install
+fails with it, and a broken image build is a confusing way to learn this.
+
+Guard it the same way husky's own documentation does:
+
+```json
+"prepare": "amont init || true"
+```
+
+Only where you need it. A repository with no production-install path should
+keep the bare `amont init`, so a real failure — a hook it may not overwrite, a
+`core.hooksPath` another tool owns — is loud rather than swallowed. `|| true`
+buys nothing there and hides something.
+
+`init` already handles the *other* half of a Docker build on its own: the
+builder stage has a `package.json` and no `.git`, which is the silent exit 0
+above.
+
 #### On turning hooks on from a package manager
 
 [The installer](#1-get-the-binary) says, and means, that it does not turn any

@@ -286,7 +286,14 @@ jobs:
         run: |
           set -euo pipefail
           cd dist/npm/amont-linux-x64-gnu
-          tar tzf "$(npm pack --silent)" | grep -qx 'package/bin/amont'
+          # Listed to a file, THEN grepped — never `tar … | grep -q`. `grep -q`
+          # exits at the first match and closes the pipe, tar takes EPIPE, and
+          # under `pipefail` that is a failed step reported as
+          # `tar: stdout: write error`. BSD tar tolerates it, GNU tar does not,
+          # so it passed on macOS locally and failed the release on ubuntu.
+          npm pack --silent > /tmp/packed
+          tar tzf "$(cat /tmp/packed)" > /tmp/contents
+          grep -qx 'package/bin/amont' /tmp/contents
           echo "the linux-x64-gnu tarball carries bin/amont"
 
       - name: Publish platform packages, then amont

@@ -85,6 +85,11 @@ installs exactly one and runs no install scripts at all — this survives
 `npm ci --ignore-scripts`. `amont init` wires up that one repository and
 nothing else: no `~/.local/bin`, no template directory, no prompts.
 
+If the project also installs **without** its dev dependencies anywhere — `npm ci
+--omit=dev`, the usual second stage of a Dockerfile — write
+`"prepare": "amont init || true"` there, since `prepare` still runs and `amont`
+will not be installed. [The details](docs/install.md#if-anything-ever-installs-without-your-dev-dependencies).
+
 ## Uninstall
 
 ```sh

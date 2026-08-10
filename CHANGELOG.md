@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.4.1 — 2026-08-07
+
+- **The npm packages v1.4.0 promised.** That release published to GitHub and
+  crates.io and then failed one step short of npm, in its own verification:
+  `tar tzf … | grep -q` looks harmless, but `grep -q` exits at the first
+  match and closes the pipe, tar takes EPIPE, and under `set -o pipefail`
+  that is a failed step — reported, unhelpfully, as `tar: stdout: write
+  error`. BSD tar tolerates the closed pipe and GNU tar does not, so it
+  passed on a Mac and failed on the ubuntu runner. Nothing was published, so
+  npm starts cleanly at this version; `^1.4.0` resolves to it.
+
+- `prepare` also runs on `npm ci --omit=dev` — the usual second stage of a
+  Dockerfile — where a **dev** dependency is by definition absent, so the
+  command does not exist and the install fails with it. The npm section now
+  says to write `"prepare": "amont init || true"` where a project installs
+  that way, and says where not to: a repository with no production-install
+  path keeps the bare form, so a hook it may not overwrite stays loud rather
+  than swallowed.
+
 ## v1.4.0 — 2026-08-07
 
 - **A repository whose hooks another tool owns is now refused, by name.**
