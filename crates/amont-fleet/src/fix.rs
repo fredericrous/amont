@@ -519,6 +519,23 @@ pub fn plan(
         }
     }
 
+    // A repository that ships its own binary is left exactly as it is.
+    //
+    // `Repair` means "put back what we install". Here there is nothing to put
+    // back: `amont init` baked this from the repository's own `prepare`, the
+    // package manager keeps it current, and rewriting it to OUR binary would
+    // undo a deliberate arrangement — and break it outright on a machine that
+    // has no binary of ours to point at. See [`shim::BakeState::SelfManaged`].
+    //
+    // `Activate` is not exempt: turning hooks ON in a repository is a different
+    // request, and one that has to be able to write the first shims. It never
+    // reaches this case anyway, since a repo with our shims already baked is
+    // `managed` and therefore repaired rather than activated.
+    if intent == Intent::Repair && matches!(repo.baked, crate::shim::BakeState::SelfManaged { .. })
+    {
+        return p;
+    }
+
     let rendered = shim::render(binary);
     for name in DISPATCHERS {
         let path = hooks.join(name);
@@ -849,6 +866,89 @@ mod tests {
         assert_eq!(tracked_refusal(&dir.join("untracked.txt")), None);
         assert_eq!(tracked_refusal(&dir.join("does-not-exist.txt")), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repository that ships its own binary is left ALONE by a repair, and
+    /// the same repository with an ordinary stale bake is still repaired.
+    ///
+    /// One test, two halves, on a REAL repository with REAL shims on disk. The
+    /// first version of this hand-built the `Repo` fixture and asserted "no
+    /// writes" — which passed before the exemption existed, because a fixture
+    /// pointing at a path with no `.git` is refused for unrelated reasons. A
+    /// test that cannot fail is worse than no test, and the control half below
+    /// is what makes the first half mean anything.
+    ///
+    /// The bake state is DERIVED from the files rather than hand-constructed,
+    /// so `bake_state`'s classification and `plan`'s reaction to it are proved
+    /// together — a rename in one that the other missed would show up here.
+    #[test]
+    fn a_repair_spares_a_package_managed_bake_and_still_fixes_a_stale_one() {
+        let base = std::env::temp_dir().join(format!("fixplan-selfmanaged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // `baked_at` is the path written INTO the shims; `ours` is what the
+        // fleet would install. They always differ here — that is the whole
+        // question — so what separates the two halves is only whether the baked
+        // path lives in a node_modules tree.
+        let plan_for = |name: &str, baked_at: &str| {
+            let dir = base.join(name);
+            let hooks = dir.join(".git/hooks");
+            std::fs::create_dir_all(&hooks).unwrap();
+            std::process::Command::new("git")
+                .args(["init", "-q", "--template=", "."])
+                .current_dir(&dir)
+                .output()
+                .expect("git init");
+            let rendered = shim::render(baked_at);
+            let mut shims = Vec::new();
+            for n in DISPATCHERS {
+                std::fs::write(hooks.join(n), &rendered).unwrap();
+                shims.push(crate::shim::classify(&hooks.join(n)));
+            }
+            let mut r = repo(true);
+            r.baked = crate::shim::bake_state(&shims, "/usr/local/bin/amont");
+            let p = plan(
+                &r,
+                &dir,
+                "/usr/local/bin/amont",
+                Intent::Repair,
+                false,
+                false,
+            );
+            (r.baked.clone(), p)
+        };
+
+        let (state, p) = plan_for("npm", "/w/node_modules/amont-darwin-arm64/bin/amont");
+        assert!(
+            matches!(state, crate::shim::BakeState::SelfManaged { .. }),
+            "expected SelfManaged, got {state:?}"
+        );
+        assert!(
+            !p.refused(),
+            "refused for an unrelated reason: {:?}",
+            p.refuse
+        );
+        assert!(p.write.is_empty(), "a repair rewrote them: {:?}", p.write);
+
+        // The control. Same repository shape, same mismatch against our binary,
+        // only the baked path differs — and this one MUST be repaired.
+        let (state, p) = plan_for("stale", "/somewhere/else/amont");
+        assert!(
+            matches!(state, crate::shim::BakeState::Stale { .. }),
+            "expected Stale, got {state:?}"
+        );
+        assert!(
+            !p.refused(),
+            "refused for an unrelated reason: {:?}",
+            p.refuse
+        );
+        assert_eq!(
+            p.write.len(),
+            DISPATCHERS.len(),
+            "repair skipped a genuinely stale bake"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// `plan()` must find and repair shims at a redirected `core.hooksPath`,

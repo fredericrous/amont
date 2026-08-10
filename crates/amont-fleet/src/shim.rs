@@ -69,6 +69,21 @@ pub enum ShimState {
 pub enum BakeState {
     /// Points at the binary we would install.
     Current,
+    /// Points into a `node_modules` tree: the REPOSITORY ships its own binary,
+    /// as a dev dependency, and `amont init` baked it from the `prepare`
+    /// script. Deliberate, correct, and none of the fleet's business.
+    ///
+    /// Without this it read as [`BakeState::Stale`] — "points somewhere else" is
+    /// literally true — and `fix --apply` would helpfully rewrite all four
+    /// shims to `~/.local/bin/amont`. On this machine that is churn: the fleet
+    /// re-bakes one way, the next `npm install` re-bakes the other, forever.
+    ///
+    /// On a TEAMMATE's machine it is worse than churn. The entire point of the
+    /// npm route is that the binary travels with the repository and nothing has
+    /// to be installed first — so `~/.local/bin/amont` is exactly the path that
+    /// does not exist there, and a fleet-wide repair would leave every one of
+    /// those repositories with shims that resolve nothing.
+    SelfManaged { path: String },
     /// Points somewhere else — the GUI-client failure mode, since a hook
     /// launched without an interactive PATH resolves nothing.
     Stale { path: String },
@@ -154,6 +169,23 @@ pub fn classify(path: &Path) -> ShimState {
     }
 }
 
+/// Whether a baked path is one a package manager owns.
+///
+/// The test is a `node_modules` PATH SEGMENT, not a substring: `/srv/my
+/// node_modules-backup/bin/amont` is somebody's directory, not a dependency
+/// tree. Both separators, because a shim baked on Windows carries `C:\…\`.
+///
+/// Deliberately not "is it inside THIS repository's node_modules". Hooks are
+/// shared across worktrees while `node_modules` is not, so the owning checkout
+/// of a hooks directory is frequently not the one whose install last ran — and
+/// answering "no" there would put us straight back to rewriting a path the
+/// package manager is maintaining.
+fn is_package_managed(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|part| part == "node_modules")
+}
+
 /// Collapse the four shims' baked paths into one verdict.
 pub fn bake_state(shims: &[ShimState], installed_binary: &str) -> BakeState {
     let mut baked: Vec<&str> = shims
@@ -170,6 +202,11 @@ pub fn bake_state(shims: &[ShimState], installed_binary: &str) -> BakeState {
         [] => BakeState::None,
         [one] if *one == PLACEHOLDER => BakeState::Unbaked,
         [one] if *one == installed_binary => BakeState::Current,
+        // After the exact match, so a machine that genuinely installed its
+        // binary inside a `node_modules` still reads as Current.
+        [one] if is_package_managed(one) => BakeState::SelfManaged {
+            path: (*one).to_string(),
+        },
         [one] => BakeState::Stale {
             path: (*one).to_string(),
         },
@@ -180,6 +217,67 @@ pub fn bake_state(shims: &[ShimState], installed_binary: &str) -> BakeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shim baked inside a `node_modules` tree belongs to the repository's
+    /// package manager, not to us.
+    ///
+    /// The `Stale` reading it used to get is what makes `fix --apply` rewrite
+    /// it to our binary — churn here, and on a machine that installed nothing
+    /// (the entire premise of the npm route) a rewrite to `~/.local/bin/amont`
+    /// points at a file that does not exist.
+    #[test]
+    fn a_bake_inside_node_modules_is_the_package_managers_business() {
+        let npm = "/repo/node_modules/amont-darwin-arm64/bin/amont";
+        assert_eq!(
+            bake_state(&[ok(npm)], "/home/me/.local/bin/amont"),
+            BakeState::SelfManaged {
+                path: npm.to_string()
+            }
+        );
+        // pnpm's real layout, which is where this actually bites: the store
+        // path carries the version, so it changes on every bump.
+        let pnpm = "/repo/node_modules/.pnpm/amont-darwin-x64@1.5.0/node_modules/amont-darwin-x64/bin/amont";
+        assert!(matches!(
+            bake_state(&[ok(pnpm)], "/home/me/.local/bin/amont"),
+            BakeState::SelfManaged { .. }
+        ));
+        // Windows separators reach this from a shim baked by `amont init`
+        // there; splitting only on `/` would call it stale.
+        let win = r"C:\repo\node_modules\amont-win32-x64\bin\amont.exe";
+        assert!(matches!(
+            bake_state(&[ok(win)], "/home/me/.local/bin/amont"),
+            BakeState::SelfManaged { .. }
+        ));
+    }
+
+    /// SEGMENT, not substring. Somebody's `node_modules-backup` directory is
+    /// not a dependency tree, and treating it as one would exempt a genuinely
+    /// stale bake from the repair that fixes it.
+    #[test]
+    fn only_a_real_path_segment_counts_as_package_managed() {
+        for path in [
+            "/srv/node_modules-backup/bin/amont",
+            "/srv/my-node_modules/bin/amont",
+            "/opt/amont/bin/amont",
+        ] {
+            assert_eq!(
+                bake_state(&[ok(path)], "/bin/amont"),
+                BakeState::Stale {
+                    path: path.to_string()
+                },
+                "{path} should still be stale"
+            );
+        }
+    }
+
+    /// The exact match wins first, so a machine that deliberately keeps its
+    /// installed binary inside a node_modules still reads as Current rather
+    /// than being quietly exempted from repair.
+    #[test]
+    fn an_exact_match_outranks_the_node_modules_rule() {
+        let p = "/repo/node_modules/.bin/amont";
+        assert_eq!(bake_state(&[ok(p)], p), BakeState::Current);
+    }
 
     #[test]
     fn templates_are_still_one_blob() {

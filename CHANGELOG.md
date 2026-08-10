@@ -6,6 +6,36 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.5.1 — 2026-08-10
+
+- **`amont-fleet fix` no longer offers to undo an npm install.** A repository
+  that carries `amont` as a dev dependency has its binary baked inside
+  `node_modules`, by `amont init`, from its own `prepare` script — deliberate,
+  and the whole point of that route. The fleet read the path as `stale`
+  ("points somewhere other than the binary we install", which is literally
+  true) and planned to rewrite all four shims.
+
+  On the machine that installed amont normally that is only churn: the fleet
+  re-bakes one way, the next `npm install` the other, forever. On a
+  teammate's machine it is a break — the npm route exists precisely so nothing
+  has to be installed first, so `~/.local/bin/amont` is the one path that is
+  not there, and a fleet-wide repair would leave those repositories with shims
+  resolving nothing.
+
+  There is now a `self_managed` bake state, reported as `npm` in the dashboard,
+  and repair leaves it alone. Activation is unaffected: turning hooks on in a
+  repository still writes the first shims. Nothing else changes state — across
+  a 163-repository sweep, every entry that had been reading `stale` was one of
+  these.
+
+- A comment in `install::init` claimed that using `absolute()` rather than
+  `canonicalize()` kept the baked path off pnpm's versioned store directory.
+  It does not, and never did: the JS wrapper resolves the binary through
+  `require.resolve` before this code runs. It is harmless — `prepare` re-bakes
+  on every install, and the shim falls through to `~/.local/bin` and then
+  `PATH`, failing loudly rather than skipping a check — but the comment said
+  otherwise, which is worse than saying nothing.
+
 ## v1.5.0 — 2026-08-10
 
 - **A gate entry can be moved to commit time.** `typecheck` sits in
