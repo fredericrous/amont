@@ -21,6 +21,21 @@ missing here.
   `git commit --no-verify` — is now stated plainly in the docs instead of
   being implied away.
 
+- **A deliberate `core.hooksPath` is serviced again, end to end.** The
+  husky-refusal work (v1.5.0/v1.5.1) over-reached in four places, each now
+  fixed: stale leftover shims in `.git/hooks` no longer mark a repository
+  hostile when our shims also sit at the redirect destination (amont is
+  running there — the leftovers are history, not a takeover, and the stranded
+  case's message now offers `amont uninstall` alongside unsetting the
+  redirect); `amont-fleet fix --apply` no longer refuses at apply time the
+  benign-redirect plans it had just previewed; a repair no longer skips
+  restoring a missing or drifted dispatcher in an npm-managed repository — it
+  restores it into the repository's own `node_modules` bake instead of either
+  hijacking or ignoring it; and a husky repository that never ran amont is
+  filed as unmanaged (silence) under repair instead of being printed with a
+  `git config --unset core.hooksPath` remedy that would disable the hooks it
+  intends.
+
 - **`amont-fleet fix` no longer offers to undo an npm install.** A repository
   that carries `amont` as a dev dependency has its binary baked inside
   `node_modules`, by `amont init`, from its own `prepare` script — deliberate,

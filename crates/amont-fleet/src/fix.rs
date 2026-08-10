@@ -419,19 +419,33 @@ pub fn plan(
     // where amont was installed and then silently stopped running. Reporting
     // that as "no shim of ours here" is precisely backwards, and it is the state
     // every `duro-*` repository was in.
+    //
+    // That argument only carries as far as its evidence. A repository that was
+    // NEVER ours — a third-party checkout that runs husky on purpose, no shim
+    // of ours anywhere — is not one where amont "stopped running", and printing
+    // `git config --unset core.hooksPath` for it hands the reader a remedy that
+    // would disable the hooks that repository intends. Under `Repair` such a
+    // repository is `Unmanaged`, the same silence every other not-ours repo
+    // gets. `Activate` stays loud: the user pointed at this repository and
+    // asked, and the answer is that somebody else owns its hooks.
     if let crate::scan::HooksDir::Redirected {
         path,
+        own,
         hostile: true,
-        ..
     } = &hooks_dir
     {
+        if intent == Intent::Repair
+            && !amont_runtime::install::holds_our_shims(own)
+            && !amont_runtime::install::holds_our_shims(path)
         {
-            p.warn
-                .push(Warning::HooksDirRedirected { path: path.clone() });
-            p.refuse
-                .push(Refusal::HooksDirRedirected { path: path.clone() });
+            p.refuse.push(Refusal::Unmanaged);
             return p;
         }
+        p.warn
+            .push(Warning::HooksDirRedirected { path: path.clone() });
+        p.refuse
+            .push(Refusal::HooksDirRedirected { path: path.clone() });
+        return p;
     }
     if !repo.managed && intent == Intent::Repair {
         p.refuse.push(Refusal::Unmanaged);
@@ -519,24 +533,34 @@ pub fn plan(
         }
     }
 
-    // A repository that ships its own binary is left exactly as it is.
+    // A repository that ships its own binary keeps its own arrangement.
     //
-    // `Repair` means "put back what we install". Here there is nothing to put
-    // back: `amont init` baked this from the repository's own `prepare`, the
+    // `Repair` means "put back what we install". An npm-managed bake was
+    // installed by `amont init` from the repository's own `prepare`, the
     // package manager keeps it current, and rewriting it to OUR binary would
     // undo a deliberate arrangement — and break it outright on a machine that
     // has no binary of ours to point at. See [`shim::BakeState::SelfManaged`].
+    //
+    // Keeping the arrangement is not the same as leaving the repository alone.
+    // `bake_state` reads only the shims that classified `Ok`, so one healthy
+    // npm-baked dispatcher next to three deleted ones still reads
+    // `SelfManaged` — and an early return here left the missing three missing,
+    // silently, with the dashboard calling the repo healthy. A missing
+    // `pre-push` is a branch-protect that never runs. So repair proceeds, but
+    // renders with the repository's OWN baked path: healthy dispatchers
+    // compare equal and produce no churn, missing or drifted ones are restored
+    // into the same npm arrangement rather than hijacked out of it.
     //
     // `Activate` is not exempt: turning hooks ON in a repository is a different
     // request, and one that has to be able to write the first shims. It never
     // reaches this case anyway, since a repo with our shims already baked is
     // `managed` and therefore repaired rather than activated.
-    if intent == Intent::Repair && matches!(repo.baked, crate::shim::BakeState::SelfManaged { .. })
-    {
-        return p;
-    }
+    let bake = match (&repo.baked, intent) {
+        (crate::shim::BakeState::SelfManaged { path }, Intent::Repair) => path.clone(),
+        _ => binary.to_string(),
+    };
 
-    let rendered = shim::render(binary);
+    let rendered = shim::render(&bake);
     for name in DISPATCHERS {
         let path = hooks.join(name);
         let changes = std::fs::read_to_string(&path)
@@ -544,7 +568,7 @@ pub fn plan(
             .unwrap_or(true);
         p.write.push(WriteShim {
             path,
-            baked: binary.to_string(),
+            baked: bake.clone(),
             changes,
         });
     }
@@ -918,7 +942,8 @@ mod tests {
             (r.baked.clone(), p)
         };
 
-        let (state, p) = plan_for("npm", "/w/node_modules/amont-darwin-arm64/bin/amont");
+        let npm_bake = "/w/node_modules/amont-darwin-arm64/bin/amont";
+        let (state, p) = plan_for("npm", npm_bake);
         assert!(
             matches!(state, crate::shim::BakeState::SelfManaged { .. }),
             "expected SelfManaged, got {state:?}"
@@ -928,7 +953,57 @@ mod tests {
             "refused for an unrelated reason: {:?}",
             p.refuse
         );
-        assert!(p.write.is_empty(), "a repair rewrote them: {:?}", p.write);
+        // Spared means NO CHURN, not no plan: every write keeps the repo's own
+        // npm bake, and none of them changes a healthy shim.
+        assert!(
+            p.write.iter().all(|w| !w.changes),
+            "a repair rewrote a healthy npm bake: {:?}",
+            p.write
+        );
+        assert!(
+            p.write.iter().all(|w| w.baked == npm_bake),
+            "a repair re-baked an npm repo to our binary: {:?}",
+            p.write
+        );
+
+        // A missing dispatcher inside that same arrangement IS repaired —
+        // `bake_state` reads only the healthy shims, so the verdict stays
+        // SelfManaged, and the early return this test used to pin left the
+        // hole in place with the dashboard calling the repo healthy. The
+        // restoration must keep the repository's own bake, not hijack it.
+        let missing = base.join("npm/.git/hooks").join(DISPATCHERS[0]);
+        std::fs::remove_file(&missing).unwrap();
+        let mut shims = Vec::new();
+        for n in DISPATCHERS {
+            shims.push(crate::shim::classify(&base.join("npm/.git/hooks").join(n)));
+        }
+        let mut r = repo(true);
+        r.baked = crate::shim::bake_state(&shims, "/usr/local/bin/amont");
+        assert!(
+            matches!(r.baked, crate::shim::BakeState::SelfManaged { .. }),
+            "expected SelfManaged with one dispatcher missing, got {:?}",
+            r.baked
+        );
+        let p = plan(
+            &r,
+            &base.join("npm"),
+            "/usr/local/bin/amont",
+            Intent::Repair,
+            false,
+            false,
+        );
+        let restored: Vec<_> = p.write.iter().filter(|w| w.changes).collect();
+        assert_eq!(
+            restored.len(),
+            1,
+            "exactly the missing dispatcher should be restored: {:?}",
+            p.write
+        );
+        assert_eq!(restored[0].path, missing);
+        assert_eq!(
+            restored[0].baked, npm_bake,
+            "the restored dispatcher must keep the npm arrangement"
+        );
 
         // The control. Same repository shape, same mismatch against our binary,
         // only the baked path differs — and this one MUST be repaired.
@@ -998,6 +1073,84 @@ mod tests {
         assert!(
             !dir.join(".git/hooks").exists(),
             "fixture: the default location was never created"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hostile redirect in a repository that was never ours is somebody
+    /// else's setup, not a finding. Under `Repair` it files as `Unmanaged` —
+    /// which the report filters as noise — because the loud refusal's printed
+    /// remedy, `git config --unset core.hooksPath`, would disable husky in a
+    /// repository that INTENDS husky. `Activate` stays loud: the user pointed
+    /// at this repository and asked.
+    #[test]
+    fn a_never_ours_husky_repo_is_unmanaged_not_lectured() {
+        let dir = std::env::temp_dir().join(format!("fixplan-husky-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        git(&["init", "-q", "--template=", "."]);
+        git(&["config", "core.hooksPath", ".husky/_"]);
+        let husky = dir.join(".husky/_");
+        std::fs::create_dir_all(&husky).unwrap();
+        std::fs::write(
+            husky.join("pre-commit"),
+            "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n",
+        )
+        .unwrap();
+
+        let p = plan(&repo(false), &dir, "/bin/gh", Intent::Repair, false, false);
+        assert_eq!(p.refuse, vec![Refusal::Unmanaged], "{:?}", p.refuse);
+
+        let p = plan(
+            &repo(false),
+            &dir,
+            "/bin/gh",
+            Intent::Activate,
+            false,
+            false,
+        );
+        assert!(
+            matches!(p.refuse.as_slice(), [Refusal::HooksDirRedirected { .. }]),
+            "{:?}",
+            p.refuse
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Our shims stranded in `<git-common-dir>/hooks` while husky owns
+    /// dispatch is exactly the state the loud refusal exists for — amont was
+    /// installed and then silently stopped running — and it stays loud.
+    #[test]
+    fn stranded_shims_behind_a_redirect_stay_loud() {
+        let dir = std::env::temp_dir().join(format!("fixplan-stranded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        git(&["init", "-q", "--template=", "."]);
+        git(&["config", "core.hooksPath", ".husky/_"]);
+        std::fs::create_dir_all(dir.join(".husky/_")).unwrap();
+        let own = dir.join(".git/hooks");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("pre-commit"), shim::render("/usr/local/bin/amont")).unwrap();
+
+        let p = plan(&repo(false), &dir, "/bin/gh", Intent::Repair, false, false);
+        assert!(
+            matches!(p.refuse.as_slice(), [Refusal::HooksDirRedirected { .. }]),
+            "stranded shims must stay a loud refusal: {:?}",
+            p.refuse
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -960,14 +960,23 @@ pub fn holds_our_shims(dir: &Path) -> bool {
 ///     lefthook both REGENERATE their directory on install, so anything we wrote
 ///     there is gone by the next `npm install` and the repository silently stops
 ///     being checked;
-///   * **our shims are already in the repository's own hooks directory** — amont
-///     was installed here and something later took dispatch away. Whatever the
-///     destination is, this repository is not running the checks it believes it
-///     is, and that is worth stopping for whether or not we can name the culprit.
+///   * **our shims sit in the repository's own hooks directory and NOT at the
+///     destination** — amont was installed here and something later took
+///     dispatch away. Whatever the destination is, this repository is not
+///     running the checks it believes it is, and that is worth stopping for
+///     whether or not we can name the culprit.
+///
+/// The second signal needs both halves. A repository whose shims sit at the
+/// destination too moved its hooks there deliberately — amont IS running, from
+/// the directory the repository chose — and whatever lingers in
+/// `<git-common-dir>/hooks` is leftovers from before the move, not evidence of
+/// a takeover. Refusing on the leftovers alone locked such a repository out of
+/// `install` (and of `amont init` from npm's `prepare`, failing every
+/// `npm install`) with a remedy that would have broken the deliberate setup.
 ///
 /// A repository with neither signal keeps the old behaviour exactly.
 pub fn redirect_is_hostile(to: &Path, own: &Path) -> bool {
-    redirect_culprit(to).is_some() || holds_our_shims(own)
+    redirect_culprit(to).is_some() || (holds_our_shims(own) && !holds_our_shims(to))
 }
 
 /// The refusal both `install` and `init` give when another tool owns dispatch.
@@ -995,6 +1004,17 @@ pub fn redirected_message(to: &Path, own: &Path) -> String {
         "\n    Hand dispatch back first: {}",
         highlight("git config --unset core.hooksPath")
     ));
+    // Stranded shims are the evidence when no culprit is named — say how to
+    // clear them, because "unset core.hooksPath" is the WRONG remedy for a
+    // repository whose redirect is deliberate and merely predates a cleanup.
+    if redirect_culprit(to).is_none() && holds_our_shims(own) {
+        msg.push_str(&format!(
+            "\n    Or, if the redirect is deliberate, clear our stale shims from {}\n    \
+             first: {}",
+            own.display(),
+            highlight("amont uninstall")
+        ));
+    }
     msg
 }
 
