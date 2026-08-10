@@ -34,49 +34,57 @@ function candidates() {
 // pnpm does not hoist — the real package sits under `node_modules/.pnpm/` — so a
 // path assembled from `__dirname` is correct under npm and wrong under pnpm and
 // yarn. Node's own resolver knows where the dependency actually is.
-function resolveBinary() {
+function binaryOf(pkg) {
   const exe = process.platform === "win32" ? "amont.exe" : "amont";
-  for (const pkg of candidates()) {
-    try {
-      const p = require.resolve(`${pkg}/bin/${exe}`);
-      if (existsSync(p)) return p;
-    } catch {
-      // Not installed: either the wrong libc for this host, or an
-      // `--ignore-scripts`-style install that skipped optional deps. Try the
-      // next candidate before giving up.
-    }
+  try {
+    const p = require.resolve(`${pkg}/bin/${exe}`);
+    if (existsSync(p)) return p;
+  } catch {
+    // Not installed: either the wrong libc for this host, or an
+    // `--ignore-scripts`-style install that skipped optional deps.
   }
   return null;
 }
 
-const binary = resolveBinary();
-if (!binary) {
-  // Name the platform. "amont binary not found" sends people to reinstall;
-  // "no build for linux/ppc64" tells them the actual answer, which is that they
-  // want `cargo install amont` or the shell installer.
-  const target = `${process.platform}/${process.arch}`;
-  process.stderr.write(
-    `amont: no native binary for ${target}.\n` +
-      `  npm installs one of: ${Object.values(PACKAGES).flat().join(", ")}\n` +
-      `  If your platform is not among them, build from source:\n` +
-      `      cargo install amont\n` +
-      `  If it is, the optional dependency did not install — try:\n` +
-      `      npm install --force amont\n`,
-  );
-  process.exit(1);
+// Existence is not runnability, so the loop is over SPAWNS, not paths. With a
+// package manager that ignores the `libc` field — yarn classic does, and
+// `npm install --force` is this file's own suggested remedy — BOTH linux-x64
+// builds get installed, gnu listed first, and on a musl host the gnu binary
+// fails at exec on the missing glibc loader while the right one sits a
+// candidate later. Only a spawn-level failure (`result.error`) falls through:
+// a binary that ran and exited non-zero has ANSWERED, and its exit code is the
+// whole product of a hook runner.
+const failures = [];
+for (const pkg of candidates()) {
+  const binary = binaryOf(pkg);
+  if (!binary) continue;
+  // `spawnSync` with inherited stdio rather than `execFileSync`: this forwards
+  // the child's exit CODE. It also keeps the child's stdin, which `amont run`
+  // reads.
+  const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+  if (result.error) {
+    failures.push(`      ${binary}: ${result.error.message}`);
+    continue;
+  }
+  // A signalled child has a null status. Report it the way a shell does, so
+  // "killed by SIGINT" does not read as a clean exit 0.
+  if (result.status === null && result.signal) {
+    process.exit(128 + (require("node:os").constants.signals[result.signal] ?? 0));
+  }
+  process.exit(result.status ?? 1);
 }
 
-// `spawnSync` with inherited stdio rather than `execFileSync`: this forwards the
-// child's exit CODE, and a hook runner's exit code is the whole product. It also
-// keeps the child's stdin, which `amont run` reads.
-const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
-if (result.error) {
-  process.stderr.write(`amont: could not run ${binary}: ${result.error.message}\n`);
-  process.exit(1);
-}
-// A signalled child has a null status. Report it the way a shell does, so
-// "killed by SIGINT" does not read as a clean exit 0.
-if (result.status === null && result.signal) {
-  process.exit(128 + (require("node:os").constants.signals[result.signal] ?? 0));
-}
-process.exit(result.status ?? 1);
+// Name the platform. "amont binary not found" sends people to reinstall;
+// "no build for linux/ppc64" tells them the actual answer, which is that they
+// want `cargo install amont` or the shell installer.
+const target = `${process.platform}/${process.arch}`;
+process.stderr.write(
+  `amont: no runnable native binary for ${target}.\n` +
+    (failures.length ? `  Installed but could not run:\n${failures.join("\n")}\n` : "") +
+    `  npm installs one of: ${Object.values(PACKAGES).flat().join(", ")}\n` +
+    `  If your platform is not among them, build from source:\n` +
+    `      cargo install amont\n` +
+    `  If it is, the optional dependency did not install — try:\n` +
+    `      npm install --force amont\n`,
+);
+process.exit(1);

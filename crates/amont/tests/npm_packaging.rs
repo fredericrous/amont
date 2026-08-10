@@ -18,6 +18,8 @@
 //! So the four lists are read off disk and compared. A Rust test is a strange
 //! home for it and it is the only place that runs on every commit.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
@@ -128,6 +130,84 @@ fn the_wrapper_can_resolve_every_package_that_is_published() {
         "bin/amont.js resolves a different set than npm installs — a platform \
          with a binary would be told it has none"
     );
+}
+
+/// Existence is not runnability: when a package manager that ignores `libc`
+/// installs BOTH linux-x64 packages, the gnu build is listed first and fails
+/// at exec on a musl host. The wrapper must fall through to the next candidate
+/// on a spawn-level failure — and must NOT fall through on a real exit code,
+/// which is a binary having answered.
+///
+/// Runs the real `bin/amont.js` under node against a fake package tree:
+/// the first candidate is executable garbage (spawn fails), the second is a
+/// script that exits 7. The 7 coming back is the fallback working end to end.
+#[cfg(unix)]
+#[test]
+fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    if common::missing("node") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("npm-wrapper-fallback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let modules = dir.join("node_modules");
+
+    // The wrapper itself, where npm would put it — resolution walks up from
+    // the file's own directory, exactly as in a real install.
+    let wrapper = modules.join("amont/bin/amont.js");
+    std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    std::fs::copy(root().join("npm/amont/bin/amont.js"), &wrapper).unwrap();
+
+    // Candidate one: exists, is executable, cannot run — the gnu-on-musl shape.
+    let gnu = modules.join("amont-linux-x64-gnu/bin/amont");
+    std::fs::create_dir_all(gnu.parent().unwrap()).unwrap();
+    std::fs::write(&gnu, b"\x7fELF not actually a binary").unwrap();
+    std::fs::set_permissions(&gnu, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Candidate two: runs, and answers with a distinctive exit code.
+    let musl = modules.join("amont-linux-x64-musl/bin/amont");
+    std::fs::create_dir_all(musl.parent().unwrap()).unwrap();
+    std::fs::write(&musl, "#!/bin/sh\nexit 7\n").unwrap();
+    std::fs::set_permissions(&musl, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The host running this test is darwin or linux-gnu, so pin the wrapper's
+    // view of the platform to the case under test instead of the machine's.
+    let run = dir.join("run.js");
+    std::fs::write(
+        &run,
+        "Object.defineProperty(process, \"platform\", { value: \"linux\" });\n\
+         Object.defineProperty(process, \"arch\", { value: \"x64\" });\n\
+         require(\"./node_modules/amont/bin/amont.js\");\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new("node")
+        .arg(&run)
+        .current_dir(&dir)
+        .output()
+        .expect("node");
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "the second candidate's exit code must come back:\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The control: with no runnable candidate at all, the wrapper names what
+    // it tried instead of exiting with a code that looks like an answer.
+    std::fs::remove_file(&musl).unwrap();
+    let out = std::process::Command::new("node")
+        .arg(&run)
+        .current_dir(&dir)
+        .output()
+        .expect("node");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no runnable native binary") && err.contains("amont-linux-x64-gnu"),
+        "the failure must name what was tried:\n{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The wrapper must never be what a hook execs.
