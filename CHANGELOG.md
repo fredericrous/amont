@@ -8,6 +8,19 @@ missing here.
 
 ## v1.5.1 — 2026-08-10
 
+- **The push gate only defers to a commit check that covers the push.** Moving
+  a gate entry to commit time (v1.5.0) skipped the push-time script whenever a
+  matching `pre-commit` declaration existed — on its name alone. Four ways
+  that let a push report a green gate having run nothing are closed: a `warn`
+  declaration (or one downgraded by `amont.severity.*`) no longer stands in
+  for a blocking push check; a push whose JS changes fall even partly outside
+  the declaration's scope runs the full gate for that ref; a monorepo
+  sub-package's gate is never skipped on the root declaration's account; and
+  the `✓ … gated at commit instead` line is only printed when the skip is
+  actually applied. The one gap that cannot be closed from push time —
+  `git commit --no-verify` — is now stated plainly in the docs instead of
+  being implied away.
+
 - **`amont-fleet fix` no longer offers to undo an npm install.** A repository
   that carries `amont` as a dev dependency has its binary baked inside
   `node_modules`, by `amont init`, from its own `prepare` script — deliberate,

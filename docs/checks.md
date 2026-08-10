@@ -141,12 +141,30 @@ lints staged files, so repeating it on push costs time and catches nothing —
 applied to whatever a repository decides to move. It is not `typecheck`-specific:
 `test:unit` and `test` work the same way.
 
-**Only a declaration that would actually run counts.** An untrusted manifest, an
-unusable line, a `hook.skip`, or a declaration on the `pre-push` stage all leave
-the push gate exactly as it was. The failure being avoided is the one worth
-stating plainly: a repository that declared `pre-commit typecheck`, never
-trusted it, and had types checked at *neither* end while both ends reported
-green.
+**Only a declaration that would actually run, and actually cover the push,
+counts.** All of these leave the push gate exactly as it was:
+
+- an **untrusted** manifest, an **unusable** line, a `hook.skip`, or a
+  declaration on the `pre-push` stage — a declaration that never runs is not a
+  check;
+- an effective severity of **`warn`**, whether declared or arrived at through
+  an `amont.severity.*` override — a check that lets a failing commit through
+  cannot stand in for one that blocks a failing push;
+- a push whose JS changes fall even partly **outside the declaration's
+  scope** — `*.ts,*.tsx` above says nothing about a `.js` change, so a push
+  carrying one runs the full gate for that ref;
+- every package but the **repo root** — the declared command runs at the root,
+  so a monorepo sub-package's gate is never skipped on its account.
+
+The failure being avoided is the one worth stating plainly: a repository that
+declared `pre-commit typecheck`, never trusted it, and had types checked at
+*neither* end while both ends reported green.
+
+One gap stays open, and is accepted rather than hidden: a commit created with
+`git commit --no-verify` never ran the moved check, and push time cannot see
+that. Moving a gate entry earlier trades the push-time backstop for commit-time
+latency — `--no-verify` is where that trade shows. If nobody on the repository
+may make that trade, leave the entry where it is.
 
 ### What a push actually tests
 

@@ -427,3 +427,123 @@ fn with_no_declaration_the_gate_is_unchanged() {
         "said something about commit-time gating with nothing declared:\n{out}"
     );
 }
+
+/// A `warn` declaration lets a failing commit through — it cannot stand in for
+/// a push check that blocks. Severity is part of "would actually run count".
+#[test]
+fn a_warn_declaration_leaves_the_push_gate_alone() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  warn  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time, warn only");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "a warn declaration removed the push gate — a failing commit and a green push:\n{out}"
+    );
+    assert!(
+        !out.contains("gated at commit"),
+        "claimed commit-time cover a warn declaration cannot give:\n{out}"
+    );
+}
+
+/// The same downgrade arrived at sideways: the declaration says `block`, an
+/// `amont.severity.*` override says `warn`. The EFFECTIVE severity is what a
+/// commit actually experiences, so it is what the push gate must consult.
+#[test]
+fn a_severity_override_to_warn_leaves_the_push_gate_alone() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+    r.git(&["config", "amont.severity.pre-commit-typecheck", "warn"]);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "a severity override downgraded the commit check and the push gate still deferred to it:\n{out}"
+    );
+}
+
+/// A `*.ts,*.tsx` declaration says nothing about a `.js` change. A push whose
+/// JS changes fall outside the declared scope carries commits the commit-time
+/// check never judged, so the full gate runs for that ref.
+#[test]
+fn a_push_outside_the_declared_scope_runs_the_full_gate() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"exit 1","test":"exit 0"}}"#,
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("src/legacy.js", "const x = 1;\n");
+    r.commit("feat: a js change the ts scope never saw");
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "a .js push was excused by a .ts-scoped declaration — checked at neither end:\n{out}"
+    );
+    assert!(
+        !out.contains("gated at commit"),
+        "claimed commit-time cover for files outside the declared scope:\n{out}"
+    );
+}
+
+/// The declared command runs at the repo ROOT. A monorepo sub-package's gate
+/// is a different command in a different directory, and no root declaration
+/// has judged it — so it is never skipped on the root's account.
+#[test]
+fn a_root_declaration_does_not_excuse_a_sub_package() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"root","scripts":{"typecheck":"exit 0","test":"exit 0"}}"#,
+    );
+    r.stage(
+        "packages/b/package.json",
+        r#"{"name":"b","scripts":{"typecheck":"exit 1"}}"#,
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("packages/b/src/a.ts", "export const x = 1\n");
+    r.commit("feat: change the sub-package");
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "the root declaration excused packages/b's own typecheck:\n{out}"
+    );
+}
