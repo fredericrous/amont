@@ -482,8 +482,10 @@ pub fn run(force: bool) -> Result<(), String> {
 /// legitimately runs where there is no `.git` — from a tarball, inside a Docker
 /// build, in CI — and failing there would make the package uninstallable in all
 /// three. It stays LOUD about everything else: a redirect, an unwritable
-/// directory and a foreign hook all still fail, because those are repositories
-/// where somebody believes they have hooks and does not.
+/// directory, a foreign hook, and a repository git REFUSES to answer about
+/// (dubious ownership in a container bind mount, an unreadable `.git/config`)
+/// all still fail, because those are repositories where somebody believes they
+/// have hooks and does not. The silence is git's verdict, never git's absence.
 pub fn init() -> Result<(), String> {
     let hooks = match repo_hooks() {
         RepoHooks::Own(dir) => dir,
@@ -491,8 +493,17 @@ pub fn init() -> Result<(), String> {
             return Err(redirected_message(&to, &own))
         }
         RepoHooks::Redirected { to, .. } => to,
-        // The one silent exit, and the only one.
+        // The one silent exit, and the only one: git itself said this is not a
+        // repository.
         RepoHooks::Nowhere => return Ok(()),
+        RepoHooks::Unanswerable { why } => {
+            return Err(format!(
+                "{} git would not say where this repository's hooks live —\n    {}\n    \
+                 Hooks were NOT installed.",
+                error_sign(),
+                crate::ui::sanitize(&why)
+            ))
+        }
     };
 
     let me =
@@ -883,8 +894,16 @@ pub enum RepoHooks {
     /// `core.hooksPath` points somewhere else. Another tool owns dispatch here,
     /// and writing to `own` would install shims git never runs.
     Redirected { to: PathBuf, own: PathBuf },
-    /// Not in a repository, or git would not answer.
+    /// Not in a repository — git itself said "not a git repository".
     Nowhere,
+    /// git failed for any OTHER reason: dubious ownership, an unreadable
+    /// `.git/config`, a corrupt gitfile. There is plausibly a repository here;
+    /// git would not talk about it. Split from [`RepoHooks::Nowhere`] because
+    /// the two demand opposite behaviour from `init` — outside a repository,
+    /// silence is correct; a repository git refuses to answer about is one
+    /// where somebody believes they are getting hooks and is not, which is the
+    /// failure this whole tool is arranged against.
+    Unanswerable { why: String },
 }
 
 /// Ask git both questions at once — what it dispatches from, and what this
@@ -895,16 +914,37 @@ pub enum RepoHooks {
 /// has no `.git/hooks` until something writes one), and `canonicalize` cannot be
 /// asked about a path that does not. Same reason `is_within` is lexical.
 pub fn repo_hooks() -> RepoHooks {
-    let Some(out) = crate::git::stdout(&[
+    // `git::output`, not `git::stdout`: the latter collapses every non-zero
+    // exit to `None` with stderr discarded, which folded "not in a repository"
+    // (silence is right) and "git refused to answer" (silence hid a container
+    // checkout getting no hooks from `prepare`, with exit 0) into one arm.
+    let Some(out) = crate::git::output(&[
         "rev-parse",
         "--path-format=absolute",
         "--git-path",
         "hooks",
         "--git-common-dir",
     ]) else {
-        return RepoHooks::Nowhere;
+        return RepoHooks::Unanswerable {
+            why: "could not run git".to_string(),
+        };
     };
-    let mut lines = out.lines();
+    if out.code != 0 {
+        // git's own verdict draws the line — the same phrase
+        // `amont-fleet::scan::hooks_dir_for` keys on.
+        if out.stderr.contains("not a git repository") {
+            return RepoHooks::Nowhere;
+        }
+        let why = out
+            .stderr
+            .lines()
+            .find(|l| l.starts_with("fatal:"))
+            .or_else(|| out.stderr.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("git gave no reason")
+            .to_string();
+        return RepoHooks::Unanswerable { why };
+    }
+    let mut lines = out.stdout.lines();
     let (Some(dispatched), Some(common)) = (lines.next(), lines.next()) else {
         return RepoHooks::Nowhere;
     };
@@ -1050,6 +1090,13 @@ fn bake_repo_hooks(binary: &str, force: bool) -> Result<(), String> {
             );
             return Ok(());
         }
+        RepoHooks::Unanswerable { why } => {
+            return Err(format!(
+                "{} git would not say where this repository's hooks live —\n    {}",
+                error_sign(),
+                crate::ui::sanitize(&why)
+            ))
+        }
     };
     let _ = std::fs::create_dir_all(&hooks);
 
@@ -1154,6 +1201,16 @@ fn uninstall_repo_hooks() -> Result<(), String> {
             println!(
                 "{} not inside a git repository — no repo hooks removed.",
                 warning_sign()
+            );
+            return Ok(());
+        }
+        // Removal stays forgiving where writing does not: failing here would
+        // leave `uninstall --binary` unable to finish its cleanup. Loud, and Ok.
+        RepoHooks::Unanswerable { why } => {
+            println!(
+                "{} git would not answer here — no repo hooks removed ({})",
+                warning_sign(),
+                crate::ui::sanitize(&why)
             );
             return Ok(());
         }

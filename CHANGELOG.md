@@ -36,6 +36,14 @@ missing here.
   `git config --unset core.hooksPath` remedy that would disable the hooks it
   intends.
 
+- **`amont init` is silent only where git itself says "not a git repository".**
+  Every other git failure — dubious ownership in a container bind mount, an
+  unreadable `.git/config`, a corrupt gitfile — used to take the same silent
+  exit 0, so `npm install` logged success while no hooks were written and
+  commits from that environment ran no checks. Those now fail loudly with
+  git's own reason; `install` does the same, and `uninstall` stays forgiving
+  (loud, but still able to finish its cleanup).
+
 - **`amont-fleet fix` no longer offers to undo an npm install.** A repository
   that carries `amont` as a dev dependency has its binary baked inside
   `node_modules`, by `amont init`, from its own `prepare` script — deliberate,
