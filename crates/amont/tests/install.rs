@@ -653,6 +653,68 @@ fn an_untracked_redirect_is_refused_and_names_the_remedy() {
     }
 }
 
+/// A repository that installed amont, then deliberately moved its hooks to a
+/// version-controlled directory — shims and all — must still be installable.
+///
+/// The leftovers in `.git/hooks` are from before the move, not evidence of a
+/// takeover: our shims sit at the DESTINATION too, so amont is running, from
+/// the directory the repository chose. Refusing on the leftovers alone locked
+/// such repositories out of `install` (and out of `amont init` from npm's
+/// `prepare`, failing every `npm install`) with a remedy that would have
+/// broken the deliberate setup.
+#[test]
+fn a_deliberate_redirect_with_stale_leftovers_is_still_installed() {
+    let s = Sandbox::new("benign-redirect-leftovers");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    // Installed once at .git/hooks…
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "setup install failed:\n{out}");
+    // …then the hooks moved, copies and all, and the leftovers stayed.
+    let tooling = repo.join("tooling/hooks");
+    std::fs::create_dir_all(&tooling).expect("mkdir");
+    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+        let shim = std::fs::read_to_string(repo.join(".git/hooks").join(name)).expect("read");
+        std::fs::write(tooling.join(name), shim).expect("write");
+    }
+    git(&repo, &["config", "core.hooksPath", "tooling/hooks"]);
+
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(
+        code, 0,
+        "a deliberate redirect was refused over leftovers:\n{out}"
+    );
+}
+
+/// The stranded case keeps its refusal — our shims in `.git/hooks`, nothing of
+/// ours at the destination — but the message must offer BOTH ways out. The
+/// only remedy it used to name, `git config --unset core.hooksPath`, is wrong
+/// for a repository whose redirect is deliberate and merely predates a
+/// cleanup; `amont uninstall` (which reaches redirected dirs) is the other
+/// half.
+#[test]
+fn a_redirect_with_only_stranded_shims_names_the_cleanup() {
+    let s = Sandbox::new("stranded-remedy");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "setup install failed:\n{out}");
+    let tooling = repo.join("tooling/hooks");
+    std::fs::create_dir_all(&tooling).expect("mkdir");
+    git(&repo, &["config", "core.hooksPath", "tooling/hooks"]);
+
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_ne!(code, 0, "stranded shims must still refuse:\n{out}");
+    assert!(
+        out.contains("amont uninstall"),
+        "the message must offer the stale-shim cleanup path:\n{out}"
+    );
+    assert!(
+        out.contains("git config --unset core.hooksPath"),
+        "and still name the dispatch remedy:\n{out}"
+    );
+}
+
 /// Uninstall must NOT inherit the refusal above.
 ///
 /// Versions before the redirect check wrote our shims into whatever

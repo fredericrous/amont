@@ -51,7 +51,6 @@
 use serde::Serialize;
 
 use crate::fix::{tracked_refusal, FixPlan, Intent};
-use crate::scan::HooksDir;
 use crate::shim;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -223,10 +222,16 @@ pub fn apply(plan: &FixPlan) -> Outcome {
 ///   anywhere other than where the plan resolved it, every path in the plan
 ///   names a file in the wrong directory.
 fn reverify(plan: &FixPlan) -> Option<Outcome> {
-    let hooks = match crate::scan::hooks_dir_for(&plan.repo_abs) {
-        HooksDir::In { path } => path,
-        // Outside, or unresolvable. Either way not somewhere we write.
-        _ => return Some(Outcome::Refused),
+    // `inside()`, not a match on `In`: it admits both `In` and a BENIGN
+    // `Redirected` — the deliberate in-repo `core.hooksPath` that `plan()`
+    // follows — and answers `None` for Outside, Unknown and a hostile
+    // redirect. Matching only `In` here refused at apply time the exact plans
+    // `plan()` had just promised for every repository keeping its hooks in a
+    // chosen directory like `tooling/hooks`.
+    let resolved = crate::scan::hooks_dir_for(&plan.repo_abs);
+    let Some(hooks) = resolved.inside().map(std::path::Path::to_path_buf) else {
+        // Outside, unresolvable, or taken over. Either way not somewhere we write.
+        return Some(Outcome::Refused);
     };
     if plan.hooks.inside() != Some(hooks.as_path()) {
         return Some(Outcome::Refused);
@@ -350,6 +355,51 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(hooks.join("pre-push")).unwrap(),
             shim::render("/bin/gh")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The write-side proof for a deliberate in-repo `core.hooksPath`:
+    /// `plan()` follows the redirect, and `apply()` must not refuse at
+    /// reverify what plan just promised. Regression: `reverify` accepted only
+    /// `HooksDir::In`, so every benign-redirect plan — previewed with four
+    /// writes — died as `Refused` at apply time.
+    #[test]
+    fn applies_at_a_benign_redirected_hooks_path() {
+        let root = std::env::temp_dir().join(format!("apply-redirect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("r");
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        git(&["init", "-q", "--template=", "."]);
+        git(&["config", "core.hooksPath", "tooling/hooks"]);
+        let hooks = dir.join("tooling/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        // A shim of ours baked to an old binary, so the repo scans managed and
+        // the plan genuinely has something to write.
+        std::fs::write(hooks.join("pre-commit"), shim::render("/old/binary")).unwrap();
+
+        let (repo, abs) = scan_one(&root, "/bin/gh");
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        assert!(!p.refused(), "{:?}", p.refuse);
+        let out = apply(&p);
+        assert!(matches!(out, Outcome::Applied { .. }), "{out:?}");
+        for n in shim::DISPATCHERS {
+            assert_eq!(
+                std::fs::read_to_string(hooks.join(n)).unwrap(),
+                shim::render("/bin/gh"),
+                "{n} must be written at the redirect"
+            );
+        }
+        assert!(
+            !dir.join(".git/hooks/pre-commit").exists(),
+            "nothing may be written where git does not dispatch"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
