@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.5.0 — 2026-08-10
+
+- **A gate entry can be moved to commit time.** `typecheck` sits in
+  `pre-push-run-tests-js`'s gate because nothing checks it sooner, and for
+  some repositories that is too late: a type error is cheapest to hear about
+  at the commit that caused it, not an hour later at push. Declare it in
+  `amont.conf` under the name of the script —
+  `pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck` — and the push
+  gate drops it, saying `✓ typecheck gated at commit instead`. The same
+  argument already keeps `lint` out of that gate, so this is that rule made
+  available rather than a new one, and it is not `typecheck`-specific.
+
+  Only a declaration that **would actually run** counts: an untrusted
+  manifest, an unusable line, a `hook.skip`, or a declaration on the wrong
+  stage all leave the push gate exactly as it was. The failure that shapes
+  the test suite is the one where a repository declares `pre-commit
+  typecheck`, is never trusted, and has types checked at neither end while
+  both ends report green.
+
 ## v1.4.1 — 2026-08-07
 
 - **The npm packages v1.4.0 promised.** That release published to GitHub and

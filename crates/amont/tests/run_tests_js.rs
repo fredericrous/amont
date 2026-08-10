@@ -244,3 +244,186 @@ fn a_non_js_change_runs_no_gate() {
     r.commit("docs: readme");
     assert_eq!(push_range(&r, &base, &head(&r)), 0);
 }
+
+// --- what a repository has already gated at COMMIT time ---------------------
+//
+// `typecheck` is in GATE because nothing checks it earlier. A repository that
+// moves it earlier — so a type error is heard at the commit that caused it,
+// not an hour later at push — must not then be charged for it twice. These
+// pin both halves: that a real declaration removes it, and that a declaration
+// which would NOT run leaves it exactly where it was.
+//
+// The signal throughout is `"typecheck": "exit 1"`. If it runs, the push
+// fails; if it is correctly skipped, `test` still runs and the push passes.
+// That cannot be satisfied by accident in either direction.
+
+/// Same as `push_range`, but keeps stdout so the message can be read.
+fn push_range_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
+    let line = format!("refs/heads/main {to} refs/heads/main {from}\n");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push-run-tests-js")
+        .current_dir(&r.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(line.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// A repo whose `typecheck` script would FAIL, plus a passing `test`, with one
+/// JS commit to push. Returns the base to push from.
+fn repo_with_failing_typecheck() -> (Repo, String) {
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"exit 1","test":"exit 0"}}"#,
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("src/a.ts", "export const x = 1\n");
+    r.commit("feat: add a ts file");
+    (r, base)
+}
+
+fn trust_manifest(r: &Repo) {
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("trust")
+        .current_dir(&r.dir)
+        .output()
+        .expect("amont trust");
+    assert!(
+        out.status.success(),
+        "could not trust the manifest: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_declared_pre_commit_check_removes_that_script_from_the_push_gate() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(
+        code, 0,
+        "typecheck ran at push despite being gated at commit:\n{out}"
+    );
+    // And it SAYS so. A check that stops running silently is the failure this
+    // whole project is arranged against.
+    assert!(
+        out.contains("typecheck") && out.contains("gated at commit"),
+        "the push did not say typecheck had moved:\n{out}"
+    );
+}
+
+/// The safety half, and the one worth getting wrong only once.
+///
+/// An untrusted manifest does not run — so if the push gate deferred to it, a
+/// repository would have types checked at NEITHER end while both ends reported
+/// green. `manifest::gate` turns untrusted declarations into `Unusable`, and
+/// `gated_at_commit` counts only `Runnable`; this is what holds that together.
+#[test]
+fn an_untrusted_declaration_leaves_the_push_gate_alone() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    // Written and committed, deliberately NOT trusted — the cloned-repo case.
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: declare typecheck, untrusted");
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "an untrusted declaration removed the push gate — nothing typechecks now:\n{out}"
+    );
+}
+
+/// Same rule, one layer up: a declaration the author switched off is not a
+/// check, so it cannot excuse the push gate either.
+#[test]
+fn a_skipped_declaration_leaves_the_push_gate_alone() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+    r.git(&["config", "--add", "hook.skip", "pre-commit-typecheck"]);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "a skipped declaration removed the push gate — nothing typechecks now:\n{out}"
+    );
+}
+
+/// A declaration on the OTHER stage means nothing here: `pre-push typecheck`
+/// does not gate anything at commit time, so the entry stays.
+#[test]
+fn a_pre_push_declaration_does_not_count_as_commit_time() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    r.stage(
+        "amont.conf",
+        "pre-push  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    );
+    r.commit("chore: declare on the wrong stage");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(
+        code, 0,
+        "a pre-push declaration was treated as commit-time cover:\n{out}"
+    );
+}
+
+/// Nothing declared is the overwhelmingly common case, and it must be exactly
+/// what it was before any of this existed.
+#[test]
+fn with_no_declaration_the_gate_is_unchanged() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = repo_with_failing_typecheck();
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_ne!(code, 0, "typecheck did not run:\n{out}");
+    assert!(
+        !out.contains("gated at commit"),
+        "said something about commit-time gating with nothing declared:\n{out}"
+    );
+}
