@@ -158,10 +158,16 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     std::fs::copy(root().join("npm/amont/bin/amont.js"), &wrapper).unwrap();
 
-    // Candidate one: exists, is executable, cannot run — the gnu-on-musl shape.
+    // Candidate one: exists, is executable, cannot run — the gnu-on-musl
+    // shape, faithfully. A glibc binary on musl fails exec with ENOENT (the
+    // dynamic loader named in its header is not there), which a shebang
+    // naming a nonexistent interpreter reproduces exactly. NOT garbage bytes:
+    // those fail with ENOEXEC, and on Linux `execvp` retries ENOEXEC through
+    // /bin/sh — the garbage RUNS, exits 127, and that is an answer, not a
+    // spawn failure.
     let gnu = modules.join("amont-linux-x64-gnu/bin/amont");
     std::fs::create_dir_all(gnu.parent().unwrap()).unwrap();
-    std::fs::write(&gnu, b"\x7fELF not actually a binary").unwrap();
+    std::fs::write(&gnu, "#!/nonexistent/ld-linux-x86-64.so.2\n").unwrap();
     std::fs::set_permissions(&gnu, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // Candidate two: runs, and answers with a distinctive exit code.
