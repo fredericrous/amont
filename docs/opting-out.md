@@ -13,8 +13,8 @@ four answers below is the right one. Those are settings:
 amont setup      # walks you through them, with the current values
 ```
 
-This matters most for `commit-msg`, which is the one hook `--no-verify` and
-`hook.skip` genuinely cannot reach (see below). Changing what it asks for is
+This matters most for `commit-msg`, which is the one hook `hook.skip`
+genuinely cannot reach (see below). Changing what it asks for is
 the only lever there is, and it is a real one. See
 [commit conventions](commit-convention.md#if-the-defaults-do-not-fit).
 
@@ -25,14 +25,17 @@ git commit --no-verify
 git push --no-verify
 ```
 
-Skips the whole `pre-commit` or `pre-push` stage for that one invocation.
+`git commit --no-verify` skips `pre-commit` **and** `commit-msg` for that one
+commit; `git push --no-verify` skips the whole `pre-push` stage.
+`prepare-commit-msg` and `post-commit` still run — that is git's behaviour,
+not ours, and it is why a bypassed commit still gets its message prepared and
+still fails to earn a [gate stamp](checks.md#moving-a-gate-entry-earlier).
 
-`commit-msg` and `prepare-commit-msg` are **not** bypassable this way — that is
-git's behaviour, not ours. Nor do they take `hook.skip` or a severity override:
-they are entrypoints rather than checks, so the keys below do not name them.
-
-To get a message past `commit-msg`, fix the message — or change what it asks
-for, which is what §0 is about.
+Neither `commit-msg` nor `prepare-commit-msg` takes `hook.skip` or a severity
+override: they are entrypoints rather than checks, so the keys below do not
+name them. To get a message past `commit-msg` without bypassing everything
+else, fix the message — or change what it asks for, which is what §0 is
+about.
 
 ## 2. One run, one check: `-c`
 

@@ -335,6 +335,27 @@ fn orange(s: &str) -> String {
     highlight(s)
 }
 
+/// A subject git itself wrote, or one that exists only to be autosquashed
+/// away.
+///
+/// Exact prefixes, space and quote included, so a HUMAN subject like
+/// "Merges: cleanup" or "fixup the parser" is still judged — only the shapes
+/// git's own porcelain emits stand aside. The trade is that a hand-written
+/// "Merge the two configs" passes unjudged; commitlint draws the same line,
+/// and the alternative blocks `git merge` itself.
+fn git_generated(subject: &str) -> bool {
+    [
+        "Merge ",
+        "Revert \"",
+        "Reapply \"",
+        "fixup! ",
+        "squash! ",
+        "amend! ",
+    ]
+    .iter()
+    .any(|p| subject.starts_with(p))
+}
+
 pub fn run(args: &[std::ffi::OsString]) -> Verdict {
     let Some(filename) = args.first().and_then(|a| a.to_str()) else {
         println!("Usage:\n\n./commit-msg <filename>");
@@ -347,6 +368,21 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
     let cleaned = strip_comments(&raw);
     let mut parts = cleaned.splitn(2, '\n');
     let subject_line = parts.next().unwrap_or("");
+
+    // Messages GIT writes are passed through, not judged. `git merge` invokes
+    // this hook (githooks(5)) with "Merge branch '…'"; `git revert` writes
+    // `Revert "…"` (and `Reapply "…"` for a revert of a revert); `--fixup`
+    // and `--squash` write `fixup!`/`squash!`/`amend!` subjects that exist
+    // only to be autosquashed away before anyone reads them. None of these
+    // can carry a conventional type — blocking them blocks the porcelain
+    // that produced them, and the workaround people reach for is
+    // `--no-verify`, which turns off the checks that DO apply to them.
+    // Said out loud, because a check that stands aside silently is the
+    // invisibility this project refuses everywhere else.
+    if git_generated(subject_line) {
+        valid("A message git itself wrote — the convention is not applied");
+        return Verdict::Proceed;
+    }
     // Everything after the subject's own newline — blank separator lines
     // included. The format string below writes that blank line itself, so
     // leaving them here means writing one MORE each time.

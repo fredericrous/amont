@@ -47,6 +47,44 @@ fn rejects_a_message_with_no_type_prefix() {
     assert!(!rewrite(&r, "just a message\n").0);
 }
 
+/// Messages git itself writes pass through unjudged — and UNTOUCHED. `git
+/// merge` invokes this hook (githooks(5)); blocking its own message blocks
+/// merging, and the workaround people reach for is `--no-verify`, which
+/// turns off the checks that DO apply.
+#[test]
+fn git_generated_messages_pass_through_untouched() {
+    let r = Repo::new();
+    for msg in [
+        "Merge branch 'feat/x' into main\n",
+        "Merge remote-tracking branch 'origin/main'\n",
+        "Merge pull request #12 from fork/feat\n",
+        "Revert \"feat: the thing\"\n\nThis reverts commit abc123.\n",
+        "Reapply \"feat: the thing\"\n",
+        "fixup! feat: the thing\n",
+        "squash! feat: the thing\n",
+        "amend! feat: the thing\n",
+    ] {
+        let (passed, after) = rewrite(&r, msg);
+        assert!(passed, "blocked git's own message: {msg:?}");
+        assert_eq!(after, msg, "rewrote git's own message: {msg:?}");
+    }
+}
+
+/// The pass-through is for git's EXACT shapes, not for humans who happen to
+/// start a sentence with one of the words.
+#[test]
+fn human_subjects_near_the_git_shapes_are_still_judged() {
+    let r = Repo::new();
+    for msg in [
+        "Merges: cleanup\n",       // not "Merge "
+        "Reverted the parser\n",   // not "Revert \""
+        "fixup the parser\n",      // not "fixup! "
+        "Mergesort implemented\n", // not "Merge "
+    ] {
+        assert!(!rewrite(&r, msg).0, "let a human subject through: {msg:?}");
+    }
+}
+
 #[test]
 fn rejects_a_prefix_with_no_description() {
     let r = Repo::new();
@@ -57,8 +95,9 @@ fn rejects_a_prefix_with_no_description() {
 ///
 /// A gitmoji in every commit subject is the most divisive opinion this project
 /// ever held, and it used to be unavoidable — `commit-msg` takes no
-/// `hook.skip`, no severity override and no `--no-verify`, so the emoji could
-/// be complied with or uninstalled. It is now a placement somebody chooses.
+/// `hook.skip` and no severity override, so short of `--no-verify` the emoji
+/// could be complied with or uninstalled. It is now a placement somebody
+/// chooses.
 #[test]
 fn nothing_is_decorated_unless_a_placement_is_chosen() {
     let r = Repo::new();

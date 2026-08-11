@@ -41,8 +41,9 @@ the footers.
 This is the hook that rejects `Add to Cart`: no type prefix. `git commit -m
 "feat: a cart the checks agree with"` passes.
 
-`--no-verify` does not bypass `commit-msg` — that is git's behaviour, not ours
-— and neither `hook.skip` nor a severity override names it. So this is the one
+`--no-verify` skips `commit-msg` along with `pre-commit` — that is git's
+behaviour — but neither `hook.skip` nor a severity override names it, so
+there is no way to turn it down and leave it on. So this is the one
 hook whose rules are adjustable in themselves: `amont setup` sets the
 subject and description limits, the body wrap, and where the type's gitmoji
 goes (nowhere, by default).
