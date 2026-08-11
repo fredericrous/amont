@@ -8,6 +8,36 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **Messages git itself writes now pass `commit-msg` unjudged.** `git merge`
+  invokes the hook (githooks(5)), and "Merge branch '…'", `Revert "…"`,
+  `Reapply "…"` and the autosquash shapes `fixup!`/`squash!`/`amend!` all
+  carry no conventional type by design — the hook blocked the porcelain that
+  produced them, and the workaround it trained was `--no-verify`, which turns
+  off everything else too. Exact prefixes only: "Merges: cleanup" and "fixup
+  the parser" are still judged.
+
+- **The docs stopped denying `--no-verify`.** Four pages (and the generated
+  AGENTS.md block) claimed commit-msg "cannot be bypassed with --no-verify" —
+  githooks(5) says the opposite, and the pages inverted prepare-commit-msg,
+  the hook the flag genuinely does not skip. Corrected everywhere; the
+  "adjustable in itself" argument now stands on the true leg (`hook.skip`
+  and `amont.severity` really cannot reach it).
+
+- **The push gates stopped reporting green when git itself fails.**
+  `run-tests-js` and `cargo-test` returned `Passed` when `rev-parse` or
+  `ls-files` failed — silently, nothing run, nothing said. They now report
+  `Unavailable` with a "git would not answer — the gate did NOT run" line:
+  loud, and non-blocking, the same split `init` got in v1.5.1.
+
+- **`defines_script` reads the top-level `"scripts"` object, not the first
+  `"scripts"` substring.** `{"files":["scripts"],"dependencies":{"test":…}}`
+  used to hand the brace-matcher the dependencies object — a dependency named
+  `test` answered as a script (blocking the push) while the real scripts
+  object was never read. The scan now tracks depth and requires a real
+  top-level key. Also: the `gated_at_commit` rustdoc example is now a
+  manifest line the parser accepts, and ban-terms' most-printed line learned
+  to spell "were".
+
 - **A fifth hook, `post-commit`, closes the `--no-verify` hole in commit-time
   gating.** Moving a gate entry to commit time (v1.5.0) skipped the push-time
   script on the strength of a declaration — a promise on paper. A commit made

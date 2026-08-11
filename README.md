@@ -240,7 +240,7 @@ writing cannot go on silently disabling things. More in
 
 ## Making the commit convention yours
 
-`commit-msg` is the one hook `hook.skip` and `--no-verify` cannot reach, so its
+`commit-msg` is the one hook `hook.skip` and `amont.severity` cannot reach, so its
 opinions are adjustable in themselves:
 
 ```sh

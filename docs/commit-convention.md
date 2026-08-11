@@ -16,11 +16,16 @@ before anyone looked.
 <type>[optional scope][optional !]: <description>
 ```
 
-Enforced by `commit-msg`, which **cannot** be bypassed with `--no-verify`:
+Enforced by `commit-msg`:
 
 - a subject is present, and is at most **72** characters;
 - it carries one of the types below, followed by a required colon and space;
 - a description follows the prefix, and is at most **50** characters.
+
+Messages git itself writes are passed through, not judged: `Merge …`,
+`Revert "…"`, `Reapply "…"`, and the autosquash shapes `fixup!`, `squash!`
+and `amend!` all carry no conventional type by design, and blocking them
+would block `git merge`, `git revert` and `git commit --fixup` themselves.
 
 An optional scope is a noun in parentheses naming a section of the codebase:
 `fix(parser): …`. A `!` before the colon marks a breaking change.
@@ -30,8 +35,9 @@ Both numbers are defaults, not laws — see
 
 ## If the defaults do not fit
 
-`commit-msg` is the one hook `hook.skip` and `amont.severity` do not reach,
-and git exempts it from `--no-verify`. So it is the one hook whose opinions
+`commit-msg` is the one hook `hook.skip` and `amont.severity` do not reach —
+`--no-verify` skips it for a single commit (git's rule, and an emergency
+exit, not a dial). So it is the one hook whose opinions
 have to be adjustable in themselves, and they are — four `git config` keys,
 walked by `amont setup` and listed in
 [configuration](configuration.md#amontcommit--what-a-commit-message-must-look-like):

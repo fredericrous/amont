@@ -34,12 +34,13 @@ prints the condition each inert check is waiting on.
 
 ## `commit-msg`
 
-Validates the summary line and reformats the message. Cannot be bypassed with
-`--no-verify`.
+Validates the summary line and reformats the message. `--no-verify` skips it
+(git's rule); no `hook.skip` or severity override names it.
 
 **Validates:** a subject is present and at most 72 characters; it carries a
 [conventional type prefix](commit-convention.md); a description follows the
-prefix; the description is at most 50 characters.
+prefix; the description is at most 50 characters. Messages git itself writes
+(`Merge …`, `Revert "…"`, `fixup!`/`squash!`/`amend!`) pass through unjudged.
 
 **Formats:** hard-wraps the body at 72 columns, groups the trailing footers
 with one blank line before them, and places the type's gitmoji wherever you

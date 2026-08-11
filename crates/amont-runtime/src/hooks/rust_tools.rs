@@ -280,8 +280,12 @@ pub fn clippy(_args: &[std::ffi::OsString]) -> Outcome {
 /// untested branch reported as a pass because nothing actually ran against
 /// it. Each ref that touches Rust gets its own worktree and its own verdict.
 pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+    // `Unavailable`, never `Passed`, when git will not answer — same argument
+    // and same wording as run-tests-js: a gate must not report green having
+    // asked nothing.
     let Some(root) = git::stdout(&["rev-parse", "--show-toplevel"]) else {
-        return Outcome::Passed;
+        super::common::warn("cargo-test: git would not answer — the gate did NOT run");
+        return Outcome::Unavailable;
     };
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))

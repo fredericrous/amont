@@ -65,9 +65,9 @@ intentionally instead:\n\
 git config amont.severity.<check-id> warn\n\
 ```\n\
 \n\
-`commit-msg` takes neither `hook.skip` nor a severity override, and git\n\
-exempts it from `--no-verify`. Write the message it asks for, or change what\n\
-it asks for — `amont setup`, or `amont.commit.*` directly.\n\
+`commit-msg` takes neither `hook.skip` nor a severity override. Write the\n\
+message it asks for, or change what it asks for — `amont setup`, or\n\
+`amont.commit.*` directly.\n\
 {END}\n"
     )
 }

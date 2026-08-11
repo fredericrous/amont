@@ -419,7 +419,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
     if found_any {
         return Outcome::Failed;
     }
-    println!("  {} No unwanted terms where found", valid_sign().trim());
+    println!("  {} No unwanted terms were found", valid_sign().trim());
     Outcome::Passed
 }
 

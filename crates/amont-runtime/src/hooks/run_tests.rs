@@ -33,7 +33,7 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 /// name of the script:
 ///
 /// ```text
-/// pre-commit  typecheck  .ts .tsx  block  npm run typecheck
+/// pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck
 /// ```
 ///
 /// The name is the contract, deliberately — matching on the command would have
@@ -142,49 +142,13 @@ fn parent_of(path: &str) -> &str {
 ///
 /// A brace-matched scan rather than a JSON parser: the only question is whether
 /// one key exists in one object, and a dependency-free binary is the point of
-/// this migration. Restricted to the "scripts" object so a same-named key
-/// elsewhere (a dependency called `test`, say) cannot answer for it.
+/// this migration. Restricted to the TOP-LEVEL "scripts" object so a
+/// same-named key elsewhere (a dependency called `test`, say) cannot answer
+/// for it.
 pub fn defines_script(pkg_json: &str, script: &str) -> bool {
-    let Some(k) = pkg_json.find("\"scripts\"") else {
+    let Some(body) = scripts_object(pkg_json) else {
         return false;
     };
-    let Some(open_rel) = pkg_json[k..].find('{') else {
-        return false;
-    };
-    let open = k + open_rel;
-    let bytes = pkg_json.as_bytes();
-    let mut depth = 0usize;
-    let mut end = open;
-    let mut in_str = false;
-    let mut escaped = false;
-    for (i, &c) in bytes.iter().enumerate().skip(open) {
-        if in_str {
-            if escaped {
-                escaped = false;
-            } else if c == b'\\' {
-                escaped = true;
-            } else if c == b'"' {
-                in_str = false;
-            }
-            continue;
-        }
-        match c {
-            b'"' => in_str = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    if end <= open {
-        return false;
-    }
-    let body = &pkg_json[open..=end];
     let needle = format!("\"{script}\"");
     let mut from = 0;
     while let Some(i) = body[from..].find(&needle) {
@@ -196,6 +160,103 @@ pub fn defines_script(pkg_json: &str, script: &str) -> bool {
         from = at + needle.len();
     }
     false
+}
+
+/// The text of the top-level `"scripts"` object, braces included.
+///
+/// A depth-tracking scan, not `find("\"scripts\"")`: anchoring on the FIRST
+/// occurrence of the substring anywhere meant `{"files":["scripts"],…}`
+/// handed the brace-matcher whichever object came next — so a dependency
+/// named `test` answered as a script while the real scripts object was never
+/// read, which is exactly the false positive `defines_script`'s doc promises
+/// away. A string only counts as a key when it sits at depth 1 (inside the
+/// document object, outside any array) AND its next non-space byte is `:` —
+/// `{"name": "scripts"}` is a value, not the key.
+fn scripts_object(pkg_json: &str) -> Option<&str> {
+    let bytes = pkg_json.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i + 1;
+                let close = string_end(bytes, start)?;
+                let content = &pkg_json[start..close];
+                i = close + 1;
+                if depth != 1 {
+                    continue;
+                }
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= bytes.len() || bytes[j] != b':' {
+                    continue; // a value, not a key
+                }
+                if content != "scripts" {
+                    continue;
+                }
+                let mut k = j + 1;
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                // The one top-level "scripts" key exists but is not an
+                // object: there are no scripts, and no later impostor may
+                // answer instead.
+                if k >= bytes.len() || bytes[k] != b'{' {
+                    return None;
+                }
+                let end = object_end(bytes, k)?;
+                return Some(&pkg_json[k..=end]);
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index of the closing quote of the string whose content starts at `from`.
+fn string_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (i, &c) in bytes.iter().enumerate().skip(from) {
+        if escaped {
+            escaped = false;
+        } else if c == b'\\' {
+            escaped = true;
+        } else if c == b'"' {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Index of the `}` matching the `{` at `open`, string-aware.
+fn object_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = string_end(bytes, i + 1)?,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Tracked `package.json` paths, as directories relative to the repo root.
@@ -286,12 +347,20 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         .map(|h| "0".repeat(h.len()))
         .unwrap_or_else(|| "0".repeat(40));
 
+    // `Unavailable`, never `Passed`, when git itself will not answer: a push
+    // gate that reports green having asked nothing is the exact conflation
+    // `Outcome::Unavailable` exists to prevent (see its doc in check.rs), and
+    // the same split `install::repo_hooks` was rewritten for. The dispatcher
+    // says "could not run" and does not block — loud, and honest.
     let Some(root) = git::stdout(&["rev-parse", "--show-toplevel"]) else {
-        return Outcome::Passed;
+        super::common::warn("run-tests-js: git would not answer — the gate did NOT run");
+        return Outcome::Unavailable;
     };
-    let pkg_dirs = git::stdout_paths(&["ls-files"])
-        .map(|f| package_dirs(&f))
-        .unwrap_or_default();
+    let Some(tracked) = git::stdout_paths(&["ls-files"]) else {
+        super::common::warn("run-tests-js: git would not answer — the gate did NOT run");
+        return Outcome::Unavailable;
+    };
+    let pkg_dirs = package_dirs(&tracked);
 
     // The DECLARATIONS are a property of the repository, resolved once; whether
     // one covers a given push is a property of that ref's changed files and of
@@ -481,6 +550,46 @@ mod tests {
     #[test]
     fn no_scripts_object_means_no_scripts() {
         assert!(!defines_script(r#"{"name":"x"}"#, "test"));
+    }
+
+    /// The misanchor this scan replaced: `find("\"scripts\"")` hit the string
+    /// inside the `files` ARRAY, brace-matched the dependencies object that
+    /// followed, and a dependency named `test` answered as a script — while
+    /// the real scripts object was never read.
+    #[test]
+    fn a_scripts_string_elsewhere_cannot_anchor_the_scan() {
+        let pkg = r#"{"files":["scripts"],"dependencies":{"test":"1.0"},"scripts":{"build":"x"}}"#;
+        assert!(
+            !defines_script(pkg, "test"),
+            "a dependency answered as a script"
+        );
+        assert!(
+            defines_script(pkg, "build"),
+            "the real scripts object was skipped"
+        );
+
+        // The same shape via a string VALUE rather than an array element.
+        let pkg =
+            r#"{"description":"scripts","dependencies":{"test":"1.0"},"scripts":{"build":"x"}}"#;
+        assert!(!defines_script(pkg, "test"));
+        assert!(defines_script(pkg, "build"));
+
+        // A NESTED "scripts" key (inside another object) is not the top-level
+        // one.
+        let pkg = r#"{"config":{"scripts":{"test":"inner"}},"scripts":{"build":"x"}}"#;
+        assert!(!defines_script(pkg, "test"));
+        assert!(defines_script(pkg, "build"));
+    }
+
+    /// `"scripts"` as a top-level key whose value is not an object defines
+    /// nothing — and no later impostor may answer instead.
+    #[test]
+    fn a_non_object_scripts_value_defines_nothing() {
+        assert!(!defines_script(r#"{"scripts":"echo hi"}"#, "test"));
+        assert!(!defines_script(
+            r#"{"scripts":"x","other":{"test":"y"}}"#,
+            "test"
+        ));
     }
 
     #[test]
