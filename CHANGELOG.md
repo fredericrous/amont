@@ -8,6 +8,18 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **A declared check is now a real check API, not a cron line.** The command
+  runs through the same program resolution built-ins use (so `npx` works on
+  Windows, where a bare spawn cannot start a `.cmd` and the check silently
+  never ran), and it receives the file list its scope matched: `$AMONT_FILES`
+  always (newline-separated, the exact set the gate judged), and appended to
+  the argv when the command carries the new `files` marker —
+  `pre-commit shellcheck *.sh block files shellcheck` finally does what it
+  looks like it does. With `files`, an empty matched set runs nothing instead
+  of handing a linter an empty argv. The docs now also state the `amont.fix`
+  cliff in bold: a `fix`-declared check does not run AT ALL for members who
+  have not set `amont.fix`.
+
 - **Messages git itself writes now pass `commit-msg` unjudged.** `git merge`
   invokes the hook (githooks(5)), and "Merge branch '…'", `Revert "…"`,
   `Reapply "…"` and the autosquash shapes `fixup!`/`squash!`/`amend!` all

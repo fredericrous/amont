@@ -53,7 +53,30 @@ no shell.
 prints, and lets the commit through. It is your choice, per check.
 
 **command** — the rest of the line, split on whitespace and executed directly
-from the repository root.
+from the repository root, through the same program resolution the built-ins
+use — so `npx` and friends work on Windows, where a bare `Command::new` cannot
+start a `.cmd`.
+
+## Your command gets the file list
+
+Two ways, both carrying exactly the paths the scope matched — the same set the
+gate above judged, which a wrapper re-running `git diff --cached` can diverge
+from (`amont run --all-files` overrides the set in-process):
+
+- **`$AMONT_FILES`**, always: the matched paths, newline-separated, relative
+  to the repository root. Empty when the set would not fit in an environment
+  variable (very large change sets) — treat empty as "derive it yourself".
+- **the `files` marker**, opt-in: prefix the command with `files ` and the
+  matched paths are appended to the argv, the way a built-in hands its tool
+  the staged list:
+
+```
+pre-commit  shellcheck  *.sh  block  files shellcheck --severity=warning
+```
+
+With `files`, a commit whose matched set is empty does not run the command at
+all — most linters error on an empty argv, and a commit must not be blocked
+over nothing.
 
 ## There is no shell
 
@@ -163,9 +186,17 @@ pre-commit  format  *.js  block  fix npx prettier --write
 
 Two conditions, both deliberate:
 
-- **Off unless you ask.** `git config amont.fix true`, per repository. A hook
-  that edits your files without being asked is a larger surprise than one that
-  complains.
+- **Off unless you ask.** `git config amont.fix true`, per repository — and
+  the consequence is worth stating in bold: **with `amont.fix` off, a
+  `fix`-declared check does not run at all**, not even in check-only mode.
+  It reports "not run" (a warn, never a block) on every commit, because the
+  one command you declared is a rewriting command and running it would edit
+  files nobody asked to have edited. A team that commits a `fix` declaration
+  gets zero enforcement from every member who has not personally opted in —
+  if you need the check to always judge, declare a second, non-`fix` line
+  with the tool's check mode.
+  A hook that edits your files without being asked is a larger surprise than
+  one that complains.
 - **pre-commit only.** `fix` on a `pre-push` line is a parse error, reported on
   every commit like any other bad line. A pre-push hook must not modify the
   worktree or index: the pushed commit would then differ from the tree you are

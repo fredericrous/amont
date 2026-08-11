@@ -519,3 +519,83 @@ fn a_repository_without_a_manifest_is_unaffected() {
         run.output()
     );
 }
+
+/// The `files` marker hands the command exactly the paths its scope matched —
+/// what a builtin gets, without a wrapper script re-deriving `git diff`.
+#[cfg(unix)]
+#[test]
+fn the_files_marker_hands_the_command_its_matched_paths() {
+    let r = Repo::new();
+    let body = "#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\nexit 0\n";
+    r.stage("probe.sh", body);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("probe.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "probe.sh"]);
+    r.stage("a.sh", "echo a\n");
+    r.stage("b.rs", "fn main() {}\n");
+    manifest(
+        &r,
+        "pre-commit  shellcheck  *.sh  block  files ./probe.sh\n",
+    );
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    let argv = std::fs::read_to_string(r.path("argv.txt")).expect("argv.txt");
+    assert!(
+        argv.lines().any(|l| l == "a.sh"),
+        "matched path missing: {argv}"
+    );
+    assert!(
+        !argv.lines().any(|l| l == "b.rs"),
+        "a path outside the scope was handed over: {argv}"
+    );
+}
+
+/// `$AMONT_FILES` always carries the matched set, marker or no marker — the
+/// wrapper-script escape hatch that cannot diverge from the set the gate
+/// judged.
+#[cfg(unix)]
+#[test]
+fn amont_files_carries_the_matched_set_without_the_marker() {
+    let r = Repo::new();
+    let body = "#!/bin/sh\nprintf '%s' \"$AMONT_FILES\" > envfiles.txt\nexit 0\n";
+    r.stage("probe.sh", body);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("probe.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "probe.sh"]);
+    r.stage("a.sh", "echo a\n");
+    r.stage("b.rs", "fn main() {}\n");
+    manifest(&r, "pre-commit  shellcheck  *.sh  block  ./probe.sh\n");
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    let env = std::fs::read_to_string(r.path("envfiles.txt")).expect("envfiles.txt");
+    assert!(env.lines().any(|l| l == "a.sh"), "{env}");
+    assert!(!env.lines().any(|l| l == "b.rs"), "{env}");
+}
+
+/// A files-taking command with nothing staged has nothing to judge: running
+/// it bare would make most linters error on an empty argv and block a commit
+/// over nothing.
+#[cfg(unix)]
+#[test]
+fn a_files_command_with_nothing_matched_does_not_run() {
+    let r = Repo::new();
+    probe(&r, PROBE, 1); // exit 1: if it runs, the stage fails loudly
+    manifest(
+        &r,
+        &format!("pre-commit  smoke  *  block  files ./{PROBE}\n"),
+    );
+    r.commit("chore: park the fixture files");
+
+    // Nothing staged at all now.
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        !run.says("probe-"),
+        "ran with an empty file list:\n{}",
+        run.output()
+    );
+}
