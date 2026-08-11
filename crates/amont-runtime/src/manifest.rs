@@ -382,7 +382,18 @@ impl Check for External {
             cmd.args(&matched);
         }
         crate::hooks::common::strip_git_env(&mut cmd);
-        match cmd.status() {
+        // Under the deadline: repo-authored code that outlives the budget is
+        // killed and FAILS — "hung" must not read as "passed", and pre-push
+        // runs these serially where one hang stalls the entire push.
+        let status = match crate::hooks::common::status_within(&mut cmd) {
+            Ok(crate::hooks::common::Ran::Status(s)) => Ok(s),
+            Ok(crate::hooks::common::Ran::TimedOut(budget)) => {
+                crate::hooks::common::say_timed_out(&self.short_name, budget);
+                return Outcome::Failed;
+            }
+            Err(e) => Err(e),
+        };
+        match status {
             // A command that could not be STARTED has not judged anything. This
             // is the distinction `Outcome` was added for: reporting a missing
             // `shellcheck` as a lint failure sends someone hunting for a lint

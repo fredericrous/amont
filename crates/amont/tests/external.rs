@@ -599,3 +599,37 @@ fn a_files_command_with_nothing_matched_does_not_run() {
         run.output()
     );
 }
+
+/// One hung tool must not hold the commit — and the parked unstaged work —
+/// hostage. The budget kills it and the check FAILS, loudly, with the config
+/// key that raises the budget named.
+#[cfg(unix)]
+#[test]
+fn a_check_that_outlives_the_budget_is_killed_and_fails() {
+    let r = Repo::new();
+    // `exec`, so the sleep IS the spawned process rather than a grandchild:
+    // the kill only reaches the direct child, and a grandchild inheriting the
+    // harness's output pipe would hold this TEST hostage the way no real git
+    // invocation can (git lends hooks its own stdio, it does not read a pipe).
+    let body = "#!/bin/sh\nexec sleep 300\n";
+    r.stage("slow.sh", body);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("slow.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "slow.sh"]);
+    manifest(&r, "pre-commit  slowpoke  *  block  ./slow.sh\n");
+    r.git(&["config", "amont.timeout", "1"]);
+
+    let started = std::time::Instant::now();
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline never fired"
+    );
+    assert!(!run.passed(), "a killed check must fail:\n{}", run.output());
+    assert!(
+        run.says("timed out") && run.says("amont.timeout"),
+        "must say what happened and how to change the budget:\n{}",
+        run.output()
+    );
+}

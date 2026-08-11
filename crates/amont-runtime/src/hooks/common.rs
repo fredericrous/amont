@@ -259,6 +259,83 @@ pub fn strip_git_env(cmd: &mut Command) {
     }
 }
 
+/// The wall-clock budget for one check's spawned command, in seconds.
+///
+/// `amont.timeout`, default 600 — ten minutes, the figure the generated
+/// agent guidance already tells tooling to allow a whole commit or push; a
+/// single check that outlives it is not slow, it is stuck. `0` disables.
+/// Read once per process: twenty concurrent checks must not each spawn a
+/// `git config` to learn the same number.
+pub fn check_timeout() -> u64 {
+    static TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TIMEOUT.get_or_init(|| crate::config::integer_or("amont.timeout", 600, 0..=86_400) as u64)
+}
+
+/// What became of a command run under the deadline.
+pub enum Ran {
+    Status(std::process::ExitStatus),
+    /// Killed at the deadline; carries the budget it exceeded, in seconds.
+    TimedOut(u64),
+}
+
+/// `cmd.status()`, bounded by [`check_timeout`].
+///
+/// Without a bound, one hung tool — a linter deadlocked on a lock file, a
+/// plugin doing network I/O — blocked the commit FOREVER, and it hung inside
+/// the index-fidelity hold: the user's unstaged changes parked in `$GIT_DIR`,
+/// their tree showing staged content only, for as long as they were willing
+/// to wait. The learned response to that is `--no-verify`, permanently —
+/// which disarms every check to escape one.
+///
+/// The kill reaches the direct child only. A grandchild that detached
+/// survives, orphaned — but the COMMIT is no longer hostage to it, which is
+/// the property that matters.
+pub fn status_within(cmd: &mut Command) -> std::io::Result<Ran> {
+    status_within_secs(cmd, check_timeout())
+}
+
+/// [`status_within`] with an explicit budget — the testable seam.
+pub fn status_within_secs(cmd: &mut Command, budget_secs: u64) -> std::io::Result<Ran> {
+    if budget_secs == 0 {
+        return cmd.status().map(Ran::Status);
+    }
+    let mut child = cmd.spawn()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Ran::Status(status));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(Ran::TimedOut(budget_secs));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Say a command was killed at the deadline, and how to change the deadline.
+pub fn say_timed_out(what: &str, budget_secs: u64) {
+    fail(&format!(
+        "{} timed out after {budget_secs}s — killed. {} raises the budget",
+        hl(what),
+        hl("git config amont.timeout <secs>")
+    ));
+}
+
+/// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
+/// tool spawns want. A timeout says so, names `what`, and reads as failure.
+pub fn bounded_success(cmd: &mut Command, what: &str) -> bool {
+    match status_within(cmd) {
+        Ok(Ran::Status(s)) => s.success(),
+        Ok(Ran::TimedOut(b)) => {
+            say_timed_out(what, b);
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 /// Run `argv` from `root`, inheriting stdio. True when it exits 0.
 pub fn run(root: &str, argv: &[String], extra: &[String]) -> bool {
     let Some((program, rest)) = argv.split_first() else {
@@ -270,7 +347,7 @@ pub fn run(root: &str, argv: &[String], extra: &[String]) -> bool {
         .current_dir(root)
         .stdin(Stdio::null());
     strip_git_env(&mut cmd);
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    bounded_success(&mut cmd, program)
 }
 
 /// As [`run`], but with the tool's own output discarded.
@@ -290,7 +367,7 @@ pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     strip_git_env(&mut cmd);
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    bounded_success(&mut cmd, program)
 }
 
 /// Whether the user asked for checks to repair what they find.
@@ -406,6 +483,31 @@ pub fn hl(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The deadline kills what outlives it and reports what finished.
+    #[cfg(unix)]
+    #[test]
+    fn the_deadline_kills_a_sleeper_and_spares_a_finisher() {
+        let started = std::time::Instant::now();
+        let mut slow = Command::new(program("sleep"));
+        slow.arg("300").stdin(Stdio::null());
+        match status_within_secs(&mut slow, 1) {
+            Ok(Ran::TimedOut(1)) => {}
+            other => panic!("expected TimedOut(1), got {:?}", other.map(|_| "ran")),
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the kill did not happen at the deadline"
+        );
+
+        let mut quick = Command::new(program("true"));
+        quick.stdin(Stdio::null());
+        match status_within_secs(&mut quick, 60) {
+            Ok(Ran::Status(s)) => assert!(s.success()),
+            other => panic!("expected a clean exit, got {:?}", other.map(|_| "?")),
+        }
+    }
+
     use super::*;
 
     #[test]

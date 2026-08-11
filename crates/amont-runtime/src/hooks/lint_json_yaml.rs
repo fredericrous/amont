@@ -34,15 +34,13 @@ pub fn is_helm_template(root: &str, file: &str) -> bool {
 }
 
 fn parses(root: &str, tool: &str, args: &[&str]) -> bool {
-    Command::new(super::common::program(tool))
-        .args(args)
+    let mut cmd = Command::new(super::common::program(tool));
+    cmd.args(args)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    super::common::bounded_success(&mut cmd, tool)
 }
 
 pub fn run(_args: &[std::ffi::OsString]) -> Outcome {

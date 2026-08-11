@@ -84,13 +84,9 @@ pub fn argo_lint(_args: &[std::ffi::OsString]) -> Outcome {
         "--".to_string(),
     ];
     argv.extend(workflows.iter().cloned());
-    let okd = Command::new(program("argo"))
-        .args(&argv)
-        .current_dir(&root)
-        .stdin(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mut cmd = Command::new(program("argo"));
+    cmd.args(&argv).current_dir(&root).stdin(Stdio::null());
+    let okd = super::common::bounded_success(&mut cmd, "argo");
     if !okd {
         fail("argo lint failed (output above)");
         return Outcome::Failed;
@@ -148,13 +144,11 @@ pub fn kube_linter(_args: &[std::ffi::OsString]) -> Outcome {
     // apps-vs-infra splits work without per-hook wiring.
     let mut overall = 0;
     for cfg in &configs {
-        let okd = Command::new(program("kube-linter"))
-            .args(["lint", ".", "--config", cfg])
+        let mut cmd = Command::new(program("kube-linter"));
+        cmd.args(["lint", ".", "--config", cfg])
             .current_dir(&root)
-            .stdin(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .stdin(Stdio::null());
+        let okd = super::common::bounded_success(&mut cmd, "kube-linter");
         if !okd {
             fail(&format!("kube-linter ({cfg}) found issues"));
             overall = 1;
@@ -293,13 +287,9 @@ fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
     argv.push("--summary");
     argv.push("-");
 
-    let conform = Command::new(program("kubeconform"))
-        .args(&argv)
-        .current_dir(root)
-        .stdin(Stdio::from(out))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mut cmd = Command::new(program("kubeconform"));
+    cmd.args(&argv).current_dir(root).stdin(Stdio::from(out));
+    let conform = super::common::bounded_success(&mut cmd, "kubeconform");
     let built = build.wait().map(|s| s.success()).unwrap_or(false);
     built && conform
 }
