@@ -72,7 +72,10 @@ elif command -v amont > /dev/null 2>&1; then
 else
     printf '  \033[38;5;160m✗\033[0m amont binary not found — hooks cannot run.\n' >&2
     printf '    Looked at: $GIT_HOOKS_BIN, the baked path, ~/.local/bin, then PATH.\n' >&2
-    printf '    Reinstall with \033[38;5;208mmake install\033[0m in git-templates.\n' >&2
+    printf '    Reinstall it the way it arrived:\n' >&2
+    printf '      npm/pnpm repo:  \033[38;5;208mnpm install\033[0m   (prepare re-bakes the hooks)\n' >&2
+    printf '      curl installer: \033[38;5;208mcurl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh\033[0m\n' >&2
+    printf '      cargo / brew:   \033[38;5;208mcargo install amont\033[0m / \033[38;5;208mbrew install amont\033[0m\n' >&2
     exit 1
 fi
 

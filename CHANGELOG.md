@@ -19,6 +19,18 @@ missing here.
   of handing a linter an empty argv. The docs now also state the `amont.fix`
   cliff in bold: a `fix`-declared check does not run AT ALL for members who
   have not set `amont.fix`.
+- **The CLI meets the standard its refusals set.** `--help` and `--version`
+  are inert in any position and answered with exit 0 — `amont install --help`
+  used to RUN THE INSTALLER, and there was no `--version` at all in a binary
+  shipped through six channels. Every verb now rejects a flag it does not
+  know as a usage error naming it — `amont trust --revok` used to fall
+  through the `--revoke` test and grant trust with no prompt. `amont --help`
+  finally describes each verb instead of listing nine syntax lines, and
+  `amont-fleet` answers `--help`/`--version` with exit 0 too. The shim's
+  binary-not-found message now names the reinstall route for each install
+  channel instead of a `make install` only contributors can run (the shim
+  text changed, so the fleet will show installed repos as drifted until
+  `amont-fleet fix --apply` re-bakes them).
 
 - **Messages git itself writes now pass `commit-msg` unjudged.** `git merge`
   invokes the hook (githooks(5)), and "Merge branch '…'", `Revert "…"`,

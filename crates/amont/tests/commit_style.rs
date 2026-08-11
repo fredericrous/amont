@@ -140,7 +140,13 @@ fn setup_rejects_an_argument_it_does_not_know() {
 fn help_names_the_new_verb() {
     let r = Repo::new();
     let out = r.run(&["--help"]).output();
-    assert!(out.contains("amont setup"), "{out}");
+    // The verb, at the start of its own usage line — help now lists verbs
+    // fleet-style, one described entry each, rather than `amont <verb>`
+    // syntax lines.
+    assert!(
+        out.lines().any(|l| l.trim_start().starts_with("setup")),
+        "{out}"
+    );
 }
 
 // The older boolean keys (`amont.fix`, `amont.testPushedTree`) moved onto

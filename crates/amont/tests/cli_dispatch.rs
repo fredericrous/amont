@@ -252,3 +252,60 @@ fn no_arguments_is_a_usage_error_that_still_explains_itself() {
     assert!(out.contains("agents-md"), "{out}");
     assert!(out.contains("--hooks-dir"), "{out}");
 }
+
+/// A help request is inert in ANY position. `amont install --help` used to
+/// run the full installer — copy the binary, populate the template dir —
+/// because `--help` was only recognized as argv[0].
+#[test]
+fn help_after_a_verb_mutates_nothing() {
+    let s = Sandbox::new("help-inert");
+    let repo = s.path("repo");
+    std::fs::create_dir_all(&repo).expect("mkdir");
+    for verb in ["install", "init", "uninstall", "trust", "run", "setup"] {
+        let (code, out) = s.run(&repo, &[verb, "--help"]);
+        assert_eq!(code, 0, "{verb} --help must exit 0:\n{out}");
+        assert!(
+            out.contains("usage:"),
+            "{verb} --help must print usage:\n{out}"
+        );
+    }
+    s.assert_nothing_was_installed(&repo, "after --help on every verb");
+}
+
+/// A six-channel-distributed binary must answer what version it is.
+#[test]
+fn version_prints_the_crate_version() {
+    let s = Sandbox::new("version");
+    let repo = s.path("repo");
+    std::fs::create_dir_all(&repo).expect("mkdir");
+    for args in [&["--version"][..], &["-V"][..], &["list", "--version"][..]] {
+        let (code, out) = s.run(&repo, args);
+        assert_eq!(code, 0, "{args:?}:\n{out}");
+        assert!(
+            out.trim().starts_with("amont ") && out.contains(env!("CARGO_PKG_VERSION")),
+            "{args:?} must name the version:\n{out}"
+        );
+    }
+    s.assert_nothing_was_installed(&repo, "after --version");
+}
+
+/// A typo'd flag is a hard usage error, not a silent no-op. `amont trust
+/// --revok` used to fall through the `--revoke` test and GRANT trust.
+#[test]
+fn an_unknown_flag_is_a_usage_error_not_a_no_op() {
+    let s = Sandbox::new("strict-flags");
+    let repo = s.path("repo");
+    std::fs::create_dir_all(&repo).expect("mkdir");
+    for (args, bad) in [
+        (&["trust", "--revok"][..], "--revok"),
+        (&["install", "--frce"][..], "--frce"),
+        (&["list", "--jsn"][..], "--jsn"),
+        (&["uninstall", "--binray"][..], "--binray"),
+        (&["run", "--all-file"][..], "--all-file"),
+    ] {
+        let (code, out) = s.run(&repo, args);
+        assert_eq!(code, 2, "{args:?} must be a usage error:\n{out}");
+        assert!(out.contains(bad), "{args:?} must name the flag:\n{out}");
+    }
+    s.assert_nothing_was_installed(&repo, "after typo'd flags");
+}
