@@ -8,6 +8,16 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **Every command a check spawns now runs under a wall-clock budget.**
+  `amont.timeout` (seconds; default 600, `0` disables). One hung tool — a
+  linter deadlocked on a lock file, a plugin doing network I/O — used to
+  block the commit FOREVER, inside the index-fidelity hold, with your
+  unstaged changes parked out of the tree; the learned response to that is
+  `--no-verify`, permanently. At the deadline the command is killed and the
+  check fails, loudly, naming the config key. The kill reaches the direct
+  child; a detached grandchild may survive, orphaned, but the commit is no
+  longer hostage to it.
+
 - **A declared check is now a real check API, not a cron line.** The command
   runs through the same program resolution built-ins use (so `npx` works on
   Windows, where a bare spawn cannot start a `.cmd` and the check silently

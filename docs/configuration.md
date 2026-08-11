@@ -121,6 +121,23 @@ limit can never accommodate) is reported by `amont list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
+## `amont.timeout` — the budget one check's command may run for
+
+```sh
+git config amont.timeout 60      # seconds; default 600, 0 disables
+```
+
+Every command a check spawns — a linter, a formatter, a declared
+`amont.conf` line, the push gate's test suite — is killed at this deadline
+and the check **fails**, loudly, naming this key. Without it, one hung tool
+blocked the commit forever while your unstaged changes sat parked out of the
+tree — and the learned response to that is `--no-verify`, permanently. The
+default is ten minutes, the same budget the generated agent guidance already
+tells tooling to allow a whole commit or push.
+
+The kill reaches the command itself; a grandchild it detached may survive,
+orphaned, but the commit is no longer hostage to it.
+
 ## `amont.fix` — let a check repair what it finds
 
 ```sh

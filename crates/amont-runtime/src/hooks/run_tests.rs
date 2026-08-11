@@ -329,9 +329,12 @@ fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
             .current_dir(&dir)
             .stdin(Stdio::null());
         super::common::strip_git_env(&mut cmd);
-        let status = cmd.status();
-        match status {
-            Ok(status) if status.success() => {}
+        match super::common::status_within(&mut cmd) {
+            Ok(super::common::Ran::Status(status)) if status.success() => {}
+            Ok(super::common::Ran::TimedOut(budget)) => {
+                super::common::say_timed_out(script, budget);
+                return false;
+            }
             // The gate's own exit code is not propagated: git only
             // distinguishes zero from non-zero, and npm's codes said nothing
             // the message above has not already said.
