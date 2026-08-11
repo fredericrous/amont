@@ -119,6 +119,8 @@ impl std::fmt::Display for ParseError {
 pub struct Declared {
     /// `Fix::Rewrite` when the command column began `fix `.
     pub fix: Fix,
+    /// The command column carried the `files` marker.
+    pub files: bool,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -245,6 +247,9 @@ pub enum Kind {
         program: String,
         args: Vec<String>,
         fix: Fix,
+        /// The command column began `files ` — append the matched paths to
+        /// the argv, the way a builtin hands its tool the staged list.
+        files: bool,
     },
     Unusable {
         why: String,
@@ -277,14 +282,15 @@ impl Check for External {
     }
 
     fn run(&self, ctx: &Ctx) -> Outcome {
-        let (scope, program, args, fix) = match &self.kind {
+        let (scope, program, args, fix, files) = match &self.kind {
             Kind::Runnable {
                 scope,
                 program,
                 args,
                 fix,
+                files,
                 ..
-            } => (scope, program, args, *fix),
+            } => (scope, program, args, *fix, *files),
             Kind::Unusable { why } => {
                 crate::hooks::common::warn(&format!(
                     "{MANIFEST}: {} — {}",
@@ -333,9 +339,48 @@ impl Check for External {
         if !scope.files.is_empty() && !scope.matches(&in_scope) {
             return Outcome::Passed;
         }
+        // The paths the declaration's scope actually matched — what a builtin
+        // would be handed. Computed here, after the gate, and given to the
+        // command two ways: `$AMONT_FILES` always (newline-separated, so a
+        // wrapper script never re-derives `git diff --cached` and diverges
+        // from the set this gate judged — `amont run --all-files` overrides
+        // the set in-process, invisibly to any child that asks git itself),
+        // and appended to the argv when the declaration carries the `files`
+        // marker.
+        let matched = scoped(scope, &in_scope);
+        // A files-taking command with no files has nothing to judge — running
+        // it bare would make most linters error on an empty argv, blocking a
+        // commit over nothing. The builtin convention, applied here.
+        if files && matched.is_empty() {
+            return Outcome::Passed;
+        }
         let root = crate::hooks::common::repo_root();
-        let mut cmd = Command::new(program);
+        // Through `program()`, exactly like every builtin: on Windows,
+        // `Command::new("npx")` cannot start `npx.cmd`, and an external that
+        // fails to SPAWN reports Unavailable — warn, never block — so the
+        // check would silently never run. The guard test that enforces this
+        // for builtins scans only `src/hooks/`; this call is the manifest's
+        // half of the same rule.
+        let mut cmd = Command::new(crate::hooks::common::program(program));
         cmd.args(args).current_dir(&root).stdin(Stdio::null());
+        // Env, not only argv: newline-separated so ordinary shell loops can
+        // read it. A path with a newline in its name would split wrong — the
+        // list is repo-controlled and such a path is already hostile input —
+        // and a change set too large for an environment variable (rare, but
+        // E2BIG kills the spawn outright) travels as an empty variable
+        // instead, which a wrapper treats exactly like "derive it yourself".
+        let joined = matched.join("\n");
+        cmd.env(
+            "AMONT_FILES",
+            if joined.len() <= 100_000 {
+                joined.as_str()
+            } else {
+                ""
+            },
+        );
+        if files {
+            cmd.args(&matched);
+        }
         crate::hooks::common::strip_git_env(&mut cmd);
         match cmd.status() {
             // A command that could not be STARTED has not judged anything. This
@@ -357,7 +402,7 @@ impl Check for External {
                 // something; re-stage exactly what moved. Only its own scope,
                 // so it cannot stage a file it never looked at.
                 if fix == Fix::Rewrite && crate::hooks::common::fixing_enabled() {
-                    match crate::hooks::common::restage(&scoped(scope, &in_scope)) {
+                    match crate::hooks::common::restage(&matched) {
                         Restaged::Staged => {
                             crate::hooks::common::ok(&format!(
                                 "{} fixed and re-staged",
@@ -570,12 +615,26 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let Some(severity) = Severity::parse(severity_tok) else {
         return fail(ParseError::BadSeverity(severity_tok.to_string()));
     };
-    // `fix` is a trailing marker on the command column rather than a sixth
-    // field, so every manifest written before this still parses.
-    let (command, wants_fix) = match command.strip_prefix("fix ") {
-        Some(rest) => (rest.trim(), true),
-        None => (command, false),
-    };
+    // `fix` and `files` are leading markers on the command column rather
+    // than extra fields, so every manifest written before them still parses.
+    // A loop, so `fix files cmd` and `files fix cmd` both work — two markers
+    // whose order carries no meaning must not be order-sensitive.
+    let mut command = command;
+    let mut wants_fix = false;
+    let mut wants_files = false;
+    loop {
+        if let Some(rest) = command.strip_prefix("fix ") {
+            command = rest.trim_start();
+            wants_fix = true;
+            continue;
+        }
+        if let Some(rest) = command.strip_prefix("files ") {
+            command = rest.trim_start();
+            wants_files = true;
+            continue;
+        }
+        break;
+    }
     if wants_fix && stage == Stage::PrePush {
         return fail(ParseError::FixOnPrePush);
     }
@@ -586,6 +645,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     };
     Line::Usable(Declared {
         fix: if wants_fix { Fix::Rewrite } else { Fix::None },
+        files: wants_files,
         name: declared.to_string(),
         stage,
         severity,
@@ -626,6 +686,7 @@ impl From<Line> for External {
                 program: d.program,
                 args: d.args,
                 fix: d.fix,
+                files: d.files,
             },
             Err(why) => Kind::Unusable { why },
         };
@@ -842,6 +903,40 @@ mod tests {
         let declared = usable(&line);
         assert_eq!(declared.fix, Fix::None);
         assert_eq!(declared.program, "fixup-tool");
+    }
+
+    /// The `files` marker, alone and stacked with `fix` in either order —
+    /// two markers whose order carries no meaning must not be
+    /// order-sensitive.
+    #[test]
+    fn the_files_marker_parses_alone_and_in_either_order_with_fix() {
+        let line = one("pre-commit  sc  *.sh  block  files shellcheck\n");
+        let declared = usable(&line);
+        assert!(declared.files);
+        assert_eq!(declared.fix, Fix::None);
+        assert_eq!(declared.program, "shellcheck");
+
+        for text in [
+            "pre-commit  fmt  *  block  fix files prettier --write\n",
+            "pre-commit  fmt  *  block  files fix prettier --write\n",
+        ] {
+            let line = one(text);
+            let declared = usable(&line);
+            assert!(declared.files, "for {text:?}");
+            assert_eq!(declared.fix, Fix::Rewrite, "for {text:?}");
+            assert_eq!(declared.program, "prettier", "for {text:?}");
+            assert_eq!(declared.args, ["--write"], "for {text:?}");
+        }
+    }
+
+    /// A command that merely starts with `files` keeps its name, exactly as
+    /// `fixup-tool` keeps its own.
+    #[test]
+    fn a_command_that_merely_starts_with_files_is_not_a_marker() {
+        let line = one("pre-commit  x  *  block  files-checker --strict\n");
+        let declared = usable(&line);
+        assert!(!declared.files);
+        assert_eq!(declared.program, "files-checker");
     }
 
     /// A gap with no name cannot be reported, and a line this broken has none.
