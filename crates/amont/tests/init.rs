@@ -148,6 +148,46 @@ fn init_outside_a_repository_is_a_silent_success() {
     );
 }
 
+/// The silence above is git's VERDICT ("not a git repository"), never git's
+/// absence. A repository git refuses to answer about — dubious ownership in a
+/// container bind mount, an unreadable `.git/config` — used to take the same
+/// silent exit 0, so `npm install` logged success, the team believed hooks
+/// were wired, and commits from that environment ran no checks. The doc
+/// promises init "stays LOUD about everything else"; this is the everything
+/// else.
+#[cfg(unix)]
+#[test]
+fn init_is_loud_when_git_refuses_to_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new("gitrefuses");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    // An unreadable `.git/config` makes every git command fail with something
+    // other than "not a git repository" — the same failure class as dubious
+    // ownership, which needs a second uid to stage. Skip under root, where
+    // chmod 000 stops nothing.
+    let config = repo.join(".git/config");
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&config).is_ok() {
+        return; // running as root; the fixture cannot fail
+    }
+
+    let (code, out) = s.init(&repo);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).expect("chmod back");
+    assert_ne!(
+        code, 0,
+        "a repository git cannot answer about must fail init, not silently skip it:\n{out}"
+    );
+    assert!(
+        out.contains("git would not say"),
+        "the failure must say git is the blocker:\n{out}"
+    );
+    assert!(
+        !repo.join(".git/hooks/pre-commit").exists(),
+        "no shim may be written on a guess"
+    );
+}
+
 /// `npm install` runs `prepare` every time, so this is the common path, not an
 /// edge case. It must also RE-BAKE rather than skip: a version bump moves the
 /// binary, and a shim still pointing at the old path is a repository whose
