@@ -315,29 +315,161 @@ fn trust_manifest(r: &Repo) {
     );
 }
 
+/// Wire the real hooks into the fixture, so a commit stamps.
+///
+/// Suppression is no longer paper-based: the push gate defers to a
+/// commit-time declaration only for commits that CARRY its stamp, and the
+/// stamp comes from pre-commit + post-commit actually running.
+fn install_hooks(r: &Repo) {
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("init")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont init");
+    assert!(
+        out.status.success(),
+        "could not install hooks: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A commit that RUNS the hooks — unlike `Repo::commit`, which passes
+/// `--no-verify` precisely so ordinary fixtures stay hook-free.
+fn verified_commit(r: &Repo, msg: &str) {
+    let out = r.git(&["commit", "-q", "-m", msg]);
+    assert!(
+        out.status.success(),
+        "verified commit failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A repo whose `typecheck` LOGS each run and passes, with a trusted
+/// declaration and real hooks. The log length is the observable: it says
+/// exactly how many times the script executed, wherever from.
+///
+/// The declared command is `node tc.js`, NOT `npm run typecheck`: a declared
+/// external spawns its literal program, and on Windows `npm` is `npm.cmd`,
+/// which `Command::new("npm")` cannot start — the check would report
+/// Unavailable at commit time and nothing would ever stamp. `node` is a real
+/// .exe everywhere. The push-time gate still goes through `npm run`, so both
+/// spellings of "the same check" are exercised — which is exactly the
+/// name-is-the-contract argument in `gated_at_commit`'s doc.
+fn stamped_repo() -> (Repo, String) {
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"node tc.js","test":"exit 0"}}"#,
+    );
+    r.stage("tc.js", "require('fs').appendFileSync('tc.log','x')\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+    install_hooks(&r);
+    (r, base)
+}
+
+fn typecheck_runs(r: &Repo) -> usize {
+    std::fs::read_to_string(r.dir.join("tc.log"))
+        .map(|s| s.len())
+        .unwrap_or(0)
+}
+
 #[test]
 fn a_declared_pre_commit_check_removes_that_script_from_the_push_gate() {
     if missing("npm") {
         return;
     }
-    let (r, base) = repo_with_failing_typecheck();
-    r.stage(
-        "amont.conf",
-        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+    let (r, base) = stamped_repo();
+    r.stage("src/a.ts", "export const x = 1\n");
+    verified_commit(&r, "feat: add a ts file");
+    assert_eq!(
+        typecheck_runs(&r),
+        1,
+        "the commit itself should have run typecheck exactly once"
     );
-    r.commit("chore: typecheck at commit time");
-    trust_manifest(&r);
 
     let (code, out) = push_range_out(&r, &base, &head(&r));
     assert_eq!(
         code, 0,
-        "typecheck ran at push despite being gated at commit:\n{out}"
+        "the push failed despite a stamped, gated typecheck:\n{out}"
     );
     // And it SAYS so. A check that stops running silently is the failure this
     // whole project is arranged against.
     assert!(
         out.contains("typecheck") && out.contains("gated at commit"),
         "the push did not say typecheck had moved:\n{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&r),
+        1,
+        "the push re-ran a script the commit already stamped:\n{out}"
+    );
+}
+
+/// THE hole the fifth shim exists to close: `--no-verify` skips pre-commit,
+/// so the check never ran — and the push gate must notice, run the script
+/// itself, and say why, instead of trusting the declaration's word for it.
+#[test]
+fn a_no_verify_commit_brings_the_push_gate_back() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = stamped_repo();
+    r.stage("src/a.ts", "export const x = 1\n");
+    r.commit("feat: dodge the hooks"); // Repo::commit is --no-verify
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(
+        code, 0,
+        "typecheck passes when run — only WHO runs it moved:\n{out}"
+    );
+    assert!(
+        out.contains("no record of it"),
+        "the push must say why the gate is running:\n{out}"
+    );
+    assert!(
+        !out.contains("gated at commit"),
+        "claimed commit-time cover for a commit that dodged the hooks:\n{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&r),
+        1,
+        "the gate did not run typecheck for the unchecked commit:\n{out}"
+    );
+}
+
+/// One unchecked commit poisons the push: the stamped commit next to it does
+/// not vouch for it, so the gate runs for the ref.
+#[test]
+fn one_unstamped_commit_re_runs_the_gate_for_the_push() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = stamped_repo();
+    r.stage("src/a.ts", "export const x = 1\n");
+    verified_commit(&r, "feat: checked");
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: unchecked"); // --no-verify
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("no record of it"),
+        "one unstamped commit must bring the gate back:\n{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&r),
+        2,
+        "commit-time once, push-time once for the unchecked commit:\n{out}"
     );
 }
 

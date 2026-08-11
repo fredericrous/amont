@@ -729,8 +729,8 @@ mod tests {
         );
         assert_eq!(
             p.write.len(),
-            4,
-            "all four are written, as propagate.sh does"
+            DISPATCHERS.len(),
+            "every dispatcher is written, as propagate.sh did"
         );
         assert!(p.write.iter().all(|w| w.changes), "none exist yet");
 
@@ -761,7 +761,11 @@ mod tests {
         let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false);
 
         assert!(!p.refused(), "{:?}", p.refuse);
-        assert_eq!(p.write.len(), 4, "all four dispatchers still planned");
+        assert_eq!(
+            p.write.len(),
+            DISPATCHERS.len(),
+            "every dispatcher still planned"
+        );
         assert!(p.remove.is_empty());
         assert_eq!(p.warn.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -780,7 +784,7 @@ mod tests {
         }
         let p = plan(&repo(true), &dir, "/bin/gh", Intent::Repair, false, false);
         assert!(p.is_noop(), "{p:?}");
-        assert_eq!(p.write.len(), 4);
+        assert_eq!(p.write.len(), DISPATCHERS.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

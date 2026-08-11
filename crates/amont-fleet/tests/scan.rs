@@ -418,7 +418,13 @@ fn a_baked_shim_is_ok_and_a_hand_edited_one_is_not() {
         "/../../templates/hooks/pre-commit"
     ))
     .unwrap();
-    for n in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for n in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         std::fs::write(
             hooks.join(n),
             template.replace("__AMONT_BIN__", "/opt/amont"),
@@ -826,8 +832,10 @@ fn a_non_utf8_hook_is_never_ours_and_never_missing() {
     let v = json(&["--root", t.path().to_str().unwrap()]);
     let r = &v["repos"][0];
     assert_eq!(r["managed"], false, "a binary hook is not one of ours: {r}");
+    // Index 2: shims sit in DISPATCHERS order, and `pre-commit` follows
+    // `commit-msg` and `post-commit`.
     assert_eq!(
-        r["shims"][1]["state"], "unreadable",
+        r["shims"][2]["state"], "unreadable",
         "and it is not MISSING, which is what makes fix write: {r}"
     );
     assert_eq!(

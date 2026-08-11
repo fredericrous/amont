@@ -58,7 +58,7 @@ and its commands are executed. No prompt, no trust decision:
 
 ```
 $ git clone hostile victim && cd victim
-  hooks present after clone: commit-msg pre-commit pre-push prepare-commit-msg
+  hooks present after clone: commit-msg post-commit pre-commit pre-push prepare-commit-msg
 $ git commit -m "feat: an innocent commit"
   >>> arbitrary code from the cloned repo <<<
 ```
@@ -222,7 +222,7 @@ tool should let you pick which one you would rather explain.
 
 We can disable a check (`hook.skip`), downgrade one (`amont.severity`) and
 install everything. There is no supported way to take it off — a user who wants
-out deletes four files by hand and leaves a stale binary in `~/.local/bin`.
+out deletes five files by hand and leaves a stale binary in `~/.local/bin`.
 
 `uninstall` at both levels, and it must be honest about what it removes: shims
 yes, the binary only when asked, `hook.skip`/severity config never, since those
@@ -637,7 +637,7 @@ format inherits, not because anything is waiting on it.
 
 **`core.hooksPath` (husky).** Husky sets one config key and ships no per-repo
 hook files. Our entire drift model — `amont-fleet apply`, `BakeState`, the
-`SHIMS` column, `recover_baked` — exists because we copy four files into
+`SHIMS` column, `recover_baked` — exists because we copy five files into
 ninety-six repositories. A global `core.hooksPath` deletes that problem class
 outright.
 
@@ -645,7 +645,7 @@ Refused, and the reason matters more than the refusal: `core.hooksPath` is
 all-or-nothing per repository. "Managed vs unmanaged", which the fleet view is
 built around, becomes unexpressible; a repository with hooks of its own silently
 loses them; and a colleague who has never heard of this tool can read
-`.git/hooks/pre-commit` and see what runs. That legibility is worth four files.
+`.git/hooks/pre-commit` and see what runs. That legibility is worth five files.
 
 **And the failure is not hypothetical — we were on the receiving end of it.**
 Eleven repositories on the author's machine ran husky, so `core.hooksPath` was
@@ -658,7 +658,7 @@ unchallenged for as long as it lasted. That is exactly "a repository with hooks
 of its own silently loses them", arrived at from the other direction, and it is
 now [refused by name](install.md#when-another-tool-already-owns-the-hooks).
 
-None of which the npm packaging contradicts. `amont init` writes the same four
+None of which the npm packaging contradicts. `amont init` writes the same five
 files to the same `.git/hooks`; what a `prepare` script changes is *who types
 the command*, not where the hooks live or whether they can be read.
 

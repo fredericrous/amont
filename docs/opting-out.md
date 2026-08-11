@@ -85,7 +85,7 @@ amont uninstall --binary     # …and the binary from ~/.local/bin
 amont-fleet uninstall --root ~/Developer
 ```
 
-This removes **our four shims and nothing else**. A hook you wrote yourself is
+This removes **our five shims and nothing else**. A hook you wrote yourself is
 left alone and named in the output, whatever it is; a hook it cannot even read
 is named too, rather than passed over in silence. `hook.skip` and
 `amont.severity` are never touched — those are your statements about your
@@ -103,7 +103,7 @@ git config --global --unset init.templateDir
 
 That glob deletes **every** hook in the
 directory — including ones other tools installed and ones you wrote — in order
-to remove four files that belong to us. `amont uninstall` exists precisely
+to remove five files that belong to us. `amont uninstall` exists precisely
 so that removing our hooks never means removing yours.
 
 ## A repository is asking to run its own checks

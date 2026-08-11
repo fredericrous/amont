@@ -6,6 +6,35 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.0 — 2026-08-11
+
+- **A fifth hook, `post-commit`, closes the `--no-verify` hole in commit-time
+  gating.** Moving a gate entry to commit time (v1.5.0) skipped the push-time
+  script on the strength of a declaration — a promise on paper. A commit made
+  with `git commit --no-verify`, from a client that runs no hooks (libgit2
+  IDEs), or on a machine without amont was never judged by the moved check,
+  and the push gate waved it through with a green "gated at commit instead"
+  line anyway.
+
+  Now the event is recorded, not assumed: when the moved check runs at
+  commit time, `post-commit` — which `--no-verify` does NOT skip — stamps the
+  commit in a local notes ref (`refs/notes/amont-gate`; never pushed,
+  invisible to `git log`, GC'd with its commits, removed by `amont
+  uninstall`). The push gate skips a script only when every pushed commit in
+  the declaration's scope carries its stamp; an unstamped commit brings the
+  gate back with a line saying why. Every failure mode points the same
+  direction — no marker, a rewritten hash, a merge or cherry-pick (which run
+  no `post-commit`) — all mean "no stamp", and a missing stamp only costs a
+  redundant run, never a skipped check. Moving a gate entry earlier now
+  trades latency, never safety.
+
+  Installing the fifth shim needs one `amont install` (or the next
+  `npm install` via `prepare`, or `amont-fleet fix --apply`) per repository;
+  until then pushes simply stop trusting commit-time gating and run the gate,
+  announcing it. **Upgrade `amont-fleet` together with `amont`**: a fleet
+  binary older than this release reads the new `post-commit` shim as a
+  retired stale file and removes it.
+
 ## v1.5.1 — 2026-08-10
 
 - **The push gate only defers to a commit check that covers the push.** Moving

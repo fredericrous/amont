@@ -30,7 +30,7 @@ language-aware checks that already know when to stay out of the way.
   what you staged; unstaged work is held aside without `git stash` and restored
   even if a check panics. The design that makes that true is the most carefully
   argued part of the codebase.
-- **Leaving is one command.** `amont uninstall` removes exactly the four
+- **Leaving is one command.** `amont uninstall` removes exactly the five
   shims install wrote — a hook you or another tool put there is named and left
   alone. A gate you cannot exit cleanly is a gate you were right not to enter.
 

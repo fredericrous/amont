@@ -93,7 +93,13 @@ fn install_places_the_binary_the_templates_and_the_repo_hooks() {
 
     let bin = installed_bin(&s);
     let tpl = s.path(".config/git/git-templates/templates/hooks");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(tpl.join(name).is_file(), "template {name} missing:\n{out}");
         assert!(
             repo.join(".git/hooks").join(name).is_file(),
@@ -156,7 +162,13 @@ fn installing_from_a_linked_worktree_bakes_into_the_shared_hooks_dir() {
 
     let (code, out) = s.install(&wt);
     assert_eq!(code, 0, "{out}");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(
             repo.join(".git/hooks").join(name).is_file(),
             "{name} missing from the common hooks dir:\n{out}"
@@ -327,8 +339,9 @@ fn uninstall_removes_our_shims_and_nothing_else() {
     let repo = s.path("repo");
     init_repo(&repo);
     assert_eq!(s.install(&repo).0, 0);
-    // A hook of their own, added after we installed.
-    let theirs = repo.join(".git/hooks/post-commit");
+    // A hook of their own, added after we installed. `post-checkout`, because
+    // `post-commit` stopped being available for this role — it is ours now.
+    let theirs = repo.join(".git/hooks/post-checkout");
     std::fs::write(&theirs, "#!/bin/sh\necho theirs\n").expect("write");
     // And policy they set, which is a statement about their repo, not ours.
     git(&repo, &["config", "hook.skip", "pre-commit-clippy"]);
@@ -336,7 +349,13 @@ fn uninstall_removes_our_shims_and_nothing_else() {
     let (code, out) = run_verb(&s, &repo, &["uninstall"]);
     assert_eq!(code, 0, "{out}");
 
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(
             !repo.join(".git/hooks").join(name).exists(),
             "{name} survived uninstall:\n{out}"
@@ -502,7 +521,13 @@ fn force_replaces_a_symlinked_hook_and_never_the_file_it_pointed_at() {
     std::fs::create_dir_all(&dev).expect("mkdir");
     std::fs::create_dir_all(repo.join(".git/hooks")).expect("mkdir");
 
-    let names = ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"];
+    let names = [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ];
     for name in names {
         let target = dev.join(name);
         std::fs::write(&target, format!("#!/bin/sh\n# PRECIOUS {name}\n")).expect("write");
@@ -571,7 +596,13 @@ fn a_tracked_hooks_directory_is_refused_even_with_force() {
     init_repo(&repo);
     let dev = repo.join("devhooks");
     std::fs::create_dir_all(&dev).expect("mkdir");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         std::fs::write(dev.join(name), format!("#!/bin/sh\n# tracked {name}\n")).expect("write");
     }
     git(&repo, &["add", "-A"]);
@@ -673,7 +704,13 @@ fn a_deliberate_redirect_with_stale_leftovers_is_still_installed() {
     // …then the hooks moved, copies and all, and the leftovers stayed.
     let tooling = repo.join("tooling/hooks");
     std::fs::create_dir_all(&tooling).expect("mkdir");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         let shim = std::fs::read_to_string(repo.join(".git/hooks").join(name)).expect("read");
         std::fs::write(tooling.join(name), shim).expect("write");
     }
@@ -772,7 +809,13 @@ fn a_write_that_cannot_happen_leaves_no_dispatchers_at_all() {
     let _ = std::fs::set_permissions(&hooks, std::fs::Permissions::from_mode(0o755));
 
     assert_ne!(code, 0, "a failed write reported success:\n{out}");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(
             !hooks.join(name).exists(),
             "{name} landed despite the install failing:\n{out}"
@@ -857,7 +900,13 @@ fn uninstall_takes_back_the_template_dir_and_names_the_standing_grant() {
     assert_eq!(s.install(&repo).0, 0);
 
     let tpl = s.path(".config/git/git-templates/templates/hooks");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(tpl.join(name).is_file(), "install wrote no template shims");
     }
     // The standing grant itself, set the way the README tells people to.
@@ -873,7 +922,13 @@ fn uninstall_takes_back_the_template_dir_and_names_the_standing_grant() {
 
     let (code, out) = run_verb(&s, &repo, &["uninstall"]);
     assert_eq!(code, 0, "{out}");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(
             !tpl.join(name).exists(),
             "{name} survived in the template dir — the next clone reinstalls it:\n{out}"
@@ -901,7 +956,13 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
     init_repo(&checkout);
     let hooks = checkout.join("templates/hooks");
     std::fs::create_dir_all(&hooks).expect("mkdir");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         std::fs::write(
             hooks.join(name),
             "#!/bin/sh\n# git-templates hook shim.\nexec amont __AMONT_BIN__\n",
@@ -934,7 +995,13 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
         ),
         "and must name the RESOLVED path, not the symlink:\n{out}"
     );
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         assert!(
             hooks.join(name).is_file(),
             "TRACKED FILE {name} WAS DELETED:\n{out}"

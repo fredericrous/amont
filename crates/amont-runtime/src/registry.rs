@@ -37,7 +37,7 @@ pub struct Ctx<'a> {
 pub type HookFn = fn(&Ctx) -> Verdict;
 
 /// name → handler. The single place a hook is registered.
-/// The four hook names git itself invokes. Everything else is a `Check`.
+/// The five hook names git itself invokes. Everything else is a `Check`.
 pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("pre-commit", dispatch::pre_commit),
     ("pre-push", dispatch::pre_push),
@@ -45,6 +45,7 @@ pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("prepare-commit-msg", |ctx| {
         hooks::prepare_commit_msg::run(ctx.args)
     }),
+    ("post-commit", |_ctx| hooks::post_commit::run()),
 ];
 
 /// Every check, in the order its stage runs them.
@@ -608,7 +609,7 @@ mod tests {
         }
     }
 
-    /// Only FOUR files ship, and they are exactly the hook names git invokes.
+    /// Only FIVE files ship, and they are exactly the hook names git invokes.
     #[test]
     fn the_shipped_shims_are_exactly_the_git_invoked_hooks() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates/hooks");
@@ -620,7 +621,13 @@ mod tests {
         shipped.sort();
         assert_eq!(
             shipped,
-            vec!["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"]
+            vec![
+                "commit-msg",
+                "post-commit",
+                "pre-commit",
+                "pre-push",
+                "prepare-commit-msg"
+            ]
         );
         for name in &shipped {
             assert!(

@@ -15,7 +15,7 @@ what you give up.
 | On the commit path | **zero external crates**, CI-enforced | Python + a managed environment per hook | Go binary | Node + `node_modules` |
 | A cloned repo's committed config runs code… | **only after you review it and `amont trust`** | after `pre-commit install`, unreviewed | after `lefthook install` — often automatic via a package `postinstall` | after `npm install` — the `prepare` script activates it |
 | Your unstaged work during a run | held aside without `git stash`, restored even if a check panics | `git stash` around the run | untouched — checks see the worktree, not the staged set | your problem — hooks are your scripts |
-| Uninstall | removes exactly the four files it wrote, names everything else | `pre-commit uninstall` | `lefthook uninstall` | delete `.husky/`, unset `core.hooksPath` |
+| Uninstall | removes exactly the five files it wrote, names everything else | `pre-commit uninstall` | `lefthook uninstall` | delete `.husky/`, unset `core.hooksPath` |
 | Commit-message conventions | built in — validated, wrapped, limits and gitmoji configurable | via a separate hook | via commitlint etc. | via commitlint etc. |
 | One view across all your repos | **`amont-fleet`** — bulk install, report, dashboard | per repo | per repo | per repo |
 | Machine-readable state for coding agents | **`amont list --json`, `amont agents-md`** | no | no | no |

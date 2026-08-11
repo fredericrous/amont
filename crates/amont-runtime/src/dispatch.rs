@@ -196,7 +196,32 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
         Err(verdict) => return verdict,
     };
 
-    let verdict = run_stage(&checks, ctx, &Overrides::read());
+    let (verdict, outcomes) = run_stage_traced(&checks, ctx, &Overrides::read());
+
+    // What post-commit will bind to the commit: the gate-declared checks
+    // that RAN clean, recorded while the index still is the commit's tree.
+    // Called on every verdict — an empty record clears any leftover marker,
+    // so a blocked attempt (or a repo with nothing declared) cannot leave an
+    // earlier attempt's marker to vouch for the next commit. `Unavailable`
+    // deliberately does not qualify: a check whose tool is missing judged
+    // nothing, and stamping it would be the paper promise this exists to
+    // replace.
+    let ran: Vec<&'static str> = if matches!(verdict, Verdict::Block) {
+        Vec::new()
+    } else {
+        crate::hooks::run_tests::gated_at_commit()
+            .into_iter()
+            .filter(|d| {
+                checks
+                    .iter()
+                    .zip(&outcomes)
+                    .any(|(c, o)| c.name() == d.id && matches!(o, Outcome::Passed | Outcome::Fixed))
+            })
+            .map(|d| d.script)
+            .collect()
+    };
+    crate::gate_stamp::record(&ran);
+
     drop(held);
     verdict
 }
@@ -207,8 +232,20 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
 /// standing in for a dead check was a literal at one call site that no test
 /// could reach — the rule was asserted on the runner and merely hoped for here.
 fn run_stage(checks: &[&'static dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdict {
+    run_stage_traced(checks, ctx, severities).0
+}
+
+/// [`run_stage`], keeping the per-check outcomes — index-aligned with
+/// `checks` — alive past the verdict. `pre_commit` needs them to know which
+/// gate-declared checks actually ran (`gate_stamp`); `Report` cannot answer
+/// that, because `classify` deliberately drops the names of `Passed`.
+fn run_stage_traced(
+    checks: &[&'static dyn Check],
+    ctx: &Ctx,
+    severities: &Overrides,
+) -> (Verdict, Vec<Outcome>) {
     if checks.is_empty() {
-        return Verdict::Proceed;
+        return (Verdict::Proceed, Vec::new());
     }
     let outcomes = run_concurrently(
         checks,
@@ -229,7 +266,7 @@ fn run_stage(checks: &[&'static dyn Check], ctx: &Ctx, severities: &Overrides) -
 
     let report = classify(checks, &outcomes, severities);
     announce(&report);
-    report.verdict()
+    (report.verdict(), outcomes)
 }
 
 /// What a stage concluded, before anything is printed or exited.

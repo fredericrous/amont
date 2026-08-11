@@ -23,6 +23,7 @@ pub mod check;
 pub mod commit_style;
 pub mod config;
 pub mod dispatch;
+pub mod gate_stamp;
 pub mod git;
 pub mod hookfile;
 pub mod hooks;

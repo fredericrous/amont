@@ -155,6 +155,40 @@ pub fn changed_files_for(r: &PushRef, zero: &str) -> Vec<String> {
     range_changed_files(&r.remote_oid, &r.local_oid)
 }
 
+/// `(commit, files)` for every commit ONE ref would push — the same walks as
+/// [`changed_files_for`], keeping the commit identities its union discards.
+///
+/// For a caller matching per-commit STATE (a `gate_stamp` note) against
+/// per-commit CHANGES, the union is useless: it says the ref touched `a.ts`
+/// without saying which commit did, and the whole question is whether THAT
+/// commit was checked. One `diff-tree` per commit rather than a parse of
+/// `--stdin` output with commit ids left in: a push is a handful of commits,
+/// and this reuses `diff_tree_stdin`'s tested flag set (`-z` for unusual
+/// bytes, `-m` for merges) instead of growing a second parser for the
+/// interleaved id-and-paths stream.
+pub fn commits_and_files_for(r: &PushRef, zero: &str) -> Vec<(String, Vec<String>)> {
+    if r.local_oid == zero {
+        return Vec::new(); // deleting a ref pushes no code
+    }
+    let commits = if r.remote_oid == zero {
+        // Same shape as `changed_files_for`'s new-branch arm, same fallback.
+        match crate::git::stdout(&["rev-list", &r.local_oid, "--not", "--remotes"]) {
+            Some(commits) if !commits.is_empty() => commits,
+            _ => r.local_oid.clone(),
+        }
+    } else {
+        let range = format!("{}..{}", r.remote_oid, r.local_oid);
+        match crate::git::stdout(&["rev-list", &range]) {
+            Some(commits) if !commits.is_empty() => commits,
+            _ => return Vec::new(),
+        }
+    };
+    commits
+        .lines()
+        .map(|c| (c.to_string(), diff_tree_stdin(c)))
+        .collect()
+}
+
 /// Every path touched by ANY commit reachable in `remote..local`, not just
 /// the net difference between the two endpoint trees.
 ///

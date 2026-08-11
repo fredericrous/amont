@@ -7,7 +7,7 @@ Phase 4 is done, not "optional and not started" as this line said for a while.
 There is no `.zsh` file anywhere in the repository; the "19 zsh suites" it
 described porting ARE the cargo integration tests under `crates/*/tests/`, and
 Windows CI runs the same suite every other platform does rather than a smoke.
-The one thing left of the shell era is the four `sh` shims, and they are shims
+The one thing left of the shell era is the five `sh` shims, and they are shims
 on purpose.
 
 **This document is history, kept for its reasoning.** Everything below is in the

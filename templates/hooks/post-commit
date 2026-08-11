@@ -1,0 +1,79 @@
+#!/bin/sh
+# git-templates hook shim → the amont binary.
+#
+# One shim serves every hook: it passes its own filename through, so the binary
+# knows which hook to run. Dispatchers (pre-commit, pre-push) and ported leaf
+# hooks use the identical file.
+# Author: https://github.com/fredericrous
+#
+# POSIX sh, not zsh: this must run wherever git does, including Git for Windows
+# (which ships sh but not zsh).
+#
+# Resolution order matters more than it looks. Git hooks do NOT inherit an
+# interactive shell's PATH: GUI clients (VS Code, Tower, JetBrains) launch git
+# with an environment that often lacks ~/.local/bin or ~/.cargo/bin. A shim that
+# only did `exec amont` would work in the terminal and fail in the GUI. So:
+#   1. $GIT_HOOKS_BIN   — escape hatch; also how `make test` points at target/debug
+#   2. the baked path   — an absolute path written into this shim by
+#                         `amont install`. The placeholder token is NOT
+#                         spelled out in this comment: substitution is a plain
+#                         global replace, so a comment containing the token gets
+#                         rewritten too, and the explanation turns into a machine
+#                         path. It did, for as long as this said otherwise.
+#                         ABSOLUTE, and checked for it below before it is used.
+#                         Git runs a hook with the working tree as the current
+#                         directory, so testing an UNSUBSTITUTED token with
+#                         `[ -x ]` asks the REPOSITORY whether it has a file by
+#                         that name — and a clone shipping an executable so
+#                         named would then be run here, on the first commit,
+#                         before any check and before any trust decision. The
+#                         unbaked shim is a supported state (3 below), so the
+#                         value has to be rejected outright rather than asked
+#                         about on disk.
+#   3. $HOME/.local/bin — the default install location, resolved at RUNTIME so
+#                         this template stays machine-agnostic. Without it, a
+#                         repo created by `git init` from a template dir that is
+#                         the git checkout itself (the usual setup here — the
+#                         XDG path symlinks to the repo) never gets that token
+#                         substituted and would depend on PATH after all.
+#                         Both names are tried: Windows builds amont.exe, and
+#                         `[ -x .../amont ]` is false for it — which left
+#                         Windows with PATH as its ONLY fallback, in exactly the
+#                         GUI-client case this list exists to survive. Windows
+#                         needs no symlink for any of this: point
+#                         init.templateDir straight at the checkout.
+#   4. PATH             — last resort
+# and if none resolve, FAIL LOUDLY. Never skip a check silently: a hook that
+# quietly does nothing is worse than one that is missing.
+set -e
+HOOKS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HOOK_NAME=$(basename -- "$0")
+
+# The baked path, and nothing relative — see 2 above. Absolute means POSIX `/…`
+# or a Windows drive path: `amont install` bakes `C:\Users\…\amont.exe` on
+# Git for Windows. An unbaked shim fails this and falls through to 3, which is
+# exactly what it should do.
+BAKED="__AMONT_BIN__"
+case "$BAKED" in
+    /*|?:/*|?:\\*) ;;
+    *) BAKED= ;;
+esac
+
+if [ -n "$GIT_HOOKS_BIN" ] && [ -x "$GIT_HOOKS_BIN" ]; then
+    BIN="$GIT_HOOKS_BIN"
+elif [ -n "$BAKED" ] && [ -x "$BAKED" ]; then
+    BIN="$BAKED"
+elif [ -x "$HOME/.local/bin/amont" ]; then
+    BIN="$HOME/.local/bin/amont"
+elif [ -x "$HOME/.local/bin/amont.exe" ]; then
+    BIN="$HOME/.local/bin/amont.exe"
+elif command -v amont > /dev/null 2>&1; then
+    BIN=amont
+else
+    printf '  \033[38;5;160m✗\033[0m amont binary not found — hooks cannot run.\n' >&2
+    printf '    Looked at: $GIT_HOOKS_BIN, the baked path, ~/.local/bin, then PATH.\n' >&2
+    printf '    Reinstall with \033[38;5;208mmake install\033[0m in git-templates.\n' >&2
+    exit 1
+fi
+
+exec "$BIN" --hooks-dir "$HOOKS_DIR" "$HOOK_NAME" "$@"

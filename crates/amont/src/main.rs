@@ -1,6 +1,6 @@
 //! The hook binary — argument handling only.
 //!
-//! Everything it does lives in `amont-runtime`. Git invokes exactly four
+//! Everything it does lives in `amont-runtime`. Git invokes exactly five
 //! hook names; the shim passes its own filename through, and the registry maps
 //! that name to a handler.
 //!

@@ -74,10 +74,16 @@ fn init_repo(dir: &Path) {
     git(dir, &["config", "user.name", "t"]);
 }
 
-const DISPATCHERS: [&str; 4] = ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"];
+const DISPATCHERS: [&str; 5] = [
+    "commit-msg",
+    "post-commit",
+    "pre-commit",
+    "pre-push",
+    "prepare-commit-msg",
+];
 
 #[test]
-fn init_writes_the_four_shims_and_bakes_the_running_binary() {
+fn init_writes_the_five_shims_and_bakes_the_running_binary() {
     let s = Sandbox::new("basic");
     let repo = s.path("repo");
     init_repo(&repo);
