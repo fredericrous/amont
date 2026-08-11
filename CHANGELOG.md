@@ -64,6 +64,16 @@ missing here.
   `PATH`, failing loudly rather than skipping a check — but the comment said
   otherwise, which is worse than saying nothing.
 
+- **The npm wrapper tries the next binary when a spawn fails.** With a package
+  manager that ignores the `libc` field — yarn classic, or the wrapper's own
+  suggested `npm install --force` — both linux-x64 packages get installed, and
+  on a musl host the glibc build was picked because it merely *existed*, then
+  failed at exec on the missing loader, taking every hook with it while the
+  right binary sat installed one candidate over. The wrapper now loops over
+  spawns rather than paths: only a spawn-level failure falls through, a real
+  exit code is forwarded as before (a binary that ran has answered), and the
+  no-candidate message names what it tried.
+
 ## v1.5.0 — 2026-08-10
 
 - **A gate entry can be moved to commit time.** `typecheck` sits in
