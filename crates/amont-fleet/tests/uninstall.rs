@@ -115,7 +115,13 @@ fn a_hooks_directory_we_cannot_write_to_is_reported_and_exits_nonzero() {
     let _ = std::fs::remove_dir_all(&root);
     let hooks = root.join("victim/.git/hooks");
     std::fs::create_dir_all(&hooks).expect("mkdir");
-    for name in ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"] {
+    for name in [
+        "commit-msg",
+        "post-commit",
+        "pre-commit",
+        "pre-push",
+        "prepare-commit-msg",
+    ] {
         std::fs::write(hooks.join(name), shim_text()).expect("write");
     }
     std::fs::set_permissions(&hooks, std::fs::Permissions::from_mode(0o555)).expect("chmod");

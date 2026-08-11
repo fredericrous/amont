@@ -83,7 +83,13 @@ impl Drop for Sandbox {
     }
 }
 
-const DISPATCHERS: [&str; 4] = ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"];
+const DISPATCHERS: [&str; 5] = [
+    "commit-msg",
+    "post-commit",
+    "pre-commit",
+    "pre-push",
+    "prepare-commit-msg",
+];
 
 /// Every verb the dispatch table holds. Spelled out here on purpose: this file
 /// is the outside view, and it should fail if the binary quietly grows a verb

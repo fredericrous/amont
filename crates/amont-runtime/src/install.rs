@@ -58,7 +58,13 @@ pub const SHIM: &str = include_str!("../templates/hooks/pre-commit");
 pub use crate::hookfile::{is_our_shim, SHIM_MARKER};
 
 /// The hook names git actually invokes, and so the only files we install.
-pub const DISPATCHERS: [&str; 4] = ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"];
+pub const DISPATCHERS: [&str; 5] = [
+    "commit-msg",
+    "post-commit",
+    "pre-commit",
+    "pre-push",
+    "prepare-commit-msg",
+];
 
 /// What may be done with a candidate template directory.
 ///
@@ -1249,6 +1255,11 @@ fn uninstall_repo_hooks() -> Result<(), String> {
             println!("{} left alone: {reason}", warning_sign());
         }
     }
+    // The gate stamps are OUR bookkeeping — the marker and the notes ref only
+    // ever say "amont checked this", which stops being true of anything the
+    // moment the hooks are gone. `hook.skip` and `amont.severity` stay: those
+    // are the user's statements about their repository, not ours.
+    crate::gate_stamp::forget();
     Ok(())
 }
 

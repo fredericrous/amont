@@ -18,7 +18,7 @@ write, no runtime to install, nothing to configure before it is useful.
   — a gate pre-commit, lefthook and husky do not have.
 - **Nothing on the commit path but `std`.** The hook binary links no external
   crates, and CI fails any build that changes that.
-- **Leaving is one command.** `amont uninstall` removes exactly the four
+- **Leaving is one command.** `amont uninstall` removes exactly the five
   shims install wrote; a hook you or another tool put there is named and left
   alone.
 
@@ -99,7 +99,7 @@ amont uninstall --binary     # …and remove ~/.local/bin/amont too
 
 Uninstall is listed second on purpose. These hooks can block a commit, so the
 honest question to answer first is how you get out — and the answer is that
-`uninstall` removes our four shims and **nothing else**. A hook you wrote
+`uninstall` removes our five shims and **nothing else**. A hook you wrote
 yourself is left where it is and named in the output, whatever it is; a hook it
 cannot even read is named too rather than passed over in silence. Your
 `hook.skip` and `amont.severity` settings are never touched, because those
@@ -108,7 +108,7 @@ are your statements about your repository.
 This is also why the README does not tell you to run
 `rm $(git rev-parse --git-dir)/hooks/*`. That glob deletes every hook in the
 directory — including ones other tools installed and ones you wrote — to remove
-four files that belong to us.
+five files that belong to us.
 
 To bypass a single run rather than uninstall: `git commit --no-verify`.
 To turn off one check permanently, see [Turning a check off, or down](#turning-a-check-off-or-down).
@@ -136,7 +136,7 @@ pre-push
   ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable
 ```
 
-Twenty-one built-in checks across four git hooks, plus any your repository declares
+Twenty-one built-in checks across five git hooks, plus any your repository declares
 itself. The full list, with what each one needs before it fires, is in
 [the checks reference](docs/checks.md).
 

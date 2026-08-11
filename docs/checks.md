@@ -1,7 +1,8 @@
 # The checks
 
-Four git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `pre-push` — and behind them twenty-one named checks, plus
+Five git hooks are installed — `pre-commit`, `commit-msg`,
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-one
+named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
 This page is the catalogue. **It is not the answer to "what will run in my
@@ -154,17 +155,34 @@ counts.** All of these leave the push gate exactly as it was:
   scope** — `*.ts,*.tsx` above says nothing about a `.js` change, so a push
   carrying one runs the full gate for that ref;
 - every package but the **repo root** — the declared command runs at the root,
-  so a monorepo sub-package's gate is never skipped on its account.
+  so a monorepo sub-package's gate is never skipped on its account;
+- a pushed commit with no **stamp** — see below. A declaration that qualifies
+  on all the points above is still only a promise; the stamp is the proof it
+  was kept.
 
 The failure being avoided is the one worth stating plainly: a repository that
 declared `pre-commit typecheck`, never trusted it, and had types checked at
 *neither* end while both ends reported green.
 
-One gap stays open, and is accepted rather than hidden: a commit created with
-`git commit --no-verify` never ran the moved check, and push time cannot see
-that. Moving a gate entry earlier trades the push-time backstop for commit-time
-latency — `--no-verify` is where that trade shows. If nobody on the repository
-may make that trade, leave the entry where it is.
+**The stamp is how the push gate trusts the event rather than the paper.**
+When the moved check runs at commit time, the `post-commit` hook records that
+fact against the commit — a local notes ref, `refs/notes/amont-gate`, never
+pushed, invisible to `git log`, garbage-collected with the commits it
+annotates, and removed by `amont uninstall`. At push, the gate skips a script
+only when every pushed commit inside the declaration's scope carries its
+stamp. A commit created with `git commit --no-verify`, made by a client that
+runs no hooks, made on a machine without amont, or whose hash a rebase or
+amend rewrote has no stamp — and the push says so and runs the script itself:
+
+```text
+⚠ typecheck is declared at commit time, but 1 pushed commit carries no record of it — running it here
+```
+
+Merge commits and cherry-picks never run `post-commit`, so they re-run the
+gate the same way. Every failure mode points in one direction: a missing
+stamp can only cost a redundant run, never skip a check that did not happen.
+The residual trade of moving a gate entry earlier is therefore latency, not
+safety — an unchecked commit makes the push slower, not greener.
 
 ### What a push actually tests
 

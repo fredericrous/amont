@@ -42,7 +42,13 @@ fn shim_for(binary: &str) -> String {
     template().replace("__AMONT_BIN__", binary)
 }
 
-const DISPATCHERS: [&str; 4] = ["commit-msg", "pre-commit", "pre-push", "prepare-commit-msg"];
+const DISPATCHERS: [&str; 5] = [
+    "commit-msg",
+    "post-commit",
+    "pre-commit",
+    "pre-push",
+    "prepare-commit-msg",
+];
 
 struct Tree(PathBuf);
 

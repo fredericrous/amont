@@ -11,6 +11,7 @@ pub mod lint_js;
 pub mod lint_json_yaml;
 pub mod merge_conflict;
 pub mod package_lock;
+pub mod post_commit;
 pub mod prepare_commit_msg;
 pub mod prettier;
 pub mod pull_rebase;

@@ -216,7 +216,7 @@ that was invisible visible:
 A **refusal** suppresses the whole repository: a half-applied fix is how a repo
 ends up with both `pre-commit-ruff.zsh` and `pre-commit-ruff`, running ruff
 twice. A **warning** prints and changes nothing about what gets done — a
-stranger's `pre-push-mine.sh` must not block repairing four broken dispatchers
+stranger's `pre-push-mine.sh` must not block repairing five broken dispatchers
 in the same directory.
 
 Folding the two together forces a choice between "say nothing" and "do nothing",
@@ -244,7 +244,7 @@ what would get somebody to type it casually.
 
 `hooks_dir` exists because a scanned repository's `core.hooksPath` may be an
 absolute path anywhere on the disk, and activation used to `create_dir_all` it
-and write four 0o755 files into it. The fleet now refuses anything that does not
+and write five 0o755 files into it. The fleet now refuses anything that does not
 resolve inside the repository's own worktree or its git common directory.
 
 Note the deliberate asymmetry: **per-repo `amont install` keeps honouring its
@@ -292,7 +292,7 @@ drifted merely because `__AMONT_BIN__` was replaced.
 - The **consistency band** is the headline, because `copies/distinct` is the one
   number that actually proves fleet health, and it is the number the text script
   got wrong. It is always `N/M`, never a bare adjective.
-- `SHIMS` is four glyphs, one per dispatcher, in fixed order. `●` ok, `◐`
+- `SHIMS` is five glyphs, one per dispatcher, in fixed order. `●` ok, `◐`
   drifted, `○` missing, `!` a symlink, `?` unreadable. Position encodes *which*
   hook without spending a column on its name. `!` and `?` are deliberately OFF
   the ●◐○ scale: those three run from healthy to absent, and a dispatcher that
@@ -538,7 +538,7 @@ Build the minimum useful tool, but build it in the final architecture:
 - Rust scanner for `--root` and `--depth`, with explicit counters for found git
   dirs, seen hook dirs, managed/unmanaged repos, unreadable paths, and excluded
   directories.
-- Rust shim inspection: four dispatcher states, baked path state, stale managed
+- Rust shim inspection: five dispatcher states, baked path state, stale managed
   files, foreign sub-hooks, vestigial hook `package.json`, languages, skips.
 - `amont-fleet --json`, emitting `FleetScan`.
 - Default TUI overview and repo detail views.
@@ -634,8 +634,8 @@ practical use.
   is shorthand for the separate binary.
 - **Templates are embedded** with `include_str!` against the workspace root, so
   the tool reports correctly from any directory rather than only inside a
-  checkout. All four dispatcher templates are currently ONE blob, so this is a
-  single embedded string, not four.
+  checkout. All five dispatcher templates are currently ONE blob, so this is a
+  single embedded string, not five.
 
 ## Success criteria
 

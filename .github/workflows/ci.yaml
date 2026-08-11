@@ -246,14 +246,14 @@ jobs:
           done
           exit $rc
 
-      # The four shims are BYTE-IDENTICAL and always have been: one file serves
+      # The five shims are BYTE-IDENTICAL and always have been: one file serves
       # every hook, passing its own filename through so the binary knows which
       # hook to run. `sh -n` above parses each of them separately and would
-      # happily pass four different files, so it cannot see a hand-edit made to
+      # happily pass five different files, so it cannot see a hand-edit made to
       # one copy — the likeliest way this set drifts, since fixing "the
-      # pre-commit shim" and forgetting the other three is a natural mistake.
+      # pre-commit shim" and forgetting the other four is a natural mistake.
       # `cmp` is the assertion that earns this job its second step.
-      - name: All four shims are byte-identical
+      - name: All five shims are byte-identical
         run: |
           rc=0
           ref=templates/hooks/pre-commit
@@ -370,7 +370,7 @@ jobs:
           git config user.name "windows ci"
 
           mkdir -p .git/hooks
-          for h in commit-msg prepare-commit-msg pre-commit; do
+          for h in commit-msg prepare-commit-msg pre-commit post-commit; do
             cp "$GITHUB_WORKSPACE/templates/hooks/$h" ".git/hooks/$h"
             sed -i "s|__AMONT_BIN__|$BIN|g" ".git/hooks/$h"
             chmod +x ".git/hooks/$h"

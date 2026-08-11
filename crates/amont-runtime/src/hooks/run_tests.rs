@@ -59,13 +59,21 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 ///
 /// Get any of these wrong and the result is the failure this project is
 /// arranged against — a push that reports a green gate having run nothing.
-/// One gap remains open by design: a commit created with `--no-verify` never
-/// ran the check, and nothing here can see that. `docs/checks.md` says so out
-/// loud instead of this code pretending otherwise.
-fn gated_at_commit() -> Vec<(&'static str, crate::check::Scope)> {
+/// A declaration passing this filter is still only a PROMISE: whether the
+/// check executed for the commits actually being pushed is what
+/// [`crate::gate_stamp`]'s per-commit stamps answer, in `run`.
+pub(crate) fn gated_at_commit() -> Vec<GateDecl> {
+    let declared = crate::manifest::externals();
+    // The fast path: pre-commit calls this on every commit to know what to
+    // stamp, and most repositories declare nothing — no GATE name declared
+    // means no git spawns for skips and severity overrides.
+    if !declared.iter().any(|ext| {
+        ext.stage == crate::check::Stage::PreCommit && GATE.contains(&ext.short_name.as_str())
+    }) {
+        return Vec::new();
+    }
     let skips = crate::configured_skips();
     let severities = crate::registry::Overrides::read();
-    let declared = crate::manifest::externals();
     GATE.iter()
         .filter_map(|script| {
             declared.iter().find_map(|ext| {
@@ -76,10 +84,26 @@ fn gated_at_commit() -> Vec<(&'static str, crate::check::Scope)> {
                     && ext.short_name == *script
                     && severities.of(ext) == crate::check::Severity::Block
                     && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s)))
-                .then_some((*script, *scope))
+                .then(|| GateDecl {
+                    script,
+                    id: ext.id.clone(),
+                    scope: *scope,
+                })
             })
         })
         .collect()
+}
+
+/// One GATE entry a commit-time declaration stands in for.
+pub(crate) struct GateDecl {
+    /// The script name, as GATE spells it.
+    pub script: &'static str,
+    /// `<stage>-<name>` — what dispatch outcomes and `hook.skip` key on.
+    /// Carried so pre-commit can match "this declaration" to "that outcome"
+    /// without re-deriving the id and drifting.
+    pub id: String,
+    /// The declaration's scope, judged per ref by [`scope_covers`].
+    pub scope: crate::check::Scope,
 }
 
 /// Did the commit-time declaration see EVERYTHING this push changes?
@@ -270,10 +294,11 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         .unwrap_or_default();
 
     // The DECLARATIONS are a property of the repository, resolved once; whether
-    // one covers a given push is a property of that ref's changed files, judged
-    // inside the loop.
+    // one covers a given push is a property of that ref's changed files and of
+    // its commits' stamps, judged inside the loop.
     let declared_gate = gated_at_commit();
     let mut announced: Vec<&'static str> = Vec::new();
+    let mut warned: Vec<&'static str> = Vec::new();
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -310,11 +335,48 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // is where the declared command runs. A sub-package's gate is a
         // different command in a different directory, and no root declaration
         // has judged it.
-        let already: Vec<&'static str> = declared_gate
+        //
+        // And the declaration must have EXECUTED, which is the stamps'
+        // question: every commit in this push the declaration would have
+        // fired on must carry a `gate_stamp` note naming the script. A commit
+        // made with `--no-verify`, from a client that runs no hooks, on a
+        // machine without amont, or with a rewritten hash has no stamp — and
+        // an unstamped commit is one the check never judged, so the gate runs
+        // rather than trusting the declaration's word for it.
+        let candidates: Vec<&GateDecl> = declared_gate
             .iter()
-            .filter(|(_, scope)| scope_covers(scope.files, &js_changed))
-            .map(|(script, _)| *script)
+            .filter(|d| scope_covers(d.scope.files, &js_changed))
             .collect();
+        let mut already: Vec<&'static str> = Vec::new();
+        if !candidates.is_empty() {
+            let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
+            let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
+            let stamps = crate::gate_stamp::stamps_for(&ids);
+            for d in candidates {
+                let unstamped = per_commit
+                    .iter()
+                    .filter(|(_, files)| d.scope.matches(files))
+                    .filter(|(commit, _)| {
+                        !stamps
+                            .get(commit)
+                            .is_some_and(|s| s.iter().any(|n| n == d.script))
+                    })
+                    .count();
+                if unstamped == 0 {
+                    already.push(d.script);
+                } else if !warned.contains(&d.script) {
+                    println!(
+                        "{} {} is declared at commit time, but {unstamped} pushed \
+                         commit{} carr{} no record of it — running it here",
+                        crate::ui::warning_sign(),
+                        d.script,
+                        if unstamped == 1 { "" } else { "s" },
+                        if unstamped == 1 { "ies" } else { "y" },
+                    );
+                    warned.push(d.script);
+                }
+            }
+        }
 
         // Same question as cargo-test: the suite should be answering about
         // the commits being pushed, not about whatever is open in the

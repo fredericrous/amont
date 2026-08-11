@@ -192,7 +192,7 @@ distinction is worth stating rather than leaving to be reconciled:
   route, activates nothing anywhere;
 - **the repository** opts in, once, by committing a line to its own
   `package.json` — a reviewable change, in the open, that a reader can see;
-- what arrives is still four legible files in `.git/hooks`. A colleague who has
+- what arrives is still five legible files in `.git/hooks`. A colleague who has
   never heard of this tool can `cat .git/hooks/pre-commit` and see what runs,
   which is exactly the property that made us
   [refuse `core.hooksPath`](index-fidelity-and-run-modes.md#what-we-are-not-taking-and-why).
@@ -218,9 +218,12 @@ cd <your-repo> && amont install
 amont list                        # what would run here, and why not
 ```
 
-That writes four shims into `.git/hooks` — `pre-commit`, `pre-push`,
-`commit-msg`, `prepare-commit-msg` — each of which resolves the binary at run
-time and dispatches into it. Nothing runs in any repository you did not do this
+That writes five shims into `.git/hooks` — `pre-commit`, `pre-push`,
+`commit-msg`, `prepare-commit-msg`, `post-commit` — each of which resolves the
+binary at run time and dispatches into it. `post-commit` is the bookkeeping
+half of [moving a gate entry to commit time](checks.md#moving-a-gate-entry-earlier):
+it records that the moved check actually ran, so the push gate can trust the
+event rather than the declaration. Nothing runs in any repository you did not do this
 in.
 
 Across many repositories at once:
@@ -239,7 +242,7 @@ the dashboard" from becoming "every commit now depends on a TUI library".
 
 `core.hooksPath` redirects hook dispatch, and `husky` sets it. In a repository
 that runs husky, git reads `.husky/_` and never looks at `.git/hooks` at all —
-so an install that wrote there would produce four files git never runs, and one
+so an install that wrote there would produce five files git never runs, and one
 that wrote to `.husky/_` would hand them to a directory husky's own `prepare`
 regenerates on the next `npm install`.
 
@@ -332,7 +335,7 @@ amont uninstall --binary     # …and remove the binary from ~/.local/bin
 amont-fleet uninstall --root ~/Developer
 ```
 
-Uninstall removes **our four shims and nothing else**. A hook you wrote
+Uninstall removes **our five shims and nothing else**. A hook you wrote
 yourself is left alone and named in the output, whatever it is — a hook it
 cannot even read is named too, rather than passed over in silence. `hook.skip`
 and `amont.severity` are never touched, because those are your statements
@@ -348,7 +351,7 @@ source and belong to the checkout.
 This is also why the documentation never tells you to run
 `rm $(git rev-parse --git-dir)/hooks/*`. That glob deletes every hook in the
 directory — including ones other tools installed and ones you wrote — in order
-to remove four files that belong to us. `amont uninstall` exists precisely
+to remove five files that belong to us. `amont uninstall` exists precisely
 so that removing our hooks never means removing yours.
 
 For bypassing a single commit, or disabling one check without uninstalling
