@@ -350,6 +350,14 @@ fn verified_commit(r: &Repo, msg: &str) {
 /// A repo whose `typecheck` LOGS each run and passes, with a trusted
 /// declaration and real hooks. The log length is the observable: it says
 /// exactly how many times the script executed, wherever from.
+///
+/// The declared command is `node tc.js`, NOT `npm run typecheck`: a declared
+/// external spawns its literal program, and on Windows `npm` is `npm.cmd`,
+/// which `Command::new("npm")` cannot start — the check would report
+/// Unavailable at commit time and nothing would ever stamp. `node` is a real
+/// .exe everywhere. The push-time gate still goes through `npm run`, so both
+/// spellings of "the same check" are exercised — which is exactly the
+/// name-is-the-contract argument in `gated_at_commit`'s doc.
 fn stamped_repo() -> (Repo, String) {
     let r = Repo::new();
     r.stage(
@@ -361,7 +369,7 @@ fn stamped_repo() -> (Repo, String) {
     let base = head(&r);
     r.stage(
         "amont.conf",
-        "pre-commit  typecheck  *.ts,*.tsx  block  npm run typecheck\n",
+        "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n",
     );
     r.commit("chore: typecheck at commit time");
     trust_manifest(&r);
