@@ -1255,11 +1255,13 @@ fn uninstall_repo_hooks() -> Result<(), String> {
             println!("{} left alone: {reason}", warning_sign());
         }
     }
-    // The gate stamps are OUR bookkeeping — the marker and the notes ref only
-    // ever say "amont checked this", which stops being true of anything the
-    // moment the hooks are gone. `hook.skip` and `amont.severity` stay: those
-    // are the user's statements about their repository, not ours.
+    // The gate stamps and the seen-identity memo are OUR bookkeeping — they
+    // only ever say "amont checked this", which stops being true of anything
+    // the moment the hooks are gone. `hook.skip` and `amont.severity` stay:
+    // those are the user's statements about their repository, not ours.
     crate::gate_stamp::forget();
+    // `--unset-all` exits 5 when the key is absent; not a failure here.
+    let _ = crate::git::succeeds(&["config", "--unset-all", "amont.knownIdentity"]);
     Ok(())
 }
 

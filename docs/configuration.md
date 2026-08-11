@@ -137,6 +137,15 @@ tells tooling to allow a whole commit or push.
 
 The kill reaches the command itself; a grandchild it detached may survive,
 orphaned, but the commit is no longer hostage to it.
+## `amont.knownIdentity` — identities usual-name has vouched for
+
+Written by the tool, not by you: when `pre-commit-usual-name` finds your
+`user.name <user.email>` in history once, it records the identity here
+(local config, never committed) and never walks the full history for it
+again — `git shortlog --all` on every commit is milliseconds today and a
+scale cliff on a long history. Multi-valued; `amont uninstall` removes it
+with the rest of amont's bookkeeping. Delete a value to make the check walk
+again.
 
 ## `amont.fix` — let a check repair what it finds
 
