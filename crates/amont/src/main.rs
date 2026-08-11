@@ -42,16 +42,30 @@ use amont_runtime::{pushrefs, registry, ListOptions};
 /// eight subcommands, printed to stderr, exiting 2. A user asking a program
 /// what it does should not be told they used it wrong.
 const USAGE: &str = "\
-usage:
-    amont --hooks-dir <dir> <hook-name> [args…]
-    amont list [--json] [--stage pre-commit|pre-push] [--pushed]
-    amont setup [--local|--global] [--dry-run]
-    amont install [--force] | uninstall [--binary]
-    amont init
-    amont trust [--show|--revoke]
-    amont run [<check>] [--all-files] [--hooks-dir <dir>] | restore
-    amont agents-md [--check] [--path <file>]
-    amont --help
+usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
+
+  list           what would run in this repository, and why not
+                 [--json] [--stage pre-commit|pre-push] [--pushed]
+  install        turn hooks on here: copy the binary if needed, bake the shims
+                 [--force] replaces a hook that is not ours
+  init           wire up THIS repository only — the verb a package manager
+                 calls from `prepare`; never copies a binary, never prompts
+  uninstall      remove OUR five shims and nothing else [--binary: the binary too]
+  setup          the commit-style questions, current values as defaults
+                 [--local|--global] [--dry-run]
+  trust          show what amont.conf declares, and accept it
+                 [--show: what is trusted] [--revoke: forget it]
+  run            rehearse checks without committing: the pre-commit stage,
+                 `run pre-push` for the push gate, or one check by name
+                 [--all-files] [--hooks-dir <dir>]
+  restore        bring back unstaged changes a killed pre-commit left parked
+  agents-md      write the agent-guidance block [--check: report drift only]
+                 [--path <file>]
+
+  --help         this text        --version   the binary's version
+
+Hook mode (what the shims call): amont --hooks-dir <dir> <hook-name> [args…]
+The full manual: https://fredericrous.github.io/amont/
 ";
 
 /// The verbs. Named as a type so the dispatch cannot grow an eighth spelling
@@ -136,6 +150,7 @@ enum Invocation {
         args: Vec<OsString>,
     },
     Help,
+    Version,
     /// Used wrongly, with the reason. Exit 2 — the binary was invoked wrongly,
     /// not a hook deciding something.
     Usage(String),
@@ -166,6 +181,9 @@ fn parse(argv: Vec<OsString>) -> Invocation {
     };
     if first == "--help" || first == "-h" {
         return Invocation::Help;
+    }
+    if first == "--version" || first == "-V" {
+        return Invocation::Version;
     }
     if let Some(sub) = first.to_str().and_then(subcommand) {
         return Invocation::Sub {
@@ -241,6 +259,10 @@ fn main() {
             print!("{USAGE}");
             std::process::exit(0);
         }
+        Invocation::Version => {
+            println!("amont {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
         Invocation::Usage(why) => {
             eprintln!("amont: {why}");
             eprint!("{USAGE}");
@@ -255,11 +277,82 @@ fn main() {
     }
 }
 
+/// The flags each verb takes — `flags` stand alone, `valued` consume the next
+/// token. THE allowlist: [`run_sub`] rejects anything else, because a silently
+/// ignored flag does the opposite of what was asked at the worst possible
+/// verb — `amont trust --revok` used to fall through the `--revoke` test and
+/// GRANT trust.
+fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
+    match sub {
+        Sub::List => (&["--json", "--pushed"], &["--stage"]),
+        Sub::Setup => (&["--local", "--global", "--dry-run"], &[]),
+        Sub::Install => (&["--force"], &[]),
+        Sub::Init | Sub::Restore => (&[], &[]),
+        Sub::Uninstall => (&["--binary"], &[]),
+        Sub::Run => (&["--all-files"], &["--hooks-dir"]),
+        Sub::Trust => (&["--show", "--revoke"], &[]),
+        Sub::AgentsMd => (&["--check"], &["--path"]),
+    }
+}
+
+/// The first `--flag` the allowlist does not know, skipping the values of the
+/// flags that take one. Positional words are the verb's own business.
+fn unknown_flag(args: &[OsString], flags: &[&str], valued: &[&str]) -> Option<String> {
+    let mut skip_value = false;
+    for a in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let Some(a) = a.to_str() else { continue };
+        if !a.starts_with('-') {
+            continue;
+        }
+        if valued.contains(&a) {
+            skip_value = true;
+            continue;
+        }
+        if !flags.contains(&a) {
+            return Some(a.to_string());
+        }
+    }
+    None
+}
+
+/// This verb's spelling in [`SUBCOMMANDS`] — for error messages.
+fn verb_name(sub: Sub) -> &'static str {
+    SUBCOMMANDS
+        .iter()
+        .find(|(_, s)| *s == sub)
+        .map(|(n, _)| *n)
+        .unwrap_or("?")
+}
+
 /// Run a subcommand and return its exit code.
 ///
 /// One `match` over the enum rather than seven `if`s, so the compiler is the
 /// thing that notices an unhandled verb.
 fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
+    // A help or version request is inert in ANY position, before anything
+    // else looks at the arguments. `amont install --help` used to RUN THE
+    // INSTALLER — copy the binary, populate the template dir, offer trust —
+    // because parse() tested `--help` only at argv[0] and install scanned
+    // only for `--force`. Asking a program what it does must never be a
+    // mutating action.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return 0;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("amont {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
+    let (flags, valued) = known_flags(sub);
+    if let Some(bad) = unknown_flag(args, flags, valued) {
+        eprintln!("amont: unknown flag {bad:?} for `{}`", verb_name(sub));
+        eprint!("{USAGE}");
+        return 2;
+    }
     match sub {
         // `amont list` — what would run here, and why. Lives in the HOOK
         // binary rather than the fleet tool because this is the binary

@@ -231,6 +231,17 @@ fn die_on_sigpipe() {}
 fn main() -> ExitCode {
     die_on_sigpipe();
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Help and version are inert requests, answered on stdout with exit 0 —
+    // asking a program what it is must never be an error. Ahead of parse(),
+    // whose `--help` arm predates this and reports usage as a failure.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!("amont-fleet {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let args = match parse(&argv, home().as_deref()) {
         Ok(a) => a,
         Err(e) => {
