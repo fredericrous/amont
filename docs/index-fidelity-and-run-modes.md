@@ -461,6 +461,27 @@ constraint.
 
 ---
 
+### Writes that land while the checks run
+
+Two kinds of process write to the tree during the hold, and they are treated
+differently:
+
+- **An editor save** is work. The restore compares each held file against the
+  content the checkout put there; a file that changed mid-run is KEPT, and the
+  held (pre-commit unstaged) version is parked in `$GIT_DIR/amont-preserved/`
+  with a printed pointer. Before this guard existed, the restore overwrote the
+  save silently — the one way this module could destroy something.
+- **A fixer** (`amont.fix true`) rewrites held files as its job, and telling
+  its writes apart from an editor's is not possible from inside the restore.
+  With fixing on, the guard stands down and the documented contract holds
+  unchanged: the tree returns to your unstaged version, the fix lives in the
+  index. `amont.fix` is an explicit opt-in; the guard protects everyone else.
+
+The checkout that starts the hold is also scoped to exactly the held paths
+(spelled `:(literal)` — a file named `*.rs` is a name, not a glob), so a
+dirty commit costs git a walk of the changed files, not of the whole tree.
+
+
 ## 2. `stage_fixed` — a formatter that fixes should re-stage
 
 > **Shipped**, under different names: the declaration is `Fix::Rewrite` on

@@ -910,3 +910,129 @@ fn an_unstaged_chmod_with_no_content_change_survives() {
         .mode();
     assert!(mode & 0o111 != 0, "mode-only change lost (mode {mode:o})");
 }
+
+/// The clobber window, closed. A file with unstaged edits is held; a check
+/// (standing in for an editor save) writes it while the stage runs; the
+/// restore must KEEP the newer content and park the held copy, saying where —
+/// this write used to destroy the save silently.
+#[cfg(unix)]
+#[test]
+fn an_editor_save_mid_check_is_kept_not_clobbered() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage("a.txt", "committed\n");
+    r.commit("chore: seed");
+    r.write("a.txt", "my unstaged edit\n"); // held when the stage begins
+
+    // The "editor": a declared check that writes a.txt mid-run. At that
+    // moment a.txt holds the INDEX content ("committed"), so the write is
+    // exactly what a background save looks like to the restore.
+    r.stage(
+        "editor.sh",
+        "#!/bin/sh\nprintf 'editor save\\n' > a.txt\nexit 0\n",
+    );
+    std::fs::set_permissions(r.path("editor.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "editor.sh"]);
+    r.stage("amont.conf", "pre-commit  editor  *  warn  ./editor.sh\n");
+    trust(&r);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert_eq!(
+        tree(&r, "a.txt"),
+        "editor save\n",
+        "the mid-check save was clobbered:\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("changed while the checks ran"),
+        "the preservation must be announced:\n{}",
+        run.output()
+    );
+    let parked = r.path(".git/amont-preserved/a.txt");
+    assert_eq!(
+        std::fs::read_to_string(&parked).expect("parked copy"),
+        "my unstaged edit\n",
+        "the held copy must be parked, not lost"
+    );
+}
+
+/// With `amont.fix` on the guard stands down: a repo-wide fixer legitimately
+/// rewrites held files mid-run, and the documented contract there has always
+/// been "the tree returns to your unstaged version".
+#[cfg(unix)]
+#[test]
+fn a_fixing_repo_keeps_the_old_restore_contract() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage("a.txt", "committed\n");
+    r.commit("chore: seed");
+    r.git(&["config", "amont.fix", "true"]);
+    r.write("a.txt", "my unstaged edit\n");
+
+    r.stage("fixer.sh", "#!/bin/sh\nprintf 'fixed\\n' > a.txt\nexit 0\n");
+    std::fs::set_permissions(r.path("fixer.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "fixer.sh"]);
+    r.stage("amont.conf", "pre-commit  fixit  *  warn  ./fixer.sh\n");
+    trust(&r);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert_eq!(
+        tree(&r, "a.txt"),
+        "my unstaged edit\n",
+        "with fixing on, the unstaged version comes back — the designed flow:\n{}",
+        run.output()
+    );
+    assert!(
+        !run.says("changed while the checks ran"),
+        "the guard must stand down under amont.fix:\n{}",
+        run.output()
+    );
+}
+
+/// The scoped checkout must reset exactly the held paths — including names
+/// that are pathspec syntax if taken literally. `*.rs` as a FILENAME is a
+/// glob to git unless the pathspec says literal. Unix-only because `*` is
+/// not a legal NTFS filename — the fixture itself cannot exist on Windows.
+#[cfg(unix)]
+#[test]
+fn a_held_path_that_looks_like_a_glob_survives_the_hold() {
+    let r = Repo::new();
+    r.stage("*.rs", "committed star\n");
+    r.stage("é.txt", "committed accent\n");
+    r.commit("chore: hostile names");
+    r.write("*.rs", "unstaged star\n");
+    r.write("é.txt", "unstaged accent\n");
+    r.stage("b.txt", "staged\n");
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert_eq!(tree(&r, "*.rs"), "unstaged star\n", "glob-named file lost");
+    assert_eq!(tree(&r, "é.txt"), "unstaged accent\n", "accented file lost");
+}
+
+/// git FAILING is not git answering "empty": the stage still proceeds (its
+/// plumbing must never block a commit), but it says out loud that it judged
+/// nothing — the third member of the repo_hooks / push-gates bug family.
+#[cfg(unix)]
+#[test]
+fn a_git_failure_is_announced_not_read_as_nothing_staged() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    seed(&r);
+    let config = r.path(".git/config");
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&config).is_ok() {
+        return; // running as root; the fixture cannot fail
+    }
+    let run = r.hook("pre-commit", &[]);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).expect("chmod back");
+    assert!(
+        run.says("would not list the staged files"),
+        "a git failure must be announced, not judged as an empty index:\n{}",
+        run.output()
+    );
+}
