@@ -735,3 +735,117 @@ fn a_blocked_attempt_cannot_vouch_for_a_no_verify_retry() {
         "the push gate must re-run typecheck for the unstamped commit:\n{out}"
     );
 }
+
+/// `git commit -a` builds a TEMPORARY index and exports GIT_INDEX_FILE to
+/// the hooks. gate_stamp::record's `git write-tree` claims (in a comment) to
+/// inherit it and so bind the stamp to the tree that commit actually seals —
+/// this is the claim, pinned.
+#[test]
+fn a_commit_dash_a_still_earns_its_stamp() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = stamped_repo();
+    r.stage("src/a.ts", "export const x = 1\n");
+    verified_commit(&r, "feat: tracked first");
+    r.write("src/a.ts", "export const x = 2\n"); // unstaged edit…
+    let out = r.git(&["commit", "-q", "-am", "feat: via commit -a"]);
+    assert!(
+        out.status.success(),
+        "commit -a failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("gated at commit") && !out.contains("no record of it"),
+        "a commit -a lost its stamp — write-tree read the wrong index:\n{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&r),
+        2,
+        "typecheck at each commit, never re-run at push:\n{out}"
+    );
+}
+
+/// The marker lives in the worktree-PRIVATE gitdir and the stamps in the
+/// shared notes ref — the code's claim about linked worktrees, pinned: a
+/// commit made in a linked worktree must suppress the push gate exactly as a
+/// main-checkout commit does.
+#[test]
+fn a_linked_worktree_commit_earns_a_stamp_the_push_sees() {
+    if missing("npm") {
+        return;
+    }
+    let (r, base) = stamped_repo();
+    r.stage("src/a.ts", "export const x = 1\n");
+    verified_commit(&r, "feat: main checkout");
+
+    let wt = r
+        .dir
+        .parent()
+        .expect("parent")
+        .join(format!("stamp-wt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&wt);
+    let out = r.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "feat/wt",
+        wt.to_str().expect("utf8"),
+    ]);
+    assert!(out.status.success(), "worktree add failed");
+
+    std::fs::create_dir_all(wt.join("src")).expect("mkdir");
+    std::fs::write(wt.join("src/b.ts"), "export const y = 2\n").expect("write");
+    let wt_git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(&wt).args(args);
+        common::Repo::strip_git_env_impl(&mut cmd);
+        cmd.output().expect("git in worktree")
+    };
+    assert!(wt_git(&["add", "src/b.ts"]).status.success());
+    let out = wt_git(&["commit", "-q", "-m", "feat: from the worktree"]);
+    assert!(
+        out.status.success(),
+        "worktree commit failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Push the worktree's branch, from the worktree, through the shared hooks.
+    let tip = String::from_utf8_lossy(&wt_git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    let line = format!("refs/heads/feat/wt {tip} refs/heads/feat/wt {base}\n");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push-run-tests-js")
+        .current_dir(&wt)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(line.as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = r.git(&["worktree", "remove", "--force", wt.to_str().expect("utf8")]);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("gated at commit") && !text.contains("no record of it"),
+        "a worktree commit's stamp was invisible to the push:\n{text}"
+    );
+}

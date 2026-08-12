@@ -640,6 +640,30 @@ jobs:
       - name: Install the tools the hooks drive
         run: npm i -g eslint prettier pyright
 
+      # kube-linter and kubeconform are Severity::Block checks that had never
+      # RUN their tool in any test environment: every k8s case asserted
+      # scoping or the not-opted-in silence, so the two checks that stop
+      # commits had never stopped or passed one — pyright's mistake (above),
+      # one tool over. kustomize rides along because the kubeconform check
+      # requires both. Versions pinned: an upstream release must not be able
+      # to change what this suite asserts.
+      - name: Install the k8s tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install kube-linter kubeconform kustomize
+
+      - name: Install the k8s tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL https://github.com/stackrox/kube-linter/releases/download/v0.7.2/kube-linter-linux.tar.gz \
+            | tar xz -C "$HOME/.local/bin" kube-linter
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C "$HOME/.local/bin" kubeconform
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+            | tar xz -C "$HOME/.local/bin" kustomize
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       # Every test does real commits in a throwaway repo. Only two set a local
       # identity, so without a global one the rest fail at `git commit` with
       # "Please tell me who you are" — and the failure would look like a hook
