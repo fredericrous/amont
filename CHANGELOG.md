@@ -15,6 +15,14 @@ missing here.
   Directories stay out; the grammar has no globs to mis-guess. The `files`
   marker, `$AMONT_FILES`, the push-gate coverage rule and the dashboard's
   "fires when" column all understand the new tokens.
+- **The manifest stopped being a process global.** `externals()` and
+  `tool_pins()` were `OnceLock`s keyed on the working directory at first
+  call — safe in a hook, which handles one repository and exits, and a
+  documented trap for anything that walks many. They are now one owned
+  `Manifest`, parsed and trust-gated once by each entrypoint with the
+  repository named explicitly, and lent down through `Ctx` exactly like the
+  push refs. The `pub(crate)` quarantine and its warning comments retire
+  with the trap; behavior is unchanged.
 
 - **`pre-push-pull-rebase` stopped testing ghosts, and learned to stand
   down.** A successful auto-rebase used to fall through to the test suite —

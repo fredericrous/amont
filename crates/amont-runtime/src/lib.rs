@@ -203,7 +203,11 @@ pub struct ListOptions {
 /// unit-tested in isolation; see `hooks/pull_rebase.rs`'s own split between
 /// pure helpers (unit-tested) and config-dependent behaviour (integration
 /// tested) for the precedent.
-pub fn gather_checks(stage_filter: Option<check::Stage>, paths: &[String]) -> Vec<CheckListing> {
+pub fn gather_checks(
+    stage_filter: Option<check::Stage>,
+    paths: &[String],
+    manifest: &manifest::Manifest,
+) -> Vec<CheckListing> {
     use crate::check::Stage;
     let stages: Vec<Stage> = match stage_filter {
         Some(s) => vec![s],
@@ -211,18 +215,18 @@ pub fn gather_checks(stage_filter: Option<check::Stage>, paths: &[String]) -> Ve
     };
     let skips = configured_skips();
     let overrides = registry::Overrides::read();
-    let externals_by_id: std::collections::BTreeMap<&str, &manifest::External> =
-        manifest::externals()
-            .iter()
-            .map(|e| (e.id.as_str(), e))
-            .collect();
+    let externals_by_id: std::collections::BTreeMap<&str, &manifest::External> = manifest
+        .externals
+        .iter()
+        .map(|e| (e.id.as_str(), e))
+        .collect();
 
     let mut out = Vec::new();
     for stage in stages {
         // Externals are listed here too, and marked, because the question
         // this command answers — "would this run here?" — is asked most
         // often about the check somebody just added to `amont.conf`.
-        for check in registry::all_stage_checks(stage) {
+        for check in registry::all_stage_checks(stage, manifest) {
             let name = check.name();
             let external = externals_by_id.get(name).copied();
             let skipped = skips.iter().any(|s| skip_suppresses(name, s));
@@ -517,7 +521,10 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     } else {
         tracked_paths()
     };
-    let listings = gather_checks(opts.stage, &paths);
+    // Loaded HERE, with the repository this command is standing in — the
+    // owned-manifest shape every entrypoint now follows. See manifest::load.
+    let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
+    let listings = gather_checks(opts.stage, &paths, &manifest);
     if opts.json {
         print_json(opts.stage, opts.pushed, &listings);
     } else {

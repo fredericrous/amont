@@ -426,7 +426,15 @@ fn run_mode(args: &[OsString]) -> i32 {
         .filter_map(|a| a.to_str())
         .find(|a| !a.starts_with("--"))
         .map(str::to_owned);
-    let push = if named.as_deref().is_some_and(needs_synthetic_push_refs) {
+    // Loaded ahead of the push-ref decision below, which asks the manifest
+    // whether a named check is a pre-push one.
+    let manifest = amont_runtime::manifest::load(std::path::Path::new(
+        &amont_runtime::hooks::common::repo_root(),
+    ));
+    let push = if named
+        .as_deref()
+        .is_some_and(|n| needs_synthetic_push_refs(n, &manifest))
+    {
         // A pre-push check invoked standalone has no real push on the other
         // end of stdin to read refs from. Left as `::default()`, `.get()`
         // would either block on a TTY that has nothing coming, or (stdin
@@ -458,6 +466,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         args: &[],
         hooks_dir: &hooks_dir,
         push: &push,
+        manifest: &manifest,
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -537,18 +546,27 @@ fn agents_md(args: &[OsString]) -> i32 {
 /// Dispatch a git-invoked hook. `args` is whatever git passed, verbatim.
 fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     let push = pushrefs::PushRefs::default();
+    // The manifest is parsed ONCE, here, at the process boundary — the same
+    // shape as the push refs above it: owned by the entrypoint, lent to
+    // everything downstream through the Ctx. git invokes hooks with the
+    // repository as the working directory, so `repo_root()`'s answer is the
+    // repository this hook is about.
+    let manifest = amont_runtime::manifest::load(std::path::Path::new(
+        &amont_runtime::hooks::common::repo_root(),
+    ));
     let ctx = registry::Ctx {
         name: hook,
         args,
         hooks_dir,
         push: &push,
+        manifest: &manifest,
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`, and 2 is neither of its answers —
     // it means the binary was invoked wrongly, not that a hook decided
     // anything, which is why it is written here and nowhere else.
     const USAGE_ERROR: i32 = 2;
-    match registry::lookup(hook) {
+    match registry::lookup(hook, &manifest) {
         Some(run_hook) => run_hook(&ctx).exit_code(),
         None => {
             eprintln!("amont: unknown hook {hook:?}");
@@ -608,8 +626,9 @@ fn value_flag(rest: &[OsString], flag: &str) -> Result<Option<PathBuf>, String> 
 /// declared stage is pre-push. Checked here, rather than left to `.get()` to
 /// discover empty, because empty and "nothing to check" are indistinguishable
 /// once a check has already started running.
-fn needs_synthetic_push_refs(name: &str) -> bool {
-    name == "pre-push" || registry::one_named(name).is_some_and(|c| c.stage() == Stage::PrePush)
+fn needs_synthetic_push_refs(name: &str, manifest: &amont_runtime::manifest::Manifest) -> bool {
+    name == "pre-push"
+        || registry::one_named(name, manifest).is_some_and(|c| c.stage() == Stage::PrePush)
 }
 
 #[cfg(test)]
