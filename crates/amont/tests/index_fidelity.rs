@@ -995,7 +995,9 @@ fn a_fixing_repo_keeps_the_old_restore_contract() {
 
 /// The scoped checkout must reset exactly the held paths — including names
 /// that are pathspec syntax if taken literally. `*.rs` as a FILENAME is a
-/// glob to git unless the pathspec says literal.
+/// glob to git unless the pathspec says literal. Unix-only because `*` is
+/// not a legal NTFS filename — the fixture itself cannot exist on Windows.
+#[cfg(unix)]
 #[test]
 fn a_held_path_that_looks_like_a_glob_survives_the_hold() {
     let r = Repo::new();
