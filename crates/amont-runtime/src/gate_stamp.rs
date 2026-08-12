@@ -226,7 +226,12 @@ mod tests {
                 Some(&["typecheck".to_string(), "test".to_string()][..])
             );
             // One-shot: the marker is gone.
-            assert!(!marker_path().unwrap().exists());
+            // One-shot: the marker is gone. The fixture's own path, not
+            // `marker_path()` — that helper spawns git, and a transient
+            // spawn failure on a loaded runner reads as `None` here while
+            // production code correctly treats it as "no marker". Seen once,
+            // on Windows, as an unwrap panic in a sibling test.
+            assert!(!dir.join(".git").join(MARKER).exists());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -249,7 +254,10 @@ mod tests {
                 stamps_for(&[head]).is_empty(),
                 "a stale marker must not vouch"
             );
-            assert!(!marker_path().unwrap().exists(), "consumed either way");
+            assert!(
+                !dir.join(".git").join(MARKER).exists(),
+                "consumed either way"
+            );
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -261,9 +269,9 @@ mod tests {
         git(&dir, &["add", "a.ts"]);
         in_repo(&dir, || {
             record(&["typecheck"]);
-            assert!(marker_path().unwrap().exists());
+            assert!(dir.join(".git").join(MARKER).exists());
             record(&[]);
-            assert!(!marker_path().unwrap().exists());
+            assert!(!dir.join(".git").join(MARKER).exists());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -279,7 +287,7 @@ mod tests {
         git(&dir, &["add", "a.ts"]);
         in_repo(&dir, || {
             let tree = git(&dir, &["write-tree"]);
-            let marker = marker_path().expect("path");
+            let marker = dir.join(".git").join(MARKER);
             std::fs::write(&marker, format!("amont-gate-v99\n{tree}\ntypecheck\n")).unwrap();
             git(&dir, &["commit", "-qm", "chore: a"]);
             bind_to_head();
