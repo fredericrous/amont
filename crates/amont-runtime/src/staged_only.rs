@@ -77,6 +77,29 @@ const FILES: &str = "files";
 /// as such instead of being half-understood.
 const FORMAT: &str = "amont-held-v1";
 
+/// What each held path's ON-DISK content looked like right after `enter()`'s
+/// checkout — i.e. the index content the checks were meant to see. `rel NUL
+/// hex NUL` pairs. Absent (an older store, a crash before the write) means no
+/// mid-check-edit protection, exactly as before the file existed.
+const EXPECTED: &str = "expected";
+
+/// Where a file the user edited MID-CHECK parks the held copy instead of
+/// clobbering the edit. Beside the store, not inside it: the store is deleted
+/// on a clean restore and this must survive to be read.
+const PRESERVED: &str = "amont-preserved";
+
+/// FNV-1a over the content. Not a security boundary — the question is "did
+/// an editor save land here while the checks ran", and an accidental
+/// collision needs an accidental 64-bit fixed point.
+fn content_hash(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// One parked path, and what it was.
 ///
 /// This used to be encoded in the FILENAME — `<name>.amont-absent` and
@@ -416,17 +439,52 @@ impl StagedOnly {
             return Err(held_nothing(&store));
         }
 
-        // Tree := index. Everything staged stays; everything else is in
-        // `store`. Locked against a concurrent `restore()` — see `ENTER_LOCK`.
+        // Tree := index, for exactly the paths being parked. Scoped, not
+        // `checkout -- .`: the repo-wide form makes git traverse and lstat
+        // the entire working tree to reset the handful of files just
+        // enumerated — seconds on a large tree, on every dirty commit — and
+        // the pathspec list is BY CONSTRUCTION the complete set of tracked
+        // paths that differ. `:(literal)` per path, because a path is data
+        // here and `*`/`:` are pathspec syntax. Locked against a concurrent
+        // `restore()` — see `ENTER_LOCK`.
         {
             let _guard = ENTER_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            if !crate::git::succeeds(&["checkout", "--", "."]) {
+            let mut spec = String::new();
+            for p in &changed {
+                spec.push_str(":(literal)");
+                spec.push_str(p);
+                spec.push('\0');
+            }
+            if crate::git::stdout_piped_raw(
+                &["checkout", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                &spec,
+            )
+            .is_none()
+            {
                 let _ = std::fs::remove_dir_all(&store);
                 return Err(format!(
                     "{} could not set the unstaged changes aside; nothing was changed",
                     error_sign()
                 ));
             }
+            // What the checks will see, recorded so `put_back` can tell an
+            // editor save made MID-CHECK apart from its own checkout — the
+            // clobber this module used to commit silently. Best-effort: a
+            // failure to record only means the old unconditional restore.
+            let mut expected = String::new();
+            for e in &entries {
+                if let Held::Modified { rel, .. } = e {
+                    if let Some(relp) = safe_rel(rel) {
+                        if let Ok(bytes) = std::fs::read(root.join(&relp)) {
+                            expected.push_str(rel);
+                            expected.push('\0');
+                            expected.push_str(&format!("{:016x}", content_hash(&bytes)));
+                            expected.push('\0');
+                        }
+                    }
+                }
+            }
+            let _ = std::fs::write(store.join(EXPECTED), expected);
             HELD.store(true, Ordering::SeqCst);
         }
         Ok(StagedOnly { held: true })
@@ -498,6 +556,15 @@ fn put_back(store: &Path, root: &Path) -> std::io::Result<()> {
 }
 
 fn put_back_v1(store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<()> {
+    let expected = read_expected(store);
+    // The guard stands down when fixing is ON: a repo-wide fixer (`prettier
+    // --write .`) legitimately rewrites held files mid-run, and telling its
+    // writes apart from an editor save is not possible from here. `amont.fix`
+    // is an explicit opt-in whose documented contract has always been "the
+    // tree returns to your unstaged version"; the guard protects the default
+    // population, which is everyone else.
+    let guard = !crate::hooks::common::fixing_requested();
+    let mut preserved: Vec<(String, std::path::PathBuf)> = Vec::new();
     let escapes = |rel: &str| {
         std::io::Error::other(format!(
             "held store names a path outside the worktree: {rel:?}"
@@ -524,7 +591,23 @@ fn put_back_v1(store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<(
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&target, std::fs::read(store.join(FILES).join(&relp))?)?;
+                let held = std::fs::read(store.join(FILES).join(&relp))?;
+                // The clobber guard. If the file on disk no longer holds what
+                // `enter()`'s checkout put there, somebody wrote it while the
+                // checks ran — an editor save is WORK, and this write used to
+                // destroy it silently. Keep the newer file; park the held
+                // copy where the warning says.
+                if guard
+                    && expected.get(rel.as_str()).is_some_and(|want| {
+                        std::fs::read(&target)
+                            .is_ok_and(|now| content_hash(&now) != *want && now != held)
+                    })
+                {
+                    let kept = preserve(store, &relp, &held)?;
+                    preserved.push((rel.clone(), kept));
+                    continue;
+                }
+                std::fs::write(&target, held)?;
                 // AFTER the write: a recorded mode without `u+w` applied first
                 // would make writing the content fail.
                 if let Some(m) = mode {
@@ -533,7 +616,59 @@ fn put_back_v1(store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<(
             }
         }
     }
+    if !preserved.is_empty() {
+        eprintln!(
+            "{} {} file(s) changed while the checks ran — the newer content was KEPT.",
+            crate::ui::warning_sign(),
+            preserved.len()
+        );
+        eprintln!("    The unstaged version each held before the commit is parked at:");
+        for (rel, kept) in &preserved {
+            eprintln!("      {} -> {}", crate::ui::sanitize(rel), kept.display());
+        }
+        eprintln!("    Compare and merge by hand; the parked copies are yours to delete.");
+    }
     Ok(())
+}
+
+/// Park `held` beside the store, never inside it — the store is deleted on a
+/// clean restore and this must survive to be read. A previous incident's copy
+/// is not overwritten; the name grows a counter instead.
+fn preserve(store: &Path, relp: &Path, held: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let base = store
+        .parent()
+        .map(|p| p.join(PRESERVED))
+        .ok_or_else(|| std::io::Error::other("store has no parent"))?;
+    let mut to = base.join(relp);
+    let mut n = 0;
+    while to.exists() {
+        n += 1;
+        to = base.join(relp).with_extension(format!("kept-{n}"));
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&to, held)?;
+    Ok(to)
+}
+
+/// The `EXPECTED` record, or empty when it is absent or unreadable — which
+/// simply disables the clobber guard, the pre-existing behaviour.
+fn read_expected(store: &Path) -> std::collections::HashMap<String, u64> {
+    let Ok(raw) = std::fs::read_to_string(store.join(EXPECTED)) else {
+        return Default::default();
+    };
+    let mut map = std::collections::HashMap::new();
+    let mut it = raw.split('\0');
+    while let (Some(rel), Some(hex)) = (it.next(), it.next()) {
+        if rel.is_empty() {
+            break;
+        }
+        if let Ok(h) = u64::from_str_radix(hex, 16) {
+            map.insert(rel.to_string(), h);
+        }
+    }
+    map
 }
 
 /// A store from before the index existed, where the kind of each entry was

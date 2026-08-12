@@ -79,8 +79,22 @@ pub fn staged_files(exts: &[&str]) -> Vec<String> {
     static INDEX: OnceLock<Vec<String>> = OnceLock::new();
     INDEX
         .get_or_init(|| {
-            git::stdout_paths(&["diff", "--diff-filter=d", "--cached", "--name-only"])
-                .unwrap_or_default()
+            match git::stdout_paths(&["diff", "--diff-filter=d", "--cached", "--name-only"]) {
+                Some(files) => files,
+                // The third member of a bug family (`repo_hooks`, the push
+                // gates): git FAILING is not git answering "empty", and a
+                // stage that judges an empty set on a git failure reports
+                // clean having verified nothing. Say so — once, this cache
+                // being the once — and still fail open: pre-commit's job is
+                // never to block a commit over its own plumbing.
+                None => {
+                    warn(
+                        "git would not list the staged files — the checks are judging \
+                         an EMPTY set, not a verified one",
+                    );
+                    Vec::new()
+                }
+            }
         })
         .iter()
         .filter(|f| exts.is_empty() || exts.iter().any(|e| f.ends_with(e)))

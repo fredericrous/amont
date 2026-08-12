@@ -8,6 +8,24 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **An editor save that lands while the checks run is no longer destroyed.**
+  The index-fidelity restore used to write the held (pre-commit) bytes over
+  whatever was on disk — including a save you made mid-check, silently. The
+  restore now compares each held file against what its own checkout put
+  there: a file that changed mid-run is kept, and the held version is parked
+  in `$GIT_DIR/amont-preserved/` with a printed pointer. With `amont.fix` on
+  the guard stands down — a repo-wide fixer rewrites held files as its job,
+  and that opt-in's contract ("the tree returns to your unstaged version")
+  holds unchanged. The hold's checkout is also scoped to exactly the held
+  paths (`:(literal)` — a file named `*.rs` is a name, not a glob), so a
+  dirty commit costs a walk of the changed files, not the whole tree — and
+  file watchers stop seeing untouched files flap.
+
+- **A git failure while listing staged files is announced, not read as
+  "nothing staged".** The stage still proceeds — its plumbing must never
+  block a commit — but it says it judged an empty, unverified set. Third
+  member of the `repo_hooks` / push-gates bug family, closed the same way.
+
 - **Every command a check spawns now runs under a wall-clock budget.**
   `amont.timeout` (seconds; default 600, `0` disables). One hung tool — a
   linter deadlocked on a lock file, a plugin doing network I/O — used to
