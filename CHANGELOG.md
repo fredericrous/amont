@@ -25,6 +25,14 @@ missing here.
   "nothing staged".** The stage still proceeds — its plumbing must never
   block a commit — but it says it judged an empty, unverified set. Third
   member of the `repo_hooks` / push-gates bug family, closed the same way.
+- **The suite now tests its own claims.** kube-linter and kubeconform —
+  blocking checks that had never executed their tools in any test
+  environment — run for real in CI on both platforms (pinned installs;
+  kustomize rides along), with block-and-pass cases each. The gate stamp's
+  linked-worktree and `git commit -a` behaviors, previously comments, are
+  pinned by tests — both claims held. And the Ctrl-C restore test is
+  marker-driven instead of guessing with a 300ms sleep that flaked under
+  load twice in one day.
 
 - **Every command a check spawns now runs under a wall-clock budget.**
   `amont.timeout` (seconds; default 600, `0` disables). One hung tool — a

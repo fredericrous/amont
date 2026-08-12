@@ -151,3 +151,116 @@ fn kubeconform_finds_a_root_above_the_staged_file() {
         "the root above the file was not discovered"
     );
 }
+
+// ---- tool-present paths -------------------------------------------------
+//
+// Everything above asserts scoping, kind filtering and the opt-in gates —
+// which meant two Severity::Block checks had never run their TOOL anywhere:
+// a regression in argument construction or exit-code reading would ship
+// undetected. These four cases execute the real binaries; CI installs them
+// (pinned) on both platforms, and the skip reporter fails the run if the
+// gates below ever skip there.
+
+const CLEAN_DEPLOY: &str = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d
+spec:
+  selector:
+    matchLabels:
+      app: d
+  template:
+    metadata:
+      labels:
+        app: d
+    spec:
+      containers:
+        - name: c
+          image: nginx:1.25
+";
+
+/// One deterministic rule, chosen in the config rather than inherited from
+/// the tool's defaults — an upstream default-set change must not move this
+/// test.
+const LATEST_TAG_ONLY: &str = "\
+checks:
+  addAllBuiltIn: false
+  doNotAutoAddDefaults: true
+  include:
+    - latest-tag
+";
+
+#[test]
+fn kube_linter_blocks_what_its_config_flags() {
+    if missing("kube-linter") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(".kube-linter.yaml", LATEST_TAG_ONLY);
+    r.stage(
+        "kubernetes/deploy.yaml",
+        &CLEAN_DEPLOY.replace("nginx:1.25", "nginx:latest"),
+    );
+    let run = r.hook("pre-commit-kube-linter", &[]);
+    assert!(
+        !run.passed(),
+        "a latest-tag image sailed past the configured rule:\n{}",
+        run.output()
+    );
+    assert!(run.says("kube-linter"), "{}", run.output());
+}
+
+#[test]
+fn kube_linter_passes_a_clean_manifest() {
+    if missing("kube-linter") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(".kube-linter.yaml", LATEST_TAG_ONLY);
+    r.stage("kubernetes/deploy.yaml", CLEAN_DEPLOY);
+    let run = r.hook("pre-commit-kube-linter", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(run.says("kube-linter passed"), "{}", run.output());
+}
+
+#[test]
+fn kubeconform_blocks_a_schema_violation() {
+    if missing("kubeconform") || missing("kustomize") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "kubernetes/kustomization.yaml",
+        "resources:\n  - deploy.yaml\n",
+    );
+    // kustomize builds this happily — it does not schema-check — so the
+    // failure below is specifically kubeconform's verdict.
+    r.stage(
+        "kubernetes/deploy.yaml",
+        &CLEAN_DEPLOY.replace("  selector:", "  replicas: three\n  selector:"),
+    );
+    let run = r.hook("pre-commit-kubeconform", &[]);
+    assert!(
+        !run.passed(),
+        "a string replicas passed schema validation:\n{}",
+        run.output()
+    );
+    assert!(run.says("kubeconform failed"), "{}", run.output());
+}
+
+#[test]
+fn kubeconform_passes_a_valid_kustomization() {
+    if missing("kubeconform") || missing("kustomize") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "kubernetes/kustomization.yaml",
+        "resources:\n  - deploy.yaml\n",
+    );
+    r.stage("kubernetes/deploy.yaml", CLEAN_DEPLOY);
+    let run = r.hook("pre-commit-kubeconform", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(run.says("kubeconform passed"), "{}", run.output());
+}

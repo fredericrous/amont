@@ -255,7 +255,16 @@ fn ctrl_c_mid_run_still_restores_and_dies_by_the_signal() {
     use std::os::unix::process::ExitStatusExt;
 
     let r = Repo::new();
-    r.stage("amont.conf", "pre-commit  slowpoke  *  warn  sleep 2\n");
+    // The check ANNOUNCES that it is running (an untracked marker file)
+    // before it sleeps. `exec`, so the sleeper is the direct child.
+    r.stage("slow.sh", "#!/bin/sh\n: > .check-started\nexec sleep 5\n");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(r.path("slow.sh"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+    }
+    r.git(&["add", "slow.sh"]);
+    r.stage("amont.conf", "pre-commit  slowpoke  *  warn  ./slow.sh\n");
     trust(&r);
     r.stage("x.json", VALID);
     r.commit("chore: seed");
@@ -270,11 +279,25 @@ fn ctrl_c_mid_run_still_restores_and_dies_by_the_signal() {
         .spawn()
         .expect("spawn amont pre-commit");
 
-    // Comfortably inside the 2s window the declared check guarantees, and
-    // comfortably past the moment `StagedOnly::enter` has already run —
-    // parking the unstaged bytes and installing the handler happens before
-    // any check, declared or built-in, starts.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Wait for the CHECK to say it is running, never a fixed sleep. The old
+    // 300ms guess flaked under load twice in one day: it could land INSIDE
+    // `enter()`'s checkout — before HELD flips true — where a SIGINT
+    // correctly leaves the store behind for `amont restore`, and this test's
+    // no-leftovers assertion is only the contract once the checks have
+    // started. The marker makes "the checks have started" an observed fact.
+    let started = r.path(".check-started");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !started.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow check never started"
+        );
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "the hook exited before the check started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 
     let status_kill = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
