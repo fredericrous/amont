@@ -679,3 +679,59 @@ fn a_root_declaration_does_not_excuse_a_sub_package() {
         "the root declaration excused packages/b's own typecheck:\n{out}"
     );
 }
+
+/// A BLOCKED commit attempt must not leave a marker that vouches for the
+/// `--no-verify` retry of the same tree. pre_commit records an empty gate
+/// list on a Block verdict — the design property the dispatcher's comment
+/// states, pinned end to end here: gated typecheck PASSES while a sibling
+/// check blocks, the same tree is then committed with --no-verify, and the
+/// push must re-run the gate.
+#[cfg(unix)]
+#[test]
+fn a_blocked_attempt_cannot_vouch_for_a_no_verify_retry() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"node tc.js","test":"exit 0"}}"#,
+    );
+    r.stage("tc.js", "require('fs').appendFileSync('tc.log','x')\n");
+    r.stage("deny.sh", "#!/bin/sh\nexit 1\n");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("deny.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "deny.sh"]);
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n\
+         pre-commit  deny  *  block  ./deny.sh\n",
+    );
+    r.commit("chore: declare");
+    trust_manifest(&r);
+    install_hooks(&r);
+
+    r.stage("src/a.ts", "export const x = 1\n");
+    let attempt = r.git(&["commit", "-q", "-m", "feat: blocked attempt"]);
+    assert!(
+        !attempt.status.success(),
+        "the deny check should have blocked the commit"
+    );
+    assert_eq!(typecheck_runs(&r), 1, "typecheck itself ran and passed");
+
+    r.commit("feat: same tree, hooks dodged"); // --no-verify
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("no record of it"),
+        "a blocked attempt's marker vouched for the retry:\n{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&r),
+        2,
+        "the push gate must re-run typecheck for the unstamped commit:\n{out}"
+    );
+}

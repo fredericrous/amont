@@ -17,6 +17,21 @@ missing here.
   check fails, loudly, naming the config key. The kill reaches the direct
   child; a detached grandchild may survive, orphaned, but the commit is no
   longer hostage to it.
+- **The commit path spawns half the subprocesses, and a test now guards the
+  number.** The staged file list and the repo root are read from git once
+  per stage and lent to every check (the `PushRefs`/`Overrides` pattern,
+  applied to the two hottest questions), and `usual-name` stopped running
+  `git shortlog --all` — a full history walk — on every commit: an identity
+  seen once is memoized in `amont.knownIdentity` (local; removed by
+  uninstall). A PATH-shimmed git that counts its own invocations pins a
+  one-file commit to a spawn budget, so the o(checks) regression class the
+  repo's founding argument is about can no longer land silently.
+
+- **The gate-stamp evidence chain is now adversarially tested**: a
+  hand-written wrong-format marker stamps nothing, a foreign note in our
+  notes ref is not a stamp, and a BLOCKED commit attempt cannot vouch for a
+  `--no-verify` retry of the same tree (pinned end to end through real
+  hooks).
 
 - **A declared check is now a real check API, not a cron line.** The command
   runs through the same program resolution built-ins use (so `npx` works on

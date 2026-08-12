@@ -268,6 +268,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The version guard's REJECT branch, fed a hand-written marker: an old
+    /// (or future) format is ignored rather than misread — the doc's claim,
+    /// now pinned. Every other test's markers come from record() itself and
+    /// so always carry the current FORMAT.
+    #[test]
+    fn a_marker_in_an_unknown_format_stamps_nothing() {
+        let dir = repo("wrongformat");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            let tree = git(&dir, &["write-tree"]);
+            let marker = marker_path().expect("path");
+            std::fs::write(&marker, format!("amont-gate-v99\n{tree}\ntypecheck\n")).unwrap();
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            bind_to_head();
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(
+                stamps_for(std::slice::from_ref(&head)).is_empty(),
+                "an unknown format was trusted"
+            );
+            assert!(!marker.exists(), "consumed either way");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A note somebody else wrote into OUR ref is not a stamp. Absent this,
+    /// `git notes --ref=amont-gate add` would be a one-line way to vouch for
+    /// an unchecked commit — the parsing trust boundary of the whole chain.
+    #[test]
+    fn a_foreign_note_is_not_a_stamp() {
+        let dir = repo("foreignnote");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            git(
+                &dir,
+                &[
+                    "notes",
+                    "--ref",
+                    NOTES_REF,
+                    "add",
+                    "-m",
+                    "typecheck test",
+                    "HEAD",
+                ],
+            );
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(
+                stamps_for(std::slice::from_ref(&head)).is_empty(),
+                "a note without the format token was trusted"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn forget_removes_the_stamps() {
         let dir = repo("forget");

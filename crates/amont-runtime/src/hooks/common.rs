@@ -59,6 +59,15 @@ pub fn not_the_index() -> bool {
 }
 
 /// An empty `exts` returns them all.
+///
+/// The UNFILTERED list is read from git ONCE per process and lent to every
+/// caller — the per-stage snapshot. Eleven of the pre-commit checks ask this
+/// question, concurrently, and each used to pay its own `git diff` spawn for
+/// an answer that cannot change while the stage runs: the index-fidelity
+/// hold pins the tree, and a fixer's `restage()` re-adds only paths already
+/// on this list. `PushRefs` ("read once and lent") and `Overrides` ("ONE
+/// subprocess for the whole stage") are the same pattern; this was the last
+/// hot question still answered per asker.
 pub fn staged_files(exts: &[&str]) -> Vec<String> {
     if let Some(all) = OVERRIDE.get() {
         return all
@@ -67,12 +76,15 @@ pub fn staged_files(exts: &[&str]) -> Vec<String> {
             .cloned()
             .collect();
     }
-    let Some(out) = git::stdout_paths(&["diff", "--diff-filter=d", "--cached", "--name-only"])
-    else {
-        return Vec::new();
-    };
-    out.into_iter()
+    static INDEX: OnceLock<Vec<String>> = OnceLock::new();
+    INDEX
+        .get_or_init(|| {
+            git::stdout_paths(&["diff", "--diff-filter=d", "--cached", "--name-only"])
+                .unwrap_or_default()
+        })
+        .iter()
         .filter(|f| exts.is_empty() || exts.iter().any(|e| f.ends_with(e)))
+        .cloned()
         .collect()
 }
 
@@ -88,7 +100,13 @@ pub fn staged_files(exts: &[&str]) -> Vec<String> {
 /// not a fallback but a wrong answer that reads as a right one. Use
 /// [`repo_root_checked`] at every command entry point.
 pub fn repo_root() -> String {
-    git::stdout(&["rev-parse", "--show-toplevel"]).unwrap_or_else(|| ".".into())
+    // Cached: the answer is a property of the process's repository, and
+    // every check asked it through its own subprocess.
+    static ROOT: OnceLock<String> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        git::stdout(&["rev-parse", "--show-toplevel"]).unwrap_or_else(|| ".".into())
+    })
+    .clone()
 }
 
 /// Repo root, or an error naming the problem.
