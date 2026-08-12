@@ -44,10 +44,14 @@ The **same name on both stages is two checks**, and that is allowed:
 `pre-commit-show-unicorn` and `pre-push-show-unicorn`, each separately skippable
 and separately downgradable. See *What a repository cannot do* for the limits.
 
-**scope** — `*` for every change, or a comma-separated list of `*.<ext>`.
-Evaluated against the files staged for a commit, or against the range being
-pushed. This gate is real: a `*.sh` check does not run on a commit that touches
-no shell.
+**scope** — `*` for every change, or a comma-separated list mixing `*.<ext>`
+extensions and bare **filenames**: `*.ts,package.json,.prettierrc`. A bare
+token matches the path's basename exactly, anywhere in the tree — an
+extension list cannot say `package.json` without also matching
+`not-package.json`, which is why this is its own kind of token. Directories
+are not expressible. Evaluated against the files staged for a commit, or
+against the range being pushed. This gate is real: a `*.sh` check does not
+run on a commit that touches no shell.
 
 **severity** — `block` fails the stage; `warn` runs the check, prints whatever it
 prints, and lets the commit through. It is your choice, per check.

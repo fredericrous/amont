@@ -84,6 +84,12 @@ impl GitState {
 pub struct Scope {
     /// Extensions that trigger it. Empty means any change.
     pub files: &'static [&'static str],
+    /// Exact FILENAMES that trigger it — `package.json`, `Dockerfile` —
+    /// matched against the path's basename, never as a suffix: an extension
+    /// list cannot say "package.json" without also matching
+    /// `not-package.json`. Builtins keep this empty; the manifest's scope
+    /// column fills it.
+    pub names: &'static [&'static str],
     /// Config paths that opt a repository in. Empty means always on.
     pub opt_in: &'static [&'static str],
     /// Git operations during which this check does not run.
@@ -99,6 +105,7 @@ pub struct Scope {
 impl Scope {
     pub const ALWAYS: Scope = Scope {
         files: &[],
+        names: &[],
         opt_in: &[],
         not_during: &[],
     };
@@ -106,6 +113,7 @@ impl Scope {
     pub const fn files(files: &'static [&'static str]) -> Scope {
         Scope {
             files,
+            names: &[],
             opt_in: &[],
             not_during: &[],
         }
@@ -114,6 +122,7 @@ impl Scope {
     pub const fn new(files: &'static [&'static str], opt_in: &'static [&'static str]) -> Scope {
         Scope {
             files,
+            names: &[],
             opt_in,
             not_during: &[],
         }
@@ -123,9 +132,30 @@ impl Scope {
     pub const fn not_during(self, states: &'static [GitState]) -> Scope {
         Scope {
             files: self.files,
+            names: self.names,
             opt_in: self.opt_in,
             not_during: states,
         }
+    }
+
+    /// No file gate at all — every change is in scope.
+    pub fn is_unscoped(&self) -> bool {
+        self.files.is_empty() && self.names.is_empty()
+    }
+
+    /// Does ONE path fall inside the file gate?
+    pub fn covers(&self, path: &str) -> bool {
+        self.files.iter().any(|ext| path.ends_with(ext)) || {
+            let base = path.rsplit('/').next().unwrap_or(path);
+            self.names.contains(&base)
+        }
+    }
+
+    /// Did the gate see EVERY one of `paths`? All-match, where [`matches`]
+    /// is any-match: the caller asking this is deciding whether a commit-time
+    /// run COVERED a push, and under-approximating is the safe direction.
+    pub fn covers_all(&self, paths: &[String]) -> bool {
+        self.is_unscoped() || paths.iter().all(|p| self.covers(p))
     }
 
     /// Would this check ever fire, given the paths a repository contains?
@@ -137,10 +167,7 @@ impl Scope {
     /// question, "would it ever fire", where over-approximating is the safe
     /// direction.
     pub fn matches(&self, paths: &[String]) -> bool {
-        let by_ext = self.files.is_empty()
-            || paths
-                .iter()
-                .any(|path| self.files.iter().any(|ext| path.ends_with(ext)));
+        let by_ext = self.is_unscoped() || paths.iter().any(|path| self.covers(path));
         let opted_in = self.opt_in.is_empty()
             || paths.iter().any(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);

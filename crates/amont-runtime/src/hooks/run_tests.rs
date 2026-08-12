@@ -55,7 +55,7 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 ///
 /// The declaration's scope rides along rather than being judged here: whether
 /// it covered a given push depends on which files that push changed, which is
-/// a per-ref question `run` answers with [`scope_covers`].
+/// a per-ref question `run` answers with [`crate::check::Scope::covers_all`].
 ///
 /// Get any of these wrong and the result is the failure this project is
 /// arranged against — a push that reports a green gate having run nothing.
@@ -102,24 +102,9 @@ pub(crate) struct GateDecl {
     /// Carried so pre-commit can match "this declaration" to "that outcome"
     /// without re-deriving the id and drifting.
     pub id: String,
-    /// The declaration's scope, judged per ref by [`scope_covers`].
+    /// The declaration's scope, judged per ref by
+    /// [`crate::check::Scope::covers_all`].
     pub scope: crate::check::Scope,
-}
-
-/// Did the commit-time declaration see EVERYTHING this push changes?
-///
-/// The commit-time check fires when ANY staged file matches its scope, so a
-/// push whose JS changes fall only partly inside that scope carries commits
-/// the check never judged — a `*.ts,*.tsx` declaration says nothing about a
-/// `.js` change. All-match, not any-match, because the question here is
-/// coverage, and under-approximating is the safe direction: an uncovered file
-/// re-runs a script that would have passed, a wrongly-covered one skips the
-/// suite.
-pub fn scope_covers(scope_exts: &[&str], changed_js: &[String]) -> bool {
-    scope_exts.is_empty()
-        || changed_js
-            .iter()
-            .all(|f| scope_exts.iter().any(|ext| f.ends_with(ext)))
 }
 
 /// The extensions this check treats as "JS worth testing". Exported so
@@ -417,7 +402,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // rather than trusting the declaration's word for it.
         let candidates: Vec<&GateDecl> = declared_gate
             .iter()
-            .filter(|d| scope_covers(d.scope.files, &js_changed))
+            .filter(|d| d.scope.covers_all(&js_changed))
             .collect();
         let mut already: Vec<&'static str> = Vec::new();
         if !candidates.is_empty() {
@@ -519,17 +504,28 @@ mod tests {
     /// means commits this push carries were never judged by it.
     #[test]
     fn a_scope_covers_only_when_every_changed_file_matches() {
-        let ts_only = &[".ts", ".tsx"];
+        use crate::check::Scope;
+        const TS_ONLY: Scope = Scope::files(&[".ts", ".tsx"]);
         let all_ts: Vec<String> = vec!["src/a.ts".into(), "src/b.tsx".into()];
         let mixed: Vec<String> = vec!["src/a.ts".into(), "src/legacy.js".into()];
         let js_only: Vec<String> = vec!["src/legacy.js".into()];
-        assert!(scope_covers(ts_only, &all_ts));
-        assert!(!scope_covers(ts_only, &mixed));
-        assert!(!scope_covers(ts_only, &js_only));
+        assert!(TS_ONLY.covers_all(&all_ts));
+        assert!(!TS_ONLY.covers_all(&mixed));
+        assert!(!TS_ONLY.covers_all(&js_only));
         // An empty scope is `*` — it saw everything.
-        assert!(scope_covers(&[], &mixed));
+        assert!(Scope::ALWAYS.covers_all(&mixed));
         // Nothing relevant changed: nothing was missed.
-        assert!(scope_covers(ts_only, &[]));
+        assert!(TS_ONLY.covers_all(&[]));
+
+        // A bare-filename scope covers by BASENAME, never by suffix.
+        const BY_NAME: Scope = Scope {
+            files: &[],
+            names: &["package.json"],
+            opt_in: &[],
+            not_during: &[],
+        };
+        assert!(BY_NAME.covers_all(&["apps/web/package.json".into()]));
+        assert!(!BY_NAME.covers_all(&["not-package.json".into()]));
     }
 
     #[test]

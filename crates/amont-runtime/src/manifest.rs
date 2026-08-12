@@ -100,7 +100,10 @@ impl std::fmt::Display for ParseError {
             ParseError::BadStage(t) => {
                 write!(f, "stage {t:?} must be `pre-commit` or `pre-push`")
             }
-            ParseError::BadScope(t) => write!(f, "scope {t:?} must be `*` or `*.<ext>`"),
+            ParseError::BadScope(t) => write!(
+                f,
+                "scope {t:?} must be `*`, `*.<ext>`, or a bare filename (no `/`)"
+            ),
             ParseError::BadTool => write!(
                 f,
                 "a tool pin is exactly `tool <program> <version-substring>`"
@@ -132,6 +135,8 @@ pub struct Declared {
     pub severity: Severity,
     /// Extensions that gate it. Empty means any change — the `*` scope.
     pub exts: Vec<String>,
+    /// Exact filenames that gate it — the scope column's bare tokens.
+    pub names: Vec<String>,
     pub program: String,
     pub args: Vec<String>,
 }
@@ -361,7 +366,7 @@ impl Check for External {
             Stage::PreCommit => crate::hooks::common::staged_files(&[]),
             Stage::PrePush => crate::pushrefs::changed_files(ctx.push.get()),
         };
-        if !scope.files.is_empty() && !scope.matches(&in_scope) {
+        if !scope.is_unscoped() && !scope.matches(&in_scope) {
             return Outcome::Passed;
         }
         // The paths the declaration's scope actually matched — what a builtin
@@ -478,14 +483,10 @@ impl Check for External {
 
 /// The paths this check's scope actually covers.
 fn scoped(scope: &Scope, paths: &[String]) -> Vec<String> {
-    if scope.files.is_empty() {
+    if scope.is_unscoped() {
         return paths.to_vec();
     }
-    paths
-        .iter()
-        .filter(|p| scope.files.iter().any(|e| p.ends_with(e)))
-        .cloned()
-        .collect()
+    paths.iter().filter(|p| scope.covers(p)).cloned().collect()
 }
 
 /// `Scope` holds `&'static` slices so a built-in can be a `const`. A parsed
@@ -512,19 +513,29 @@ fn leak(exts: Vec<String>) -> &'static [&'static str] {
 /// Returns owned extensions rather than a `Scope`, so validating a manifest
 /// costs nothing permanent. Only `External::from` turns these into the
 /// `&'static` form `Scope` requires.
-fn parse_scope(token: &str) -> Result<Vec<String>, ParseError> {
+fn parse_scope(token: &str) -> Result<(Vec<String>, Vec<String>), ParseError> {
     if token == "*" {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut exts = Vec::new();
+    let mut names = Vec::new();
     for part in token.split(',') {
-        let ext = part
-            .strip_prefix('*')
-            .filter(|ext| ext.starts_with('.'))
-            .ok_or_else(|| ParseError::BadScope(part.to_string()))?;
-        exts.push(ext.to_string());
+        if let Some(ext) = part.strip_prefix('*').filter(|ext| ext.starts_with('.')) {
+            exts.push(ext.to_string());
+            continue;
+        }
+        // A bare token is an exact FILENAME — `package.json`, `Dockerfile`,
+        // `.prettierrc` — matched against the basename. Directories are not
+        // expressible (a `/` is refused), and anything that LOOKS like a glob
+        // (`*`, `?`, `[`) is refused as the typo it almost certainly is —
+        // this grammar deliberately has no globs to mis-guess.
+        if !part.is_empty() && !part.contains(['*', '?', '[', '/']) {
+            names.push(part.to_string());
+            continue;
+        }
+        return Err(ParseError::BadScope(part.to_string()));
     }
-    Ok(exts)
+    Ok((exts, names))
 }
 
 fn parse_stage(token: &str) -> Option<Stage> {
@@ -662,7 +673,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     {
         return fail(ParseError::Duplicate(declared.to_string()));
     }
-    let exts = match parse_scope(scope_tok) {
+    let (exts, names) = match parse_scope(scope_tok) {
         Ok(e) => e,
         Err(why) => return fail(why),
     };
@@ -704,6 +715,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         stage,
         severity,
         exts,
+        names,
         program,
         args: argv.collect(),
     })
@@ -731,10 +743,15 @@ impl From<Line> for External {
         let (name, stage, parsed) = l.into_parts();
         let kind = match parsed {
             Ok(d) => Kind::Runnable {
-                scope: if d.exts.is_empty() {
+                scope: if d.exts.is_empty() && d.names.is_empty() {
                     Scope::ALWAYS
                 } else {
-                    Scope::files(leak(d.exts))
+                    Scope {
+                        files: leak(d.exts),
+                        names: leak(d.names),
+                        opt_in: &[],
+                        not_during: &[],
+                    }
                 },
                 severity: d.severity,
                 program: d.program,
@@ -939,6 +956,31 @@ mod tests {
             Line::Broken { name, why, .. } => panic!("{name} failed to parse: {why}"),
             Line::Tool(pin) => panic!("{} is a tool pin, not a declaration", pin.program),
         }
+    }
+
+    /// The scope column's bare tokens are exact filenames — basename-matched,
+    /// so `package.json` cannot be counterfeited by `not-package.json` — and
+    /// they mix freely with extensions. Directories and free `*` stay refused.
+    #[test]
+    fn a_bare_scope_token_is_an_exact_filename() {
+        let line = one("pre-commit  lockcheck  package.json  block  ./check.sh\n");
+        let d = usable(&line);
+        assert!(d.exts.is_empty());
+        assert_eq!(d.names, ["package.json"]);
+
+        let line = one("pre-commit  x  *.ts,package.json,.prettierrc  block  ./x\n");
+        let d = usable(&line);
+        assert_eq!(d.exts, [".ts"]);
+        assert_eq!(d.names, ["package.json", ".prettierrc"]);
+
+        assert_eq!(
+            why(&one("pre-commit  x  src/package.json  block  ./x\n")),
+            ParseError::BadScope("src/package.json".into())
+        );
+        assert_eq!(
+            why(&one("pre-commit  x  pkg*  block  ./x\n")),
+            ParseError::BadScope("pkg*".into())
+        );
     }
 
     /// The pin grammar: exactly three tokens, claimed from a first token that

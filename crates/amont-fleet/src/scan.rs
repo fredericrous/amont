@@ -70,7 +70,14 @@ fn declared_checks(repo: &Path) -> Vec<DeclaredCheck> {
                     Ok(declared) => DeclaredState::Usable {
                         severity: declared.severity.as_str().to_string(),
                         command: declared.command(),
-                        exts: declared.exts,
+                        exts: {
+                            // Filename tokens ride in the same display list:
+                            // the dashboard's question is "fires when", and
+                            // both kinds of token answer it.
+                            let mut fires_on = declared.exts;
+                            fires_on.extend(declared.names);
+                            fires_on
+                        },
                     },
                     Err(why) => DeclaredState::Unusable { why },
                 },
