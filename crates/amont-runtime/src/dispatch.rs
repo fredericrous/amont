@@ -188,6 +188,9 @@ fn hold_unstaged() -> Result<crate::staged_only::StagedOnly, Verdict> {
 }
 
 pub fn pre_commit(ctx: &Ctx) -> Verdict {
+    // Before anything runs: a pinned tool at the wrong version makes every
+    // verdict below it suspect, and the warning costs one --version per pin.
+    crate::manifest::verify_tool_pins();
     let in_progress = crate::git_states_in_progress();
     let checks = selected_during(Stage::PreCommit, &in_progress);
 
@@ -452,6 +455,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Option<Verdict> {
 }
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
+    crate::manifest::verify_tool_pins();
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
     let severities = Overrides::read();
     // pre-push had NO state guard at all, with a comment admitting it existed

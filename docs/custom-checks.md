@@ -175,6 +175,30 @@ repository's own toolchain: `prettier` and `eslint` are taken from
 `node_modules/.bin` when present, so a hostile `node_modules` needs no manifest
 at all. That is the same exposure `npm install` already carries.
 
+## Pinning tool versions
+
+The checks run whatever `prettier`, `ruff` or `shellcheck` this machine has —
+and when two machines disagree, the hook "passes here, fails in CI", which
+reads as flakiness and trains people toward `--no-verify`. A `tool` line
+turns that skew into a printed fact:
+
+```
+# tool  <program>  <version-substring>
+tool  ruff  0.6.
+tool  shellcheck  0.10
+```
+
+Once per hook run (both stages), each pinned tool's `--version` first line is
+checked for the substring; a mismatch or an unrunnable tool warns, naming
+both sides. **Warn-only, always** — skew never blocks a commit, because the
+fix is a human decision about which side to move.
+
+A substring, not a semver range: `0.6.` pins a minor, `0.6.3` a patch, and
+the point is agreement between machines, not range arithmetic. Pins are
+trust-gated like every declaration — verifying one executes
+`<program> --version` for a name the repository chose, which is exactly the
+consent `amont trust` collects.
+
 ## Letting a check fix what it finds
 
 Prefix the command with `fix ` and the check may rewrite files, with whatever it

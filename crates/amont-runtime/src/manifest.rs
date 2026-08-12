@@ -72,6 +72,8 @@ pub enum ParseError {
     BadStage(String),
     BadScope(String),
     BadSeverity(String),
+    /// A `tool` line with the wrong shape.
+    BadTool,
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -99,6 +101,10 @@ impl std::fmt::Display for ParseError {
                 write!(f, "stage {t:?} must be `pre-commit` or `pre-push`")
             }
             ParseError::BadScope(t) => write!(f, "scope {t:?} must be `*` or `*.<ext>`"),
+            ParseError::BadTool => write!(
+                f,
+                "a tool pin is exactly `tool <program> <version-substring>`"
+            ),
             ParseError::FixOnPrePush => write!(
                 f,
                 "`fix` is only for pre-commit — a pre-push hook must not rewrite files"
@@ -161,9 +167,23 @@ impl Declared {
 /// Separate from `External` because the fleet reads ninety-six manifests and may
 /// re-read them on every refresh, while `External` holds a `Scope` whose
 /// `&'static` slices are LEAKED.
+/// `tool <program> <version-substring>` — a version this repository expects
+/// of a tool its checks drive, so cross-machine skew is a printed fact
+/// instead of "the hook is flaky here". Verified once per hook run, warn-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPin {
+    pub program: String,
+    /// A substring `<program> --version`'s first line must contain — `0.6.`
+    /// pins a minor, `0.6.3` pins a patch. Substring, not semver: the point
+    /// is agreement between machines, not range arithmetic.
+    pub want: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
     Usable(Declared),
+    /// A tool version pin — carries no check.
+    Tool(ToolPin),
     Broken {
         /// The declared name, or `<file>:<lineno>` when the line has none — a
         /// gap has to be nameable to be reportable.
@@ -180,19 +200,23 @@ impl Line {
     pub fn name(&self) -> &str {
         match self {
             Line::Usable(d) => &d.name,
+            Line::Tool(pin) => &pin.program,
             Line::Broken { name, .. } => name,
         }
     }
     pub fn stage(&self) -> Stage {
         match self {
             Line::Usable(d) => d.stage,
+            // A pin has no stage; it is verified at both. The value only
+            // feeds displays that will not ask a pin for one.
+            Line::Tool(_) => Stage::PreCommit,
             Line::Broken { stage, .. } => *stage,
         }
     }
     /// `Some(reason)` when this line declares a check that cannot run.
     pub fn broken(&self) -> Option<String> {
         match self {
-            Line::Usable(_) => None,
+            Line::Usable(_) | Line::Tool(_) => None,
             Line::Broken { lineno, why, .. } => Some(format!("line {lineno}: {why}")),
         }
     }
@@ -216,6 +240,7 @@ impl Line {
         let stage = self.stage();
         let parsed = match self {
             Line::Usable(d) => Ok(d),
+            Line::Tool(pin) => Err(format!("tool pin: {} {}", pin.program, pin.want)),
             Line::Broken { lineno, why, .. } => Err(format!("line {lineno}: {why}")),
         };
         (name, stage, parsed)
@@ -578,6 +603,24 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
 /// valid declaration was rejected as "declared twice" for colliding with a
 /// broken one, which pointed the reader at the wrong line entirely.
 fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
+    // `tool` was never a valid stage, so claiming it as a keyword breaks no
+    // manifest that ever parsed. Handled before `tokenise`, whose five-column
+    // shape a three-token pin does not have.
+    if line == "tool" || line.starts_with("tool ") || line.starts_with("tool\t") {
+        let mut it = line.split_whitespace().skip(1);
+        return match (it.next(), it.next(), it.next()) {
+            (Some(program), Some(want), None) => Line::Tool(ToolPin {
+                program: program.to_string(),
+                want: want.to_string(),
+            }),
+            _ => broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadTool,
+            ),
+        };
+    }
     let (fields, command) = match tokenise(line) {
         Some(t) => t,
         // No name to report: fall back to the position, which is the only
@@ -712,7 +755,11 @@ impl From<Line> for External {
 }
 
 pub fn parse(text: &str) -> Vec<External> {
-    parse_lines(text).into_iter().map(External::from).collect()
+    parse_lines(text)
+        .into_iter()
+        .filter(|l| !matches!(l, Line::Tool(_)))
+        .map(External::from)
+        .collect()
 }
 
 /// The manifest for `root`, or an empty list. Read once per process.
@@ -766,6 +813,79 @@ pub(crate) fn externals() -> &'static [External] {
     })
 }
 
+/// The repository's tool pins, TRUST-GATED — an untrusted manifest's pins are
+/// inert, because verifying one means executing `<program> --version` for a
+/// program name the repository chose, and that is exactly the consent the
+/// trust model exists to collect. Same OnceLock shape and same caveats as
+/// [`externals`].
+pub(crate) fn tool_pins() -> &'static [ToolPin] {
+    static PINS: OnceLock<Vec<ToolPin>> = OnceLock::new();
+    PINS.get_or_init(|| {
+        let root = crate::hooks::common::repo_root();
+        let root = Path::new(&root);
+        let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
+            return Vec::new();
+        };
+        let Ok(text) = String::from_utf8(bytes.clone()) else {
+            return Vec::new();
+        };
+        if crate::trust::state_of(root, &bytes) != crate::trust::State::Trusted {
+            return Vec::new();
+        }
+        parse_lines(&text)
+            .into_iter()
+            .filter_map(|l| match l {
+                Line::Tool(pin) => Some(pin),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Check every trusted pin against the tool actually on this machine, and say
+/// what disagrees. Warn-only, once per hook run, at BOTH stages: skew never
+/// blocks a commit — its cost is a check disagreeing with CI, and the fix is
+/// a human decision — but it stops being invisible, which is the whole point.
+pub fn verify_tool_pins() {
+    for pin in tool_pins() {
+        match version_of(&pin.program) {
+            None => crate::hooks::common::warn(&format!(
+                "{} is pinned to {} in {MANIFEST}, but `{} --version` would not run",
+                crate::ui::highlight(&pin.program),
+                crate::ui::sanitize(&pin.want),
+                crate::ui::sanitize(&pin.program),
+            )),
+            Some(v) if !v.contains(&pin.want) => crate::hooks::common::warn(&format!(
+                "{} reports {} — {MANIFEST} pins {}; this machine may disagree with CI",
+                crate::ui::highlight(&pin.program),
+                crate::ui::sanitize(&v),
+                crate::ui::sanitize(&pin.want),
+            )),
+            _ => {}
+        }
+    }
+}
+
+/// First line of `<program> --version`, resolved the way every check resolves
+/// a tool. A version probe answers in milliseconds or not at all, so it is
+/// deliberately not under the check deadline.
+fn version_of(program: &str) -> Option<String> {
+    let out = Command::new(crate::hooks::common::program(program))
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
 /// Apply a trust verdict to what the manifest declared.
 ///
 /// Untrusted declarations are kept and DISABLED, not dropped. The names stay
@@ -809,6 +929,7 @@ mod tests {
         match l {
             Line::Broken { why, .. } => why.clone(),
             Line::Usable(d) => panic!("{} parsed when it should not have", d.name),
+            Line::Tool(pin) => panic!("{} parsed as a pin, not a broken line", pin.program),
         }
     }
 
@@ -816,7 +937,28 @@ mod tests {
         match l {
             Line::Usable(d) => d,
             Line::Broken { name, why, .. } => panic!("{name} failed to parse: {why}"),
+            Line::Tool(pin) => panic!("{} is a tool pin, not a declaration", pin.program),
         }
+    }
+
+    /// The pin grammar: exactly three tokens, claimed from a first token that
+    /// was never a valid stage — no manifest that ever parsed changes meaning.
+    #[test]
+    fn a_tool_pin_parses_and_a_malformed_one_is_broken() {
+        let line = one("tool  ruff  0.6.\n");
+        assert_eq!(
+            line,
+            Line::Tool(ToolPin {
+                program: "ruff".into(),
+                want: "0.6.".into()
+            })
+        );
+        assert_eq!(why(&one("tool ruff\n")), ParseError::BadTool);
+        assert_eq!(why(&one("tool ruff 0.6. extra\n")), ParseError::BadTool);
+        // `tool` is only a keyword in column one — a check NAMED tool still
+        // parses as the check it always was.
+        let line = one("pre-commit  tool  *  block  make tool\n");
+        assert_eq!(usable(&line).name, "tool");
     }
 
     #[test]
