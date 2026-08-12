@@ -16,6 +16,13 @@ missing here.
   and asks for a second one. And `amont.autoRebase false` turns the check
   into a pure advisor: no network round-trips on the push path, no rebase you
   did not type — a behind branch stops the push with the command to run.
+- **`amont.conf` can pin tool versions.** `tool ruff 0.6.` checks — once per
+  hook run, at both stages — that `ruff --version`'s first line contains the
+  substring, and warns naming both sides when it does not (or when the tool
+  will not run at all). Warn-only, always: skew never blocks a commit, it
+  just stops masquerading as a flaky hook. Pins are trust-gated like every
+  declaration — verifying one executes a program the repository named — and
+  a malformed pin nags like any other broken line.
 
 - **An editor save that lands while the checks run is no longer destroyed.**
   The index-fidelity restore used to write the held (pre-commit) bytes over

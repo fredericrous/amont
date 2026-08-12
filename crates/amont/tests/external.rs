@@ -633,3 +633,88 @@ fn a_check_that_outlives_the_budget_is_killed_and_fails() {
         run.output()
     );
 }
+
+/// `tool <program> <version-substring>` — the pin that turns cross-machine
+/// version skew from "the hook is flaky here" into a printed fact.
+#[test]
+fn a_mismatched_tool_pin_warns_and_never_blocks() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    // git is the one tool every machine running this suite has.
+    manifest(&r, "tool git 999.999.\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "skew must never block:\n{}", run.output());
+    assert!(
+        run.says("999.999.") && run.says("disagree with CI"),
+        "the skew must be named:\n{}",
+        run.output()
+    );
+}
+
+#[test]
+fn a_matching_tool_pin_is_silent() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    manifest(&r, "tool git version\n"); // `git --version` prints "git version …"
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        !run.says("disagree with CI") && !run.says("would not run") && !run.says("tool <program>"),
+        "a satisfied pin must cost no output:\n{}",
+        run.output()
+    );
+}
+
+/// Verifying a pin means EXECUTING `<program> --version` for a program name
+/// the repository chose — exactly the consent the trust model collects. An
+/// untrusted manifest's pins are inert.
+#[test]
+fn an_untrusted_manifest_s_pins_run_nothing() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    // Committed but never trusted; the program name would fail loudly if run.
+    r.stage("amont.conf", "tool definitely-absent-tool-xyz 1.\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        !run.says("definitely-absent-tool-xyz 1."),
+        "an untrusted pin must not be verified:\n{}",
+        run.output()
+    );
+}
+
+/// A pinned tool that is not runnable at all is its own message — the skew
+/// warning would be nonsense with nothing to compare.
+#[test]
+fn a_pin_on_a_missing_tool_says_so() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    manifest(&r, "tool definitely-absent-tool-xyz 1.\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        run.says("would not run"),
+        "a missing pinned tool must be named:\n{}",
+        run.output()
+    );
+}
+
+/// A malformed pin nags like every other broken line — a line that cannot be
+/// understood is not skipped.
+#[test]
+fn a_malformed_tool_pin_nags() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    manifest(&r, "tool git\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        run.passed(),
+        "a broken line warns, never blocks:\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("tool <program> <version-substring>"),
+        "the shape must be prescribed:\n{}",
+        run.output()
+    );
+}
