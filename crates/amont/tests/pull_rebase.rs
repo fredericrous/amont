@@ -211,7 +211,7 @@ fn the_default_branch_advisory_survives_a_worktree_marker() {
     // Move the default branch ahead on the server.
     r.stage("a.txt", "two\n");
     r.commit("chore: move main on");
-    r.git(&["push", "-q", "--no-verify", "origin", "main"]);
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
 
     let listed = String::from_utf8_lossy(
         &std::process::Command::new("git")
@@ -281,4 +281,63 @@ fn the_advisory_uses_the_branch_s_own_remote() {
         "the advisory looked for a remote this repo does not have:\n{}",
         run.output()
     );
+}
+
+/// Behind, clean tree, sync succeeds — and the push must STOP: the oids git
+/// handed this push predate the rebase, so the suite would judge commits git
+/// is no longer pushing and the server refuses the stale objects anyway.
+#[test]
+fn a_successful_auto_rebase_stops_the_push_and_says_push_again() {
+    let r = with_origin();
+    // Advance the upstream past us WITHOUT a second clone: push a commit,
+    // then step the local branch back and re-fetch — behind by one, clean.
+    r.stage("b.txt", "ahead on the remote\n");
+    r.commit("chore: remote-side commit");
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
+    r.git(&["reset", "--hard", "-q", "HEAD~1"]);
+    r.git(&["fetch", "-q", "origin"]);
+    let remote_tip = String::from_utf8_lossy(&r.git(&["rev-parse", "origin/main"]).stdout)
+        .trim()
+        .to_string();
+
+    let run = r.hook("pre-push-pull-rebase", &[]);
+    assert!(
+        !run.passed(),
+        "a push whose refs predate the rebase must not proceed:\n{}",
+        run.output()
+    );
+    assert!(run.says("push again"), "{}", run.output());
+    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    assert_eq!(head, remote_tip, "the rebase itself must have happened");
+}
+
+/// `amont.autoRebase false`: the check becomes a pure advisor — no rebase it
+/// was not asked for, and the push stops BEFORE the suite spends minutes on
+/// refs the server will refuse.
+#[test]
+fn auto_rebase_off_advises_and_never_mutates() {
+    let r = with_origin();
+    r.stage("b.txt", "ahead on the remote\n");
+    r.commit("chore: remote-side commit");
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
+    r.git(&["reset", "--hard", "-q", "HEAD~1"]);
+    r.git(&["fetch", "-q", "origin"]);
+    r.git(&["config", "amont.autoRebase", "false"]);
+    let before = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let run = r.hook("pre-push-pull-rebase", &[]);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(
+        run.says("amont.autoRebase"),
+        "must name the key that changes this:\n{}",
+        run.output()
+    );
+    let after = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    assert_eq!(before, after, "advisory mode rebased anyway");
 }

@@ -121,6 +121,25 @@ limit can never accommodate) is reported by `amont list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
+## `amont.autoRebase` — whether pre-push may sync a behind branch for you
+
+```sh
+git config amont.autoRebase false   # default true
+```
+
+On (the default, and the behaviour every install so far has had):
+`pre-push-pull-rebase` rebases a clean, behind, non-diverged branch onto its
+own upstream — then **stops the push and asks for a second one**, because the
+refs git handed the hook predate the rebase; the suite would otherwise judge
+commits git is no longer pushing, and the server refuses the stale objects
+regardless.
+
+Off: the check becomes a pure advisor. It performs no network I/O at all (no
+`ls-remote`, no advisory `fetch` — behind is judged from your last fetch) and
+never runs a rebase you did not type; a behind branch stops the push with the
+command to run. A hook that rewrites your branch is a bigger claim than most
+teams want a "check" to make — this is the key that unmakes it.
+
 ## `amont.timeout` — the budget one check's command may run for
 
 ```sh

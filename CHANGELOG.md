@@ -8,6 +8,15 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **`pre-push-pull-rebase` stopped testing ghosts, and learned to stand
+  down.** A successful auto-rebase used to fall through to the test suite —
+  which then judged packages selected from the pre-rebase oids git handed the
+  hook, at a HEAD those oids no longer describe, before the server refused
+  the stale objects anyway. A successful sync now stops the push immediately
+  and asks for a second one. And `amont.autoRebase false` turns the check
+  into a pure advisor: no network round-trips on the push path, no rebase you
+  did not type — a behind branch stops the push with the command to run.
+
 - **An editor save that lands while the checks run is no longer destroyed.**
   The index-fidelity restore used to write the held (pre-commit) bytes over
   whatever was on disk — including a save you made mid-check, silently. The
