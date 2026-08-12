@@ -36,22 +36,23 @@ use crate::ui::{highlight, valid_sign, warning_sign};
 /// The checks for a stage, minus anything `hook.skip` filters out. Resolution
 /// goes through `names_check`, the one rule this and the severity lookup share:
 /// `git config hook.skip ruff` skips `pre-commit-ruff` by short name.
-fn selected(stage: Stage) -> Vec<&'static dyn Check> {
-    selected_during(stage, &[])
+fn selected(stage: Stage, manifest: &crate::manifest::Manifest) -> Vec<&dyn Check> {
+    selected_during(stage, &[], manifest)
 }
 
 /// The checks for a stage, minus `hook.skip` and minus anything that declares
 /// it does not run during an operation currently in progress.
-fn selected_during(
+fn selected_during<'a>(
     stage: Stage,
     in_progress: &[crate::check::GitState],
-) -> Vec<&'static dyn Check> {
+    manifest: &'a crate::manifest::Manifest,
+) -> Vec<&'a dyn Check> {
     let skips = configured_skips();
     // Externals are included here, so `hook.skip` and the severity override
     // govern a declared command exactly as they govern a built-in. A repository
     // that can add a check it cannot disable would be a worse deal than not
     // being able to add one.
-    let (kept, dropped): (Vec<_>, Vec<_>) = all_stage_checks(stage)
+    let (kept, dropped): (Vec<_>, Vec<_>) = all_stage_checks(stage, manifest)
         .into_iter()
         .partition(|c| !skips.iter().any(|s| crate::skip_suppresses(c.name(), s)));
     let names: Vec<&str> = dropped.iter().map(|c| c.name()).collect();
@@ -190,9 +191,9 @@ fn hold_unstaged() -> Result<crate::staged_only::StagedOnly, Verdict> {
 pub fn pre_commit(ctx: &Ctx) -> Verdict {
     // Before anything runs: a pinned tool at the wrong version makes every
     // verdict below it suspect, and the warning costs one --version per pin.
-    crate::manifest::verify_tool_pins();
+    crate::manifest::verify_tool_pins(&ctx.manifest.pins);
     let in_progress = crate::git_states_in_progress();
-    let checks = selected_during(Stage::PreCommit, &in_progress);
+    let checks = selected_during(Stage::PreCommit, &in_progress, ctx.manifest);
 
     let held = match hold_unstaged() {
         Ok(guard) => guard,
@@ -212,7 +213,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     let ran: Vec<&'static str> = if matches!(verdict, Verdict::Block) {
         Vec::new()
     } else {
-        crate::hooks::run_tests::gated_at_commit()
+        crate::hooks::run_tests::gated_at_commit(&ctx.manifest.externals)
             .into_iter()
             .filter(|d| {
                 checks
@@ -234,7 +235,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
 /// A seam, so a test can hand it a check that panics. Without it the value
 /// standing in for a dead check was a literal at one call site that no test
 /// could reach — the rule was asserted on the runner and merely hoped for here.
-fn run_stage(checks: &[&'static dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdict {
+fn run_stage(checks: &[&dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdict {
     run_stage_traced(checks, ctx, severities).0
 }
 
@@ -243,7 +244,7 @@ fn run_stage(checks: &[&'static dyn Check], ctx: &Ctx, severities: &Overrides) -
 /// gate-declared checks actually ran (`gate_stamp`); `Report` cannot answer
 /// that, because `classify` deliberately drops the names of `Passed`.
 fn run_stage_traced(
-    checks: &[&'static dyn Check],
+    checks: &[&dyn Check],
     ctx: &Ctx,
     severities: &Overrides,
 ) -> (Verdict, Vec<Outcome>) {
@@ -258,6 +259,7 @@ fn run_stage_traced(
                 args: ctx.args,
                 hooks_dir: ctx.hooks_dir,
                 push: ctx.push,
+                manifest: ctx.manifest,
             };
             check.run(&sub)
         },
@@ -407,7 +409,11 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
         // there is no staged/unstaged distinction to protect when the input
         // set is `git ls-files`, so a hold would be surprising extra mutation
         // with no correctness upside.
-        return run_stage(&selected(Stage::PreCommit), ctx, &Overrides::read());
+        return run_stage(
+            &selected(Stage::PreCommit, ctx.manifest),
+            ctx,
+            &Overrides::read(),
+        );
     }
 
     // Staged mode IS a rehearsal of the commit, so it takes the same hold the
@@ -419,7 +425,11 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
         Ok(guard) => guard,
         Err(verdict) => return verdict,
     };
-    let verdict = run_stage(&selected(Stage::PreCommit), ctx, &Overrides::read());
+    let verdict = run_stage(
+        &selected(Stage::PreCommit, ctx.manifest),
+        ctx,
+        &Overrides::read(),
+    );
     // AFTER the report has been printed: dropping earlier would put the
     // unstaged content back under a check that is still reading files.
     drop(held);
@@ -435,13 +445,13 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
 /// staged mode. A pre-push or commit-msg check invoked by name must never
 /// touch the working tree — nothing about a push is a staging operation.
 pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Option<Verdict> {
-    let run_check = crate::registry::lookup(name)?;
+    let run_check = crate::registry::lookup(name, ctx.manifest)?;
     if all_files {
         enter_all_files_mode();
         return Some(run_check(ctx));
     }
-    let is_pre_commit_check =
-        crate::registry::one_named(name).is_some_and(|c| c.stage() == Stage::PreCommit);
+    let is_pre_commit_check = crate::registry::one_named(name, ctx.manifest)
+        .is_some_and(|c| c.stage() == Stage::PreCommit);
     if !is_pre_commit_check {
         return Some(run_check(ctx));
     }
@@ -455,19 +465,20 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Option<Verdict> {
 }
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
-    crate::manifest::verify_tool_pins();
+    crate::manifest::verify_tool_pins(&ctx.manifest.pins);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
     let severities = Overrides::read();
     // pre-push had NO state guard at all, with a comment admitting it existed
     // only because the zsh version had none. Now it asks the same question
     // pre-commit does and each check answers for itself.
     let in_progress = crate::git_states_in_progress();
-    for check in selected_during(Stage::PrePush, &in_progress) {
+    for check in selected_during(Stage::PrePush, &in_progress, ctx.manifest) {
         let sub = Ctx {
             name: check.name(),
             args: ctx.args,
             hooks_dir: ctx.hooks_dir,
             push: ctx.push,
+            manifest: ctx.manifest,
         };
         match check.run(&sub) {
             Outcome::Passed => {}
@@ -647,11 +658,13 @@ mod tests {
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let push = crate::pushrefs::PushRefs::default();
+        let manifest = crate::manifest::Manifest::default();
         let ctx = Ctx {
             name: "pre-commit",
             args: &[],
             hooks_dir: std::path::Path::new("."),
             push: &push,
+            manifest: &manifest,
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

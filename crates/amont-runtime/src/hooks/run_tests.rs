@@ -62,8 +62,7 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 /// A declaration passing this filter is still only a PROMISE: whether the
 /// check executed for the commits actually being pushed is what
 /// [`crate::gate_stamp`]'s per-commit stamps answer, in `run`.
-pub(crate) fn gated_at_commit() -> Vec<GateDecl> {
-    let declared = crate::manifest::externals();
+pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<GateDecl> {
     // The fast path: pre-commit calls this on every commit to know what to
     // stamp, and most repositories declare nothing — no GATE name declared
     // means no git spawns for skips and severity overrides.
@@ -329,7 +328,7 @@ fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
     true
 }
 
-pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::External]) -> Outcome {
     // An all-zero oid, of whatever length this repo's hash is (sha1 or sha256).
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
@@ -353,7 +352,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef]) -> Outcome {
     // The DECLARATIONS are a property of the repository, resolved once; whether
     // one covers a given push is a property of that ref's changed files and of
     // its commits' stamps, judged inside the loop.
-    let declared_gate = gated_at_commit();
+    let declared_gate = gated_at_commit(declared);
     let mut announced: Vec<&'static str> = Vec::new();
     let mut warned: Vec<&'static str> = Vec::new();
 

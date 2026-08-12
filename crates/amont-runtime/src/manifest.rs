@@ -39,7 +39,6 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 
 use crate::check::{Check, Fix, Outcome, Scope, Severity, Stage};
 use crate::hooks::common::Restaged;
@@ -794,61 +793,50 @@ pub fn read_lines(root: &Path) -> Vec<Line> {
         .unwrap_or_default()
 }
 
-/// Every external declared by the repository this process is running in.
+/// Everything one repository's manifest declares, parsed and trust-gated
+/// ONCE, owned by the entrypoint that loaded it and lent down through `Ctx`.
 ///
-/// A `static OnceLock` rather than a leak: the borrow is genuinely `'static`
-/// because the storage is, and it also guarantees the file is read once however
-/// many checks ask for it.
-///
-/// `pub(crate)`, NOT `pub`. The answer depends on the working directory at the
-/// FIRST call and is then cached for the life of the process — safe in a hook,
-/// which handles one repository and exits, and a trap for anything that walks
-/// many. The fleet crate reads `read_lines(path)` instead, which takes the
-/// repository it means.
-pub(crate) fn externals() -> &'static [External] {
-    static EXTERNALS: OnceLock<Vec<External>> = OnceLock::new();
-    EXTERNALS.get_or_init(|| {
-        let root = crate::hooks::common::repo_root();
-        let root = Path::new(&root);
-        // ONE read. The bytes that get PARSED and the bytes that get HASHED
-        // have to be the same bytes: this used to `read(root)` and then let
-        // `trust::state` open the file a second time, so anything that changed
-        // it in between — a `git checkout`, a watcher, a `make` target already
-        // running — produced a trust decision about content that is not the
-        // content about to be executed. `record_verified` closes this at trust
-        // time and has a test named for it; the run path had the same gap.
-        let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
-            return Vec::new();
-        };
-        // Non-UTF-8 yields no externals, as it always has: `parse` takes a
-        // `&str`, and a manifest we cannot read as text is one we cannot act
-        // on. Not lossy — that would invent a manifest nobody wrote.
-        let Ok(text) = String::from_utf8(bytes.clone()) else {
-            return Vec::new();
-        };
-        gate(parse(&text), crate::trust::state_of(root, &bytes))
-    })
+/// This replaced two process-global `OnceLock`s keyed on the working
+/// directory at first call — safe in a hook, which handles one repository
+/// and exits, and a trap for anything that walks many. Owned data has no
+/// first-call: the caller says which repository it means, every time.
+#[derive(Default)]
+pub struct Manifest {
+    /// Declared checks — untrusted ones present but `Unusable`, so the
+    /// decision waiting on the reader stays visible. See [`gate`].
+    pub externals: Vec<External>,
+    /// Tool version pins — DROPPED entirely when untrusted, because verifying
+    /// one executes `<program> --version` for a name the repository chose,
+    /// which is exactly the consent the trust model exists to collect.
+    pub pins: Vec<ToolPin>,
 }
 
-/// The repository's tool pins, TRUST-GATED — an untrusted manifest's pins are
-/// inert, because verifying one means executing `<program> --version` for a
-/// program name the repository chose, and that is exactly the consent the
-/// trust model exists to collect. Same OnceLock shape and same caveats as
-/// [`externals`].
-pub(crate) fn tool_pins() -> &'static [ToolPin] {
-    static PINS: OnceLock<Vec<ToolPin>> = OnceLock::new();
-    PINS.get_or_init(|| {
-        let root = crate::hooks::common::repo_root();
-        let root = Path::new(&root);
-        let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
-            return Vec::new();
-        };
-        let Ok(text) = String::from_utf8(bytes.clone()) else {
-            return Vec::new();
-        };
-        if crate::trust::state_of(root, &bytes) != crate::trust::State::Trusted {
-            return Vec::new();
-        }
+/// Read and trust-gate `root`'s manifest.
+///
+/// ONE read. The bytes that get PARSED and the bytes that get HASHED are the
+/// same bytes: an earlier shape `read(root)`-ed and then let `trust::state`
+/// open the file a second time, so anything that changed it in between — a
+/// `git checkout`, a watcher, a `make` target already running — produced a
+/// trust decision about content that is not the content about to be
+/// executed.
+///
+/// Each call leaks the `Scope` slices it builds (see [`leak`]) — pennies for
+/// the hook path, which loads once per process, and the reason the fleet
+/// keeps reading [`read_lines`] instead: a scanner must not leak once per
+/// repository per refresh.
+pub fn load(root: &Path) -> Manifest {
+    // Non-UTF-8 yields nothing, as it always has: `parse` takes a `&str`,
+    // and a manifest we cannot read as text is one we cannot act on. Not
+    // lossy — that would invent a manifest nobody wrote.
+    let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
+        return Manifest::default();
+    };
+    let Ok(text) = String::from_utf8(bytes.clone()) else {
+        return Manifest::default();
+    };
+    let state = crate::trust::state_of(root, &bytes);
+    let externals = gate(parse(&text), state);
+    let pins = if state == crate::trust::State::Trusted {
         parse_lines(&text)
             .into_iter()
             .filter_map(|l| match l {
@@ -856,15 +844,18 @@ pub(crate) fn tool_pins() -> &'static [ToolPin] {
                 _ => None,
             })
             .collect()
-    })
+    } else {
+        Vec::new()
+    };
+    Manifest { externals, pins }
 }
 
 /// Check every trusted pin against the tool actually on this machine, and say
 /// what disagrees. Warn-only, once per hook run, at BOTH stages: skew never
 /// blocks a commit — its cost is a check disagreeing with CI, and the fix is
 /// a human decision — but it stops being invisible, which is the whole point.
-pub fn verify_tool_pins() {
-    for pin in tool_pins() {
+pub fn verify_tool_pins(pins: &[ToolPin]) {
+    for pin in pins {
         match version_of(&pin.program) {
             None => crate::hooks::common::warn(&format!(
                 "{} is pinned to {} in {MANIFEST}, but `{} --version` would not run",
@@ -911,8 +902,9 @@ fn version_of(program: &str) -> Option<String> {
 /// failure this project is arranged against — and the reader needs to know
 /// there is a decision waiting for them.
 ///
-/// Split out from `externals` because that function is a `OnceLock` keyed on
-/// the process's own repository and so cannot be tested; this is the part with
+/// Split out of [`load`] so the rule can be asserted without a repository on
+/// disk — and kept split even now that `load` takes an explicit root, because
+/// a trust verdict is one input among several there and this is the part with
 /// the rule in it.
 pub(crate) fn gate(declared: Vec<External>, state: crate::trust::State) -> Vec<External> {
     match crate::trust::why(state) {

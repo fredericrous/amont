@@ -32,6 +32,10 @@ pub struct Ctx<'a> {
     /// The pre-push ref list, read from stdin at most once and lent to every
     /// check that asks. See `pushrefs`.
     pub push: &'a PushRefs,
+    /// What this repository's manifest declares — parsed and trust-gated once
+    /// by the entrypoint, lent to everything downstream. The same shape as
+    /// `push`: read once, owned high, borrowed everywhere.
+    pub manifest: &'a crate::manifest::Manifest,
 }
 
 pub type HookFn = fn(&Ctx) -> Verdict;
@@ -278,7 +282,7 @@ pub const CHECKS: &[Builtin] = &[
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
-        run: |ctx| hooks::run_tests::run(ctx.push.get()),
+        run: |ctx| hooks::run_tests::run(ctx.push.get(), &ctx.manifest.externals),
     },
     Builtin {
         name: "pre-push-cargo-test",
@@ -483,12 +487,16 @@ pub fn stage_checks(stage: Stage) -> impl Iterator<Item = &'static Builtin> {
 /// The order is not negotiable and not configurable. A third-party command must
 /// not be able to delay `pre-push-branch-protect`, and appending is the only
 /// arrangement in which it cannot.
-pub fn all_stage_checks(stage: Stage) -> Vec<&'static dyn Check> {
-    let mut out: Vec<&'static dyn Check> = stage_checks(stage)
+pub fn all_stage_checks<'a>(
+    stage: Stage,
+    manifest: &'a crate::manifest::Manifest,
+) -> Vec<&'a dyn Check> {
+    let mut out: Vec<&'a dyn Check> = stage_checks(stage)
         .map(|check| check as &dyn Check)
         .collect();
     out.extend(
-        crate::manifest::externals()
+        manifest
+            .externals
             .iter()
             .filter(|external| external.stage == stage)
             .map(|external| external as &dyn Check),
@@ -496,21 +504,24 @@ pub fn all_stage_checks(stage: Stage) -> Vec<&'static dyn Check> {
     out
 }
 
-pub fn lookup(name: &str) -> Option<HookFn> {
+pub fn lookup(name: &str, manifest: &crate::manifest::Manifest) -> Option<HookFn> {
     if let Some((_, f)) = ENTRYPOINTS.iter().find(|(n, _)| *n == name) {
         return Some(*f);
     }
     // A check invoked directly by name — how the tests drive individual checks,
     // and how `amont <check>` works from a shell. Its Outcome collapses to an
     // exit code here, honouring severity, so a `warn` check invoked directly
-    // reports without failing exactly as it does inside a dispatcher.
+    // reports without failing exactly as it does inside a dispatcher. The
+    // closure re-resolves through the Ctx it is handed — a plain fn pointer
+    // captures nothing, and the manifest travels ON the Ctx.
     if CHECKS.iter().any(|check| check.name == name)
-        || crate::manifest::externals()
+        || manifest
+            .externals
             .iter()
             .any(|external| external.id == name)
     {
         return Some(|ctx: &Ctx| {
-            let check = one_named(ctx.name).expect("checked above");
+            let check = one_named(ctx.name, ctx.manifest).expect("checked above");
             Verdict::blocking(matches!(
                 (check.run(ctx), severity_of(check)),
                 (Outcome::Failed, Severity::Block)
@@ -523,11 +534,12 @@ pub fn lookup(name: &str) -> Option<HookFn> {
 /// One check by name, whichever kind it is. Built-ins are searched first, which
 /// costs nothing because `manifest::parse` refuses a name a built-in already
 /// holds — the two guards together mean neither kind can shadow the other.
-pub fn one_named(name: &str) -> Option<&'static dyn Check> {
+pub fn one_named<'a>(name: &str, manifest: &'a crate::manifest::Manifest) -> Option<&'a dyn Check> {
     if let Some(builtin) = CHECKS.iter().find(|check| check.name == name) {
         return Some(builtin);
     }
-    crate::manifest::externals()
+    manifest
+        .externals
         .iter()
         .find(|external| external.id == name)
         .map(|external| external as &dyn Check)
@@ -629,9 +641,10 @@ mod tests {
                 "prepare-commit-msg"
             ]
         );
+        let none = crate::manifest::Manifest::default();
         for name in &shipped {
             assert!(
-                lookup(name).is_some(),
+                lookup(name, &none).is_some(),
                 "shipped shim {name:?} has no handler"
             );
         }
@@ -641,10 +654,15 @@ mod tests {
     /// invoke one directly.
     #[test]
     fn every_check_is_reachable_by_name() {
+        let none = crate::manifest::Manifest::default();
         for check in CHECKS {
-            assert!(lookup(check.name).is_some(), "{} not reachable", check.name);
+            assert!(
+                lookup(check.name, &none).is_some(),
+                "{} not reachable",
+                check.name
+            );
         }
-        assert!(lookup("pre-commit-not-a-check").is_none());
+        assert!(lookup("pre-commit-not-a-check", &none).is_none());
     }
 
     /// pre-push is serial and fail-fast, so declaration order IS cost order.
