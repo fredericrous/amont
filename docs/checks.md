@@ -109,7 +109,7 @@ for a test suite.
 |---|---|---|
 | `pre-push-branch-protect` | always | Refuses a direct push to `main` or `master`. |
 | `pre-push-branch-pattern` | always | Requires `prefix/branch-name` (e.g. `feat/3002-image-crop`), unless the branch already exists on the remote. |
-| `pre-push-pull-rebase` | always | Rebases the branch onto **its own** upstream before pushing, and warns — never acts — when the default branch has moved ahead. Never touches a dirty tree, and aborts cleanly on conflict rather than leaving a half-rebased state. |
+| `pre-push-pull-rebase` | always | Rebases the branch onto **its own** upstream before pushing (then asks for a second push — the first one's refs predate the rebase), and warns — never acts — when the default branch has moved ahead. Never touches a dirty tree, aborts cleanly on conflict, and `amont.autoRebase false` makes it a pure, networkless advisor. |
 | `pre-push-run-tests-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | Runs each touched JS package's gate: `typecheck`, `test:unit`, `test`, whichever it defines, cheapest first. Skips any of those a `pre-commit` declaration already covers — see below. |
 | `pre-push-cargo-test` | `.rs` + `Cargo.toml` | `cargo test`. |
 

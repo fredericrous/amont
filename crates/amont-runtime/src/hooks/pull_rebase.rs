@@ -156,11 +156,19 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         .strip_prefix(&format!("{remote}/"))
         .unwrap_or(&upstream);
 
+    // Whether this check may MUTATE and use the NETWORK. Off, it becomes a
+    // pure advisor over your last fetch: no ls-remote round-trip per push, no
+    // rebase you did not type — the shape a check is expected to have. On (the
+    // default, and the behaviour every install so far has had), it syncs a
+    // behind branch for you and then asks for a second push.
+    let auto = crate::config::boolean_or("amont.autoRebase", true);
+
     // 2b. The upstream can be configured locally but GONE on the remote — the
     //     normal state right after a PR squash-merges with delete-on-merge.
     //     `git pull --rebase` would fail on the missing ref and read as a
-    //     conflict, wrongly blocking the push.
-    if !git::succeeds(&["ls-remote", "--exit-code", "--heads", &remote, branch]) {
+    //     conflict, wrongly blocking the push. Only asked when a rebase may
+    //     actually happen: it is this check's per-push network round-trip.
+    if auto && !git::succeeds(&["ls-remote", "--exit-code", "--heads", &remote, branch]) {
         println!(
             "{} Upstream {upstream} no longer exists on the remote (merged + auto-deleted?) — skipping sync.", warning_sign()
         );
@@ -193,9 +201,20 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             highlight("git pull --rebase"),
             highlight("git merge")
         );
-    } else if behind_count(&status).unwrap_or(0) > 0
-        && !git::succeeds(&["pull", "--rebase", &remote, branch])
-    {
+    } else if behind_count(&status).unwrap_or(0) > 0 {
+        if !auto {
+            // Advisory, then STOP — before the test suite spends minutes on a
+            // push the server will refuse as non-fast-forward anyway. Judged
+            // from the local tracking ref (the last fetch): with auto off
+            // this check does no network I/O at all.
+            println!(
+                "{} Behind {upstream} — not auto-rebasing ({} is off).",
+                warning_sign(),
+                highlight("amont.autoRebase")
+            );
+            println!("    Sync first: {}", highlight("git pull --rebase"));
+            return Outcome::Failed;
+        }
         // `behind_count > 0` gates the attempt itself, not just its outcome:
         // with nothing behind, the upstream has no commits to reconcile with,
         // so `pull --rebase` has nothing to do BY DEFINITION — and attempting
@@ -206,14 +225,25 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         // is exactly such a shape: `pull --rebase` tries to linearize it by
         // full reachability rather than first-parent, replays commits that
         // were already incorporated, and fails loudly over a push that was a
-        // clean fast-forward all along. Behind-only or diverged pushes still
-        // go through the real sync below; only the pointless case is skipped.
+        // clean fast-forward all along.
         //
         // Explicit remote and branch, not a bare `pull --rebase` trusting
         // ambient `branch.*.remote`/`.merge` — `remote`/`branch` are already
         // the verified pair from 2a/2b, and repeating them here means this
         // sync can never again silently use something other than what was
         // just checked.
+        if git::succeeds(&["pull", "--rebase", &remote, branch]) {
+            // HEAD moved; the oids git handed THIS push on stdin have not.
+            // Carrying on would run the suite against packages selected from
+            // commits git is no longer pushing, and the server refuses the
+            // stale objects as non-fast-forward regardless. Fail fast, with
+            // the good news first.
+            println!(
+                "{} Rebased onto {upstream}. This push's refs predate the rebase — push again.",
+                warning_sign()
+            );
+            return Outcome::Failed;
+        }
         // Abort so the tree is never left half-rebased.
         let _ = git::succeeds(&["rebase", "--abort"]);
         println!(
@@ -249,7 +279,11 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     // then this step ignored it: in a repository whose remote is `upstream`,
     // the fetch failed (ignored) and `rev-list origin/<branch>...HEAD` returned
     // None, so the advisory was silently skipped.
-    let _ = git::succeeds(&["fetch", &remote, default_branch]);
+    // The advisory's fetch is the other network round-trip; with auto off it
+    // reads the last fetch's refs instead — stale is fine for an advisory.
+    if auto {
+        let _ = git::succeeds(&["fetch", &remote, default_branch]);
+    }
     let range = format!("{remote}/{default_branch}...HEAD");
     if let Some(n) =
         git::stdout(&["rev-list", "--left-right", "--count", &range]).and_then(|s| ahead_count(&s))
