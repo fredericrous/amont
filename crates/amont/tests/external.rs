@@ -718,3 +718,34 @@ fn a_malformed_tool_pin_nags() {
         run.output()
     );
 }
+
+/// A bare scope token is an exact filename: the check fires when THAT file
+/// is staged — anywhere in the tree — and never for a suffix look-alike.
+#[cfg(unix)]
+#[test]
+fn a_filename_scope_fires_on_the_file_and_not_a_look_alike() {
+    let r = Repo::new();
+    probe(&r, PROBE, 1); // exit 1: firing is visible as a block
+    manifest(
+        &r,
+        &format!("pre-commit  lockcheck  package.json  block  ./{PROBE}\n"),
+    );
+
+    // A suffix look-alike must not wake it.
+    r.stage("not-package.json", "{}\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        !run.says("probe-") && run.passed(),
+        "a look-alike woke a filename-scoped check:\n{}",
+        run.output()
+    );
+
+    // The real thing, nested, does.
+    r.stage("apps/web/package.json", "{}\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        run.says("probe-") && !run.passed(),
+        "the named file did not wake the check:\n{}",
+        run.output()
+    );
+}

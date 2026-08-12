@@ -8,6 +8,14 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **A declared check's scope can name files, not only extensions.**
+  `pre-commit lockcheck package.json block ./check-lock.sh` finally parses:
+  bare tokens in the scope column are exact filenames, basename-matched (so
+  `not-package.json` cannot counterfeit them), mixing freely with `*.<ext>`.
+  Directories stay out; the grammar has no globs to mis-guess. The `files`
+  marker, `$AMONT_FILES`, the push-gate coverage rule and the dashboard's
+  "fires when" column all understand the new tokens.
+
 - **`pre-push-pull-rebase` stopped testing ghosts, and learned to stand
   down.** A successful auto-rebase used to fall through to the test suite —
   which then judged packages selected from the pre-rebase oids git handed the

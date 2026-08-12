@@ -275,7 +275,15 @@ pub fn gather_checks(stage_filter: Option<check::Stage>, paths: &[String]) -> Ve
                 fix: check.fix(),
                 status,
                 reason,
-                scope_files: check.scope().files.iter().map(|s| s.to_string()).collect(),
+                scope_files: {
+                    let scope = check.scope();
+                    scope
+                        .files
+                        .iter()
+                        .chain(scope.names.iter())
+                        .map(|s| s.to_string())
+                        .collect()
+                },
                 scope_opt_in: check.scope().opt_in.iter().map(|s| s.to_string()).collect(),
                 command,
             });
@@ -524,10 +532,15 @@ pub fn list_checks(opts: ListOptions) -> i32 {
 }
 
 fn describe(s: crate::check::Scope) -> String {
-    let files = if s.files.is_empty() {
+    let files = if s.is_unscoped() {
         String::new()
     } else {
-        s.files.join(" ")
+        s.files
+            .iter()
+            .chain(s.names.iter())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     let opt = s.opt_in.join(" | ");
     match (files.is_empty(), opt.is_empty()) {
