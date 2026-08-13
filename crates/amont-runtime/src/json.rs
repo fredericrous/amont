@@ -38,6 +38,13 @@ pub fn int_field(key: &str, value: i64) -> String {
 }
 
 /// `null` when `value` is `None` — used for `stage_filter` and `command`.
+pub fn opt_int_field(key: &str, value: Option<i64>) -> String {
+    match value {
+        Some(v) => int_field(key, v),
+        None => format!("\"{}\":null", escape(key)),
+    }
+}
+
 pub fn opt_string_field(key: &str, value: Option<&str>) -> String {
     match value {
         Some(v) => string_field(key, v),
@@ -96,6 +103,8 @@ mod tests {
             opt_string_field("command", Some("ruff check")),
             "\"command\":\"ruff check\""
         );
+        assert_eq!(opt_int_field("last", None), "\"last\":null");
+        assert_eq!(opt_int_field("last", Some(42)), "\"last\":42");
     }
 
     #[test]

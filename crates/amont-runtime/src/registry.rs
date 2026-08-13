@@ -49,7 +49,7 @@ pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("prepare-commit-msg", |ctx| {
         hooks::prepare_commit_msg::run(ctx.args)
     }),
-    ("post-commit", |_ctx| hooks::post_commit::run()),
+    ("post-commit", |ctx| hooks::post_commit::run(ctx)),
 ];
 
 /// Every check, in the order its stage runs them.

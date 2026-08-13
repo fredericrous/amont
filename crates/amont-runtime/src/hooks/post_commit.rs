@@ -9,12 +9,16 @@
 //!
 //! Notification-only, like the hook itself: git ignores its exit code, so
 //! this never blocks, and it prints nothing — a bookkeeping step that talked
-//! on every commit would be noise nobody asked for. The mechanism lives in
-//! [`crate::gate_stamp`]; this is only the hook-shaped door to it.
+//! on every commit would be noise nobody asked for. That includes the bypass
+//! ledger: a commit that dodged its gate is COUNTED here, silently — the
+//! number's whole value is that it is collected without a lecture. The
+//! mechanisms live in [`crate::gate_stamp`] and [`crate::bypass`]; this is
+//! only the hook-shaped door to them.
 
 use crate::check::Verdict;
 
-pub fn run() -> Verdict {
-    crate::gate_stamp::bind_to_head();
+pub fn run(ctx: &crate::registry::Ctx) -> Verdict {
+    let stamped = crate::gate_stamp::bind_to_head();
+    crate::bypass::note_unverified(ctx.manifest, &stamped);
     Verdict::Proceed
 }
