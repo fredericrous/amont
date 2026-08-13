@@ -10,6 +10,7 @@
 //! not meaningfully work with a TUI.
 
 mod apply;
+mod bypasses;
 mod checks;
 mod fix;
 mod progress;
@@ -541,6 +542,14 @@ fn report(s: &scan::FleetScan, elapsed: std::time::Duration) {
         s.excluded_dirs,
         elapsed.as_secs_f64()
     );
+    if s.bypassed_commits > 0 {
+        // Both numbers, per this function's own rule: a count without its
+        // spread reads as one repo's problem when it may be the fleet's.
+        println!(
+            "  {} unverified commits across {} repositories",
+            s.bypassed_commits, s.repos_with_bypasses
+        );
+    }
     if !s.unreadable.is_empty() {
         println!("  {} unreadable:", s.unreadable.len());
         for p in s.unreadable.iter().take(5) {

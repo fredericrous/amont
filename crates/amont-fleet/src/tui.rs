@@ -505,8 +505,22 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
         // numbers harder to read for decoration's sake.
         Line::from(format!("{}   {status}", s.root.display())).style(tint(app.color, ACCENT)),
         Line::from(format!(
-            "{} repositories · {} managed · {} unmanaged · {} skipped subtrees",
-            s.git_dirs_found, s.managed_seen, s.unmanaged_seen, s.excluded_dirs
+            "{} repositories · {} managed · {} unmanaged · {} skipped subtrees{}",
+            s.git_dirs_found,
+            s.managed_seen,
+            s.unmanaged_seen,
+            s.excluded_dirs,
+            // Silent at zero: a clean fleet's header says nothing about
+            // bypasses, so the line only appears when there is something
+            // to act on.
+            if s.bypassed_commits == 0 {
+                String::new()
+            } else {
+                format!(
+                    " · {} unverified commits in {} repos",
+                    s.bypassed_commits, s.repos_with_bypasses
+                )
+            }
         )),
         Line::from(format!(
             "consistency  {}",
@@ -572,7 +586,7 @@ fn table(f: &mut Frame, area: Rect, app: &App) {
 
     let header = if wide {
         vec![
-            "REPO", "SHIMS", "BAKE", "LANG", "SKIPS", "WARN", "DECL", "AGENTS", "STATE",
+            "REPO", "SHIMS", "BAKE", "LANG", "SKIPS", "WARN", "DECL", "BYPASS", "AGENTS", "STATE",
         ]
     } else if mid {
         vec!["REPO", "SHIMS", "BAKE", "STATE"]
@@ -634,6 +648,29 @@ fn table(f: &mut Frame, area: Rect, app: &App) {
                     app.color,
                     if broken > 0 { Color::Red } else { Color::Reset },
                 )));
+                // Bypasses are events, not policy: a downgrade (WARN) is a
+                // statement about the repository, a bypass is something that
+                // HAPPENED — folding them together would hide which one a
+                // rising number means. Recency drives the tint: three dodges
+                // this month are a signal, three from two years ago are
+                // history.
+                let recent = repo.bypasses.last.is_some_and(|last| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs().saturating_sub(last) < 30 * 86_400)
+                        .unwrap_or(false)
+                });
+                cells.push(
+                    Cell::from(if repo.bypasses.total == 0 {
+                        "-".to_string()
+                    } else {
+                        repo.bypasses.total.to_string()
+                    })
+                    .style(tint(
+                        app.color,
+                        if recent { Color::Yellow } else { Color::Reset },
+                    )),
+                );
                 cells.push(Cell::from(agents_md_word(repo.agents_md)).style(tint(
                     app.color,
                     match repo.agents_md {
@@ -664,6 +701,7 @@ fn table(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(12),
             Constraint::Length(6),
             Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(7),
             Constraint::Length(14),
@@ -902,6 +940,25 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
+    if repo.bypasses.total > 0 {
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from("unverified commits (no record their commit-time gate ran)")
+                .style(tint(app.color, ACCENT)),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        for sc in &repo.bypasses.by_script {
+            lines.push(Line::from(format!(
+                "  {:<18} {:>3}   last {}",
+                sc.script,
+                sc.count,
+                amont_runtime::bypass::age(now, sc.last)
+            )));
+        }
+    }
     lines.push(Line::from(""));
     let (agents_md_word, agents_md_colour) = match repo.agents_md {
         AgentsMdState::UpToDate => ("up to date".to_string(), Color::Green),
@@ -1100,6 +1157,8 @@ pub fn run(root: std::path::PathBuf, depth: usize, binary: String) -> std::io::R
         hooks_outside_seen: 0,
         excluded_dirs: 0,
         dirs_visited: 0,
+        bypassed_commits: 0,
+        repos_with_bypasses: 0,
         repos: Vec::new(),
     });
     app.scanning = true;
@@ -1192,6 +1251,8 @@ mod tests {
             hooks_outside_seen: 0,
             excluded_dirs: 0,
             dirs_visited: 412,
+            bypassed_commits: 0,
+            repos_with_bypasses: 0,
             repos: Vec::new(),
         }
     }
@@ -1214,6 +1275,7 @@ mod tests {
             applicable: Vec::new(),
             skips: Vec::new(),
             severities: Vec::new(),
+            bypasses: crate::bypasses::Bypasses::default(),
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
@@ -1237,6 +1299,8 @@ mod tests {
             hooks_outside_seen: 0,
             excluded_dirs: 3,
             dirs_visited: 100,
+            bypassed_commits: 0,
+            repos_with_bypasses: 0,
             repos: rs,
         }
     }
@@ -1531,6 +1595,78 @@ mod tests {
 
     /// The table counts only real downgrades. An inert line must not inflate
     /// the number, or the column becomes noise nobody acts on.
+    #[test]
+    fn the_bypass_column_is_a_dash_for_a_clean_repo() {
+        let app = App::new(scan_with_repos(vec![repo("clean", true)]));
+        let out = render(&app, 130, 12);
+        assert!(out.contains("BYPASS"), "the column must exist: {out}");
+        let row = out
+            .lines()
+            .find(|l| l.contains("clean "))
+            .expect("the repo row");
+        assert!(row.contains(" - "), "zero renders as a dash: {row}");
+    }
+
+    #[test]
+    fn the_bypass_column_counts_and_the_detail_pane_names_the_scripts() {
+        let mut r = repo("dodgy", true);
+        r.bypasses = crate::bypasses::Bypasses {
+            total: 3,
+            last: Some(0),
+            by_script: vec![
+                crate::bypasses::ScriptCount {
+                    script: "typecheck".into(),
+                    count: 2,
+                    last: 0,
+                },
+                crate::bypasses::ScriptCount {
+                    script: "test".into(),
+                    count: 1,
+                    last: 0,
+                },
+            ],
+        };
+        let mut app = App::new(scan_with_repos(vec![r]));
+        app.mode = Mode::Browse;
+        let out = render(&app, 130, 12);
+        let row = out
+            .lines()
+            .find(|l| l.contains("dodgy "))
+            .expect("the repo row");
+        assert!(row.contains(" 3 "), "the count renders: {row}");
+        app.mode = Mode::Detail;
+        let detail = render(&app, 130, 40);
+        assert!(detail.contains("unverified commits"), "{detail}");
+        assert!(detail.contains("typecheck"), "{detail}");
+        assert!(detail.contains("test"), "{detail}");
+    }
+
+    #[test]
+    fn the_bypass_column_drops_with_the_other_wide_columns() {
+        let app = App::new(scan_with_repos(vec![repo("some/repo", true)]));
+        let mid = render(&app, 80, 12);
+        assert!(
+            !mid.contains("BYPASS"),
+            "BYPASS drops with the wide columns: {mid}"
+        );
+    }
+
+    #[test]
+    fn the_header_says_nothing_about_bypasses_when_there_are_none() {
+        let app = App::new(scan_with_repos(vec![repo("clean", true)]));
+        let out = render(&app, 130, 12);
+        assert!(
+            !out.contains("unverified"),
+            "a clean fleet's header stays clean: {out}"
+        );
+        let mut scan = scan_with_repos(vec![repo("dodgy", true)]);
+        scan.bypassed_commits = 7;
+        scan.repos_with_bypasses = 3;
+        let app = App::new(scan);
+        let out = render(&app, 130, 12);
+        assert!(out.contains("7 unverified commits in 3 repos"), "{out}");
+    }
+
     #[test]
     fn the_warn_column_counts_only_what_actually_weakens() {
         let mut r = repo("a", true);
