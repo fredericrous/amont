@@ -37,7 +37,7 @@ pub fn early() -> Outcome {
         return Outcome::Passed;
     };
     if conforms(&branch) {
-        println!(
+        crate::say!(
             "{} Branch name conforms with authorized pattern",
             valid_sign()
         );
@@ -62,7 +62,7 @@ pub fn early() -> Outcome {
         .map(|p| p.name)
         .collect::<Vec<_>>()
         .join(", ");
-    println!(
+    crate::say!(
         "{} Branch {} will be refused at push time — it does not match
     {}.
     Rename it now, while nothing is stacked on the name: {} <prefix>/…
@@ -153,7 +153,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         .filter_map(|r| name_to_validate(r, &zero))
         .collect();
     if candidates.is_empty() {
-        println!(
+        crate::say!(
             "{} No new branch name to validate. Push is authorized.",
             valid_sign()
         );
@@ -173,7 +173,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
     // `None` here means git failed, which is NOT the same as "no branches" —
     // treat only a successful, empty listing as the initial-push case.
     if git::stdout(&["ls-remote", "--heads", remote]).is_some_and(|s| s.is_empty()) {
-        println!(
+        crate::say!(
             "{} Remote has no branches yet (initial push). Name is authorized.",
             valid_sign()
         );
@@ -189,7 +189,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         .collect();
     if !offenders.is_empty() {
         for name in &offenders {
-            println!(
+            crate::say!(
                 "{} Branch name {} does not adhere to this project's contract:
     {}.
     Rename your branch with: {} <branch name>
@@ -203,7 +203,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
 
-    println!(
+    crate::say!(
         "{} Branch name conforms with authorized pattern",
         valid_sign()
     );

@@ -332,6 +332,66 @@ pub fn status_within_secs(cmd: &mut Command, budget_secs: u64) -> std::io::Resul
         return cmd.status().map(Ran::Status);
     }
     let mut child = cmd.spawn()?;
+    wait_within(&mut child, budget_secs)
+}
+
+/// [`status_within`], with the child's stdout and stderr CAPTURED into the
+/// calling check's slot instead of inherited — the other half of one-check-
+/// one-block: a linter's twelve lines used to land on the shared terminal
+/// between two other checks' lines. Falls back to plain [`status_within`]
+/// when no slot is installed on this thread (`amont.progress false`, or a
+/// spawn outside a stage), which is byte-for-byte the old behaviour.
+///
+/// stdout and stderr merge in ARRIVAL order inside the block, which is what
+/// the terminal showed before. The readers are threads, not processes, and
+/// they are joined before the status is returned so a block can never grow
+/// after its check finished.
+pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
+    let Some((stage, idx)) = crate::live::current_sink() else {
+        return status_within(cmd);
+    };
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let budget = check_timeout();
+    let mut child = cmd.spawn()?;
+    let mut readers = Vec::new();
+    for pipe in [
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let stage = std::sync::Arc::clone(&stage);
+        readers.push(std::thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut chunk = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut pipe, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => stage.append_raw(idx, &chunk[..n]),
+                }
+            }
+        }));
+    }
+    let ran = wait_within(&mut child, budget)?;
+    for r in readers {
+        let _ = r.join();
+    }
+    Ok(ran)
+}
+
+/// The deadline loop over an already-spawned child — shared by the
+/// inherited and captured runners.
+fn wait_within(child: &mut std::process::Child, budget_secs: u64) -> std::io::Result<Ran> {
+    if budget_secs == 0 {
+        return child.wait().map(Ran::Status);
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
     loop {
         if let Some(status) = child.try_wait()? {
@@ -358,7 +418,7 @@ pub fn say_timed_out(what: &str, budget_secs: u64) {
 /// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
 /// tool spawns want. A timeout says so, names `what`, and reads as failure.
 pub fn bounded_success(cmd: &mut Command, what: &str) -> bool {
-    match status_within(cmd) {
+    match status_streamed(cmd) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(what, b);
@@ -399,7 +459,16 @@ pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     strip_git_env(&mut cmd);
-    bounded_success(&mut cmd, program)
+    // Deliberately NOT the streamed runner: this helper's contract is that
+    // the output is discarded, and capture would resurrect it into the block.
+    match status_within(&mut cmd) {
+        Ok(Ran::Status(s)) => s.success(),
+        Ok(Ran::TimedOut(b)) => {
+            say_timed_out(program, b);
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 /// Whether the user asked for checks to repair what they find.
@@ -499,13 +568,18 @@ pub fn restage(paths: &[String]) -> Restaged {
 }
 
 pub fn ok(msg: &str) {
-    println!("{} {msg}", valid_sign());
+    crate::live::say(&format!("{} {msg}", valid_sign()));
 }
 pub fn fail(msg: &str) {
-    println!("{} {msg}", error_sign());
+    crate::live::say(&format!("{} {msg}", error_sign()));
 }
 pub fn warn(msg: &str) {
-    println!("{} {msg}", warning_sign());
+    crate::live::say(&format!("{} {msg}", warning_sign()));
+}
+/// A line with no sign of its own — what a check's direct `println!` becomes,
+/// so it lands in the check's block instead of interleaving. See `live::say`.
+pub fn say(msg: &str) {
+    crate::live::say(msg);
 }
 
 /// Orange, for the fragments these hooks highlight.

@@ -121,6 +121,23 @@ limit can never accommodate) is reported by `amont list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
+## `amont.progress` — one check, one block
+
+```sh
+git config amont.progress false   # default true
+```
+
+On (the default): everything a pre-commit check says — its own lines and its
+tools' captured output — is buffered and emitted as ONE contiguous block when
+the check finishes, so twenty concurrent checks stop shuffling their failure
+output together. Blocks arrive in completion order.
+
+Off: raw streaming, exactly as before — every line lands the moment it is
+written, interleaved across whatever else is running. The honest cost of the
+default is that a long-running tool's output arrives when the check ends
+rather than as it happens; this key is the way back if you want to watch a
+test suite scroll.
+
 ## `amont.autoRebase` — whether pre-push may sync a behind branch for you
 
 ```sh

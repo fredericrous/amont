@@ -251,9 +251,25 @@ fn run_stage_traced(
     if checks.is_empty() {
         return (Verdict::Proceed, Vec::new());
     }
+    // One slot per check: everything a check says lands in its own buffer
+    // and reaches stdout as ONE block when it finishes — see `live`. Off
+    // (`amont.progress false`), no sink is ever installed and every print
+    // streams exactly as it always did.
+    let stage = crate::live::enabled().then(|| {
+        let names: Vec<&str> = checks.iter().map(|c| c.name()).collect();
+        crate::live::Stage::begin(&names)
+    });
+    let items: Vec<(usize, &&dyn Check)> = checks.iter().enumerate().collect();
     let outcomes = run_concurrently(
-        checks,
-        |check| {
+        &items,
+        |(idx, check)| {
+            let _sink = stage.as_ref().map(|s| s.enter(*idx));
+            // The block is emitted however the check leaves — a panicking
+            // check's partial output still reaches the reader, above the
+            // dead-check verdict `run_concurrently` fills in.
+            let _flush = stage
+                .as_ref()
+                .map(|s| crate::live::FinishOnDrop::new(s, *idx));
             let sub = Ctx {
                 name: check.name(),
                 args: ctx.args,
@@ -472,7 +488,16 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // only because the zsh version had none. Now it asks the same question
     // pre-commit does and each check answers for itself.
     let in_progress = crate::git_states_in_progress();
-    for check in selected_during(Stage::PrePush, &in_progress, ctx.manifest) {
+    let pre_push_checks = selected_during(Stage::PrePush, &in_progress, ctx.manifest);
+    let stage = crate::live::enabled().then(|| {
+        let names: Vec<&str> = pre_push_checks.iter().map(|c| c.name()).collect();
+        crate::live::Stage::begin(&names)
+    });
+    for (idx, check) in pre_push_checks.iter().enumerate() {
+        let _sink = stage.as_ref().map(|s| s.enter(idx));
+        let _flush = stage
+            .as_ref()
+            .map(|s| crate::live::FinishOnDrop::new(s, idx));
         let sub = Ctx {
             name: check.name(),
             args: ctx.args,
@@ -495,7 +520,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             // Cannot occur: `Fix::Rewrite` is refused on a pre-push
             // declaration, so nothing here can repair anything.
             Outcome::Fixed => {}
-            Outcome::Failed => match severities.of(check) {
+            Outcome::Failed => match severities.of(*check) {
                 Severity::Warn => println!(
                     "{} {} reported a problem (severity warn)",
                     warning_sign(),

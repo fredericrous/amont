@@ -29,6 +29,7 @@ pub mod hookfile;
 pub mod hooks;
 pub mod install;
 pub mod json;
+pub mod live;
 pub mod manifest;
 pub mod pushed_tree;
 pub mod pushrefs;

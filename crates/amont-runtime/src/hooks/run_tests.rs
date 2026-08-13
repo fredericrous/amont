@@ -313,7 +313,7 @@ fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
             .current_dir(&dir)
             .stdin(Stdio::null());
         super::common::strip_git_env(&mut cmd);
-        match super::common::status_within(&mut cmd) {
+        match super::common::status_streamed(&mut cmd) {
             Ok(super::common::Ran::Status(status)) if status.success() => {}
             Ok(super::common::Ran::TimedOut(budget)) => {
                 super::common::say_timed_out(script, budget);
@@ -421,7 +421,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                 if unstamped == 0 {
                     already.push(d.script);
                 } else if !warned.contains(&d.script) {
-                    println!(
+                    crate::say!(
                         "{} {} is declared at commit time, but {unstamped} pushed \
                          commit{} carr{} no record of it — running it here",
                         crate::ui::warning_sign(),
@@ -457,7 +457,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                 .filter(|s| !announced.contains(s))
                 .collect();
             if !newly.is_empty() {
-                println!(
+                crate::say!(
                     "{} {} gated at commit instead — not repeating {} here",
                     crate::ui::valid_sign(),
                     newly.join(", "),

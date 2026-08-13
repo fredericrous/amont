@@ -414,7 +414,7 @@ impl Check for External {
         // Under the deadline: repo-authored code that outlives the budget is
         // killed and FAILS — "hung" must not read as "passed", and pre-push
         // runs these serially where one hang stalls the entire push.
-        let status = match crate::hooks::common::status_within(&mut cmd) {
+        let status = match crate::hooks::common::status_streamed(&mut cmd) {
             Ok(crate::hooks::common::Ran::Status(s)) => Ok(s),
             Ok(crate::hooks::common::Ran::TimedOut(budget)) => {
                 crate::hooks::common::say_timed_out(&self.short_name, budget);
