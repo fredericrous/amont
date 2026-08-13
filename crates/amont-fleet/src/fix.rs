@@ -632,6 +632,7 @@ mod tests {
             applicable: Vec::new(),
             skips: Vec::new(),
             severities: Vec::new(),
+            bypasses: crate::bypasses::Bypasses::default(),
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,

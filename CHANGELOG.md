@@ -8,6 +8,14 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **The fleet sees the bypasses.** `amont-fleet` reads each repository's
+  bypass ledger (through the runtime's own parser — the dashboard cannot
+  form its own opinion) and shows it: a `BYPASS` column in the overview,
+  tinted only when the newest event is recent; a per-script block in the
+  repo detail pane; a fleet aggregate in the header and the text report,
+  spoken only when non-zero. `scan --json` carries the per-repo objects and
+  the fleet totals.
+
 - **A dodged gate is counted.** post-commit always knew when a commit
   arrived without its commit-time gate having run — `--no-verify`, a blocked
   attempt retried with it, a missing tool — and discarded the signal on the

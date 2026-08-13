@@ -882,3 +882,43 @@ fn a_repo_with_a_stale_block_scans_as_drifted() {
     let v = json(&["--root", t.path().to_str().unwrap()]);
     assert_eq!(v["repos"][0]["agents_md"], "drifted");
 }
+
+/// The bypass ledger reaches the JSON, read through the runtime's own
+/// parser — and a repo without one reads as zero, not as an error.
+#[test]
+fn the_json_carries_each_repos_bypass_ledger() {
+    let t = Tree::new("bypasses");
+    t.managed_repo("a");
+    // `managed_repo` fakes the directory shape; the ledger reader resolves
+    // the common dir through git, so this repo must be real.
+    let repo = t.path().join("a");
+    Command::new("git")
+        .args(["init", "-q", "--template=", "."])
+        .current_dir(&repo)
+        .output()
+        .expect("git init");
+    std::fs::write(
+        repo.join(".git/amont-bypasses"),
+        "amont-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n",
+    )
+    .expect("write ledger");
+    let v = json(&["--root", t.path().to_str().unwrap()]);
+    let b = &v["repos"][0]["bypasses"];
+    assert_eq!(b["total"], 3, "{b}");
+    assert_eq!(b["last"], 200, "{b}");
+    assert_eq!(b["by_script"][0]["script"], "typecheck");
+    assert_eq!(b["by_script"][0]["count"], 2);
+    assert_eq!(b["by_script"][0]["last"], 200);
+    assert_eq!(v["bypassed_commits"], 3, "{}", v["bypassed_commits"]);
+    assert_eq!(v["repos_with_bypasses"], 1);
+}
+
+/// A fleet with no ledgers anywhere aggregates to zero.
+#[test]
+fn a_clean_fleet_has_zero_bypasses_in_the_json() {
+    let t = Tree::new("bypasses-clean");
+    t.managed_repo("a");
+    let v = json(&["--root", t.path().to_str().unwrap()]);
+    assert_eq!(v["repos"][0]["bypasses"]["total"], 0);
+    assert_eq!(v["bypassed_commits"], 0);
+}

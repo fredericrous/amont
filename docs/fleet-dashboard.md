@@ -323,6 +323,15 @@ drifted merely because `__AMONT_BIN__` was replaced.
   something: an explicit `block`, a misspelt check name and an unrecognised value
   all change nothing, and inflating the count with them is how a column stops
   being read. The detail pane names all three.
+- `BYPASS` is not folded into `WARN` for the same reason: a downgrade is a
+  policy statement about the repository, a bypass is an event that happened.
+  It counts unverified commits — commits carrying no record their commit-time
+  gate ran — read from the runtime's local ledger through the runtime's own
+  parser. The count is a *floor* once the runtime compacts the ledger; the
+  tint follows recency (an event in the last 30 days), because three dodges
+  this month and three from two years ago must not paint alike. A rate needs
+  a denominator (commits over the same window, `rev-list --count` at scan
+  time); that is deliberately v-next rather than half-implemented here.
 
 ### The empty state, which is the point
 
@@ -499,8 +508,8 @@ one is not a code path that exists.
 - **`NO_COLOR`** (and `TERM=dumb`) → glyph-and-text rendering, fully usable.
 - **CVD-safe**: state never encoded by colour alone; every colour is paired with
   a distinct glyph and a word in the legend.
-- **Narrow terminals**: below 100 columns drop `LANG`, `SKIPS`, `WARN` and
-  `DECL` together; below 60, fall back to a single-column list. Never horizontal
+- **Narrow terminals**: below 100 columns drop `LANG`, `SKIPS`, `WARN`,
+  `DECL` and `BYPASS` together; below 60, fall back to a single-column list. Never horizontal
   scrolling.
 - **Screen readers do not meaningfully work with TUIs.** The accessible path is
   therefore `amont fleet --json`, emitting the full data model for scripting

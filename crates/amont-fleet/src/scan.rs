@@ -123,6 +123,12 @@ pub struct Repo {
     /// repo that enforces nothing reads exactly like one that enforces
     /// everything unless this column says otherwise.
     pub severities: Vec<SeverityOverride>,
+    /// Commits made here that carry no record their commit-time gate ran —
+    /// `--no-verify` and its cousins, read from the runtime's local ledger.
+    /// A rising count is the first symptom of a gate people have started
+    /// routing around (a slow check, a flaky one), and until it was counted
+    /// the hooks detected the signal on every commit and threw it away.
+    pub bypasses: crate::bypasses::Bypasses,
     /// Checks this repo declares in `amont.conf`. Invisible to the fleet
     /// view until now: a repo could be running a command on every commit that
     /// no dashboard column mentioned, and a manifest line nobody can parse is a
@@ -196,6 +202,10 @@ pub struct FleetScan {
     pub hooks_outside_seen: usize,
     pub excluded_dirs: usize,
     pub dirs_visited: usize,
+    /// Unverified commits summed across the fleet, with the repo count as
+    /// the denominator's denominator — every number here carries context.
+    pub bypassed_commits: usize,
+    pub repos_with_bypasses: usize,
     pub repos: Vec<Repo>,
 }
 
@@ -550,6 +560,8 @@ pub fn scan(
             hooks_outside_seen: 0,
             excluded_dirs: 0,
             dirs_visited: 0,
+            bypassed_commits: 0,
+            repos_with_bypasses: 0,
             repos: Vec::new(),
         },
     };
@@ -670,7 +682,10 @@ fn found_repo(w: &mut Walk, repo: &Path) -> Repo {
     // path: two repos can legitimately be told to use one `core.hooksPath`
     // without being the same repository, and it is the repository identity that
     // decides whether writing twice is writing the same file twice.
-    let shares_hooks_with = common_dir_for(repo).and_then(|common| {
+    // Resolved once and reused below for the bypass ledger — one
+    // `rev-parse` per repo, not two, across a whole fleet.
+    let common = common_dir_for(repo);
+    let shares_hooks_with = common.clone().and_then(|common| {
         use std::collections::hash_map::Entry;
         let rel = repo.strip_prefix(&w.root).unwrap_or(repo).to_path_buf();
         match w.seen_common.entry(common) {
@@ -703,14 +718,20 @@ fn found_repo(w: &mut Walk, repo: &Path) -> Repo {
     } else {
         w.scan.unmanaged_seen += 1;
     }
-    inspect(
+    let inspected = inspect(
         &w.root,
         repo,
         hooks_dir,
         managed,
         shares_hooks_with,
+        common.as_deref(),
         &w.installed_binary,
-    )
+    );
+    w.scan.bypassed_commits += inspected.bypasses.total;
+    if inspected.bypasses.total > 0 {
+        w.scan.repos_with_bypasses += 1;
+    }
+    inspected
 }
 
 /// Everything we can learn about one repository from its hooks directory.
@@ -728,6 +749,7 @@ fn inspect(
     hooks_dir: HooksDir,
     managed: bool,
     shares_hooks_with: Option<PathBuf>,
+    common_dir: Option<&Path>,
     installed_binary: &str,
 ) -> Repo {
     let (mut stale_ours, mut foreign_subs) = (Vec::new(), Vec::new());
@@ -781,6 +803,7 @@ fn inspect(
         applicable: applicable_checks(repo),
         skips: skips::read(repo),
         severities: severities::read(repo),
+        bypasses: common_dir.map(crate::bypasses::read).unwrap_or_default(),
         declared: declared_checks(repo),
         trusted: match amont_runtime::trust::state(repo) {
             amont_runtime::trust::State::NoManifest => None,
