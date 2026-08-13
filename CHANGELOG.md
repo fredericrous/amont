@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.6.0 — 2026-08-11
+## v1.6.0 — 2026-08-13
 
 - **The fleet sees the bypasses.** `amont-fleet` reads each repository's
   bypass ledger (through the runtime's own parser — the dashboard cannot
