@@ -351,6 +351,13 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
         return status_within(cmd);
     };
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if crate::live::watching() {
+        // The block lands on a real terminal but the tool sees a pipe and
+        // would strip its colors; the big three opt-in knobs put them back.
+        cmd.env("FORCE_COLOR", "1")
+            .env("CLICOLOR_FORCE", "1")
+            .env("CARGO_TERM_COLOR", "always");
+    }
     let budget = check_timeout();
     let mut child = cmd.spawn()?;
     let mut readers = Vec::new();

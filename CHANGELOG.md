@@ -8,6 +8,17 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **The hooks show their work.** While the concurrent stage runs, an
+  interactive terminal now gets a live region under the finished blocks:
+  one line per running check — braille spinner, name, elapsed seconds —
+  repainted ten times a second, shrinking as checks finish, erased without
+  a trace when the stage ends. Pre-push gets the same treatment, so a long
+  `cargo test` is a ticking clock instead of a frozen prompt. Std-only, on
+  stderr, strictly TTY-gated (pipes, redirects, `TERM=dumb`, and CI logs
+  never see a control code); captured tools get `FORCE_COLOR`/
+  `CLICOLOR_FORCE`/`CARGO_TERM_COLOR` so their blocks keep their colors.
+  `amont.progress false` turns it off with the rest of the machinery.
+
 - **One check, one block.** Twenty concurrent pre-commit checks used to
   print straight to the shared terminal from their own threads, shuffling
   two failing linters' lines together — the dispatcher's roll-up existed

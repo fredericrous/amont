@@ -18,6 +18,13 @@ Git runs it before the commit exists. All fifteen built-in checks fan out
 **concurrently**, each reporting its own line, and a panic in one is isolated so
 the other fourteen still report.
 
+On an interactive terminal you watch this happen: a live region shows one
+spinner line per check still running (`⠹ clippy   2.3s`), shrinking as they
+finish, while each finished check's full output lands above it as one
+contiguous block — never interleaved with another check's, however many run
+at once. Piped or in CI the region stays silent and only the blocks appear.
+`git config amont.progress false` restores plain streaming output.
+
 Most of them will say nothing, because most are inert in any given repository:
 a check fires only when the commit touches files it understands *and* the
 repository carries the configuration that opts into that tool. `amont list`

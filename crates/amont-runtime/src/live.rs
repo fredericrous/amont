@@ -1,4 +1,5 @@
-//! One check, one block: per-check output capture for the concurrent stage.
+//! One check, one block — and while it runs, one line: per-check output
+//! capture plus a live progress region for the concurrent stage.
 //!
 //! Twenty checks used to print straight to inherited stdio from their own
 //! threads, so two failing linters shuffled their lines together and the
@@ -24,19 +25,45 @@
 //! without the shuffling. `amont.progress false` switches the whole
 //! mechanism off and restores raw streaming for anyone who wants to watch a
 //! tool write in real time.
+//!
+//! # The region
+//!
+//! When stderr is a real terminal ([`watching`]) the stage also paints a
+//! live region UNDER the finished blocks: one line per running check —
+//! braille spinner, name, elapsed — repainted every 80ms by a ticker
+//! thread, shrinking as checks finish, gone without a trace when the stage
+//! ends. Blocks go to stdout, the region to stderr; both feed one tty, and
+//! every write to either happens under the same [`Stage::out`] lock, so a
+//! block never tears a repaint in half. Piped, redirected, `TERM=dumb`, or
+//! CI: [`watching`] is false, no ticker starts, and the region costs
+//! nothing — which is also why the test suite (piped stdio throughout)
+//! exercises capture but never the paint.
 
 use std::cell::RefCell;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
+
+/// The fleet spinner's frames (progress.rs) — cycled by elapsed time, so a
+/// frame needs no state beyond the clock.
+const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The region never grows past this many check lines; the rest fold into
+/// one `… and N more`. Twelve is the whole default fleet on one screen.
+const MAX_LINES: usize = 12;
 
 /// One check's place in the stage.
 struct Slot {
-    #[allow(dead_code)] // the live region (next change) reads these two
+    /// Sanitised at [`Stage::begin`]: a manifest-declared name is
+    /// repo-derived text and the region writes it to a live terminal.
     name: String,
-    #[allow(dead_code)]
+    /// Restamped by [`Stage::enter`], so a serial stage (pre-push) times
+    /// each check from its own start, not the stage's.
     started: Instant,
     buf: Vec<u8>,
+    /// Entered and not yet finished — the region shows exactly these.
+    running: bool,
     done: bool,
 }
 
@@ -44,8 +71,12 @@ struct Slot {
 /// the stage goes through.
 pub struct Stage {
     slots: Mutex<Vec<Slot>>,
-    /// Serialises block emission (and, next change, region repaints).
-    out: Mutex<()>,
+    /// Serialises block emission and region repaints; the value is how many
+    /// region lines are currently painted (what an erase must remove).
+    out: Mutex<usize>,
+    /// Painting at all? [`enabled`] && [`watching`], decided once at begin.
+    live: bool,
+    stop: AtomicBool,
 }
 
 thread_local! {
@@ -55,28 +86,55 @@ thread_local! {
 
 impl Stage {
     /// A stage over `names`, in dispatch order. Does nothing visible until
-    /// checks start finishing.
+    /// checks start entering (the region) or finishing (the blocks).
     pub fn begin(names: &[&str]) -> Arc<Stage> {
         let now = Instant::now();
-        Arc::new(Stage {
+        let stage = Arc::new(Stage {
             slots: Mutex::new(
                 names
                     .iter()
                     .map(|n| Slot {
-                        name: (*n).to_string(),
+                        // Every name in a stage carries the stage's own
+                        // prefix ("pre-commit-clippy"); the region drops it
+                        // — twelve identical prefixes say nothing.
+                        name: crate::ui::sanitize(
+                            n.strip_prefix("pre-commit-")
+                                .or_else(|| n.strip_prefix("pre-push-"))
+                                .unwrap_or(n),
+                        ),
                         started: now,
                         buf: Vec::new(),
+                        running: false,
                         done: false,
                     })
                     .collect(),
             ),
-            out: Mutex::new(()),
-        })
+            out: Mutex::new(0),
+            live: enabled() && watching(),
+            stop: AtomicBool::new(false),
+        });
+        if stage.live {
+            // The ticker holds a Weak: the stage dropping is what ends it,
+            // so a paint can never outlive the region's owner.
+            let weak = Arc::downgrade(&stage);
+            let _ = std::thread::Builder::new()
+                .name("amont-live".into())
+                .spawn(move || tick(weak));
+        }
+        stage
     }
 
     /// Route this thread's [`say`] calls into slot `idx` until the guard
-    /// drops. Installed by the dispatcher around each `check.run`.
+    /// drops. Installed by the dispatcher around each `check.run`. Also
+    /// starts the slot's clock and puts it in the region.
     pub fn enter(self: &Arc<Stage>, idx: usize) -> SinkGuard {
+        {
+            let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(slot) = slots.get_mut(idx) {
+                slot.running = true;
+                slot.started = Instant::now();
+            }
+        }
         SINK.with(|s| *s.borrow_mut() = Some((Arc::clone(self), idx)));
         SinkGuard
     }
@@ -101,7 +159,9 @@ impl Stage {
         }
     }
 
-    /// The check is over: emit everything it said as ONE contiguous write.
+    /// The check is over: emit everything it said as ONE contiguous write,
+    /// with the region lifted out of the way first and repainted after —
+    /// blocks pile up above, spinners stay below.
     ///
     /// Called by the dispatcher after `check.run` returns (still on the
     /// check's thread, so a torn-down thread cannot strand a buffer — the
@@ -113,17 +173,131 @@ impl Stage {
                 return;
             };
             slot.done = true;
+            slot.running = false;
             std::mem::take(&mut slot.buf)
         };
-        if block.is_empty() {
+        if block.is_empty() && !self.live {
             return;
         }
-        let _out = self.out.lock().unwrap_or_else(|p| p.into_inner());
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        let _ = handle.write_all(&block);
-        let _ = handle.flush();
+        let mut drawn = self.out.lock().unwrap_or_else(|p| p.into_inner());
+        if !block.is_empty() {
+            if *drawn > 0 {
+                let mut err = std::io::stderr().lock();
+                let _ = write!(err, "\x1b[{}A\x1b[J", *drawn);
+                let _ = err.flush();
+                *drawn = 0;
+            }
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let _ = handle.write_all(&block);
+            let _ = handle.flush();
+        }
+        self.repaint(&mut drawn);
     }
+
+    /// Erase and redraw the region in one stderr write. Lock order is
+    /// `out` → `slots`, everywhere — never the reverse.
+    fn repaint(&self, drawn: &mut usize) {
+        if !self.live {
+            return;
+        }
+        let entries: Vec<(String, f64)> = {
+            let slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
+            let now = Instant::now();
+            slots
+                .iter()
+                .filter(|s| s.running && !s.done)
+                .map(|s| (s.name.clone(), now.duration_since(s.started).as_secs_f64()))
+                .collect()
+        };
+        let text = region(&entries, term_width());
+        let mut paint = String::new();
+        if *drawn > 0 {
+            paint.push_str(&format!("\x1b[{}A\x1b[J", *drawn));
+        }
+        paint.push_str(&text);
+        if paint.is_empty() {
+            return;
+        }
+        let mut err = std::io::stderr().lock();
+        let _ = err.write_all(paint.as_bytes());
+        let _ = err.flush();
+        *drawn = text.matches('\n').count();
+    }
+}
+
+impl Drop for Stage {
+    /// The stage's end erases whatever the region still shows — a Block
+    /// verdict, a panic on the dispatcher path, anything: no spinner junk
+    /// above the roll-up. (`get_mut`: dropping proves no other thread holds
+    /// the stage, so the locks are free.)
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if !self.live {
+            return;
+        }
+        let drawn = self.out.get_mut().unwrap_or_else(|p| p.into_inner());
+        if *drawn > 0 {
+            let mut err = std::io::stderr().lock();
+            let _ = write!(err, "\x1b[{}A\x1b[J", *drawn);
+            let _ = err.flush();
+            *drawn = 0;
+        }
+    }
+}
+
+/// The ticker: repaint every 80ms until the stage drops or tells it to
+/// stop. Holds only a `Weak`, so it can never keep a finished stage alive.
+fn tick(weak: Weak<Stage>) {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let Some(stage) = weak.upgrade() else { return };
+        if stage.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut drawn = stage.out.lock().unwrap_or_else(|p| p.into_inner());
+        stage.repaint(&mut drawn);
+    }
+}
+
+/// The region's text: one `⠹ name  12.3s` line per running check, capped at
+/// [`MAX_LINES`] plus a `… and N more` overflow line. Pure — the ticker is
+/// a thin shell around this, and the tests drive it directly.
+fn region(entries: &[(String, f64)], width: usize) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let pad = entries
+        .iter()
+        .take(MAX_LINES)
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for (name, secs) in entries.iter().take(MAX_LINES) {
+        let frame = FRAMES[((secs * 10.0) as usize) % FRAMES.len()];
+        let line = format!("{frame} {name:<pad$} {secs:>5.1}s");
+        if line.chars().count() > width {
+            out.extend(line.chars().take(width));
+        } else {
+            out.push_str(&line);
+        }
+        out.push('\n');
+    }
+    if entries.len() > MAX_LINES {
+        out.push_str(&format!("… and {} more\n", entries.len() - MAX_LINES));
+    }
+    out
+}
+
+/// `$COLUMNS` when it is exported and sane, else a conservative 100 — the
+/// region's lines are short and an ioctl is not worth its portability.
+fn term_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse::<usize>().ok())
+        .filter(|w| *w >= 20)
+        .unwrap_or(100)
 }
 
 /// Emits slot `idx`'s block when dropped — however the check's closure
@@ -195,6 +369,24 @@ pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| crate::config::boolean_or("amont.progress", true))
 }
 
+/// Is anyone watching? True only when stderr is a real terminal that speaks
+/// VT: not piped, not redirected, not `TERM=dumb` — and on Windows only
+/// with `TERM` actually set, because bare conhost may not interpret the
+/// cursor codes the region depends on. This is the paint gate; capture
+/// ([`enabled`]) does not consult it.
+pub fn watching() -> bool {
+    static WATCHING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WATCHING.get_or_init(|| {
+        if !std::io::stderr().is_terminal() {
+            return false;
+        }
+        match std::env::var("TERM") {
+            Ok(term) => term != "dumb",
+            Err(_) => !cfg!(windows),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +440,68 @@ mod tests {
         stage.append_raw(0, b"after\n");
         let slots = stage.slots.lock().unwrap();
         assert!(slots[0].buf.is_empty(), "a write landed after finish");
+    }
+
+    /// A repo-derived check name cannot smuggle control bytes onto a live
+    /// terminal: sanitised at begin, once, for every later paint.
+    #[test]
+    fn a_slot_name_is_sanitised_at_begin() {
+        let stage = Stage::begin(&["evil\u{1b}[2Jname\rhere"]);
+        let slots = stage.slots.lock().unwrap();
+        assert!(!slots[0].name.contains('\u{1b}'), "{:?}", slots[0].name);
+        assert!(!slots[0].name.contains('\r'), "{:?}", slots[0].name);
+    }
+
+    /// Region names drop the stage's own prefix — it is the same twelve
+    /// characters on every line.
+    #[test]
+    fn a_slot_name_drops_the_stage_prefix() {
+        let stage = Stage::begin(&["pre-commit-clippy", "pre-push-run-tests", "bare"]);
+        let slots = stage.slots.lock().unwrap();
+        assert_eq!(slots[0].name, "clippy");
+        assert_eq!(slots[1].name, "run-tests");
+        assert_eq!(slots[2].name, "bare");
+    }
+
+    /// The spinner frame comes from the clock: different elapsed, different
+    /// frame; same elapsed, same frame.
+    #[test]
+    fn frames_advance_with_time() {
+        let a = region(&[("clippy".into(), 0.0)], 80);
+        let b = region(&[("clippy".into(), 0.1)], 80);
+        let c = region(&[("clippy".into(), 1.0)], 80);
+        assert_ne!(a.chars().next(), b.chars().next());
+        assert_eq!(a.chars().next(), c.chars().next(), "10 frames per second");
+    }
+
+    /// Names pad to a column so the elapsed figures align.
+    #[test]
+    fn region_lines_align() {
+        let text = region(&[("a".into(), 0.0), ("longer-name".into(), 0.0)], 80);
+        let widths: Vec<usize> = text.lines().map(|l| l.chars().count()).collect();
+        assert_eq!(widths[0], widths[1], "{text:?}");
+    }
+
+    /// Thirteen running checks paint as twelve lines and one overflow.
+    #[test]
+    fn region_caps_and_counts_the_rest() {
+        let entries: Vec<(String, f64)> = (0..13).map(|i| (format!("check-{i}"), 0.0)).collect();
+        let text = region(&entries, 80);
+        assert_eq!(text.lines().count(), MAX_LINES + 1);
+        assert!(text.ends_with("… and 1 more\n"), "{text:?}");
+    }
+
+    /// A narrow terminal truncates rather than wraps — a wrapped region
+    /// line would break the erase arithmetic.
+    #[test]
+    fn region_respects_width() {
+        let text = region(&[("a-name-much-longer-than-the-terminal".into(), 0.0)], 20);
+        assert!(text.lines().all(|l| l.chars().count() <= 20), "{text:?}");
+    }
+
+    /// No running checks, no region — not even a blank line.
+    #[test]
+    fn an_empty_region_is_empty() {
+        assert_eq!(region(&[], 80), "");
     }
 }
