@@ -130,7 +130,12 @@ git config amont.progress false   # default true
 On (the default): everything a pre-commit check says — its own lines and its
 tools' captured output — is buffered and emitted as ONE contiguous block when
 the check finishes, so twenty concurrent checks stop shuffling their failure
-output together. Blocks arrive in completion order.
+output together. Blocks arrive in completion order. And when stderr is a
+real terminal, a live region under the blocks shows one line per running
+check — spinner, name, elapsed — so a slow `cargo test` is a ticking clock
+instead of a frozen prompt. The region only ever paints on an interactive
+terminal; piped or redirected output, `TERM=dumb`, and CI logs never see a
+control code.
 
 Off: raw streaming, exactly as before — every line lands the moment it is
 written, interleaved across whatever else is running. The honest cost of the

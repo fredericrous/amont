@@ -352,8 +352,8 @@ fn announce(report: &Report) {
     }
     if !report.unavailable.is_empty() {
         // Distinct from "passed". Silence here is how a repo looks verified
-        // when nothing actually ran — and with twenty checks interleaving
-        // their output, a trailing count is the only place you can see it.
+        // when nothing actually ran — the trailing count is the one line
+        // guaranteed to be read, whatever the twenty blocks above said.
         println!(
             "{} {} check(s) could not run: {}",
             warning_sign(),
