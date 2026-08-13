@@ -8,6 +8,16 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **A dodged gate is counted.** post-commit always knew when a commit
+  arrived without its commit-time gate having run — `--no-verify`, a blocked
+  attempt retried with it, a missing tool — and discarded the signal on the
+  spot. It now appends one line per dodged script to a local ledger
+  (`$GIT_COMMON_DIR/amont-bypasses`, versioned `amont-bypass-v1`), silently,
+  and `amont list` reports the tally as "unverified commits" (with a
+  `bypasses` object in `--json`). Local-only, never pushed, no telemetry;
+  `amont.recordBypasses false` opts out, `amont uninstall` erases it. An
+  ungated repository pays zero extra git spawns — pinned by a budget test.
+
 - **The hooks show their work.** While the concurrent stage runs, an
   interactive terminal now gets a live region under the finished blocks:
   one line per running check — braille spinner, name, elapsed seconds —

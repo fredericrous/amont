@@ -849,3 +849,168 @@ fn a_linked_worktree_commit_earns_a_stamp_the_push_sees() {
         "a worktree commit's stamp was invisible to the push:\n{text}"
     );
 }
+
+// --- the bypass ledger -----------------------------------------------------
+//
+// The stamp's silent sibling: a commit a gate declaration covered, created
+// without that gate having run, appends one line per dodged script to
+// `.git/amont-bypasses`. These tests pin what counts and — just as load-
+// bearing — what does not: the fixture's own setup commits, out-of-scope
+// commits, and repositories that declare no gate must all leave NO file.
+
+fn ledger(r: &Repo) -> Option<String> {
+    std::fs::read_to_string(r.path(".git/amont-bypasses")).ok()
+}
+
+#[test]
+fn a_stamped_repo_starts_with_an_empty_ledger() {
+    let (r, _base) = stamped_repo();
+    assert_eq!(
+        ledger(&r),
+        None,
+        "the fixture's pre-install commits must not register"
+    );
+}
+
+#[test]
+fn a_no_verify_commit_a_gate_covers_is_recorded_as_unverified() {
+    let (r, _base) = stamped_repo();
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
+    let text = ledger(&r).expect("a bypassed gate leaves a ledger");
+    assert!(text.starts_with("amont-bypass-v1"), "{text:?}");
+    assert!(text.contains(" typecheck"), "{text:?}");
+    assert_eq!(text.lines().count(), 2, "one header, one event: {text:?}");
+}
+
+#[test]
+fn a_verified_commit_records_nothing() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = stamped_repo();
+    r.stage("src/b.ts", "export const y = 2\n");
+    verified_commit(&r, "feat: through the gate");
+    assert_eq!(ledger(&r), None, "a stamped commit is not a bypass");
+}
+
+#[test]
+fn a_commit_outside_the_declarations_scope_records_nothing() {
+    let (r, _base) = stamped_repo();
+    r.stage("README.md", "docs only\n");
+    r.commit("docs: no ts touched");
+    assert_eq!(
+        ledger(&r),
+        None,
+        "the gate never covered this commit, so nothing was dodged"
+    );
+}
+
+#[test]
+fn a_repo_that_declares_no_gate_records_nothing() {
+    let r = Repo::new();
+    r.stage("a.txt", "hello\n");
+    r.commit("chore: base");
+    install_hooks(&r);
+    r.stage("b.txt", "more\n");
+    r.commit("chore: more");
+    assert_eq!(ledger(&r), None, "no declaration, no bypass to count");
+}
+
+#[test]
+fn a_blocked_commit_retried_with_no_verify_is_recorded() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage("tc.js", "process.exit(1)\n");
+    r.commit("chore: base");
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n",
+    );
+    r.commit("chore: gate at commit time");
+    trust_manifest(&r);
+    install_hooks(&r);
+    r.stage("src/a.ts", "export const x = 1\n");
+    let attempt = r.git(&["commit", "-q", "-m", "feat: blocked"]);
+    assert!(!attempt.status.success(), "the gate must block the attempt");
+    r.commit("feat: bypassed after the block");
+    let text = ledger(&r).expect("the retry dodged a gate that said no");
+    assert!(text.contains(" typecheck"), "{text:?}");
+}
+
+#[test]
+fn a_partially_stamped_commit_records_only_the_missing_script() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = stamped_repo();
+    // A second gate whose program does not exist: it reports Unavailable at
+    // commit time (warn, never blocks), earns no stamp, and is exactly the
+    // case the discard-site design missed — the commit lands stamped for
+    // typecheck and unverified for test.
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n\
+         pre-commit  test       *.ts,*.tsx  block  amont-no-such-tool-xyz\n",
+    );
+    r.stage("src/b.ts", "export const y = 2\n");
+    trust_manifest(&r);
+    verified_commit(&r, "feat: half a gate");
+    let text = ledger(&r).expect("the unavailable half goes unverified");
+    assert!(text.contains(" test"), "{text:?}");
+    assert!(
+        !text.contains(" typecheck"),
+        "the stamped half must not be counted: {text:?}"
+    );
+}
+
+#[test]
+fn amont_list_json_reports_the_bypass_ledger() {
+    let (r, _base) = stamped_repo();
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: dodge the gate");
+    let out = r.run(&["list", "--json"]);
+    assert_eq!(out.code, 0, "{}", out.output());
+    assert!(
+        out.stdout.contains("\"bypasses\":{\"total\":1"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("\"script\":\"typecheck\",\"count\":1"),
+        "{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn amont_list_text_names_the_dodged_script() {
+    let (r, _base) = stamped_repo();
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: dodge the gate");
+    let out = r.run(&["list"]);
+    assert!(out.stdout.contains("unverified commits"), "{}", out.stdout);
+    assert!(out.stdout.contains("typecheck"), "{}", out.stdout);
+}
+
+#[test]
+fn amont_uninstall_forgets_the_bypass_ledger() {
+    let (r, _base) = stamped_repo();
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: dodge the gate");
+    assert!(ledger(&r).is_some());
+    let out = r.run(&["uninstall"]);
+    assert_eq!(out.code, 0, "{}", out.output());
+    assert_eq!(ledger(&r), None, "the ledger is OUR bookkeeping — gone");
+}
+
+#[test]
+fn amont_record_bypasses_false_records_nothing() {
+    let (r, _base) = stamped_repo();
+    r.git(&["config", "amont.recordBypasses", "false"]);
+    r.stage("src/b.ts", "export const y = 2\n");
+    r.commit("feat: dodge the gate, off the record");
+    assert_eq!(ledger(&r), None, "the documented switch must be honoured");
+}

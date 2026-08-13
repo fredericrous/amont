@@ -121,6 +121,25 @@ limit can never accommodate) is reported by `amont list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
+## `amont.recordBypasses` — whether a dodged gate is tallied
+
+```sh
+git config amont.recordBypasses false   # default true
+```
+
+When a commit that a commit-time gate declaration covered lands without that
+gate having run — `git commit --no-verify`, a blocked attempt retried with
+it, a gate whose tool was missing — `post-commit` silently appends one line
+per dodged script to `$(git rev-parse --git-common-dir)/amont-bypasses`.
+`amont list` shows the tally as "unverified commits". The file is local:
+never a ref, never pushed, never sent anywhere.
+
+`false` stops the counting from now on. The switch exists because "my tool
+counts my bypasses" can reasonably read as surveillance, and the answer to
+that reading should be a documented off-switch rather than an argument —
+though the count is also the first place a slow or flaky check becomes
+visible as the thing people route around.
+
 ## `amont.progress` — one check, one block
 
 ```sh

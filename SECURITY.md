@@ -111,7 +111,10 @@ Not because they do not matter, but so a report is not wasted:
   `eslint` or `kubeconform` belongs upstream. How this project *invokes* them
   is in scope.
 - **`--no-verify`.** Bypassing hooks is git's feature and a deliberate escape
-  hatch here.
+  hatch here. Bypasses of a commit-time gate are tallied in a local file that
+  is never pushed and never transmitted — see
+  [docs/opting-out.md](docs/opting-out.md) for what is recorded and how to
+  turn it off or erase it.
 - **SHA-1 collision resistance as an absolute.** The fingerprint uses git's own
   content id, and [docs/trust.md](docs/trust.md) states the trade explicitly: a
   chosen-prefix collision is not defended against, and the alternatives were a

@@ -31,6 +31,13 @@ commit; `git push --no-verify` skips the whole `pre-push` stage.
 not ours, and it is why a bypassed commit still gets its message prepared and
 still fails to earn a [gate stamp](checks.md#moving-a-gate-entry-earlier).
 
+Bypassing stays a supported escape hatch, and it is now *counted*: a commit
+that dodged a commit-time gate adds a line to a local ledger
+(`$(git rev-parse --git-common-dir)/amont-bypasses`) that `amont list`
+summarises as "unverified commits". Local means local — the file is never
+pushed and never leaves the machine. `git config amont.recordBypasses false`
+turns the counting off; `amont uninstall`, or deleting the file, erases it.
+
 Neither `commit-msg` nor `prepare-commit-msg` takes `hook.skip` or a severity
 override: they are entrypoints rather than checks, so the keys below do not
 name them. To get a message past `commit-msg` without bypassing everything

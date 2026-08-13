@@ -19,6 +19,7 @@
 //! ```
 
 pub mod agents_md;
+pub mod bypass;
 pub mod check;
 pub mod commit_style;
 pub mod config;
@@ -413,7 +414,12 @@ fn commit_style_json(style: &commit_style::Style, rows: &[commit_style::Setting]
 /// `{"stage_filter": ..., "pushed": ..., "checks": [...]}` — an object, not a
 /// bare array, so a field can be added later without changing the top-level
 /// shape.
-pub fn print_json(stage_filter: Option<check::Stage>, pushed: bool, listings: &[CheckListing]) {
+pub fn print_json(
+    stage_filter: Option<check::Stage>,
+    pushed: bool,
+    listings: &[CheckListing],
+    bypasses: &bypass::Ledger,
+) {
     let checks: Vec<String> = listings
         .iter()
         .map(|l| {
@@ -458,8 +464,31 @@ pub fn print_json(stage_filter: Option<check::Stage>, pushed: bool, listings: &[
             format!("\"checks\":{}", json::array(&checks)),
             format!("\"commit_style\":{}", commit_style_json(&style, &rows)),
             format!("\"branch_style\":{}", branch_style_json()),
+            format!("\"bypasses\":{}", bypasses_json(bypasses)),
         ])
     );
+}
+
+/// `{"total": N, "last": <epoch|null>, "by_script": [...]}` — the ledger of
+/// unverified commits, so a parsing reader (the fleet, an agent) sees the
+/// same numbers `amont list` prints.
+fn bypasses_json(l: &bypass::Ledger) -> String {
+    let by_script: Vec<String> = l
+        .by_script
+        .iter()
+        .map(|s| {
+            json::object(&[
+                json::string_field("script", &s.script),
+                json::int_field("count", s.count as i64),
+                json::int_field("last", s.last as i64),
+            ])
+        })
+        .collect();
+    json::object(&[
+        json::int_field("total", l.total as i64),
+        json::opt_int_field("last", l.last.map(|v| v as i64)),
+        format!("\"by_script\":{}", json::array(&by_script)),
+    ])
 }
 
 /// The branch contract, in the same document agents are told to consult — so
@@ -526,8 +555,9 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     // owned-manifest shape every entrypoint now follows. See manifest::load.
     let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
     let listings = gather_checks(opts.stage, &paths, &manifest);
+    let bypasses = bypass::read();
     if opts.json {
-        print_json(opts.stage, opts.pushed, &listings);
+        print_json(opts.stage, opts.pushed, &listings, &bypasses);
     } else {
         print_text(&listings);
         // Not filtered by `--stage`: commit style belongs to no stage, and
@@ -535,8 +565,39 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         // reader who narrowed their question.
         let (style, rows) = commit_style::describe();
         print_commit_style(&style, &rows);
+        print_bypasses(&bypasses);
     }
     0
+}
+
+/// The unverified-commit tally, only when there is one — a clean repository's
+/// `amont list` output stays byte-identical to what it always was.
+fn print_bypasses(l: &bypass::Ledger) {
+    if l.total == 0 {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    println!("\nunverified commits");
+    let pad = l
+        .by_script
+        .iter()
+        .map(|s| ui::sanitize(&s.script).chars().count())
+        .max()
+        .unwrap_or(0);
+    for s in &l.by_script {
+        println!(
+            "  {:<pad$}  {:>3}   last {}",
+            ui::sanitize(&s.script),
+            s.count,
+            bypass::age(now, s.last)
+        );
+    }
+    println!(
+        "  these commits carry no record that their commit-time gate ran — the push gate ran it instead"
+    );
 }
 
 fn describe(s: crate::check::Scope) -> String {

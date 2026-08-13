@@ -185,6 +185,19 @@ stamp can only cost a redundant run, never skip a check that did not happen.
 The residual trade of moving a gate entry earlier is therefore latency, not
 safety — an unchecked commit makes the push slower, not greener.
 
+**The missing stamp is also counted.** Every commit that a gate declaration
+covered but that carries no record its gate ran appends one line per dodged
+script to `$(git rev-parse --git-common-dir)/amont-bypasses` — a plain local
+file, never a ref, never pushed, never sent anywhere; the no-telemetry
+promise applies in full. `--no-verify` is only the commonest cause: a
+blocked attempt retried with it, or a gate whose tool was missing, count the
+same way, which is why `amont list` labels the tally **unverified commits**
+rather than guessing at intent. A rising count is the first symptom of a
+gate people have started routing around — a slow check, a flaky one — and
+until it was counted, the hooks detected that signal on every commit and
+threw it away. `amont uninstall` deletes the file;
+`git config amont.recordBypasses false` stops the counting.
+
 ### What a push actually tests
 
 By default `pre-push` runs your suite against the **working tree**, and says

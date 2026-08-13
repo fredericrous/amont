@@ -66,9 +66,7 @@ pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<Gat
     // The fast path: pre-commit calls this on every commit to know what to
     // stamp, and most repositories declare nothing — no GATE name declared
     // means no git spawns for skips and severity overrides.
-    if !declared.iter().any(|ext| {
-        ext.stage == crate::check::Stage::PreCommit && GATE.contains(&ext.short_name.as_str())
-    }) {
+    if gate_names_declared(declared).is_empty() {
         return Vec::new();
     }
     let skips = crate::configured_skips();
@@ -90,6 +88,21 @@ pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<Gat
                 })
             })
         })
+        .collect()
+}
+
+/// GATE names this manifest declares at pre-commit, before any config is
+/// read — the zero-spawn question "could this repository have a commit-time
+/// gate at all". [`gated_at_commit`] and the bypass ledger's fast path both
+/// start here, from the same predicate, so they cannot drift.
+pub(crate) fn gate_names_declared(declared: &[crate::manifest::External]) -> Vec<&'static str> {
+    GATE.iter()
+        .filter(|script| {
+            declared.iter().any(|ext| {
+                ext.stage == crate::check::Stage::PreCommit && ext.short_name == **script
+            })
+        })
+        .copied()
         .collect()
 }
 

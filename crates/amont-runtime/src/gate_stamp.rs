@@ -94,33 +94,46 @@ pub fn record(scripts: &[&str]) {
 ///
 /// One-shot by construction — the marker is deleted before anything is
 /// judged, so no path through here can leave it to vouch for a later commit.
-pub fn bind_to_head() {
-    let Some(path) = marker_path() else { return };
+///
+/// Returns the scripts it actually stamped (empty on every no-stamp path,
+/// including a note git refused). The caller subtracts this from what the
+/// manifest declares to learn what the commit dodged — [`crate::bypass`]
+/// keeps that count. Two records, two questions: the stamp gates a check,
+/// the ledger only counts.
+pub fn bind_to_head() -> Vec<String> {
+    let Some(path) = marker_path() else {
+        return Vec::new();
+    };
     let Ok(body) = std::fs::read_to_string(&path) else {
-        return; // no marker: nothing ran at pre-commit, nothing to stamp
+        return Vec::new(); // no marker: nothing ran at pre-commit, nothing to stamp
     };
     let _ = std::fs::remove_file(&path);
     let mut lines = body.lines();
     if lines.next() != Some(FORMAT) {
-        return;
+        return Vec::new();
     }
-    let Some(tree) = lines.next() else { return };
+    let Some(tree) = lines.next() else {
+        return Vec::new();
+    };
     let scripts: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
     if scripts.is_empty() {
-        return;
+        return Vec::new();
     }
     let Some(head_tree) = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]) else {
-        return;
+        return Vec::new();
     };
     // A different tree means this commit is not the one pre-commit judged —
     // the marker is a dead letter from an aborted attempt.
     if head_tree != tree {
-        return;
+        return Vec::new();
     }
     let note = format!("{FORMAT} {}", scripts.join(" "));
-    let _ = crate::git::succeeds(&[
+    if !crate::git::succeeds(&[
         "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, "HEAD",
-    ]);
+    ]) {
+        return Vec::new(); // a note git refused is not a stamp
+    }
+    scripts.iter().map(|s| s.to_string()).collect()
 }
 
 /// pre-push: which of `commits` carry a stamp, and for which scripts.
@@ -218,7 +231,12 @@ mod tests {
         in_repo(&dir, || {
             record(&["typecheck", "test"]);
             git(&dir, &["commit", "-qm", "chore: a"]);
-            bind_to_head();
+            let stamped = bind_to_head();
+            assert_eq!(
+                stamped,
+                vec!["typecheck".to_string(), "test".to_string()],
+                "bind_to_head reports the scripts it stamped"
+            );
             let head = git(&dir, &["rev-parse", "HEAD"]);
             let stamps = stamps_for(std::slice::from_ref(&head));
             assert_eq!(
@@ -248,7 +266,10 @@ mod tests {
             std::fs::write(dir.join("a.ts"), "y").unwrap();
             git(&dir, &["add", "a.ts"]);
             git(&dir, &["commit", "-qm", "chore: different"]);
-            bind_to_head();
+            assert!(
+                bind_to_head().is_empty(),
+                "bind_to_head reports nothing when the tree moved"
+            );
             let head = git(&dir, &["rev-parse", "HEAD"]);
             assert!(
                 stamps_for(&[head]).is_empty(),
