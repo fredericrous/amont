@@ -47,13 +47,13 @@ pub fn run(refs: &[PushRef]) -> Outcome {
     }
     for (name, deleting) in &blocked {
         let what = if *deleting { "Deleting" } else { "Pushing to" };
-        println!(
+        crate::say!(
             "{} {what} branch {} is forbidden. Open a Pull Request.",
             error_sign(),
             highlight(name)
         );
     }
-    println!(
+    crate::say!(
         "    (if you really mean it: {})",
         highlight("git push --no-verify")
     );

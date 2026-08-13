@@ -8,6 +8,17 @@ missing here.
 
 ## v1.6.0 — 2026-08-11
 
+- **One check, one block.** Twenty concurrent pre-commit checks used to
+  print straight to the shared terminal from their own threads, shuffling
+  two failing linters' lines together — the dispatcher's roll-up existed
+  partly to apologise for it. Every check now writes into its own buffer
+  (its helper lines and its tools' captured stdout/stderr alike) and lands
+  on the terminal as one contiguous block when it finishes, in completion
+  order. `amont.progress false` restores raw streaming. Two small side
+  effects: ban-terms' header moved from stderr to stdout with the rest of
+  its report, and a captured tool sees a pipe instead of a terminal (the
+  live display in the next change re-enables tool colors where it matters).
+
 - **A declared check's scope can name files, not only extensions.**
   `pre-commit lockcheck package.json block ./check-lock.sh` finally parses:
   bare tokens in the scope column are exact filenames, basename-matched (so

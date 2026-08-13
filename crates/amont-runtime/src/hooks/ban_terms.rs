@@ -404,22 +404,22 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
 
         if !matches.is_empty() {
             if !found_any {
-                eprintln!("  {} Unwanted terms found", error_sign().trim());
+                crate::say!("  {} Unwanted terms found", error_sign().trim());
             }
             found_any = true;
-            println!(
+            crate::say!(
                 "    The following files contains '{}' in them:",
                 highlight(term.label)
             );
             for m in matches {
-                println!("    - {}", highlight(m));
+                crate::say!("    - {}", highlight(m));
             }
         }
     }
     if found_any {
         return Outcome::Failed;
     }
-    println!("  {} No unwanted terms were found", valid_sign().trim());
+    crate::say!("  {} No unwanted terms were found", valid_sign().trim());
     Outcome::Passed
 }
 

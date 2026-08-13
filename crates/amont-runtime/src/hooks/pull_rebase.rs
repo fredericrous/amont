@@ -106,7 +106,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         .unwrap_or_default()
         .is_empty()
     {
-        println!(
+        crate::say!(
             "{} Uncommitted changes — skipping pre-push pull-rebase.",
             warning_sign()
         );
@@ -146,7 +146,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             .lines()
             .any(|r| r == remote);
     if !is_a_real_remote {
-        println!(
+        crate::say!(
             "{} {upstream} is not a remote-tracking branch — skipping sync.",
             warning_sign()
         );
@@ -169,7 +169,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     //     conflict, wrongly blocking the push. Only asked when a rebase may
     //     actually happen: it is this check's per-push network round-trip.
     if auto && !git::succeeds(&["ls-remote", "--exit-code", "--heads", &remote, branch]) {
-        println!(
+        crate::say!(
             "{} Upstream {upstream} no longer exists on the remote (merged + auto-deleted?) — skipping sync.", warning_sign()
         );
         return Outcome::Passed;
@@ -188,15 +188,15 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         // The hook cannot tell the two apart: git does not tell a pre-push hook
         // whether `--force` was passed, and both cases are non-fast-forward.
         // Guessing wrong here costs someone their rebase, so it does not guess.
-        println!(
+        crate::say!(
             "{} Branch and upstream have diverged ({ahead} ahead, {behind} behind) — not auto-rebasing.",
             warning_sign()
         );
-        println!(
+        crate::say!(
             "    Rebased or amended locally? That is expected — push with {}.",
             highlight("git push --force-with-lease")
         );
-        println!(
+        crate::say!(
             "    Someone else pushed here? Reconcile first with {} (or {}).",
             highlight("git pull --rebase"),
             highlight("git merge")
@@ -207,12 +207,12 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             // push the server will refuse as non-fast-forward anyway. Judged
             // from the local tracking ref (the last fetch): with auto off
             // this check does no network I/O at all.
-            println!(
+            crate::say!(
                 "{} Behind {upstream} — not auto-rebasing ({} is off).",
                 warning_sign(),
                 highlight("amont.autoRebase")
             );
-            println!("    Sync first: {}", highlight("git pull --rebase"));
+            crate::say!("    Sync first: {}", highlight("git pull --rebase"));
             return Outcome::Failed;
         }
         // `behind_count > 0` gates the attempt itself, not just its outcome:
@@ -238,7 +238,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             // commits git is no longer pushing, and the server refuses the
             // stale objects as non-fast-forward regardless. Fail fast, with
             // the good news first.
-            println!(
+            crate::say!(
                 "{} Rebased onto {upstream}. This push's refs predate the rebase — push again.",
                 warning_sign()
             );
@@ -246,14 +246,14 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         }
         // Abort so the tree is never left half-rebased.
         let _ = git::succeeds(&["rebase", "--abort"]);
-        println!(
+        crate::say!(
             "{} pull --rebase hit conflicts (rebase aborted, tree restored).",
             error_sign()
         );
-        println!("    Resolve manually: {}", highlight("git pull --rebase"));
+        crate::say!("    Resolve manually: {}", highlight("git pull --rebase"));
         return Outcome::Failed;
     } else {
-        println!("{} Branch is in sync with its upstream", valid_sign());
+        crate::say!("{} Branch is in sync with its upstream", valid_sign());
     }
 
     // 4. Informational only — never acts.
@@ -293,11 +293,11 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             // so 12 commits ahead printed "1". The test was only ever
             // non-zero/zero, so the wrong number went unnoticed. Parsed properly
             // here.
-            println!(
+            crate::say!(
                 "{} {remote}/{default_branch} is ahead by {n} commit(s).",
                 warning_sign()
             );
-            println!(
+            crate::say!(
                 "    Consider before merging: {}",
                 highlight(&format!("git merge {remote}/{default_branch}"))
             );

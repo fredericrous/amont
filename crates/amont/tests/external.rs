@@ -749,3 +749,72 @@ fn a_filename_scope_fires_on_the_file_and_not_a_look_alike() {
         run.output()
     );
 }
+
+/// THE interleave regression: two concurrent checks, each printing around a
+/// deliberate pause, must come out as two CONTIGUOUS blocks. Against the
+/// pre-capture code this fails almost every run — both probes are mid-sleep
+/// together and their second lines land across each other's.
+#[cfg(unix)]
+#[test]
+fn concurrent_checks_emit_contiguous_blocks() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    for name in ["alpha", "beta"] {
+        let file = format!("{name}.sh");
+        r.stage(
+            &file,
+            &format!("#!/bin/sh\necho {name}-first\nsleep 1\necho {name}-second\nexit 0\n"),
+        );
+        std::fs::set_permissions(r.path(&file), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        r.git(&["add", &file]);
+    }
+    manifest(
+        &r,
+        "pre-commit  alpha  *  warn  ./alpha.sh\n\
+         pre-commit  beta  *  warn  ./beta.sh\n",
+    );
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    let out = run.output();
+    for (name, other) in [("alpha", "beta"), ("beta", "alpha")] {
+        let first = out
+            .find(&format!("{name}-first"))
+            .unwrap_or_else(|| panic!("{name}-first missing:\n{out}"));
+        let second = out
+            .find(&format!("{name}-second"))
+            .unwrap_or_else(|| panic!("{name}-second missing:\n{out}"));
+        assert!(first < second, "{name}'s lines arrived reversed:\n{out}");
+        assert!(
+            !out[first..second].contains(other),
+            "{name}'s block was interleaved with {other}'s:\n{out}"
+        );
+    }
+}
+
+/// `amont.progress false` is the escape hatch back to raw streaming — the
+/// output is all still there, just without the one-block guarantee.
+#[cfg(unix)]
+#[test]
+fn progress_off_restores_raw_streaming() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage(
+        "noisy.sh",
+        "#!/bin/sh\necho noisy-one\necho noisy-two\nexit 0\n",
+    );
+    std::fs::set_permissions(r.path("noisy.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "noisy.sh"]);
+    manifest(&r, "pre-commit  noisy  *  warn  ./noisy.sh\n");
+    r.git(&["config", "amont.progress", "false"]);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        run.says("noisy-one") && run.says("noisy-two"),
+        "raw streaming lost the output:\n{}",
+        run.output()
+    );
+}

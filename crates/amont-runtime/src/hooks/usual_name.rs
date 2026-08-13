@@ -51,7 +51,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     // `Warned` and not `Passed` — the commit proceeds either way, but the
     // dashboard should not count a fresh identity as a clean run.
     if !seen {
-        println!(
+        crate::say!(
             "{} It is the first time you commit as {}",
             warning_sign(),
             highlight(&full)
