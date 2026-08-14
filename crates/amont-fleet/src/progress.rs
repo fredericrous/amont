@@ -225,6 +225,30 @@ impl Steps {
         }
     }
 
+    /// Is a person actually seeing this? The apply loop keys its output
+    /// shape on the answer: streaming every success line is for pipes and
+    /// CI, where lines are all there is; on a terminal the live line carries
+    /// the liveness and scrollback is reserved for exceptions.
+    pub fn is_live(&self) -> bool {
+        self.live.is_some()
+    }
+
+    /// Print a real line from inside the phase without tearing the frame:
+    /// erase, print to stdout, repaint. The one legitimate way to put
+    /// something in scrollback while the line is up — an exception worth
+    /// keeping, printed the moment it happened. A no-frame `Steps` just
+    /// prints, so callers need no second code path.
+    pub fn interrupt(&mut self, line: &str) {
+        if self.live.is_some() {
+            let mut err = std::io::stderr();
+            let _ = write!(err, "\r\u{1b}[K");
+            let _ = err.flush();
+        }
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+        self.paint();
+    }
+
     /// Erase the line — idempotent, and `Drop` calls it too, for the same
     /// reason [`Bar::finish`] exists: an early return must not leave a
     /// spinner as the last thing on screen.
@@ -499,6 +523,15 @@ mod tests {
         assert!(!s.contains('\u{1b}'), "{s:?}");
         assert!(!s.contains('\r'), "{s:?}");
         assert!(s.contains("\\x1b"), "escaped, not dropped: {s:?}");
+    }
+
+    /// `interrupt` on a frameless phase is a plain println — one call site,
+    /// both worlds, and no stderr traffic on the piped path.
+    #[test]
+    fn an_interrupt_without_a_frame_is_just_a_line() {
+        let mut steps = Steps { live: None };
+        steps.interrupt("kept line");
+        steps.finish();
     }
 
     /// An empty phase draws nothing and a disabled one is inert — the paths

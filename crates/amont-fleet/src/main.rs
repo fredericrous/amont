@@ -397,16 +397,32 @@ fn main() -> ExitCode {
             // whole duration — same hang-shaped silence the scan line above
             // fixes, at the step where files are actually being written.
             let mut reports: Vec<apply::ApplyReport> = Vec::with_capacity(plans.len());
+            // Same shape as the planning pass above; the output rule differs
+            // by audience. A pipe gets every line, because lines are all a
+            // pipe has. A terminal gets the live counter and keeps its
+            // scrollback for the exceptional — a wall of identical success
+            // lines is how the one FAILED line went unread.
+            let mut applying = progress::Steps::start("applying", plans.len());
             for p in &plans {
+                applying.step(&p.repo);
                 let r = apply::ApplyReport {
                     repo: p.repo.clone(),
                     outcome: apply::apply(p),
                 };
                 if !args.json {
-                    print_apply_line(&r);
+                    match &r.outcome {
+                        apply::Outcome::Failed { .. } => applying.interrupt(&apply_line(&r)),
+                        apply::Outcome::Applied { .. } if !applying.is_live() => {
+                            use std::io::Write;
+                            println!("{}", apply_line(&r));
+                            let _ = std::io::stdout().flush();
+                        }
+                        _ => {}
+                    }
                 }
                 reports.push(r);
             }
+            applying.finish();
             if args.json {
                 println!(
                     "{}",
@@ -639,14 +655,80 @@ fn report_refusals(plans: &[fix::FixPlan]) {
     if interesting.is_empty() {
         return;
     }
-    println!();
-    println!("REFUSED (nothing in these repositories was touched):");
-    for p in interesting {
-        println!("  {}", shown(&p.repo));
-        for r in p.refuse.iter().filter(|r| **r != fix::Refusal::Unmanaged) {
-            println!("    {}", r.explain());
+    // The redirected-hooks refusal comes in fleets: eleven husky repositories
+    // are one fact, not eleven four-line paragraphs. Group them by owner,
+    // state the cause once, name the repositories compactly, give the remedy
+    // once. Everything else stays itemised — those refusals are rare and
+    // their explanations are path-specific.
+    let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
+    let mut singles: Vec<&fix::FixPlan> = Vec::new();
+    for p in &interesting {
+        let redirected = p.refuse.iter().find_map(|r| match r {
+            fix::Refusal::HooksDirRedirected { path } => {
+                Some(amont_runtime::install::redirect_culprit(path).unwrap_or("another tool"))
+            }
+            _ => None,
+        });
+        // Grouping claims the whole repo only when the redirect is its ONLY
+        // interesting refusal — a repo with more to say keeps its paragraph.
+        let only = p
+            .refuse
+            .iter()
+            .filter(|r| **r != fix::Refusal::Unmanaged)
+            .count()
+            == 1;
+        match redirected {
+            Some(owner) if only => {
+                let owner = owner.to_string();
+                match grouped.iter_mut().find(|(o, _)| *o == owner) {
+                    Some((_, repos)) => repos.push(shown(&p.repo)),
+                    None => grouped.push((owner, vec![shown(&p.repo)])),
+                }
+            }
+            _ => singles.push(p),
         }
     }
+    println!();
+    for (owner, repos) in &grouped {
+        println!(
+            "{} {} refused — {owner} owns the hooks (core.hooksPath); nothing there was touched",
+            amont_runtime::ui::warning_sign(),
+            repos.len()
+        );
+        for line in wrap_list(repos, 92) {
+            println!("    {line}");
+        }
+        println!("    hand dispatch back, per repo: git config --unset core.hooksPath");
+    }
+    if !singles.is_empty() {
+        println!(
+            "{} {} refused (nothing in these repositories was touched):",
+            amont_runtime::ui::warning_sign(),
+            singles.len()
+        );
+        for p in singles {
+            println!("  {}", shown(&p.repo));
+            for r in p.refuse.iter().filter(|r| **r != fix::Refusal::Unmanaged) {
+                println!("    {}", r.explain());
+            }
+        }
+    }
+}
+
+/// Pack names onto lines of at most `width` characters, ` · ` separated —
+/// the difference between eleven repository names and eleven paragraphs.
+fn wrap_list(names: &[String], width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for name in names {
+        match lines.last_mut() {
+            Some(last) if last.chars().count() + 3 + name.chars().count() <= width => {
+                last.push_str(" · ");
+                last.push_str(name);
+            }
+            _ => lines.push(name.clone()),
+        }
+    }
+    lines
 }
 
 /// Everything found but not acted on, named.
@@ -658,63 +740,77 @@ fn report_refusals(plans: &[fix::FixPlan]) {
 /// path can.
 fn report_warnings(plans: &[fix::FixPlan]) {
     report_refusals(plans);
-    let warned: Vec<&fix::FixPlan> = plans.iter().filter(|p| !p.warn.is_empty()).collect();
-    if warned.is_empty() {
-        return;
-    }
-    println!();
-    println!("LEFT ALONE (not ours — nothing here is deleted or written):");
-    for p in warned {
+    // A redirected-hooks warning on a repo whose refusal already said
+    // "husky owns the hooks" is the same fact twice — the refusal group
+    // covers it. What stays here is what only this section can say: a
+    // sub-hook somebody else wrote, or a hooks path outside the repository.
+    let mut lines: Vec<String> = Vec::new();
+    let mut sub_hooks = 0usize;
+    for p in plans.iter().filter(|p| !p.warn.is_empty()) {
+        let refused_redirect = p
+            .refuse
+            .iter()
+            .any(|r| matches!(r, fix::Refusal::HooksDirRedirected { .. }));
         for w in &p.warn {
             match w {
                 fix::Warning::UnrecognizedSubHook { path } => {
-                    println!("  {}  (a hook we did not write)", shown(path));
+                    sub_hooks += 1;
+                    lines.push(format!("  {}  (a hook we did not write)", shown(path)));
                 }
                 fix::Warning::HooksDirOutsideRepo { path } => {
-                    println!(
+                    lines.push(format!(
                         "  {}  ({}: core.hooksPath points OUTSIDE the repository)",
                         shown(path),
                         shown(&p.repo)
-                    );
+                    ));
                 }
                 fix::Warning::HooksDirRedirected { path } => {
+                    if refused_redirect {
+                        continue;
+                    }
                     let owner =
                         amont_runtime::install::redirect_culprit(path).unwrap_or("another tool");
-                    println!(
+                    lines.push(format!(
                         "  {}  ({}: core.hooksPath — {owner} owns the hooks, amont is not running)",
                         shown(path),
                         shown(&p.repo)
-                    );
+                    ));
                 }
             }
         }
     }
-    println!("  (pass --remove-unrecognized to delete the sub-hooks above)");
+    if lines.is_empty() {
+        return;
+    }
+    println!();
+    println!("LEFT ALONE (not ours — nothing here is deleted or written):");
+    for line in lines {
+        println!("{line}");
+    }
+    if sub_hooks > 0 {
+        println!("  (pass --remove-unrecognized to delete the sub-hooks above)");
+    }
 }
 
 /// What actually happened. A failure is never folded into the same count as a
 /// success, and "refused" is reported separately from "unchanged" — they look
 /// identical in a total and mean opposite things.
-/// One repository's outcome, printed the moment it happened — streaming is
-/// the point, see the apply loop. Refused and Unchanged stay silent here
-/// exactly as they always have; the summary counts them. The explicit flush
-/// is for a piped stdout, which buffers whole blocks and would otherwise
-/// hold the stream back until exit — the same silence this exists to end.
-fn print_apply_line(r: &apply::ApplyReport) {
-    use std::io::Write;
+/// One repository's outcome as a line — the piped stream's format,
+/// unchanged, so anything grepping `FAILED at` keeps working. Refused and
+/// Unchanged never reach the stream; the summary counts them.
+fn apply_line(r: &apply::ApplyReport) -> String {
     match &r.outcome {
         apply::Outcome::Applied {
             removed: rm,
             written: wr,
-        } => println!("{}  -{rm} +{wr}", shown(&r.repo)),
-        apply::Outcome::Failed { error, at } => println!(
+        } => format!("{}  -{rm} +{wr}", shown(&r.repo)),
+        apply::Outcome::Failed { error, at } => format!(
             "{}  FAILED at {at}: {}",
             shown(&r.repo),
             amont_runtime::ui::sanitize(error)
         ),
-        apply::Outcome::Refused | apply::Outcome::Unchanged => return,
+        apply::Outcome::Refused | apply::Outcome::Unchanged => String::new(),
     }
-    let _ = std::io::stdout().flush();
 }
 
 fn report_apply_summary(reports: &[apply::ApplyReport], plans: &[fix::FixPlan]) {
@@ -735,14 +831,53 @@ fn report_apply_summary(reports: &[apply::ApplyReport], plans: &[fix::FixPlan]) 
             apply::Outcome::Failed { .. } => {}
         }
     }
-    let failed = reports
+    let failures: Vec<&apply::ApplyReport> = reports
         .iter()
         .filter(|r| matches!(r.outcome, apply::Outcome::Failed { .. }))
-        .count();
+        .collect();
+    let failed = failures.len();
     report_warnings(plans);
+    // Failures repeat here, LAST before the counts, on purpose: the stream
+    // said it when it happened, but on a fleet the stream has scrolled — the
+    // bottom of the report is the one place the eye reliably lands.
+    if !failures.is_empty() {
+        println!();
+        println!("{} {failed} failed:", amont_runtime::ui::error_sign());
+        for f in &failures {
+            if let apply::Outcome::Failed { error, at } = &f.outcome {
+                println!("  {}", shown(&f.repo));
+                // The repo is the line above and most errors begin by
+                // repeating `at` — trim both, or one failure reads as three
+                // copies of the same absolute path.
+                let at_short = at
+                    .split("/.git/")
+                    .nth(1)
+                    .map(|tail| format!(".git/{tail}"))
+                    .unwrap_or_else(|| at.clone());
+                let reason = error
+                    .strip_prefix(at.as_str())
+                    .map_or(error.as_str(), |t| t.trim_start());
+                let reason = reason.strip_prefix("is ").unwrap_or(reason);
+                println!(
+                    "    at {}: {}",
+                    amont_runtime::ui::sanitize(&at_short),
+                    amont_runtime::ui::sanitize(reason)
+                );
+            }
+        }
+    }
+    // The verdict glyph makes the last line scannable: ✗ something failed,
+    // ! something was declined, ✓ everything the plan meant to do happened.
+    let sign = if failed > 0 {
+        amont_runtime::ui::error_sign()
+    } else if refused > 0 {
+        amont_runtime::ui::warning_sign()
+    } else {
+        amont_runtime::ui::valid_sign()
+    };
     println!();
     println!(
-        "  {applied} of {} repositories changed · {refused} refused · {unchanged} already correct · {failed} failed",
+        "{sign} {applied} of {} repositories changed · {refused} refused · {unchanged} already correct · {failed} failed",
         reports.len()
     );
     println!("  {removed} removed · {written} written");
@@ -751,6 +886,30 @@ fn report_apply_summary(reports: &[apply::ApplyReport], plans: &[fix::FixPlan]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eleven names, three lines — the whole point over eleven paragraphs.
+    /// Width is measured in characters and the separator counts.
+    #[test]
+    fn wrap_list_packs_names_and_respects_the_width() {
+        let names: Vec<String> = (0..11).map(|i| format!("Perso/repo-{i:02}")).collect();
+        let lines = wrap_list(&names, 50);
+        assert!(lines.len() < names.len(), "{lines:?}");
+        for line in &lines {
+            assert!(line.chars().count() <= 50, "{line:?}");
+        }
+        let joined = lines.join(" · ");
+        for name in &names {
+            assert!(joined.contains(name.as_str()), "{name} lost");
+        }
+    }
+
+    /// A name longer than the width still gets its own line rather than
+    /// being dropped — the wrap never loses a repository.
+    #[test]
+    fn wrap_list_keeps_an_oversized_name() {
+        let names = vec!["a-name-well-beyond-any-reasonable-width-limit-for-a-line".to_string()];
+        assert_eq!(wrap_list(&names, 20), names);
+    }
 
     #[test]
     fn parses_flags_and_defaults() {

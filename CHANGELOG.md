@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.2 — 2026-08-14
+
+- **The apply report earns its scrollback.** `amont-fleet fix --apply` used
+  to print one `-0 +5` line per repository — eighty-six identical successes
+  burying the one FAILED line at equal weight — then spell out each husky
+  refusal as its own four-line paragraph, twice. On a terminal, successes
+  now collapse into the live `applying n/m` counter and scrollback keeps
+  only the exceptional; redirected-hooks refusals group by owner (the cause
+  once, the repositories packed onto wrapped lines, the remedy once);
+  failures repeat just above the summary — the place the eye lands — with
+  the path said once instead of three times; and the final counts lead with
+  a verdict glyph (`✓`/`!`/`✗`). Piped and CI output keeps the stable
+  line-per-repo stream, and `--json` is untouched.
+
 ## v1.6.1 — 2026-08-14
 
 - **The planning pass shows its work.** `amont-fleet fix` and `install`
