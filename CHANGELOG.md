@@ -6,6 +6,18 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.1 — 2026-08-14
+
+- **The planning pass shows its work.** `amont-fleet fix` and `install`
+  follow the scan with a per-repository planning pass — git is asked whether
+  each hook path is tracked before anything may be written — and on a fleet
+  that was several seconds of dead air between the scan report and the first
+  apply line: silence indistinguishable from a hang, one phase after the
+  scan bar fixed exactly that. The pass now draws the same in-place status
+  line with the one thing the scan cannot have — a denominator:
+  `⠹ planning 42/185 · 1.2s  Perso/some/repo`. Same terminal gate, same
+  width and escaping guarantees, gone without a trace when the phase ends.
+
 ## v1.6.0 — 2026-08-13
 
 - **The fleet sees the bypasses.** `amont-fleet` reads each repository's

@@ -162,6 +162,127 @@ impl Drop for Bar {
     }
 }
 
+/// The same line, for a phase whose SIZE is already known.
+///
+/// `fix` and `install` follow the scan with a planning pass that asks git,
+/// per repository, whether each hook path is tracked before anything may be
+/// written — a spawn or two per repository, which on a fleet is several
+/// seconds of dead air between the scan line and the first apply line. Same
+/// hang-shaped silence the scan bar exists to end, one phase later. The
+/// denominator is the one thing this has that [`Bar`] cannot: the walk
+/// discovers its total, a phase over scanned repositories starts with it,
+/// so the line can say how far along it is instead of only how fast it goes.
+pub struct Steps {
+    /// `None` when nothing is watching — same gate, same reason as [`Bar`].
+    live: Option<StepsLive>,
+}
+
+struct StepsLive {
+    verb: &'static str,
+    started: Instant,
+    painted: Instant,
+    done: usize,
+    total: usize,
+    /// Raw; sanitised at paint time by [`fit`], like [`Live::current`].
+    current: String,
+}
+
+impl Steps {
+    /// Start drawing. Unlike [`Bar::start`] there is no announcement line:
+    /// the phase lives between two reports and leaves nothing behind.
+    pub fn start(verb: &'static str, total: usize) -> Steps {
+        if total == 0 || !watching() {
+            return Steps { live: None };
+        }
+        let now = Instant::now();
+        let mut steps = Steps {
+            live: Some(StepsLive {
+                verb,
+                started: now,
+                // Back-dated by one interval so the first step paints
+                // immediately instead of after 80ms of blank.
+                painted: now - REPAINT,
+                done: 0,
+                total,
+                current: String::new(),
+            }),
+        };
+        steps.paint();
+        steps
+    }
+
+    /// One item entered the phase. Called BEFORE the work, so the line names
+    /// what is being worked on now — when a repository stalls the pass, the
+    /// path on screen is the one to blame.
+    pub fn step(&mut self, current: &Path) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        live.done += 1;
+        live.current = current.display().to_string();
+        if live.painted.elapsed() >= REPAINT {
+            self.paint();
+        }
+    }
+
+    /// Erase the line — idempotent, and `Drop` calls it too, for the same
+    /// reason [`Bar::finish`] exists: an early return must not leave a
+    /// spinner as the last thing on screen.
+    pub fn finish(&mut self) {
+        if self.live.take().is_some() {
+            let mut err = std::io::stderr();
+            let _ = write!(err, "\r\u{1b}[K");
+            let _ = err.flush();
+        }
+    }
+
+    fn paint(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        live.painted = Instant::now();
+        let secs = live.started.elapsed().as_secs_f64();
+        let frame = FRAMES[((secs * 10.0) as usize) % FRAMES.len()];
+        let s = step_line(
+            frame,
+            live.verb,
+            live.done,
+            live.total,
+            secs,
+            &live.current,
+            width(),
+        );
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\r\u{1b}[K{s}");
+        let _ = err.flush();
+    }
+}
+
+impl Drop for Steps {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// One counted frame: `⠋ planning 42/185 · 1.2s  Perso/some/repo`. Pure,
+/// like [`line`], and sharing its tail through [`fit`] so the width and
+/// sanitisation guarantees are one implementation, not two.
+fn step_line(
+    frame: char,
+    verb: &str,
+    done: usize,
+    total: usize,
+    secs: f64,
+    current: &str,
+    width: usize,
+) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let head = format!("  {frame} {verb} {done}/{total} · {secs:.1}s  ");
+    fit(head, current, width)
+}
+
 /// Is there a person on the other end of stderr?
 ///
 /// `TERM=dumb` is part of the question, not a separate one: a dumb terminal is
@@ -225,14 +346,22 @@ fn line(frame: char, dirs: usize, repos: usize, secs: f64, current: &str, width:
         plural(dirs, "dir", "dirs"),
         plural(repos, "repo", "repos"),
     );
+    fit(head, current, width)
+}
+
+/// The shared back half of every frame: the head wins outright, then the
+/// path takes what is left, cut from the LEFT so it keeps the part that
+/// identifies a repository rather than the part every sibling shares.
+///
+/// Sanitised HERE, at the last moment before it is written, so no caller
+/// can hand this module a raw path and have it reach the terminal. The
+/// escaping happens before the truncation because it changes the length:
+/// one ESC becomes the four characters `\x1b`.
+fn fit(head: String, current: &str, width: usize) -> String {
     let head_len = head.chars().count();
     if head_len >= width {
         return head.chars().take(width).collect();
     }
-    // Sanitised HERE, at the last moment before it is written, so no caller
-    // can hand this function a raw path and have it reach the terminal. The
-    // escaping happens before the truncation because it changes the length:
-    // one ESC becomes the four characters `\x1b`.
     let current = amont_runtime::ui::sanitize(current);
     let room = width - head_len;
     let len = current.chars().count();
@@ -335,6 +464,52 @@ mod tests {
             assert!(s.chars().count() <= width, "width {width}: {s:?}");
             assert!(!s.contains('\u{1b}'), "{s:?}");
         }
+    }
+
+    /// A counted frame carries its denominator — the whole reason [`Steps`]
+    /// exists over reusing [`Bar`] — and the tail keeps [`line`]'s rules.
+    #[test]
+    fn a_counted_frame_shows_its_denominator() {
+        let s = step_line('⠋', "planning", 42, 185, 1.25, "Perso/some/repo", 80);
+        assert!(s.contains("planning 42/185"), "{s:?}");
+        assert!(s.contains("1.2s"), "{s:?}");
+        assert!(s.ends_with("Perso/some/repo"), "{s:?}");
+    }
+
+    /// Same width guarantee as [`line`], through the same [`fit`].
+    #[test]
+    fn a_counted_frame_never_exceeds_the_width() {
+        let long = "Perso/some/deeply/nested/group/project/with-a-long-name/sub";
+        for width in [0, 1, 5, 20, 40, 80, 200] {
+            let s = step_line('⠋', "planning", 184, 185, 12.75, long, width);
+            assert!(
+                s.chars().count() <= width,
+                "width {width}: {:?} is {} chars",
+                s,
+                s.chars().count()
+            );
+        }
+    }
+
+    /// Same trust boundary as [`line`]: the paths here come off the same
+    /// walk of somebody else's disk.
+    #[test]
+    fn a_hostile_path_cannot_reach_a_counted_frame() {
+        let s = step_line('⠋', "planning", 1, 2, 1.0, "evil\u{1b}[2Jname\rhere", 80);
+        assert!(!s.contains('\u{1b}'), "{s:?}");
+        assert!(!s.contains('\r'), "{s:?}");
+        assert!(s.contains("\\x1b"), "escaped, not dropped: {s:?}");
+    }
+
+    /// An empty phase draws nothing and a disabled one is inert — the paths
+    /// every piped invocation and every empty fleet take.
+    #[test]
+    fn an_empty_or_unwatched_phase_is_inert() {
+        let mut steps = Steps { live: None };
+        steps.step(Path::new("x"));
+        steps.finish();
+        steps.finish();
+        assert!(Steps::start("planning", 0).live.is_none());
     }
 
     /// Nothing is watching, so nothing is drawn — and `update` must not panic
