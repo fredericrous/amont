@@ -362,10 +362,18 @@ fn main() -> ExitCode {
     }
 
     if args.mode == Mode::Fix || args.mode == Mode::Install {
+        // The plan pass asks git, per repository, whether each hook path is
+        // tracked before anything may be written — a spawn or two each,
+        // which on a fleet is several silent seconds between the scan
+        // report above and the first plan or apply line below. Same rule as
+        // the scan bar: silence indistinguishable from a hang is not
+        // allowed, at any phase.
+        let mut steps = progress::Steps::start("planning", scan.repos.len());
         let plans: Vec<fix::FixPlan> = scan
             .repos
             .iter()
             .map(|r| {
+                steps.step(&r.path);
                 let intent = if args.mode == Mode::Install {
                     fix::Intent::Activate
                 } else {
@@ -381,6 +389,7 @@ fn main() -> ExitCode {
                 )
             })
             .collect();
+        steps.finish();
         if args.apply {
             // One repository at a time, each line printed the moment its
             // outcome exists. Collecting every report and printing at the end
