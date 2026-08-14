@@ -562,16 +562,15 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
         manifest: &manifest,
     };
     // THE process boundary: the one place a hook result becomes a number.
-    // Everything above speaks `Verdict`, and 2 is neither of its answers —
-    // it means the binary was invoked wrongly, not that a hook decided
-    // anything, which is why it is written here and nowhere else.
-    const USAGE_ERROR: i32 = 2;
+    // Everything above speaks `Verdict`. An unknown name is NOT the usage
+    // error it looks like: nobody hand-types hook mode — the name is a
+    // shim passing its own filename, so a name this binary has never heard
+    // is a shim from a NEWER template. That is age, not misuse, and it
+    // arrives on every commit of every fresh repository, so it must not
+    // fail and must not nag — see `skew`.
     match registry::lookup(hook, &manifest) {
         Some(run_hook) => run_hook(&ctx).exit_code(),
-        None => {
-            eprintln!("amont: unknown hook {hook:?}");
-            USAGE_ERROR
-        }
+        None => amont_runtime::skew::absorb_newer_hook(hook),
     }
 }
 

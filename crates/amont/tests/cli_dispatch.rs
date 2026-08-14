@@ -309,3 +309,77 @@ fn an_unknown_flag_is_a_usage_error_not_a_no_op() {
     }
     s.assert_nothing_was_installed(&repo, "after typo'd flags");
 }
+
+/// A hook name this binary has never heard, arriving through hook mode, is
+/// a shim from a NEWER template — age, not misuse. It must absorb (exit 0,
+/// git ignores hooks that do not exist), warn exactly once per binary
+/// version per repository, and leave a versioned marker `uninstall` cleans.
+/// Before this, the day a new shim shipped, every machine with an older
+/// binary printed `unknown hook` at exit 2 on every commit.
+#[test]
+fn a_hook_from_a_newer_template_is_absorbed_not_erred() {
+    let s = Sandbox::new("newer-shim");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let hooks = repo.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).expect("mkdir");
+    let hooks_dir = hooks.to_str().expect("utf8").to_string();
+
+    // First encounter: exit 0, one clear warning naming the fix.
+    let (code, out) = s.run(
+        &repo,
+        &["--hooks-dir", &hooks_dir, "post-merge-from-the-future"],
+    );
+    assert_eq!(code, 0, "a newer shim must not fail the commit: {out}");
+    assert!(
+        out.contains("newer than this binary"),
+        "the first encounter explains itself: {out}"
+    );
+    assert!(
+        repo.join(".git/amont-skew").is_file(),
+        "the warning leaves its once-per-version marker"
+    );
+
+    // Second encounter, same version: silent. Even for a DIFFERENT unknown
+    // hook — the message is about the binary's age, not about one name.
+    let (code, out) = s.run(&repo, &["--hooks-dir", &hooks_dir, "another-future-hook"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.trim().is_empty(),
+        "once per binary version means once: {out:?}"
+    );
+}
+
+/// The same unknown token WITHOUT --hooks-dir is still a loud usage error —
+/// a person typed it, and silence would strand them.
+#[test]
+fn an_unknown_verb_stays_a_loud_usage_error() {
+    let s = Sandbox::new("unknown-verb");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = s.run(&repo, &["post-merge-from-the-future"]);
+    assert_ne!(code, 0, "an interactive typo must not pass silently: {out}");
+    assert!(!out.trim().is_empty(), "and it must say something");
+}
+
+/// `uninstall` forgets the skew marker with the rest of our bookkeeping.
+#[test]
+fn uninstall_forgets_the_skew_marker() {
+    let s = Sandbox::new("skew-forget");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let hooks = repo.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).expect("mkdir");
+    let hooks_dir = hooks.to_str().expect("utf8").to_string();
+    let (_, _) = s.run(
+        &repo,
+        &["--hooks-dir", &hooks_dir, "post-merge-from-the-future"],
+    );
+    assert!(repo.join(".git/amont-skew").is_file());
+    let (code, out) = s.run(&repo, &["uninstall"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !repo.join(".git/amont-skew").exists(),
+        "the marker is OUR bookkeeping — gone with the hooks"
+    );
+}
