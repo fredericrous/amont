@@ -173,13 +173,17 @@ fn pre_push_stops_at_the_first_failure() {
     );
 }
 
-/// An unknown hook name is still loud: it exits 2 rather than passing silently.
+/// An unknown hook name in hook mode is a shim from a NEWER template, not a
+/// usage error — it absorbs at exit 0 and explains itself once. The loud
+/// exit-2 this test used to pin is what printed `unknown hook` on every
+/// commit of every machine whose binary lagged the template; the loudness
+/// now lives on the interactive path (cli_dispatch pins both halves).
 #[test]
-fn an_unknown_hook_exits_two() {
+fn an_unknown_hook_is_absorbed_as_version_skew() {
     let r = Repo::new();
     let run = r.hook("pre-commit-not-a-hook", &[]);
-    assert_eq!(run.code, 2);
-    assert!(run.says("unknown hook"));
+    assert_eq!(run.code, 0, "{}", run.output());
+    assert!(run.says("newer than this binary"), "{}", run.output());
 }
 
 /// A skip is otherwise invisible at exactly the moment it matters: with

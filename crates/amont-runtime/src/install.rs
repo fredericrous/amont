@@ -1262,6 +1262,7 @@ fn uninstall_repo_hooks() -> Result<(), String> {
     // about their repository, not ours.
     crate::gate_stamp::forget();
     crate::bypass::forget();
+    crate::skew::forget();
     // `--unset-all` exits 5 when the key is absent; not a failure here.
     let _ = crate::git::succeeds(&["config", "--unset-all", "amont.knownIdentity"]);
     Ok(())

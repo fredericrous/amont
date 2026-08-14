@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.3 — 2026-08-15
+
+- **A shim newer than its binary is absorbed, not erred.** Shims and binary
+  upgrade separately: a refreshed template bakes its full shim set into
+  every `git init`, while the binary on PATH can lag releases behind — and
+  the day `post-commit` shipped, every machine with an older binary printed
+  `unknown hook` at exit 2 on every commit. In hook mode an unknown name is
+  a shim passing its own filename, so it now reads as what it is — a
+  message from a newer template: warn once per binary version per
+  repository (a versioned `$GIT_DIR/amont-skew` marker, removed by
+  `uninstall`), name the fix, exit 0. A hook the binary does not know is a
+  hook that does not exist yet; fail-open here is the gate's own safe
+  direction, and blocking commits over binary age would teach exactly the
+  `--no-verify` habit this project exists to unteach. An unknown verb
+  typed interactively stays a loud usage error.
+
 ## v1.6.2 — 2026-08-14
 
 - **The apply report earns its scrollback.** `amont-fleet fix --apply` used
