@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.4 — 2026-08-15
+
+- **The release publishes its own homebrew tap.** The formula bump was the
+  one manual step left in a release — copy a version, copy four sha256
+  lines, push — done by hand four times in three days, each a transcription
+  error waiting for its moment. A new `publish-tap` job reads the published
+  release's own SHA256SUMS, rewrites the formula through an assert-heavy
+  script (`scripts/bump-tap.py` — wrong-version checksums, missing targets,
+  and stale version strings all refuse loudly; `ruby -c` proves the result
+  is a formula before anything moves), and pushes to the tap with a deploy
+  key that can write to that one repository and nothing else. Idempotent,
+  so a resumed release run no-ops. This release exists to prove the loop:
+  if you installed it with `brew upgrade`, no human touched the formula.
+
 ## v1.6.3 — 2026-08-15
 
 - **A shim newer than its binary is absorbed, not erred.** Shims and binary
