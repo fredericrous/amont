@@ -432,3 +432,74 @@ jobs:
 
           echo "### Published to crates.io" >> "$GITHUB_STEP_SUMMARY"
           echo "\`cargo install amont\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  # The release's last manual step, retired. The tap formula was bumped by
+  # hand four times in three days — copy a version, copy four sha256 lines,
+  # push — and a transcription error there ships a formula brew refuses, or
+  # worse, accepts. A release is not published until `brew upgrade` can see
+  # it, so the release publishes it.
+  #
+  # Auth is a deploy key that can write to the TAP REPOSITORY and nothing
+  # else (secret TAP_DEPLOY_KEY; the tap holds the matching public key) —
+  # narrower than any PAT. The rewrite itself is scripts/bump-tap.py, which
+  # asserts on every surprise rather than sedding hopefully, and `ruby -c`
+  # proves the result is at least a formula before anything is pushed.
+  publish-tap:
+    name: publish to the homebrew tap
+    needs: [guard, publish]
+    # Keyed on the ref being a TAG exactly as publish-npm is, so a
+    # workflow_dispatch against an existing tag can resume this too. The
+    # push step's nothing-to-commit path makes that resume a no-op when the
+    # tap already carries the version.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # From the PUBLISHED release, not from this run's artifacts: the
+      # formula must name the bytes an installer will actually download,
+      # and reading them back from the release asserts they are there.
+      - name: Download the published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v$VERSION" --pattern SHA256SUMS
+
+      - name: Clone the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 git@github.com:fredericrous/homebrew-tap.git tap
+
+      - name: Rewrite the formula
+        run: |
+          set -euo pipefail
+          python3 scripts/bump-tap.py "$VERSION" SHA256SUMS tap/Formula/amont.rb
+          ruby -c tap/Formula/amont.rb
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          cd tap
+          if git diff --quiet; then
+            echo "the tap already carries $VERSION — nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/amont.rb
+          git commit -m "chore: amont $VERSION"
+          git push origin HEAD
+          echo "### Published to the homebrew tap" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew upgrade fredericrous/tap/amont\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
