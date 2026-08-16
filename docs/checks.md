@@ -143,6 +143,24 @@ lints staged files, so repeating it on push costs time and catches nothing —
 applied to whatever a repository decides to move. It is not `typecheck`-specific:
 `test:unit` and `test` work the same way.
 
+**And it is not npm-specific.** A gate is a NAME declared at both stages —
+the vocabulary is yours, not package.json's. Declare the same name at
+`pre-commit` (severity `block`) and at `pre-push`, and the commit-time side
+earns per-commit stamps the push-time side defers to:
+
+```text
+# stage       name   scope   severity  command
+pre-commit    test   *.rs    block     cargo test
+pre-push      test   *.rs    block     cargo test
+```
+
+A push whose commits all carry the `test` stamp skips the pre-push line with
+the same `✓ test gated at commit instead` message; a `--no-verify` commit
+brings it back with the same warning; and the dodge lands in the bypass
+ledger under its own name. `cargo test`, `pytest`, `go test` — the contract
+is identical because the machinery never looks at the command, only at the
+name, the severity, the scope, and the stamps.
+
 **Only a declaration that would actually run, and actually cover the push,
 counts.** All of these leave the push gate exactly as it was:
 

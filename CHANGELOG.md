@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.5 — 2026-08-16
+
+- **A gate is a name, not an npm script.** The commit-time gate was keyed to
+  the push gate's three package.json scripts (`typecheck`, `test:unit`,
+  `test`) — the moment a Rust or Python repository wanted a gated
+  `cargo test`, the seam showed. Now ANY name declared at both stages pairs:
+  the `pre-commit … block` side earns per-commit stamps, and the same-named
+  `pre-push` declaration is skipped for fully-stamped pushes (`✓ test gated
+  at commit instead`), runs for unstamped ones with the same warning the npm
+  gate gives, and its dodges land in the bypass ledger under their own name.
+  Warn-severity, skipped, or scope-uncovered pairs vouch for nothing,
+  exactly as before. The npm push gate keeps its vocabulary; it is now one
+  consumer of the machinery instead of its definition.
+
 ## v1.6.4 — 2026-08-15
 
 - **The release publishes its own homebrew tap.** The formula bump was the

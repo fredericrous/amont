@@ -210,10 +210,13 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     // deliberately does not qualify: a check whose tool is missing judged
     // nothing, and stamping it would be the paper promise this exists to
     // replace.
-    let ran: Vec<&'static str> = if matches!(verdict, Verdict::Block) {
+    // EVERY blocking declaration, not only the npm GATE names: a custom
+    // `pre-commit check … block …` earns its stamp the same way, and a
+    // same-named pre-push declaration defers to it (see `pair_verdict`).
+    let ran: Vec<String> = if matches!(verdict, Verdict::Block) {
         Vec::new()
     } else {
-        crate::hooks::run_tests::gated_at_commit(&ctx.manifest.externals)
+        crate::hooks::run_tests::blocking_commit_decls(&ctx.manifest.externals)
             .into_iter()
             .filter(|d| {
                 checks
@@ -224,6 +227,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .map(|d| d.script)
             .collect()
     };
+    let ran: Vec<&str> = ran.iter().map(String::as_str).collect();
     crate::gate_stamp::record(&ran);
 
     drop(held);
@@ -498,6 +502,40 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let _flush = stage
             .as_ref()
             .map(|s| crate::live::FinishOnDrop::new(s, idx));
+        // A declared pre-push external whose NAME is also declared at
+        // pre-commit (blocking) is a gate pair: the commit-time side earned
+        // per-commit stamps, and this side runs only for pushes carrying
+        // commits with no record of it — the same contract the npm gate has
+        // always had, for vocabularies npm never heard of (`cargo test`,
+        // `pytest`, anything). Messages mirror the npm gate's exactly;
+        // docs/checks.md quotes them.
+        if let Some(ext) = ctx
+            .manifest
+            .externals
+            .iter()
+            .find(|e| e.stage == Stage::PrePush && e.id == check.name())
+        {
+            match crate::hooks::run_tests::pair_verdict(ext, ctx.manifest, ctx.push) {
+                crate::hooks::run_tests::PairVerdict::Gated => {
+                    crate::say!(
+                        "{} {} gated at commit instead — not repeating it here",
+                        valid_sign(),
+                        highlight(&ext.short_name),
+                    );
+                    continue;
+                }
+                crate::hooks::run_tests::PairVerdict::Unstamped(n) => {
+                    crate::say!(
+                        "{} {} is declared at commit time, but {n} pushed                          commit{} carr{} no record of it — running it here",
+                        warning_sign(),
+                        ext.short_name,
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "ies" } else { "y" },
+                    );
+                }
+                crate::hooks::run_tests::PairVerdict::NotPaired => {}
+            }
+        }
         let sub = Ctx {
             name: check.name(),
             args: ctx.args,

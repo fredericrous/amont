@@ -181,11 +181,13 @@ pub(crate) fn note_unverified(manifest: &crate::manifest::Manifest, stamped: &[S
         return;
     }
     // Skips and severity overrides can retire a declaration from the gate;
-    // an entry the push gate would not trust cannot be "bypassed".
-    let declared = crate::hooks::run_tests::gated_at_commit(&manifest.externals);
+    // an entry the push gate would not trust cannot be "bypassed". EVERY
+    // blocking declaration counts, whatever its name — the ledger is about
+    // dodged checks, not about npm's vocabulary.
+    let declared = crate::hooks::run_tests::blocking_commit_decls(&manifest.externals);
     let missing: Vec<_> = declared
         .iter()
-        .filter(|d| !stamped.iter().any(|s| s == d.script))
+        .filter(|d| !stamped.contains(&d.script))
         .collect();
     if missing.is_empty() {
         return;
@@ -200,7 +202,7 @@ pub(crate) fn note_unverified(manifest: &crate::manifest::Manifest, stamped: &[S
     let scripts: Vec<&str> = missing
         .iter()
         .filter(|d| d.scope.matches(&files))
-        .map(|d| d.script)
+        .map(|d| d.script.as_str())
         .collect();
     if scripts.is_empty() {
         return;
