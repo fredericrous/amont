@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-four
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-six
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -117,6 +117,34 @@ for a test suite.
 branch instead of the branch's own upstream, or autostashing a dirty tree to
 do it, are exactly the ways a pre-push hook loses somebody's work — so it
 does neither, ever.
+
+### The secrets check — `secrets`, at both stages
+
+A staged credential is a ten-second fix: unstage it. A PUSHED credential is
+not a history problem, it is an incident — the secret is compromised the
+moment it leaves the machine, and the remedy stops being `git commit
+--amend` and becomes rotation. So this check exists twice:
+
+- **`pre-commit-secrets`** scans the staged content and blocks — private
+  key headers, cloud access key ids, the well-known API token prefixes
+  (GitHub, Slack, Google, Stripe live keys, npm, OpenAI/Anthropic).
+- **`pre-push-secrets`** scans every line every pushed commit ADDS —
+  including commits made with `--no-verify`, from other tools, or three
+  commits ago, and including a secret added and removed *within* the pushed
+  range, because the history being published still carries it. The push is
+  the last moment a secret is recoverable at all.
+
+Detection is curated token shapes, not entropy — entropy heuristics are
+where secret scanners get noisy, and a noisy blocker is a blocker people
+learn to delete. A legitimate fixture opts out per line with the pragma
+`amont:allow-secret` on the same line: visible in review, greppable, and
+narrower than skipping the whole check. Binary files and files over 2 MB
+are skipped.
+
+Findings are **redacted**: the report names the kind and the place
+(`a private key at config/deploy.pem:1`), never the matched text — a hook
+that echoes a secret into scrollback and CI logs has widened the leak it
+exists to prevent.
 
 ### The dependency audits — `audit-rust`, `audit-js`, `audit-python`
 

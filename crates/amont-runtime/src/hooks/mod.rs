@@ -19,5 +19,6 @@ pub mod pull_rebase;
 pub mod python_tools;
 pub mod run_tests;
 pub mod rust_tools;
+pub mod secrets;
 pub mod usual_name;
 pub mod yamllint;

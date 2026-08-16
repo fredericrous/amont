@@ -136,8 +136,12 @@ fn a_missing_audit_tool_warns_and_never_blocks() {
     std::fs::create_dir_all(r.path(".git/toolshims")).unwrap();
     let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/tags/v1.0.0");
     assert_eq!(code, 0, "{out}");
+    // On a machine with a REAL cargo-audit on PATH the shim dir cannot
+    // hide it, and the check takes the could-not-check path instead (the
+    // fixture repo has no Cargo.toml). Both phrasings honour the same
+    // contract this test pins: loud, and never blocking.
     assert!(
-        out.contains("did NOT run") || out.contains("could not run"),
+        out.contains("did NOT run") || out.contains("could not run") || out.contains("NOT checked"),
         "{out}"
     );
 }

@@ -6,6 +6,21 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.7 — 2026-08-16
+
+- **Secrets never leave the machine.** Two new checks, one leak, both
+  moments: `pre-commit-secrets` blocks a staged credential (private key
+  headers, AWS access key ids, GitHub/Slack/Google/Stripe-live/npm/
+  OpenAI/Anthropic token shapes) while it is still a ten-second fix, and
+  `pre-push-secrets` scans every line every pushed commit adds — a
+  `--no-verify` commit, another tool's commit, a secret added and removed
+  within the pushed range — because the push is the last moment a secret
+  is recoverable and after it the remedy is rotation, not history editing.
+  Curated token shapes, no entropy heuristics, no network; per-line
+  `amont:allow-secret` pragma for legitimate fixtures; reports are
+  redacted (the kind and the place, never the matched text). Twenty-six
+  built-in checks now.
+
 ## v1.6.6 — 2026-08-16
 
 - **Dependency audits, with the severity the push deserves.** Three new
