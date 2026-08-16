@@ -1527,7 +1527,7 @@ mod tests {
             out.contains("the whole pre-commit trigger"),
             "must name what it covers: {out}"
         );
-        assert!(out.contains("16 checks"), "and how many: {out}");
+        assert!(out.contains("17 checks"), "and how many: {out}");
     }
 
     /// The shape a mistake takes now: a value that names nothing at all.

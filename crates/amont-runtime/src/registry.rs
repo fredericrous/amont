@@ -230,6 +230,17 @@ pub const CHECKS: &[Builtin] = &[
         fix: Fix::Rewrite,
         run: |ctx| hooks::python_tools::ruff(ctx.args),
     },
+    // A staged credential is a ten-second fix; a pushed one is an
+    // incident. Both halves of that sentence are checks — see
+    // `hooks::secrets` for why the push half exists at all.
+    Builtin {
+        name: "pre-commit-secrets",
+        stage: Stage::PreCommit,
+        scope: Scope::ALWAYS,
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |_ctx| hooks::secrets::staged(),
+    },
     Builtin {
         name: "pre-commit-usual-name",
         stage: Stage::PreCommit,
@@ -266,6 +277,14 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         run: |ctx| hooks::branch_pattern::run(ctx.push.get(), ctx.args),
+    },
+    Builtin {
+        name: "pre-push-secrets",
+        stage: Stage::PrePush,
+        scope: Scope::ALWAYS,
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::secrets::pushed(ctx.push.get()),
     },
     Builtin {
         name: "pre-push-pull-rebase",
@@ -706,6 +725,7 @@ mod tests {
             vec![
                 "pre-push-branch-protect",
                 "pre-push-branch-pattern",
+                "pre-push-secrets",
                 "pre-push-pull-rebase",
                 "pre-push-audit-js",
                 "pre-push-audit-python",
@@ -794,6 +814,8 @@ mod tests {
             "pre-commit-yamllint",
             Consumes::Exts(crate::hooks::yamllint::EXTS),
         ),
+        ("pre-commit-secrets", Consumes::All),
+        ("pre-push-secrets", Consumes::All),
         ("pre-push-branch-protect", Consumes::All),
         ("pre-push-branch-pattern", Consumes::All),
         ("pre-push-pull-rebase", Consumes::All),
@@ -876,6 +898,8 @@ mod tests {
         ("pre-commit-ruff", true),
         ("pre-commit-usual-name", false),
         ("pre-commit-yamllint", false),
+        ("pre-commit-secrets", false),
+        ("pre-push-secrets", false),
         ("pre-push-branch-protect", false),
         ("pre-push-branch-pattern", false),
         ("pre-push-pull-rebase", false),
@@ -917,7 +941,7 @@ mod tests {
     /// the point of the refactor: there is no second table to disagree with.
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 24);
+        assert_eq!(CHECKS.len(), 26);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(
