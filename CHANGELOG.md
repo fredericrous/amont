@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.6 — 2026-08-16
+
+- **Dependency audits, with the severity the push deserves.** Three new
+  pre-push checks — `audit-rust` (`cargo audit`, opted in by `Cargo.lock`),
+  `audit-js` (`npm audit`, by `package-lock.json`), `audit-python`
+  (`pip-audit`, by `requirements.txt`) — bring the release workflow's
+  policy to the machine where the push starts: known vulnerabilities are a
+  named WARNING on a branch push and a REFUSAL on a push carrying a `v*`
+  tag, because a tag is a release and immutable registries take nothing
+  back. Warning-class advisories (unmaintained/unsound) are named and never
+  block; a missing tool or unreachable advisory database is loud and never
+  blocks — the offline case must not teach `--no-verify`. The tools' output
+  decides, never the exit code alone. Twenty-four built-in checks now.
+
 ## v1.6.5 — 2026-08-16
 
 - **The fleet's defaults stopped being one person's laptop.** `--binary`

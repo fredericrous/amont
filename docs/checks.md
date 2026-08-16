@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-one
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-four
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -117,6 +117,35 @@ for a test suite.
 branch instead of the branch's own upstream, or autostashing a dirty tree to
 do it, are exactly the ways a pre-push hook loses somebody's work — so it
 does neither, ever.
+
+### The dependency audits — `audit-rust`, `audit-js`, `audit-python`
+
+At `pre-push`, one vulnerability audit per ecosystem the repository uses:
+`cargo audit` (opted in by a `Cargo.lock`), `npm audit` (`package-lock.json`),
+and `pip-audit -r requirements.txt` (`requirements.txt`). No lockfile, no
+check — an audit without a resolved tree audits a guess.
+
+The severity is the push's, not the finding's:
+
+- **a branch push** with known vulnerabilities gets a named warning — the
+  advisory is information, tomorrow's retry is free, and it tells you now
+  that it *will* block a release;
+- **a push carrying a `v*` tag** (a `v` followed by a digit — `v1.2.3`,
+  `v2`; a tag merely starting with the letter v does not count) is a release
+  leaving the building, and known vulnerabilities refuse it, with the tool's
+  full report reprinted;
+- **warning-class advisories** (unmaintained, unsound) are named and never
+  block, anywhere — a gate nothing can pass is a gate people learn to
+  delete;
+- **a tool that is missing or cannot reach its advisory database** says so
+  loudly and never blocks: a hook may be offline, and a push gate that fails
+  on a captive portal teaches `--no-verify`. If your releases must not ship
+  unchecked, enforce that in CI, where the network is never in question —
+  this repository's own release workflow does exactly that.
+
+The tools' output decides, never the exit code alone: every one of these
+tools conflates "found vulnerabilities" with "could not fetch the database"
+in its exit status, and those mean opposite things.
 
 ### Moving a gate entry earlier
 
