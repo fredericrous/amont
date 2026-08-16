@@ -165,9 +165,68 @@ jobs:
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
+  # The blocking twin of ci.yaml's advisory audit — same parsing, opposite
+  # stakes. On a PR an advisory is information; on a TAG it is about to be
+  # compiled into six binaries and served to installers, so:
+  #
+  #   - a VULNERABILITY fails the release (the advisory ids decide, exactly
+  #     as in ci.yaml — the exit code alone conflates findings with fetch
+  #     failures);
+  #   - warning-class advisories (unmaintained/unsound) stay named
+  #     annotations: the tree carries two today in the fleet's TUI stack,
+  #     and a gate nothing can pass is a gate people learn to delete;
+  #   - a fetch failure ALSO fails, unlike ci.yaml: "could not check" is not
+  #     "clean", and an unchecked tree does not ship. On a PR you retry
+  #     tomorrow; a release published today is immutable today.
+  audit:
+    name: no known vulnerabilities ship
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}
+      - name: Install cargo-audit
+        run: command -v cargo-audit > /dev/null || cargo install --locked cargo-audit
+      - name: Audit the resolved tree
+        run: |
+          set -uo pipefail
+          cargo audit --color never 2>&1 | tee /tmp/audit.log
+          rc=${PIPESTATUS[0]}
+          ids=$(grep -Eo 'RUSTSEC-[0-9]{4}-[0-9]{4}' /tmp/audit.log | sort -u)
+
+          if [ -z "$ids" ]; then
+            if [ "$rc" -eq 0 ]; then
+              echo "no advisories against the locked tree"
+              exit 0
+            fi
+            echo "::error::cargo audit could not complete — the tree was NOT checked, and an unchecked tree does not ship"
+            exit 1
+          fi
+
+          if [ "$rc" -eq 0 ]; then
+            echo "::warning::advisories against the locked tree (warnings — unmaintained/unsound); named below, not blocking"
+            printf '%s\n' "$ids" | while read -r id; do
+              echo "::warning::$id  https://rustsec.org/advisories/$id"
+            done
+            exit 0
+          fi
+
+          echo "::error::VULNERABILITIES against the locked tree — refusing to release"
+          printf '%s\n' "$ids" | while read -r id; do
+            echo "::error::$id  https://rustsec.org/advisories/$id"
+          done
+          exit 1
+
   publish:
     name: publish the release
-    needs: [guard, build]
+    needs: [guard, build, audit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

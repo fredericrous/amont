@@ -200,7 +200,9 @@ jobs:
           # Exit 0 on purpose. `continue-on-error` above already keeps the run
           # green; this keeps the STEP from being marked failed too, so the
           # annotations are the signal rather than a red X people learn to
-          # ignore. Flip both if this is ever promoted to blocking.
+          # ignore. The BLOCKING form of this job lives in release.yaml
+          # (`audit`): same parsing, but a vulnerability or an unchecked
+          # tree refuses the release.
           exit 0
 
   # The shims are the only shell left in this repository.
