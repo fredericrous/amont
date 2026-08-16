@@ -8,6 +8,15 @@ missing here.
 
 ## v1.6.5 — 2026-08-16
 
+- **The fleet's defaults stopped being one person's laptop.** `--binary`
+  defaulted to `~/.local/bin/amont` — on a machine whose amont had moved to
+  homebrew's prefix, every correctly-baked shim read as a stale bake. It now
+  defaults to the `amont` on PATH (what a shim's own fallback would
+  execute — probing reality, not guessing), with the install path kept as
+  fallback. `--root` still defaults to `~/Developer` when it exists; a home
+  without one is refused with the remedy named (`--root <dir>`) instead of
+  presenting one machine's layout as a fact about every machine.
+
 - **A gate is a name, not an npm script.** The commit-time gate was keyed to
   the push gate's three package.json scripts (`typecheck`, `test:unit`,
   `test`) — the moment a Rust or Python repository wanted a gated

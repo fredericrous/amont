@@ -45,9 +45,9 @@ usage: amont-fleet [scan|tui|fix|install|uninstall] [--root <dir>] [--depth <n>]
   fix            show what would be changed — DRY RUN unless --apply
   fix --apply    carry out the plan
 
-  --root <dir>   where to look for repositories (default: $HOME/Developer)
+  --root <dir>   where to look for repositories (default: $HOME/Developer when it exists)
   --depth <n>    directory levels to descend  (default: 6)
-  --binary <p>   the binary shims should point at (default: $HOME/.local/bin/amont)
+  --binary <p>   the binary shims should point at (default: the amont on PATH, else $HOME/.local/bin/amont)
   --agents-md    with fix/install: also roll out the AGENTS.md pointer
   --remove-unrecognized
                  ALSO delete pre-commit-* / pre-push-* files this tool did not
@@ -170,9 +170,10 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
     let root = match root {
         Some(r) => r,
         None => default_root(home).ok_or_else(|| {
-            "no --root given and $HOME is not set — refusing to guess \
-             (the alternative is silently scanning, and `fix --apply`ing, \
-             from wherever this happened to be launched)"
+            "no --root given and no ~/Developer to fall back to — refusing \
+             to guess (the alternative is silently scanning, and `fix \
+             --apply`ing, from wherever this happened to be launched). \
+             Say where the fleet lives: --root <dir>"
                 .to_string()
         })?,
     };
@@ -192,23 +193,43 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Where `make install` puts the binary. Shims baked with anything else are
-/// reported as stale, which is the GUI-client failure mode.
-///
-/// `home: None` has no good guess and must not pretend to: a bare relative
-/// `"amont"` baked into a shim is a silently broken install — the same
-/// failure family as #79 (a wrong path from a missing env var), just on the
-/// write side rather than the delete side.
-fn default_binary(home: Option<&Path>) -> Option<String> {
-    home.map(|h| h.join(".local/bin/amont").to_string_lossy().into_owned())
+/// The `amont` a shim's PATH fallback would actually execute — absolute, or
+/// nothing. This is the truthful bake target: shims resolve their baked
+/// path first and PATH last, so baking anything OTHER than the PATH binary
+/// makes the two disagree the day one of them upgrades.
+fn amont_on_path() -> Option<String> {
+    let exe = if cfg!(windows) { "amont.exe" } else { "amont" };
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(exe))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
-/// `home: None` must not fall back to `.` — `fix --apply`/`install` would
-/// then operate, recursively, from wherever the process happened to be
-/// launched, with only `is_dir()` standing between that and doing real work.
-/// #79 was exactly this: a surprising path from an absent env var.
+/// The binary shims should point at: the one PATH would run, else the
+/// install default. The install default alone was a PERSONAL default — it
+/// said `~/.local/bin/amont` on a machine whose amont had moved to
+/// homebrew's prefix, and every correctly-baked shim then read as a stale
+/// bake. Probing PATH is not guessing: it is what execution would do.
+///
+/// `on_path` is injected rather than read here so the tests are about the
+/// precedence, not about what happens to be installed on the test machine.
+/// With neither source there is still no good guess and no pretending: a
+/// bare relative `"amont"` baked into a shim is a silently broken install —
+/// the same failure family as #79 (a wrong path from a missing env var),
+/// just on the write side rather than the delete side.
+fn default_binary(home: Option<&Path>, on_path: Option<String>) -> Option<String> {
+    on_path.or_else(|| home.map(|h| h.join(".local/bin/amont").to_string_lossy().into_owned()))
+}
+
+/// `~/Developer` WHEN IT EXISTS — a convention this tool grew up in, kept
+/// as a convenience, no longer presented as a fact about every machine. A
+/// home without it gets the refusal below rather than a scan of nothing
+/// (or worse: `fix --apply` recursing from `.`, which is #79's shape — a
+/// surprising path from an absent env var — and why `home: None` must
+/// never fall back to the current directory).
 fn default_root(home: Option<&Path>) -> Option<PathBuf> {
-    home.map(|h| h.join("Developer"))
+    home.map(|h| h.join("Developer")).filter(|d| d.is_dir())
 }
 
 /// Same disposition as the hook binary's `die_on_sigpipe`, for the same
@@ -266,7 +287,7 @@ fn main() -> ExitCode {
     let installed = match args
         .binary
         .clone()
-        .or_else(|| default_binary(home().as_deref()))
+        .or_else(|| default_binary(home().as_deref(), amont_on_path()))
     {
         Some(b) => b,
         None => {
@@ -913,15 +934,30 @@ mod tests {
 
     #[test]
     fn parses_flags_and_defaults() {
-        let home = Path::new("/home/x");
-        let a = parse(&[], Some(home)).expect("defaults");
+        // A home whose ~/Developer EXISTS — the default root is adaptive
+        // now, and a bare fake path would be the refusal case instead.
+        let home = std::env::temp_dir().join(format!("fleet-parse-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(home.join("Developer"));
+        let a = parse(&[], Some(&home)).expect("defaults");
         assert_eq!(a.depth, 6);
         assert!(!a.json);
         assert_eq!(a.root, home.join("Developer"));
 
-        let a = parse(&["--depth".into(), "2".into(), "--json".into()], Some(home)).unwrap();
+        let a = parse(
+            &["--depth".into(), "2".into(), "--json".into()],
+            Some(&home),
+        )
+        .unwrap();
         assert_eq!(a.depth, 2);
         assert!(a.json);
+
+        // And a home WITHOUT one is refused, with the remedy named.
+        let bare = Path::new("/home/x");
+        let Err(err) = parse(&[], Some(bare)) else {
+            panic!("a home without ~/Developer must be refused");
+        };
+        assert!(err.contains("--root"), "{err}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Deleting hooks other people wrote is opt-in, and the flag's absence is
@@ -929,22 +965,31 @@ mod tests {
     /// the whole fix.
     #[test]
     fn deleting_other_peoples_hooks_is_off_unless_asked_for() {
+        // Explicit --root: this test is about the flag, and the default
+        // root is adaptive now (it needs a real ~/Developer).
         let home = Some(Path::new("/home/x"));
-        assert!(!parse(&[], home).unwrap().remove_unrecognized);
+        let with_root = |mut v: Vec<String>| {
+            v.extend(["--root".to_string(), "/tmp".to_string()]);
+            v
+        };
+        assert!(!parse(&with_root(vec![]), home).unwrap().remove_unrecognized);
         assert!(
-            !parse(&["fix".into(), "--apply".into()], home)
+            !parse(&with_root(vec!["fix".into(), "--apply".into()]), home)
                 .unwrap()
                 .remove_unrecognized
         );
         assert!(
-            !parse(&["install".into()], home)
+            !parse(&with_root(vec!["install".into()]), home)
                 .unwrap()
                 .remove_unrecognized
         );
         assert!(
-            parse(&["fix".into(), "--remove-unrecognized".into()], home)
-                .unwrap()
-                .remove_unrecognized
+            parse(
+                &with_root(vec!["fix".into(), "--remove-unrecognized".into()]),
+                home
+            )
+            .unwrap()
+            .remove_unrecognized
         );
         // And the usage text has to say both halves out loud.
         assert!(USAGE.contains("--remove-unrecognized"), "{USAGE}");
@@ -990,16 +1035,47 @@ mod tests {
             "no directory to guess without $HOME"
         );
         assert_eq!(
-            default_binary(None),
+            default_binary(None, None),
             None,
-            "no binary path to guess without $HOME"
+            "no binary path to guess without $HOME and nothing on PATH"
         );
 
+        // A home whose ~/Developer does not exist is a home with no default
+        // root — the refusal, not a scan of nothing.
         let home = Path::new("/home/x");
-        assert_eq!(default_root(Some(home)), Some(home.join("Developer")));
+        assert_eq!(default_root(Some(home)), None);
         assert_eq!(
-            default_binary(Some(home)),
+            default_binary(Some(home), None),
             Some(home.join(".local/bin/amont").to_string_lossy().into_owned())
         );
+    }
+
+    /// The PATH binary outranks the install default: it is the one a shim's
+    /// own fallback would execute, so baking anything else makes the two
+    /// disagree the day one of them upgrades.
+    #[test]
+    fn the_path_binary_outranks_the_install_default() {
+        let home = Path::new("/home/x");
+        assert_eq!(
+            default_binary(Some(home), Some("/opt/homebrew/bin/amont".into())),
+            Some("/opt/homebrew/bin/amont".into())
+        );
+        assert_eq!(
+            default_binary(None, Some("/usr/local/bin/amont".into())),
+            Some("/usr/local/bin/amont".into())
+        );
+    }
+
+    /// A ~/Developer that exists is still the default root — the convention
+    /// is kept, only its universality was retired.
+    #[test]
+    fn an_existing_developer_dir_is_still_the_default_root() {
+        let fake_home = std::env::temp_dir().join(format!("fleet-home-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(fake_home.join("Developer"));
+        assert_eq!(
+            default_root(Some(&fake_home)),
+            Some(fake_home.join("Developer"))
+        );
+        let _ = std::fs::remove_dir_all(&fake_home);
     }
 }
