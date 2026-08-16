@@ -1527,7 +1527,7 @@ mod tests {
             out.contains("the whole pre-commit trigger"),
             "must name what it covers: {out}"
         );
-        assert!(out.contains("17 checks"), "and how many: {out}");
+        assert!(out.contains("18 checks"), "and how many: {out}");
     }
 
     /// The shape a mistake takes now: a value that names nothing at all.
@@ -1992,7 +1992,10 @@ mod tests {
     fn the_checks_panel_names_each_trigger() {
         let mut app = App::new(scan_with_repos(vec![repo("a", true)]));
         app.mode = Mode::Detail;
-        let out = render(&app, 100, 40);
+        // Tall enough for the whole registry: the panel windows around the
+        // cursor, and a pre-push check that scrolls out of a short render
+        // reads as a missing row rather than a wrong label.
+        let out = render(&app, 100, 60);
         let row = |name: &str| {
             out.lines()
                 .find(|l| l.contains(name))

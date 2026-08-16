@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-six
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-eight
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -117,6 +117,24 @@ for a test suite.
 branch instead of the branch's own upstream, or autostashing a dirty tree to
 do it, are exactly the ways a pre-push hook loses somebody's work — so it
 does neither, ever.
+
+### The large-file guard — `large-files`
+
+Git history never forgets a megabyte: an accidentally committed dataset or
+bundle is paid for by every clone forever, even after deletion — deleting
+adds a commit, it does not remove the bytes. At `pre-commit`, a staged file
+over `amont.largeFileWarn` MB (default 10) gets a named warning — a large
+asset can be deliberate, and this is the moment to decide — and one over
+`amont.largeFileBlock` MB (default 100, GitHub's own refusal line) blocks
+with the remedy named: git-lfs, or keep it out of history.
+
+### The Python test gate — `pytest`
+
+`cargo-test`'s contract for the third ecosystem: a repository declaring a
+pytest setup (a `pytest.ini` or a `conftest.py` — a bare `pyproject.toml`
+is not a promise to test) runs its suite at `pre-push` against the PUSHED
+tree, per ref, for pushes that change Python. Missing pytest or an
+unanswering git is `Unavailable` — loud, never green.
 
 ### The secrets check — `secrets`, at both stages
 

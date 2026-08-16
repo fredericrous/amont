@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.8 — 2026-08-16
+
+- **The large-file guard.** Git history never forgets a megabyte: a staged
+  file over `amont.largeFileWarn` MB (default 10) is named at commit — a
+  large asset can be deliberate, and this is the moment to decide — and
+  one over `amont.largeFileBlock` MB (default 100, GitHub's own refusal
+  line) blocks with the remedy named: git-lfs, or keep it out of history,
+  because deletion later does not remove the bytes.
+- **The Python test gate.** `pre-push-pytest` closes the parity gap: JS
+  had a push-time suite from the start, Rust gained `cargo-test`, and now
+  a repository declaring a pytest setup (`pytest.ini` or `conftest.py`)
+  runs its suite against the pushed tree, per ref, for pushes that change
+  Python. Twenty-eight built-in checks.
+
 ## v1.6.7 — 2026-08-16
 
 - **Secrets never leave the machine.** Two new checks, one leak, both
