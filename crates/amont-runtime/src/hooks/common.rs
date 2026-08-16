@@ -393,6 +393,57 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
     Ok(ran)
 }
 
+/// Run to completion under the `amont.timeout` deadline with stdout and
+/// stderr CAPTURED into a string the caller can parse — what the audit
+/// checks need: their verdict lives in the tool's output, not its exit
+/// code alone. Arrival-ordered merge of both streams, like
+/// [`status_streamed`]'s blocks. `None` when the child cannot be spawned.
+pub fn capture_within(cmd: &mut Command) -> Option<(Ran, String)> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let budget = check_timeout();
+    let mut child = cmd.spawn().ok()?;
+    let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let mut readers = Vec::new();
+    for pipe in [
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let text = std::sync::Arc::clone(&text);
+        readers.push(std::thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut chunk = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut pipe, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let piece = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                        text.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .push_str(&piece);
+                    }
+                }
+            }
+        }));
+    }
+    let ran = wait_within(&mut child, budget).ok()?;
+    for r in readers {
+        let _ = r.join();
+    }
+    let text = std::sync::Arc::try_unwrap(text)
+        .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
+        .unwrap_or_default();
+    Some((ran, text))
+}
+
 /// The deadline loop over an already-spawned child — shared by the
 /// inherited and captured runners.
 fn wait_within(child: &mut std::process::Child, budget_secs: u64) -> std::io::Result<Ran> {

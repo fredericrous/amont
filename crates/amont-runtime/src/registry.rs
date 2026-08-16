@@ -275,6 +275,36 @@ pub const CHECKS: &[Builtin] = &[
         fix: Fix::None,
         run: |ctx| hooks::pull_rebase::run(ctx.args),
     },
+    // The three dependency audits sit between the structural checks and the
+    // test suites: network-bound but seconds, where a suite is minutes —
+    // and when a v* tag is in the push, failing here saves the suite's
+    // whole cost. Each opts in by the LOCKFILE its tool audits: an audit
+    // without a resolved tree audits a guess. On a branch push they only
+    // warn; the blocking case is the release tag — see `hooks::audit`.
+    Builtin {
+        name: "pre-push-audit-js",
+        stage: Stage::PrePush,
+        scope: Scope::new(&[], &["package-lock.json"]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::audit::js(ctx.push.get()),
+    },
+    Builtin {
+        name: "pre-push-audit-python",
+        stage: Stage::PrePush,
+        scope: Scope::new(&[], &["requirements.txt"]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::audit::python(ctx.push.get()),
+    },
+    Builtin {
+        name: "pre-push-audit-rust",
+        stage: Stage::PrePush,
+        scope: Scope::new(&[], &["Cargo.lock"]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::audit::rust(ctx.push.get()),
+    },
     Builtin {
         name: "pre-push-run-tests-js",
         stage: Stage::PrePush,
@@ -677,6 +707,9 @@ mod tests {
                 "pre-push-branch-protect",
                 "pre-push-branch-pattern",
                 "pre-push-pull-rebase",
+                "pre-push-audit-js",
+                "pre-push-audit-python",
+                "pre-push-audit-rust",
                 "pre-push-run-tests-js",
                 "pre-push-cargo-test",
             ]
@@ -846,6 +879,9 @@ mod tests {
         ("pre-push-branch-protect", false),
         ("pre-push-branch-pattern", false),
         ("pre-push-pull-rebase", false),
+        ("pre-push-audit-js", false),
+        ("pre-push-audit-python", false),
+        ("pre-push-audit-rust", false),
         ("pre-push-run-tests-js", false),
         ("pre-push-cargo-test", false),
     ];
@@ -881,7 +917,7 @@ mod tests {
     /// the point of the refactor: there is no second table to disagree with.
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 21);
+        assert_eq!(CHECKS.len(), 24);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(
