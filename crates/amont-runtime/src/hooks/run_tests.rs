@@ -63,53 +63,152 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 /// check executed for the commits actually being pushed is what
 /// [`crate::gate_stamp`]'s per-commit stamps answer, in `run`.
 pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<GateDecl> {
+    let mut decls = blocking_commit_decls(declared);
+    decls.retain(|d| GATE.contains(&d.script.as_str()));
+    decls
+}
+
+/// EVERY blocking commit-time declaration, whatever its name — the general
+/// form [`gated_at_commit`] narrows to the npm GATE vocabulary. This is what
+/// earns stamps and what the bypass ledger counts: a `pre-commit test *.rs
+/// block cargo test` line gates exactly the way `typecheck` always has, and
+/// a same-named pre-push declaration defers to its stamps (see
+/// [`pair_verdict`]). The npm push gate was the first consumer of this
+/// machinery, not its definition.
+pub(crate) fn blocking_commit_decls(declared: &[crate::manifest::External]) -> Vec<GateDecl> {
     // The fast path: pre-commit calls this on every commit to know what to
-    // stamp, and most repositories declare nothing — no GATE name declared
-    // means no git spawns for skips and severity overrides.
+    // stamp, and most repositories declare nothing — no pre-commit
+    // declaration means no git spawns for skips and severity overrides.
     if gate_names_declared(declared).is_empty() {
         return Vec::new();
     }
     let skips = crate::configured_skips();
     let severities = crate::registry::Overrides::read();
-    GATE.iter()
-        .filter_map(|script| {
-            declared.iter().find_map(|ext| {
-                let crate::manifest::Kind::Runnable { scope, .. } = &ext.kind else {
-                    return None;
-                };
-                (ext.stage == crate::check::Stage::PreCommit
-                    && ext.short_name == *script
-                    && severities.of(ext) == crate::check::Severity::Block
-                    && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s)))
-                .then(|| GateDecl {
-                    script,
-                    id: ext.id.clone(),
-                    scope: *scope,
-                })
+    declared
+        .iter()
+        .filter_map(|ext| {
+            let crate::manifest::Kind::Runnable { scope, .. } = &ext.kind else {
+                return None;
+            };
+            (ext.stage == crate::check::Stage::PreCommit
+                && severities.of(ext) == crate::check::Severity::Block
+                && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s)))
+            .then(|| GateDecl {
+                script: ext.short_name.clone(),
+                id: ext.id.clone(),
+                scope: *scope,
             })
         })
         .collect()
 }
 
-/// GATE names this manifest declares at pre-commit, before any config is
-/// read — the zero-spawn question "could this repository have a commit-time
-/// gate at all". [`gated_at_commit`] and the bypass ledger's fast path both
+/// Names this manifest declares at pre-commit, before any config is read —
+/// the zero-spawn question "could this repository have a commit-time gate at
+/// all". [`blocking_commit_decls`] and the bypass ledger's fast path both
 /// start here, from the same predicate, so they cannot drift.
-pub(crate) fn gate_names_declared(declared: &[crate::manifest::External]) -> Vec<&'static str> {
-    GATE.iter()
-        .filter(|script| {
-            declared.iter().any(|ext| {
-                ext.stage == crate::check::Stage::PreCommit && ext.short_name == **script
-            })
-        })
-        .copied()
+pub(crate) fn gate_names_declared(declared: &[crate::manifest::External]) -> Vec<String> {
+    declared
+        .iter()
+        .filter(|ext| ext.stage == crate::check::Stage::PreCommit)
+        .map(|ext| ext.short_name.clone())
         .collect()
 }
 
-/// One GATE entry a commit-time declaration stands in for.
+/// What a declared PRE-PUSH external should do about a same-named
+/// commit-time declaration — the general form of the npm gate's stamp
+/// suppression, for names the GATE list never heard of. Declaring `test`
+/// (or `lint`, or anything) at BOTH stages is the contract: the pre-commit
+/// side earns per-commit stamps, and the pre-push side runs only for pushes
+/// carrying commits with no record of it.
+pub(crate) enum PairVerdict {
+    /// No blocking commit-time pair covers this push — run normally.
+    NotPaired,
+    /// Every pushed commit in the pair's scope carries its stamp — skip,
+    /// saying so.
+    Gated,
+    /// A pair exists but this many pushed commits carry no record of it —
+    /// run, saying why the declaration's word was not enough.
+    Unstamped(usize),
+}
+
+/// Judge a pre-push declared external against its commit-time pair, with
+/// exactly the npm gate's rules: the pair must be BLOCKING (a warn check
+/// vouches for nothing), its scope must have seen every file this push
+/// changes that the push-side check would fire on, and every relevant
+/// commit must carry its stamp. Any git refusal reads as "no stamp", which
+/// runs the check — the only safe direction.
+pub(crate) fn pair_verdict(
+    ext: &crate::manifest::External,
+    manifest: &crate::manifest::Manifest,
+    push: &crate::pushrefs::PushRefs,
+) -> PairVerdict {
+    let crate::manifest::Kind::Runnable {
+        scope: push_scope, ..
+    } = &ext.kind
+    else {
+        return PairVerdict::NotPaired;
+    };
+    // Cheap name test before any config read or git spawn: most pre-push
+    // declarations have no commit-time namesake.
+    if !manifest
+        .externals
+        .iter()
+        .any(|e| e.stage == crate::check::Stage::PreCommit && e.short_name == ext.short_name)
+    {
+        return PairVerdict::NotPaired;
+    }
+    let Some(pair) = blocking_commit_decls(&manifest.externals)
+        .into_iter()
+        .find(|d| d.script == ext.short_name)
+    else {
+        return PairVerdict::NotPaired;
+    };
+    let zero = git::stdout(&["hash-object", "--stdin"])
+        .map(|h| "0".repeat(h.len()))
+        .unwrap_or_else(|| "0".repeat(40));
+    let mut unstamped = 0usize;
+    let mut judged_any = false;
+    for r in push.get() {
+        let changed = crate::pushrefs::changed_files_for(r, &zero);
+        let relevant: Vec<String> = changed
+            .iter()
+            .filter(|f| push_scope.matches(std::slice::from_ref(f)))
+            .cloned()
+            .collect();
+        if relevant.is_empty() {
+            continue; // this ref never fires the push-side check
+        }
+        judged_any = true;
+        if !pair.scope.covers_all(&relevant) {
+            // The pair has not judged everything this push changes — its
+            // word covers nothing here, silently: claiming partial coverage
+            // out loud would read as reassurance.
+            return PairVerdict::NotPaired;
+        }
+        let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
+        let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
+        let stamps = crate::gate_stamp::stamps_for(&ids);
+        unstamped += per_commit
+            .iter()
+            .filter(|(_, files)| pair.scope.matches(files))
+            .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair.script)))
+            .count();
+    }
+    if !judged_any {
+        return PairVerdict::NotPaired;
+    }
+    if unstamped == 0 {
+        PairVerdict::Gated
+    } else {
+        PairVerdict::Unstamped(unstamped)
+    }
+}
+
+/// One gate entry a commit-time declaration stands in for.
 pub(crate) struct GateDecl {
-    /// The script name, as GATE spells it.
-    pub script: &'static str,
+    /// The declared name — a GATE script for the npm push gate, any name
+    /// for a declared pre-commit/pre-push pair.
+    pub script: String,
     /// `<stage>-<name>` — what dispatch outcomes and `hook.skip` key on.
     /// Carried so pre-commit can match "this declaration" to "that outcome"
     /// without re-deriving the id and drifting.
@@ -366,8 +465,8 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
     // one covers a given push is a property of that ref's changed files and of
     // its commits' stamps, judged inside the loop.
     let declared_gate = gated_at_commit(declared);
-    let mut announced: Vec<&'static str> = Vec::new();
-    let mut warned: Vec<&'static str> = Vec::new();
+    let mut announced: Vec<String> = Vec::new();
+    let mut warned: Vec<String> = Vec::new();
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -416,7 +515,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
             .iter()
             .filter(|d| d.scope.covers_all(&js_changed))
             .collect();
-        let mut already: Vec<&'static str> = Vec::new();
+        let mut already: Vec<String> = Vec::new();
         if !candidates.is_empty() {
             let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
             let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
@@ -426,13 +525,11 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                     .iter()
                     .filter(|(_, files)| d.scope.matches(files))
                     .filter(|(commit, _)| {
-                        !stamps
-                            .get(commit)
-                            .is_some_and(|s| s.iter().any(|n| n == d.script))
+                        !stamps.get(commit).is_some_and(|s| s.contains(&d.script))
                     })
                     .count();
                 if unstamped == 0 {
-                    already.push(d.script);
+                    already.push(d.script.clone());
                 } else if !warned.contains(&d.script) {
                     crate::say!(
                         "{} {} is declared at commit time, but {unstamped} pushed \
@@ -442,7 +539,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                         if unstamped == 1 { "" } else { "s" },
                         if unstamped == 1 { "ies" } else { "y" },
                     );
-                    warned.push(d.script);
+                    warned.push(d.script.clone());
                 }
             }
         }
@@ -464,10 +561,10 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
         // scope or a missing root package disqualified would be the same lie
         // in the other direction.
         if folders.iter().any(|f| f.is_empty()) {
-            let newly: Vec<&'static str> = already
+            let newly: Vec<String> = already
                 .iter()
-                .copied()
                 .filter(|s| !announced.contains(s))
+                .cloned()
                 .collect();
             if !newly.is_empty() {
                 crate::say!(
@@ -480,9 +577,14 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
             }
         }
 
+        let already_strs: Vec<&str> = already.iter().map(String::as_str).collect();
         for folder in folders {
             // Root only: the declared command runs at the repo root.
-            let already_here: &[&str] = if folder.is_empty() { &already } else { &[] };
+            let already_here: &[&str] = if folder.is_empty() {
+                &already_strs
+            } else {
+                &[]
+            };
             if !run_gate(&where_, &folder, already_here) {
                 return Outcome::Failed;
             }
