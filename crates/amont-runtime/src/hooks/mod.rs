@@ -8,6 +8,7 @@ pub mod branch_protect;
 pub mod commit_msg;
 pub mod common;
 pub mod k8s;
+pub mod large_files;
 pub mod lint_js;
 pub mod lint_json_yaml;
 pub mod merge_conflict;

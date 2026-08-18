@@ -245,7 +245,7 @@ fn a_trigger_skip_disables_its_stage_and_says_so() {
     r.git(&["config", "--add", "hook.skip", "pre-commit"]);
     let run = r.hook("pre-commit", &[]);
     assert!(
-        run.says("17 checks skipped"),
+        run.says("18 checks skipped"),
         "a trigger disables its stage: {}",
         run.stdout
     );

@@ -152,6 +152,14 @@ pub const CHECKS: &[Builtin] = &[
         run: |ctx| hooks::k8s::kubeconform(ctx.args),
     },
     Builtin {
+        name: "pre-commit-large-files",
+        stage: Stage::PreCommit,
+        scope: Scope::ALWAYS,
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |_ctx| hooks::large_files::staged(),
+    },
+    Builtin {
         name: "pre-commit-lint-js",
         stage: Stage::PreCommit,
         scope: Scope::new(hooks::lint_js::EXTS, &["package.json"]).not_during(MID_OPERATION),
@@ -341,6 +349,15 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         run: |ctx| hooks::rust_tools::test(ctx.push.get()),
+    },
+    Builtin {
+        name: "pre-push-pytest",
+        stage: Stage::PrePush,
+        scope: Scope::new(hooks::python_tools::EXTS, &["pytest.ini", "conftest.py"])
+            .not_during(&[GitState::Bisect, GitState::Rebase]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::python_tools::pytest(ctx.push.get()),
     },
 ];
 
@@ -732,6 +749,7 @@ mod tests {
                 "pre-push-audit-rust",
                 "pre-push-run-tests-js",
                 "pre-push-cargo-test",
+                "pre-push-pytest",
             ]
         );
     }
@@ -814,6 +832,7 @@ mod tests {
             "pre-commit-yamllint",
             Consumes::Exts(crate::hooks::yamllint::EXTS),
         ),
+        ("pre-commit-large-files", Consumes::All),
         ("pre-commit-secrets", Consumes::All),
         ("pre-push-secrets", Consumes::All),
         ("pre-push-branch-protect", Consumes::All),
@@ -822,6 +841,10 @@ mod tests {
         (
             "pre-push-run-tests-js",
             Consumes::Exts(crate::hooks::run_tests::JS_EXTS),
+        ),
+        (
+            "pre-push-pytest",
+            Consumes::Exts(crate::hooks::python_tools::EXTS),
         ),
         (
             "pre-push-cargo-test",
@@ -898,6 +921,7 @@ mod tests {
         ("pre-commit-ruff", true),
         ("pre-commit-usual-name", false),
         ("pre-commit-yamllint", false),
+        ("pre-commit-large-files", false),
         ("pre-commit-secrets", false),
         ("pre-push-secrets", false),
         ("pre-push-branch-protect", false),
@@ -908,6 +932,7 @@ mod tests {
         ("pre-push-audit-rust", false),
         ("pre-push-run-tests-js", false),
         ("pre-push-cargo-test", false),
+        ("pre-push-pytest", false),
     ];
 
     /// A `Fix::Rewrite` declaration is a PROMISE, and the set of checks that
@@ -941,7 +966,7 @@ mod tests {
     /// the point of the refactor: there is no second table to disagree with.
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 26);
+        assert_eq!(CHECKS.len(), 28);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

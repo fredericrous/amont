@@ -241,3 +241,51 @@ pub fn pyright(_args: &[std::ffi::OsString]) -> Outcome {
     ok("pyright passed");
     Outcome::Passed
 }
+
+/// The Python test gate — `pre-push-pytest`, `cargo-test`'s shape for the
+/// third ecosystem. JS had a push-time suite from the start and Rust
+/// gained one; Python repositories declaring a pytest setup (a
+/// `pytest.ini` or a `conftest.py` — a bare `pyproject.toml` is not a
+/// promise to test) ran nothing at push until now.
+///
+/// Same contract as the other suites: runs against the PUSHED tree per
+/// ref (see `pushed_tree`), `Unavailable` — loudly, never green — when
+/// git will not answer or pytest is not installed, and fail-fast on a red
+/// suite.
+pub fn pytest(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+    let Some(root) = crate::git::stdout(&["rev-parse", "--show-toplevel"]) else {
+        super::common::warn("pytest: git would not answer — the gate did NOT run");
+        return Outcome::Unavailable;
+    };
+    let zero = crate::git::stdout(&["hash-object", "--stdin"])
+        .map(|h| "0".repeat(h.len()))
+        .unwrap_or_else(|| "0".repeat(40));
+    let mut ran_any = false;
+    for r in refs {
+        let changed = crate::pushrefs::changed_files_for(r, &zero);
+        if !changed.iter().any(|f| EXTS.iter().any(|e| f.ends_with(e))) {
+            continue; // this ref pushes no Python
+        }
+        let Some(pytest) = super::common::which("pytest") else {
+            super::common::warn(
+                "Python changed but pytest is not installed — the gate did NOT run",
+            );
+            return Outcome::Unavailable;
+        };
+        // Where THIS ref's suite runs decides what it is answering about —
+        // the pushed commits, not whatever is open in the editor.
+        let (where_, _guard) = crate::pushed_tree::where_to_run(&r.local_oid, &root);
+        let mut cmd = std::process::Command::new(&pytest);
+        cmd.current_dir(&where_).stdin(std::process::Stdio::null());
+        super::common::strip_git_env(&mut cmd);
+        if !super::common::bounded_success(&mut cmd, "pytest") {
+            super::common::fail("Python tests failed. Push aborted.");
+            return Outcome::Failed;
+        }
+        ran_any = true;
+    }
+    if ran_any {
+        super::common::ok("Python tests passed");
+    }
+    Outcome::Passed
+}
