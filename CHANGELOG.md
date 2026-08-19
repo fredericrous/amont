@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.7.2 — 2026-08-19
+
+- **The CI backstop, stated and shipped.** amont deliberately does not run
+  in CI — CI wants the real tools, called directly. Eight copyable
+  workflow templates (`templates/ci/{github,forgejo}/{rust,js,python,go}.yaml`)
+  express amont's local policy in native steps, each annotated with the
+  check it mirrors, audits keeping their branch-warns/release-blocks
+  split. The amont-only checks (ban-terms, secrets, large-files,
+  conventions) stay deliberately local. New docs chapter: *The CI
+  backstop*.
+- **`amont run` accepts short names.** `amont run ban-terms` now resolves
+  exactly as `hook.skip ban-terms` always did; an ambiguous short name
+  (`branch-pattern` names two checks) lists both full ids instead of
+  guessing, and a short-named pre-push check still gets its synthetic
+  refs.
+- Two messages lost their accidental mid-line whitespace runs (the
+  conventions held-back line and the gate-pair "running it here" line).
+
 ## v1.7.1 — 2026-08-19
 
 - **v1.7.0, delivered.** Same features as below; the v1.7.0 tag never

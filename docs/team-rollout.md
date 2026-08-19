@@ -107,7 +107,8 @@ no per-repo step, nothing to forget.
 - **Hooks remain advisory.** `--no-verify` still works, deliberately, and
   is [counted](checks.md#the-stamp-contract) rather than prevented. The
   guarantee lives in CI, not on laptops; put the same checks there and
-  the hook becomes the fast feedback, not the enforcement.
+  the hook becomes the fast feedback, not the enforcement — [the CI
+  backstop](ci.md) ships copyable workflow templates for exactly that.
 - **Version skew.** Enrolled machines resolve whatever binary they have;
   two teammates on different amont versions run different check sets,
   silently, until a shim is newer than a binary (which warns). Pin the

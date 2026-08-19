@@ -1,0 +1,38 @@
+# The CI backstop for a Python repository — the same tools amont runs locally,
+# called directly. amont itself deliberately does not run in CI; see
+# https://fredericrous.github.io/amont/ci.html. Copy into .github/workflows/
+# and prune what you don't use.
+name: checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff pyright pytest
+      - run: ruff check . # pre-commit-ruff
+      - run: pyright # pre-commit-pyright — delete if unconfigured
+      - run: pytest # pre-push-pytest
+
+  # pre-push-audit-python's split: advisory on branches, blocking on a v* release.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements.txt

@@ -1,0 +1,37 @@
+# The CI backstop for a Go repository — the same tools amont runs locally,
+# called directly. amont itself deliberately does not run in CI; see
+# https://fredericrous.github.io/amont/ci.html. Copy into .github/workflows/
+# and prune what you don't use.
+name: checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: test -z "$(gofmt -l .)" # pre-commit-gofmt
+      - run: go vet ./... # pre-commit-go-vet
+      - run: go test ./... # pre-push-go-test
+
+  # pre-push-audit-go's split: advisory on branches, blocking on a v* release.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...

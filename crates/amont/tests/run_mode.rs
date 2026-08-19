@@ -308,3 +308,37 @@ fn a_named_pre_push_check_uses_the_upstream_as_its_push_ref() {
     );
     assert!(out.contains("main"), "{out}");
 }
+
+/// A short name runs the check it names, exactly as `hook.skip` would have
+/// resolved it — the rest of the tool taught the short vocabulary, and `run`
+/// demanding the full id was a second one.
+#[test]
+fn a_short_name_resolves_like_a_skip() {
+    let r = Repo::new();
+    r.stage("f.ts", "debugger;\n");
+    let (code, out) = run(&r, &["ban-terms"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("Unwanted terms"), "{out}");
+}
+
+/// A short name reaching two checks is an answer, not a guess: both full ids
+/// are listed and nothing runs.
+#[test]
+fn an_ambiguous_short_name_lists_its_candidates() {
+    let r = Repo::new();
+    r.stage("a.txt", "x\n");
+    let (code, out) = run(&r, &["branch-pattern"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("more than one check"), "{out}");
+    assert!(out.contains("pre-commit-branch-pattern"), "{out}");
+    assert!(out.contains("pre-push-branch-pattern"), "{out}");
+}
+
+/// A nonsense name is still unknown, with the same pointer it always had.
+#[test]
+fn an_unknown_name_is_still_unknown() {
+    let r = Repo::new();
+    let (code, out) = run(&r, &["no-such-check"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("unknown check"), "{out}");
+}

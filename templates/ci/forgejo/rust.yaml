@@ -1,0 +1,36 @@
+# The CI backstop for a Rust repository, Forgejo Actions edition — the same
+# tools amont runs locally, called directly, in a language container so no
+# setup actions are needed. Copy into .forgejo/workflows/ and prune what you
+# don't use. See https://fredericrous.github.io/amont/ci.html
+name: checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: docker
+    container:
+      image: rust:latest
+    timeout-minutes: 30
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all -- --check # pre-commit-cargo-fmt, locally
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings # pre-commit-clippy
+      - run: cargo test --workspace --all-features # pre-push-cargo-test
+
+  # pre-push-audit-rust's split: advisory on branches, blocking on a v* release.
+  audit:
+    runs-on: docker
+    container:
+      image: rust:latest
+    timeout-minutes: 15
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
