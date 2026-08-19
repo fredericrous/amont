@@ -129,7 +129,8 @@ fn selected_during<'a>(
         .partition(|check| check.reach() == crate::check::Reach::Safety);
     if !held.is_empty() {
         println!(
-            "{} {} convention check(s) held back — no amont.conf here and              amont.conventions is `declared`; the safety net still runs",
+            "{} {} convention check(s) held back — no amont.conf here and \
+             amont.conventions is `declared`; the safety net still runs",
             warning_sign(),
             held.len(),
         );
@@ -512,24 +513,87 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
 /// index-fidelity hold only when it is a `Stage::PreCommit` check running in
 /// staged mode. A pre-push or commit-msg check invoked by name must never
 /// touch the working tree — nothing about a push is a staging operation.
-pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Option<Verdict> {
-    let run_check = crate::registry::lookup(name, ctx.manifest)?;
+/// Resolve what `amont run <name>` means, exactly as `hook.skip` resolves a
+/// name — the rest of the tool taught `ban-terms`; making `run` demand the
+/// full id was a pointless second vocabulary. Ambiguity is an answer, not a
+/// guess: the two `branch-pattern` checks are different code at different
+/// stages.
+///
+/// Public because the CALLER needs the answer before anything else happens:
+/// main decides whether to synthesize push refs from the resolved name, and
+/// an ambiguous name must say so rather than fail on a missing upstream it
+/// was never going to use.
+pub fn resolve_check_name(name: &str, manifest: &crate::manifest::Manifest) -> Named2 {
+    if crate::registry::lookup(name, manifest).is_some() {
+        return Named2::Resolved(name.to_string());
+    }
+    let mut matches: Vec<String> = crate::registry::CHECKS
+        .iter()
+        .map(|c| c.name.to_string())
+        .chain(manifest.externals.iter().map(|e| e.id.clone()))
+        .filter(|id| crate::skip_suppresses(id, name))
+        .collect();
+    matches.dedup();
+    match matches.len() {
+        0 => Named2::Unknown,
+        1 => Named2::Resolved(matches.remove(0)),
+        _ => Named2::Ambiguous(matches),
+    }
+}
+
+/// How a run name resolved.
+pub enum Named2 {
+    Resolved(String),
+    Unknown,
+    Ambiguous(Vec<String>),
+}
+
+pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
+    let full: String = match resolve_check_name(name, ctx.manifest) {
+        Named2::Resolved(id) => id,
+        Named2::Unknown => return Named::Unknown,
+        Named2::Ambiguous(ids) => return Named::Ambiguous(ids),
+    };
+    let name = full.as_str();
+    let Some(run_check) = crate::registry::lookup(name, ctx.manifest) else {
+        return Named::Unknown;
+    };
+    // The Ctx must carry the RESOLVED id: lookup's closure re-resolves
+    // through `ctx.name`, and handing it the short name back would panic on
+    // the very ambiguity this function just settled.
+    let ctx = &Ctx {
+        name,
+        args: ctx.args,
+        hooks_dir: ctx.hooks_dir,
+        push: ctx.push,
+        manifest: ctx.manifest,
+    };
     if all_files {
         enter_all_files_mode();
-        return Some(run_check(ctx));
+        return Named::Ran(run_check(ctx));
     }
     let is_pre_commit_check = crate::registry::one_named(name, ctx.manifest)
         .is_some_and(|c| c.stage() == Stage::PreCommit);
     if !is_pre_commit_check {
-        return Some(run_check(ctx));
+        return Named::Ran(run_check(ctx));
     }
     let held = match hold_unstaged() {
         Ok(guard) => guard,
-        Err(verdict) => return Some(verdict),
+        Err(verdict) => return Named::Ran(verdict),
     };
     let verdict = run_check(ctx);
     drop(held);
-    Some(verdict)
+    Named::Ran(verdict)
+}
+
+/// What `run_named` resolved a name to.
+pub enum Named {
+    Ran(Verdict),
+    /// Nothing matches — full id, short name, or entrypoint.
+    Unknown,
+    /// A short name that reaches more than one check; the caller lists them
+    /// so the user can pick a full id.
+    Ambiguous(Vec<String>),
 }
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
@@ -574,7 +638,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 }
                 crate::hooks::run_tests::PairVerdict::Unstamped(n) => {
                     crate::say!(
-                        "{} {} is declared at commit time, but {n} pushed                          commit{} carr{} no record of it — running it here",
+                        "{} {} is declared at commit time, but {n} pushed \
+                         commit{} carr{} no record of it — running it here",
                         warning_sign(),
                         ext.short_name,
                         if n == 1 { "" } else { "s" },

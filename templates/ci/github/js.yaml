@@ -1,0 +1,41 @@
+# The CI backstop for a JS/TS repository — the same tools amont runs locally,
+# called directly. amont itself deliberately does not run in CI; see
+# https://fredericrous.github.io/amont/ci.html. Copy into .github/workflows/
+# and prune what you don't use.
+name: checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install eslint . # pre-commit-lint-js — delete if no eslint config
+      # pre-push-run-tests-js runs whichever gate scripts the package defines,
+      # cheapest first; --if-present mirrors "only what the repo declares".
+      - run: npm run typecheck --if-present
+      - run: npm run test:unit --if-present
+      - run: npm run test --if-present
+
+  # pre-push-audit-js's split: advisory on branches, blocking on a v* release.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - run: npm audit

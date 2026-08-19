@@ -466,6 +466,28 @@ fn run_mode(args: &[OsString]) -> i32 {
     let manifest = amont_runtime::manifest::load(std::path::Path::new(
         &amont_runtime::hooks::common::repo_root(),
     ));
+    // Resolve a short name to its full id BEFORE the push-ref decision:
+    // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`
+    // must say so rather than fail on an upstream it was never going to use.
+    let named = match named {
+        Some(n) if amont_runtime::registry::lookup(&n, &manifest).is_none() => {
+            match amont_runtime::dispatch::resolve_check_name(&n, &manifest) {
+                amont_runtime::dispatch::Named2::Resolved(id) => Some(id),
+                amont_runtime::dispatch::Named2::Unknown => {
+                    eprintln!("amont: unknown check {n:?} — try `amont list`");
+                    return 2;
+                }
+                amont_runtime::dispatch::Named2::Ambiguous(ids) => {
+                    eprintln!(
+                        "amont: {n:?} names more than one check — pick one: {}",
+                        ids.join(", ")
+                    );
+                    return 2;
+                }
+            }
+        }
+        other => other,
+    };
     let push = if named
         .as_deref()
         .is_some_and(|n| needs_synthetic_push_refs(n, &manifest))
@@ -508,9 +530,16 @@ fn run_mode(args: &[OsString]) -> i32 {
         // decision about whether a named check takes the index-fidelity hold —
         // stay in one place rather than being re-derived here.
         Some(check) => match amont_runtime::dispatch::run_named(&ctx, &check, all_files) {
-            Some(v) => v,
-            None => {
+            amont_runtime::dispatch::Named::Ran(v) => v,
+            amont_runtime::dispatch::Named::Unknown => {
                 eprintln!("amont: unknown check {check:?} — try `amont list`");
+                return 2;
+            }
+            amont_runtime::dispatch::Named::Ambiguous(ids) => {
+                eprintln!(
+                    "amont: {check:?} names more than one check — pick one: {}",
+                    ids.join(", ")
+                );
                 return 2;
             }
         },
@@ -661,8 +690,19 @@ fn value_flag(rest: &[OsString], flag: &str) -> Result<Option<PathBuf>, String> 
 /// discover empty, because empty and "nothing to check" are indistinguishable
 /// once a check has already started running.
 fn needs_synthetic_push_refs(name: &str, manifest: &amont_runtime::manifest::Manifest) -> bool {
-    name == "pre-push"
-        || registry::one_named(name, manifest).is_some_and(|c| c.stage() == Stage::PrePush)
+    if name == "pre-push" {
+        return true;
+    }
+    if let Some(c) = registry::one_named(name, manifest) {
+        return c.stage() == Stage::PrePush;
+    }
+    // A SHORT name resolves later, in `run_named` — but the refs decision is
+    // made here, first. Match the same way it will: if any check the name
+    // reaches is a pre-push one, synthesize. For an ambiguous name this may
+    // synthesize refs that go unused; run_named then reports the ambiguity.
+    registry::CHECKS
+        .iter()
+        .any(|c| c.stage == Stage::PrePush && amont_runtime::skip_suppresses(c.name, name))
 }
 
 #[cfg(test)]

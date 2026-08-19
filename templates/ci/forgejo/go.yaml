@@ -1,0 +1,35 @@
+# The CI backstop for a Go repository, Forgejo Actions edition — the same
+# tools amont runs locally, called directly, in a golang container. Copy into
+# .forgejo/workflows/ and prune what you don't use.
+# See https://fredericrous.github.io/amont/ci.html
+name: checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: docker
+    container:
+      image: golang:latest
+    timeout-minutes: 20
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: test -z "$(gofmt -l .)" # pre-commit-gofmt
+      - run: go vet ./... # pre-commit-go-vet
+      - run: go test ./... # pre-push-go-test
+
+  # pre-push-audit-go's split: advisory on branches, blocking on a v* release.
+  audit:
+    runs-on: docker
+    container:
+      image: golang:latest
+    timeout-minutes: 10
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...

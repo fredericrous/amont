@@ -714,10 +714,12 @@ reproducibility story, and the half we have is the less visible one.
 **Nothing here enforces anything.** Hooks are advisory by construction:
 `--no-verify` and `hook.skip` are each one command away, deliberately. So the
 question "what stops an unformatted commit reaching the default branch" has no
-answer in this document, and `--all-files` naming CI parity as a use case is not
-one. That wants a documented exit-code contract and machine-readable output —
-SARIF would let the same checks feed code scanning, JUnit would let them feed a
-test report — and `amont run --all-files` is where it belongs.
+answer in this document. An earlier draft of this paragraph proposed making
+`amont run --all-files` CI-grade — exit-code contract, SARIF, JUnit. The
+decision went the other way: amont deliberately does not run in CI at all.
+CI wants the real tools, called directly, with the platform's own caching
+and attribution — see [the CI backstop](ci.md), which ships copyable
+workflow templates saying exactly that.
 
 **No DCO / `Signed-off-by` check.** `commit-msg` enforces a gitmoji prefix and
 length rules, which are house style. Any project that requires a Developer
