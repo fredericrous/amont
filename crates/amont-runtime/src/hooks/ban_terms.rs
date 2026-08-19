@@ -1,4 +1,4 @@
-//! pre-commit-ban-terms — refuse focused/debug leftovers in staged JS/TS.
+//! pre-commit-ban-terms — refuse focused/debug leftovers in staged sources.
 //!
 //! Two stages, kept exactly as the JS had them:
 //!   1. `git diff --cached -G<loose>` picks candidate files cheaply, and keeps
@@ -9,15 +9,32 @@
 //!
 //! Stage 1 stays deliberately loose (POSIX regex, flavour varies by platform);
 //! a loose prefilter costs one extra file read, a strict one misses violations.
+//!
+//! Each term carries its own language: the file extensions it scans and the
+//! blanker that understands their comment and string syntax. JS/TS terms came
+//! first; Rust (`dbg!`) and Python (`breakpoint()`, `pdb.set_trace()`) get the
+//! same treatment — a debug leftover is a debug leftover in any language.
 
 use crate::check::Outcome;
 use crate::git;
 use crate::ui::{error_sign, highlight, valid_sign};
 
-/// (label, loose `git diff -G` prefilter, precise matcher)
+/// Everything any term scans. The registry declares the check's scope from
+/// this constant, so a term cannot gain a language without the dashboard
+/// learning about it — pinned by `the_scope_is_the_union_of_the_terms`.
+pub const EXTS: &[&str] = &[".js", ".jsx", ".ts", ".tsx", ".vue", ".rs", ".py"];
+
+const JS_LIKE: &[&str] = &[".js", ".jsx", ".ts", ".tsx", ".vue"];
+const RUST: &[&str] = &[".rs"];
+const PYTHON: &[&str] = &[".py"];
+
+/// A banned form: a loose `git diff -G` prefilter, the extensions it applies
+/// to, the blanker for that language, and the precise matcher.
 struct Term {
     label: &'static str,
     prefilter: &'static str,
+    exts: &'static [&'static str],
+    blank: fn(&str) -> String,
     matches: fn(&str) -> bool,
 }
 
@@ -105,26 +122,106 @@ fn focused_suite(src: &str) -> bool {
     false
 }
 
-const TERMS: [Term; 4] = [
+/// `dbg!(…)` — the macro invocation, any delimiter. `xdbg!` and a function
+/// named `dbg` both pass; `std::dbg!(` is still the macro (`:` is not an
+/// identifier character, so the leading guard lets it through).
+fn rust_dbg(src: &str) -> bool {
+    let word = "dbg";
+    let mut from = 0;
+    while let Some(i) = src[from..].find(word) {
+        let at = from + i;
+        let after = at + word.len();
+        let before_ok = src[..at]
+            .chars()
+            .next_back()
+            .map(|c| !is_ident(c))
+            .unwrap_or(true);
+        let rest = &src[after..];
+        if before_ok
+            && rest.starts_with('!')
+            && matches!(rest[1..].trim_start().chars().next(), Some('(' | '[' | '{'))
+        {
+            return true;
+        }
+        from = after;
+    }
+    false
+}
+
+/// `pdb.set_trace(` / `ipdb.set_trace(` — the import-and-call form. The
+/// leading guard excludes identifier characters only, so `x.pdb.set_trace(`
+/// is still caught while `xpdb.set_trace(` matches neither needle (the `i`
+/// rejects the first, the `x` the second). Bare `set_trace(` is deliberately
+/// not matched: without its module it is just a method name.
+fn pdb_set_trace(src: &str) -> bool {
+    for needle in ["pdb.set_trace", "ipdb.set_trace"] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(needle) {
+            let at = from + i;
+            let after = at + needle.len();
+            let before_ok = src[..at]
+                .chars()
+                .next_back()
+                .map(|c| !is_ident(c))
+                .unwrap_or(true);
+            if before_ok && src[after..].trim_start().starts_with('(') {
+                return true;
+            }
+            from = at + needle.len();
+        }
+    }
+    false
+}
+
+const TERMS: [Term; 7] = [
     Term {
         label: "fit",
         prefilter: r"\s*fit\(",
+        exts: JS_LIKE,
+        blank: blank_non_code,
         matches: |s| call_of(s, "fit"),
     },
     Term {
         label: "fdescribe",
         prefilter: r"\s*fdescribe\(",
+        exts: JS_LIKE,
+        blank: blank_non_code,
         matches: |s| call_of(s, "fdescribe"),
     },
     Term {
         label: "debugger",
         prefilter: "debugger;?",
+        exts: JS_LIKE,
+        blank: blank_non_code,
         matches: bare_debugger,
     },
     Term {
         label: "skipOnly",
         prefilter: r"(describe|context|it)\.(skip|only)",
+        exts: JS_LIKE,
+        blank: blank_non_code,
         matches: focused_suite,
+    },
+    Term {
+        label: "dbg!",
+        prefilter: "dbg!",
+        exts: RUST,
+        blank: blank_rust,
+        matches: rust_dbg,
+    },
+    Term {
+        label: "breakpoint",
+        prefilter: "breakpoint",
+        exts: PYTHON,
+        blank: blank_python,
+        matches: |s| call_of(s, "breakpoint"),
+    },
+    Term {
+        label: "set_trace",
+        prefilter: "set_trace",
+        exts: PYTHON,
+        blank: blank_python,
+        matches: pdb_set_trace,
     },
 ];
 
@@ -354,11 +451,352 @@ pub fn blank_non_code(src: &str) -> String {
     out
 }
 
-fn is_searchable(file: &str) -> bool {
+/// Is `word` exactly a raw-string prefix? `r"…"`, `br"…"`, `cr"…"` — an
+/// identifier that merely ENDS in `r` (`attr"…"` is not Rust anyway) stays an
+/// ordinary word because the tracker holds the whole contiguous run.
+fn is_raw_prefix(word: &str) -> bool {
+    matches!(word, "r" | "br" | "cr")
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum R {
+    Code,
+    Line,
+    Block(u32),
+    Str,
+    Raw(u32),
+}
+
+/// Blank comments and the insides of string/char literals in RUST source,
+/// preserving length and line count like `blank_non_code` does for JS.
+///
+/// The shapes that differ from JS and earn their handling here:
+///   - block comments NEST — `/* /* */ */` is one comment, and treating the
+///     first `*/` as the end would scan the tail of the comment as code
+///     (a false alarm, the direction to avoid);
+///   - raw strings `r"…"` / `r#"…"#` (and the `br`/`cr` variants), where `\`
+///     is literal and the terminator is `"` plus the opening's `#` count;
+///   - `'` is either a char literal or a lifetime. Bounded lookahead tells
+///     them apart: a char literal closes within a few characters, a lifetime
+///     never closes. Misreading a lifetime as a char start would blank real
+///     code (a missed warning); the case that must not be missed is `'"'`,
+///     which read as a lifetime opens a phantom string and blanks the rest of
+///     the file. The lookahead exists for that quote.
+pub fn blank_rust(src: &str) -> String {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut state = R::Code;
+    let mut word = String::new();
+    let mut i = 0;
+    let keep = |c: char| if c == '\n' { '\n' } else { ' ' };
+
+    while i < b.len() {
+        let ch = b[i];
+        let next = b.get(i + 1).copied();
+        match state {
+            R::Code => {
+                if ch == '/' && next == Some('/') {
+                    state = R::Line;
+                    out.push_str("  ");
+                    i += 2;
+                } else if ch == '/' && next == Some('*') {
+                    state = R::Block(1);
+                    out.push_str("  ");
+                    i += 2;
+                } else if ch == '"' {
+                    state = if is_raw_prefix(&word) {
+                        R::Raw(0)
+                    } else {
+                        R::Str
+                    };
+                    word.clear();
+                    out.push(ch);
+                    i += 1;
+                } else if ch == '#' && is_raw_prefix(&word) {
+                    // `r#"…"#`, possibly with more hashes. A `#` NOT followed
+                    // by hashes-then-quote is ordinary code (`r#ident` is a
+                    // raw identifier, `#[attr]` an attribute).
+                    let mut n = 0;
+                    while b.get(i + n) == Some(&'#') {
+                        n += 1;
+                    }
+                    if b.get(i + n) == Some(&'"') {
+                        for _ in 0..n {
+                            out.push('#');
+                        }
+                        out.push('"');
+                        state = R::Raw(n as u32);
+                        i += n + 1;
+                    } else {
+                        out.push(ch);
+                        i += 1;
+                    }
+                    word.clear();
+                } else if ch == '\'' {
+                    // Char literal or lifetime. After `'\` the literal closes
+                    // at the first quote (only `'\\'` puts a backslash before
+                    // it, and that IS the escaped char); after `'x` it closes
+                    // only as `'x'`. `'\u{10FFFF}'` is the longest escape, so
+                    // the lookahead is bounded.
+                    let char_end = match next {
+                        Some('\\') => (i + 3..(i + 14).min(b.len())).find(|&j| b[j] == '\''),
+                        Some(c) if c != '\'' => {
+                            if b.get(i + 2) == Some(&'\'') {
+                                Some(i + 2)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    match char_end {
+                        Some(j) => {
+                            out.push('\'');
+                            for c in &b[i + 1..j] {
+                                out.push(keep(*c));
+                            }
+                            out.push('\'');
+                            i = j + 1;
+                        }
+                        None => {
+                            // a lifetime — its name flows on as ordinary code
+                            out.push('\'');
+                            i += 1;
+                        }
+                    }
+                    word.clear();
+                } else {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        word.push(ch);
+                    } else {
+                        word.clear();
+                    }
+                    out.push(ch);
+                    i += 1;
+                }
+            }
+            R::Line => {
+                if ch == '\n' {
+                    state = R::Code;
+                    out.push(ch);
+                } else {
+                    out.push(' ');
+                }
+                i += 1;
+            }
+            R::Block(depth) => {
+                if ch == '/' && next == Some('*') {
+                    state = R::Block(depth + 1);
+                    out.push_str("  ");
+                    i += 2;
+                } else if ch == '*' && next == Some('/') {
+                    state = if depth == 1 {
+                        R::Code
+                    } else {
+                        R::Block(depth - 1)
+                    };
+                    out.push_str("  ");
+                    i += 2;
+                } else {
+                    out.push(keep(ch));
+                    i += 1;
+                }
+            }
+            R::Str => {
+                if ch == '\\' {
+                    // Blank the escape AND what it escapes, so `\"` never
+                    // closes — but keep an escaped newline a newline, since
+                    // Rust strings span lines and the line count must hold.
+                    out.push(' ');
+                    if let Some(n) = next {
+                        out.push(keep(n));
+                    }
+                    i += 2;
+                } else if ch == '"' {
+                    state = R::Code;
+                    out.push(ch);
+                    i += 1;
+                } else {
+                    out.push(keep(ch));
+                    i += 1;
+                }
+            }
+            R::Raw(hashes) => {
+                let n = hashes as usize;
+                if ch == '"' && (1..=n).all(|k| b.get(i + k) == Some(&'#')) {
+                    out.push('"');
+                    for _ in 0..n {
+                        out.push('#');
+                    }
+                    state = R::Code;
+                    i += n + 1;
+                } else {
+                    out.push(keep(ch));
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One open Python string literal: what closes it and how its insides behave.
+#[derive(Clone, Copy)]
+struct PyLit {
+    quote: char,
+    triple: bool,
+    fstr: bool,
+}
+
+#[derive(Clone, Copy)]
+enum P {
+    Code,
+    Comment,
+    Lit(PyLit),
+}
+
+/// Blank comments and the insides of string literals in PYTHON source,
+/// preserving length and line count.
+///
+/// The shapes that earn their handling here:
+///   - `#` comments and the three quote forms: `'…'`, `"…"`, and the triples;
+///   - prefixes (`r`, `b`, `f`, `u` and their pairs) read from the word the
+///     tracker just saw, because `f"{breakpoint()}"` interpolates CODE: like
+///     the JS blanker's `${…}`, blanking it would hide a banned call — a
+///     missed warning, the direction this hook must never fail in. `{{` is
+///     text, and interpolations nest (`f"{f'{x}'}"`), so open ones are a
+///     stack of the literals to resume, not a flag;
+///   - a backslash always blanks the next character, raw or not: in Python a
+///     raw string still cannot end on a lone backslash, so `r"\"…` staying
+///     open mirrors the real parser;
+///   - an unterminated single-line string bails back to code at the newline
+///     rather than blanking the rest of the file.
+pub fn blank_python(src: &str) -> String {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut state = P::Code;
+    let mut word = String::new();
+    let mut i = 0;
+    // Open f-string interpolations, innermost last: brace depth inside the
+    // interpolation, and the literal to resume when it closes.
+    let mut subst: Vec<(u32, PyLit)> = Vec::new();
+    let keep = |c: char| if c == '\n' { '\n' } else { ' ' };
+
+    while i < b.len() {
+        let ch = b[i];
+        let next = b.get(i + 1).copied();
+        match state {
+            P::Code => {
+                if ch == '#' {
+                    state = P::Comment;
+                    out.push(' ');
+                    i += 1;
+                } else if ch == '\'' || ch == '"' {
+                    let prefix = !word.is_empty()
+                        && word.len() <= 2
+                        && word.chars().all(|c| "rbfuRBFU".contains(c));
+                    let fstr = prefix && word.to_ascii_lowercase().contains('f');
+                    let triple = next == Some(ch) && b.get(i + 2) == Some(&ch);
+                    state = P::Lit(PyLit {
+                        quote: ch,
+                        triple,
+                        fstr,
+                    });
+                    word.clear();
+                    if triple {
+                        out.push(ch);
+                        out.push(ch);
+                        out.push(ch);
+                        i += 3;
+                    } else {
+                        out.push(ch);
+                        i += 1;
+                    }
+                } else {
+                    if !subst.is_empty() {
+                        if ch == '{' {
+                            subst.last_mut().expect("non-empty").0 += 1;
+                        } else if ch == '}' {
+                            let (depth, lit) = *subst.last().expect("non-empty");
+                            if depth == 0 {
+                                subst.pop();
+                                state = P::Lit(lit);
+                                out.push(ch);
+                                i += 1;
+                                continue;
+                            }
+                            subst.last_mut().expect("non-empty").0 -= 1;
+                        }
+                    }
+                    if ch.is_alphanumeric() || ch == '_' {
+                        word.push(ch);
+                    } else {
+                        word.clear();
+                    }
+                    out.push(ch);
+                    i += 1;
+                }
+            }
+            P::Comment => {
+                if ch == '\n' {
+                    state = P::Code;
+                    out.push(ch);
+                } else {
+                    out.push(' ');
+                }
+                i += 1;
+            }
+            P::Lit(lit) => {
+                if ch == '\\' {
+                    out.push(' ');
+                    if let Some(n) = next {
+                        out.push(keep(n));
+                    }
+                    i += 2;
+                } else if lit.triple
+                    && ch == lit.quote
+                    && next == Some(lit.quote)
+                    && b.get(i + 2) == Some(&lit.quote)
+                {
+                    state = P::Code;
+                    out.push(ch);
+                    out.push(ch);
+                    out.push(ch);
+                    i += 3;
+                } else if !lit.triple && ch == lit.quote {
+                    state = P::Code;
+                    out.push(ch);
+                    i += 1;
+                } else if !lit.triple && ch == '\n' {
+                    // unterminated — bail so the rest of the file is scanned
+                    state = P::Code;
+                    out.push(ch);
+                    i += 1;
+                } else if lit.fstr && ch == '{' && next == Some('{') {
+                    out.push_str("  ");
+                    i += 2;
+                } else if lit.fstr && ch == '{' {
+                    subst.push((0, lit));
+                    state = P::Code;
+                    word.clear();
+                    out.push(ch);
+                    i += 1;
+                } else if lit.fstr && ch == '}' && next == Some('}') {
+                    out.push_str("  ");
+                    i += 2;
+                } else {
+                    out.push(keep(ch));
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn is_searchable(file: &str, exts: &[&str]) -> bool {
     let f = file.rsplit('/').next().unwrap_or(file);
-    [".js", ".jsx", ".ts", ".tsx", ".vue"]
-        .iter()
-        .any(|e| f.ends_with(e))
+    exts.iter().any(|e| f.ends_with(e))
 }
 
 pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
@@ -389,7 +827,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
         let matches: Vec<&str> = out
             .iter()
             .map(String::as_str)
-            .filter(|f| is_searchable(f))
+            .filter(|f| is_searchable(f, term.exts))
             .filter(|f| !stem_matches_self(f))
             .filter(|file| {
                 match git::stdout(&["show", &format!(":{file}")]) {
@@ -397,7 +835,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
                     // calls): keep the prefilter's verdict rather than
                     // silently clearing it.
                     None => true,
-                    Some(content) => (term.matches)(&blank_non_code(&content)),
+                    Some(content) => (term.matches)(&(term.blank)(&content)),
                 }
             })
             .collect();
@@ -544,13 +982,208 @@ debugger;";
     }
 
     #[test]
-    fn only_js_like_files_are_searched() {
+    fn each_term_searches_only_its_own_language() {
         for f in ["a.js", "a.jsx", "a.ts", "a.tsx", "a.vue", "dir/b.ts"] {
-            assert!(is_searchable(f), "{f}");
+            assert!(is_searchable(f, JS_LIKE), "{f}");
         }
-        for f in ["a.rs", "a.md", "a.json", "README"] {
-            assert!(!is_searchable(f), "{f}");
+        for f in ["a.rs", "a.py", "a.md", "a.json", "README"] {
+            assert!(!is_searchable(f, JS_LIKE), "{f}");
         }
+        assert!(is_searchable("src/lib.rs", RUST));
+        assert!(!is_searchable("a.ts", RUST));
+        assert!(is_searchable("app/main.py", PYTHON));
+        assert!(!is_searchable("a.pyi", PYTHON), "stubs never execute");
+    }
+
+    /// The registry declares the check's scope from `EXTS`; a term must not
+    /// scan a language the dashboard does not know about, nor the reverse.
+    #[test]
+    fn the_scope_is_the_union_of_the_terms() {
+        let mut union: Vec<&str> = TERMS.iter().flat_map(|t| t.exts.iter().copied()).collect();
+        union.sort_unstable();
+        union.dedup();
+        let mut declared: Vec<&str> = EXTS.to_vec();
+        declared.sort_unstable();
+        assert_eq!(union, declared);
+    }
+}
+
+#[cfg(test)]
+mod rust_terms {
+    use super::*;
+
+    #[test]
+    fn catches_the_macro_call() {
+        assert!(rust_dbg("dbg!(x)"));
+        assert!(rust_dbg("let y = dbg! (x);"));
+        assert!(rust_dbg("std::dbg!(x)"));
+        assert!(rust_dbg("dbg![x]"));
+        assert!(rust_dbg("dbg!{x}"));
+    }
+
+    #[test]
+    fn leaves_lookalikes_alone() {
+        assert!(!rust_dbg("xdbg!(1)")); // preceded by a word char
+        assert!(!rust_dbg("dbg(1)")); // a function, not the macro
+        assert!(!rust_dbg("debug!(x)")); // a different macro
+        assert!(!rust_dbg("dbg")); // the bare word
+    }
+
+    #[test]
+    fn comments_and_strings_are_discussion() {
+        for src in [
+            "// dbg!(x)\nlet a = 1;",
+            "/* dbg!(x) */",
+            "/// docs mentioning dbg!(x)\nfn f() {}",
+            "let s = \"dbg!(x)\";",
+            "let s = r\"dbg!(x)\";",
+            "let s = r#\"dbg!(\"x\")\"#;",
+            "let s = br\"dbg!(x)\";",
+        ] {
+            assert!(!rust_dbg(&blank_rust(src)), "false alarm: {src}");
+        }
+    }
+
+    /// Block comments NEST: the first `*/` must not end `/* /* … */`, or the
+    /// tail of the comment is scanned as code — a false alarm.
+    #[test]
+    fn block_comments_nest() {
+        assert!(!rust_dbg(&blank_rust("/* /* x */ dbg!(1) */")));
+        assert!(rust_dbg(&blank_rust("/* /* x */ */ dbg!(1)")));
+    }
+
+    /// A raw string's terminator is `"` plus the opening's `#` count — a mere
+    /// `"` inside `r#"…"#` must not close it, and the real terminator must.
+    #[test]
+    fn raw_string_hashes_are_honoured() {
+        assert!(!rust_dbg(&blank_rust("let s = r#\"a\"b\"#;")));
+        assert!(rust_dbg(&blank_rust("let s = r#\"a\"b\"#; dbg!(1);")));
+        assert!(!rust_dbg(&blank_rust("let s = r##\"a\"# dbg!(1) \"##;")));
+    }
+
+    /// The quote-shaped char literals. Read as lifetimes they would open a
+    /// phantom string and blank the rest of the file — a missed warning.
+    #[test]
+    fn a_char_literal_holding_a_quote_does_not_open_a_string() {
+        assert!(rust_dbg(&blank_rust("let c = '\"'; dbg!(1);")));
+        assert!(rust_dbg(&blank_rust("let c = '\\''; dbg!(1);")));
+        assert!(rust_dbg(&blank_rust("let c = '\\\\'; dbg!(1);")));
+        assert!(rust_dbg(&blank_rust("let c = '\\u{7f}'; dbg!(1);")));
+    }
+
+    /// The other direction: a lifetime is code, not an open char literal, so
+    /// what follows it must still be scanned.
+    #[test]
+    fn a_lifetime_does_not_swallow_the_line() {
+        assert!(rust_dbg(&blank_rust("fn f<'a>(x: &'a str) { dbg!(x); }")));
+        assert!(rust_dbg(&blank_rust("let x: &'static str = s; dbg!(x);")));
+    }
+
+    #[test]
+    fn blanking_preserves_length_and_lines() {
+        let src = "let s = r#\"a\"b\"#;\n// dbg!(x)\nlet c = 'y';\n";
+        let out = blank_rust(src);
+        assert_eq!(out.len(), src.len());
+        assert_eq!(out.lines().count(), src.lines().count());
+    }
+
+    /// This file names the term it bans — in strings and comments only, which
+    /// the blanker must keep blanked or the hook makes its own source
+    /// uncommittable.
+    #[test]
+    fn the_hooks_own_source_survives_its_own_scan() {
+        assert!(!rust_dbg(&blank_rust(include_str!("ban_terms.rs"))));
+    }
+}
+
+#[cfg(test)]
+mod python_terms {
+    use super::*;
+
+    #[test]
+    fn catches_the_debug_calls() {
+        assert!(call_of("breakpoint()", "breakpoint"));
+        assert!(call_of("    breakpoint ()", "breakpoint"));
+        assert!(pdb_set_trace("pdb.set_trace()"));
+        assert!(pdb_set_trace("ipdb.set_trace()"));
+        assert!(pdb_set_trace("x.pdb.set_trace()"));
+    }
+
+    #[test]
+    fn leaves_lookalikes_alone() {
+        assert!(!call_of("self.breakpoint()", "breakpoint")); // somebody's API
+        assert!(!call_of("my_breakpoint()", "breakpoint"));
+        assert!(!pdb_set_trace("xpdb.set_trace()")); // neither pdb nor ipdb
+        assert!(!pdb_set_trace("set_trace()")); // bare, no module
+        assert!(!pdb_set_trace("pdb.set_trace")); // not the call form
+    }
+
+    #[test]
+    fn comments_and_strings_are_discussion() {
+        for src in [
+            "# breakpoint()\nx = 1\n",
+            "s = 'breakpoint()'\n",
+            "s = \"pdb.set_trace()\"\n",
+            "def f():\n    \"\"\"calls breakpoint() eventually\"\"\"\n",
+            "s = '''ipdb.set_trace()'''\n",
+            "s = f\"breakpoint( {x}\"\n", // f-string TEXT is still a string
+            "s = f\"{{breakpoint()}}\"\n", // escaped braces are text
+        ] {
+            let b = blank_python(src);
+            assert!(!call_of(&b, "breakpoint"), "false alarm: {src}");
+            assert!(!pdb_set_trace(&b), "false alarm: {src}");
+        }
+    }
+
+    /// An f-string interpolation is CODE — blanking it would hide a banned
+    /// call, the direction this hook must never fail in. And they nest.
+    #[test]
+    fn an_interpolation_is_code() {
+        assert!(call_of(
+            &blank_python("s = f\"{breakpoint()}\"\n"),
+            "breakpoint"
+        ));
+        assert!(call_of(
+            &blank_python("s = f\"{f'{breakpoint()}'}\"\n"),
+            "breakpoint"
+        ));
+        // a `}` closing a nested format spec must not end the interpolation
+        assert!(call_of(
+            &blank_python("s = f\"{x:{w}} {breakpoint()}\"\n"),
+            "breakpoint"
+        ));
+    }
+
+    /// In Python a raw string still cannot end on a lone backslash: the `\"`
+    /// keeps the literal open, so what looks like code after it is string.
+    #[test]
+    fn a_raw_string_backslash_does_not_close_early() {
+        let b = blank_python("s = r\"\\\"; breakpoint()\"\n");
+        assert!(!call_of(&b, "breakpoint"));
+    }
+
+    /// An unterminated single-line string bails at the newline rather than
+    /// blanking the rest of the file.
+    #[test]
+    fn an_unterminated_string_does_not_blank_the_next_line() {
+        let b = blank_python("s = 'oops\nbreakpoint()\n");
+        assert!(call_of(&b, "breakpoint"));
+    }
+
+    #[test]
+    fn triple_quotes_span_lines_and_close_only_on_three() {
+        let b = blank_python("s = \"\"\"\ntext \" and \"\" inside\nbreakpoint()\n\"\"\"\nx = 1\n");
+        assert!(!call_of(&b, "breakpoint"));
+        let b2 = blank_python("s = \"\"\"doc\"\"\"\nbreakpoint()\n");
+        assert!(call_of(&b2, "breakpoint"));
+    }
+
+    #[test]
+    fn blanking_preserves_length_and_lines() {
+        let src = "# c\ns = f\"{x} y\"\nt = '''a\nb'''\n";
+        let out = blank_python(src);
+        assert_eq!(out.len(), src.len());
+        assert_eq!(out.lines().count(), src.lines().count());
     }
 }
 

@@ -94,7 +94,7 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-commit-ban-terms",
         stage: Stage::PreCommit,
-        scope: Scope::files(&[".js", ".jsx", ".ts", ".tsx", ".vue"]),
+        scope: Scope::files(hooks::ban_terms::EXTS),
         severity: Severity::Block,
         fix: Fix::None,
         run: |ctx| hooks::ban_terms::run(ctx.name, ctx.args),
@@ -782,10 +782,13 @@ mod tests {
             "pre-commit-argo-lint",
             Consumes::Exts(crate::hooks::k8s::EXTS),
         ),
-        // Declares JS extensions so the dashboard can say what it is FOR, but
-        // greps every staged path — a banned term in a `.md` is still a banned
-        // term. This is why the assertion below is a SUBSET check.
-        ("pre-commit-ban-terms", Consumes::All),
+        // Each term filters candidates against its own language's extensions,
+        // and `EXTS` is pinned to be exactly their union — so this names the
+        // module constant the check itself filters with.
+        (
+            "pre-commit-ban-terms",
+            Consumes::Exts(crate::hooks::ban_terms::EXTS),
+        ),
         (
             "pre-commit-cargo-fmt",
             Consumes::Exts(crate::hooks::rust_tools::EXTS),
@@ -859,9 +862,9 @@ mod tests {
     /// build, so adding a check forces somebody to state what it actually
     /// reads. The second half then pins that `scope.files ⊆ consumed`.
     ///
-    /// SUBSET, not equality, deliberately: `ban-terms` declares JS extensions
-    /// and greps every staged path, and `prettier` declares `files: &[]` while
-    /// consuming seventeen extensions. Equality would forbid both.
+    /// SUBSET, not equality, deliberately: `prettier` declares `files: &[]` —
+    /// it is opt-in by CONFIG, not by file type — while consuming seventeen
+    /// extensions. Equality would forbid it.
     #[test]
     fn no_check_declares_a_file_type_it_does_not_consume() {
         for (name, _) in CONSUMED {
