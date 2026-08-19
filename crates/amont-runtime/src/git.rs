@@ -2,14 +2,51 @@
 
 use std::process::{Command, Stdio};
 
+/// Run `cmd`, retrying the transient SPAWN failures a loaded machine
+/// produces: EINTR, EAGAIN (fork pressure), ETXTBSY (another thread's
+/// fork-to-exec window still holding a write descriptor on the executable).
+/// A NON-ZERO EXIT IS NEVER RETRIED — that is git answering; this covers
+/// only "git could not be asked".
+///
+/// The failure this ends: `gate_stamp`'s tests — and, invisibly, real
+/// hooks on a loaded machine — watched a single failed fork turn
+/// `bind_to_head` into "nothing to stamp". The hooks' fail-open reading of
+/// `None` is right for a git that is genuinely absent; three attempts over
+/// ~130ms is the difference between that and a scheduler hiccup.
+fn retrying<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut delay = std::time::Duration::from_millis(10);
+    for tries_left in [2u8, 1, 0] {
+        match attempt() {
+            Err(e) if tries_left > 0 && transient(&e) => {
+                std::thread::sleep(delay);
+                delay *= 3;
+            }
+            other => return other,
+        }
+    }
+    unreachable!("the zero-tries arm returns")
+}
+
+/// The retryable kinds, matched on raw OS codes because the precise
+/// `io::ErrorKind` variants (`ExecutableFileBusy`, `ResourceBusy`) are not
+/// stable at this crate's MSRV: EINTR(4), EAGAIN(11 linux / 35 mac),
+/// ETXTBSY(26).
+fn transient(e: &std::io::Error) -> bool {
+    if matches!(
+        e.kind(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+    ) {
+        return true;
+    }
+    matches!(e.raw_os_error(), Some(4 | 11 | 26 | 35))
+}
+
 /// stdout of a git command, trimmed. `None` when git itself failed — which the
 /// hooks treat as "cannot tell, do not block", never as "empty".
 pub fn stdout(args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).stderr(Stdio::null());
+    let out = retrying(|| cmd.output()).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -22,13 +59,9 @@ pub fn stdout(args: &[&str]) -> Option<String> {
 /// the answer git would give THERE — config is per-repository, so asking from
 /// the wrong directory returns the wrong severity.
 pub fn stdout_in(dir: &std::path::Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args).stderr(Stdio::null());
+    let out = retrying(|| cmd.output()).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -40,13 +73,12 @@ pub fn stdout_in(dir: &std::path::Path, args: &[&str]) -> Option<String> {
 /// untrimmed: every line is a path, and the caller trims those itself.
 pub fn stdout_piped(args: &[&str], stdin: &str) -> Option<String> {
     use std::io::Write;
-    let mut child = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = retrying(|| cmd.spawn()).ok()?;
     child.stdin.take()?.write_all(stdin.as_bytes()).ok()?;
     let out = child.wait_with_output().ok()?;
     out.status
@@ -62,13 +94,12 @@ pub fn stdout_piped(args: &[&str], stdin: &str) -> Option<String> {
 /// separators are the whole point).
 pub fn stdout_piped_raw(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
     use std::io::Write;
-    let mut child = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = retrying(|| cmd.spawn()).ok()?;
     child.stdin.take()?.write_all(stdin.as_bytes()).ok()?;
     let out = child.wait_with_output().ok()?;
     out.status.success().then_some(out.stdout)
@@ -82,15 +113,14 @@ pub fn stdout_piped_raw(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
 /// have already read and must not re-encode.
 pub fn stdout_piped_in(dir: &std::path::Path, args: &[&str], stdin: &[u8]) -> Option<String> {
     use std::io::Write;
-    let mut child = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(dir)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = retrying(|| cmd.spawn()).ok()?;
     child.stdin.take()?.write_all(stdin).ok()?;
     let out = child.wait_with_output().ok()?;
     out.status
@@ -101,11 +131,9 @@ pub fn stdout_piped_in(dir: &std::path::Path, args: &[&str], stdin: &[u8]) -> Op
 /// Raw stdout, untrimmed and not lossy — for a patch, where a trailing newline
 /// and any byte in a binary hunk are load-bearing.
 pub fn stdout_raw(args: &[&str]) -> Option<Vec<u8>> {
-    let out = Command::new("git")
-        .args(args)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).stderr(Stdio::null());
+    let out = retrying(|| cmd.output()).ok()?;
     out.status.success().then_some(out.stdout)
 }
 
@@ -126,11 +154,9 @@ pub struct Output {
 /// parse, and those two must not become the same answer — one is a default,
 /// the other is a mistake somebody needs to be told about. See `config`.
 pub fn output(args: &[&str]) -> Option<Output> {
-    let out = Command::new("git")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).stdin(Stdio::null());
+    let out = retrying(|| cmd.output()).ok()?;
     Some(Output {
         // A process killed by a signal has no code. Treat that as "git did not
         // answer" rather than inventing one; the caller falls back.
@@ -142,12 +168,12 @@ pub fn output(args: &[&str]) -> Option<Output> {
 
 /// True when the command exits 0. Output discarded.
 pub fn succeeds(args: &[&str]) -> bool {
-    Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::null());
+    retrying(|| cmd.status())
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -182,6 +208,71 @@ pub(crate) fn split_nul_paths(raw: &[u8]) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    /// The classifier: scheduler hiccups retry, real answers do not.
+    #[test]
+    fn transient_covers_the_fork_pressure_kinds_and_nothing_else() {
+        for code in [4, 11, 26, 35] {
+            assert!(
+                transient(&std::io::Error::from_raw_os_error(code)),
+                "raw {code} is a loaded-machine hiccup"
+            );
+        }
+        assert!(transient(&std::io::Error::from(
+            std::io::ErrorKind::Interrupted
+        )));
+        assert!(!transient(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+        assert!(!transient(&std::io::Error::from_raw_os_error(13))); // EACCES
+    }
+
+    /// Three attempts, then the error is the caller's: a git that is
+    /// genuinely absent must not cost more than ~130ms of patience.
+    #[test]
+    fn retrying_gives_up_after_three_transient_failures() {
+        let mut calls = 0;
+        let r: std::io::Result<()> = retrying(|| {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(11))
+        });
+        assert!(r.is_err());
+        assert_eq!(calls, 3);
+    }
+
+    /// A non-transient error returns immediately — a missing git is an
+    /// answer, not a hiccup.
+    #[test]
+    fn a_hard_error_is_not_retried() {
+        let mut calls = 0;
+        let r: std::io::Result<()> = retrying(|| {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert!(r.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    /// A success after a hiccup is a success.
+    #[test]
+    fn one_hiccup_then_an_answer_is_an_answer() {
+        let mut calls = 0;
+        let r = retrying(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(std::io::Error::from_raw_os_error(4))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(r.unwrap(), 42);
+        assert_eq!(calls, 2);
+    }
 }
 
 #[cfg(test)]
