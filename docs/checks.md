@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them twenty-eight
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-two
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -60,8 +60,8 @@ Only for a commit you are authoring. `-m`, `-t`, a merge, a squash and
 
 ## `pre-commit`
 
-All fifteen run **concurrently**, and a panic in one is isolated so the other
-fourteen still report.
+All twenty run **concurrently**, and a panic in one is isolated so the other
+nineteen still report.
 
 | id | fires when | what it does |
 |---|---|---|
@@ -70,6 +70,8 @@ fourteen still report.
 | `pre-commit-branch-pattern` | always | Says at the **first commit** what [`pre-push-branch-pattern`](#pre-push) will refuse at push time, with the `git branch -m` fix — while renaming costs nothing. Quiet on a detached head, in a remoteless repository, and on any branch a remote already has. **Never blocks.** |
 | `pre-commit-cargo-fmt` | `.rs` + `Cargo.toml` | `cargo fmt`. **fixes** |
 | `pre-commit-clippy` | `.rs` + `Cargo.toml` | `cargo clippy` |
+| `pre-commit-go-vet` | `.go` + `go.mod` | `go vet ./...`, per touched module. |
+| `pre-commit-gofmt` | `.go` + `go.mod` | `gofmt`, handed exactly the staged files. **fixes** |
 | `pre-commit-kube-linter` | `.yaml` `.yml` + `.kube-linter*.yaml`/`.yml` | kube-linter. **soft** |
 | `pre-commit-kubeconform` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Schema-validates rendered manifests. **soft** |
 | `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint, only in repos that carry an eslint config. |
@@ -112,6 +114,7 @@ for a test suite.
 | `pre-push-pull-rebase` | always | Rebases the branch onto **its own** upstream before pushing (then asks for a second push — the first one's refs predate the rebase), and warns — never acts — when the default branch has moved ahead. Never touches a dirty tree, aborts cleanly on conflict, and `amont.autoRebase false` makes it a pure, networkless advisor. |
 | `pre-push-run-tests-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | Runs each touched JS package's gate: `typecheck`, `test:unit`, `test`, whichever it defines, cheapest first. Skips any of those a `pre-commit` declaration already covers — see below. |
 | `pre-push-cargo-test` | `.rs` + `Cargo.toml` | `cargo test`. |
+| `pre-push-go-test` | `.go` + `go.mod` | `go test ./...`, per touched module, against the pushed tree. |
 
 `pull-rebase`'s constraints are load-bearing: rebasing onto the *default*
 branch instead of the branch's own upstream, or autostashing a dirty tree to
@@ -164,12 +167,13 @@ Findings are **redacted**: the report names the kind and the place
 that echoes a secret into scrollback and CI logs has widened the leak it
 exists to prevent.
 
-### The dependency audits — `audit-rust`, `audit-js`, `audit-python`
+### The dependency audits — `audit-rust`, `audit-js`, `audit-python`, `audit-go`
 
 At `pre-push`, one vulnerability audit per ecosystem the repository uses:
 `cargo audit` (opted in by a `Cargo.lock`), `npm audit` (`package-lock.json`),
-and `pip-audit -r requirements.txt` (`requirements.txt`). No lockfile, no
-check — an audit without a resolved tree audits a guess.
+`pip-audit -r requirements.txt` (`requirements.txt`), and `govulncheck ./...`
+(`go.sum`). No lockfile, no check — an audit without a resolved tree audits
+a guess.
 
 The severity is the push's, not the finding's:
 

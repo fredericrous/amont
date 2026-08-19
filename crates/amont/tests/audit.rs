@@ -164,6 +164,40 @@ fn npm_audit_summary_decides_both_ways() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// govulncheck's GO- ids decide; the exit code says whether the analysed
+/// code is affected or the finding is informational.
+#[test]
+fn govulncheck_ids_decide_both_ways() {
+    let r = repo();
+    shim(
+        &r,
+        "govulncheck",
+        "echo 'Vulnerability #1: GO-2022-0969'\nexit 3",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-go", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("GO-2022-0969"), "{out}");
+
+    shim(
+        &r,
+        "govulncheck",
+        "echo 'No vulnerabilities found.'\nexit 0",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-go", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "{out}");
+
+    // Informational — the module is vulnerable, the code never calls it:
+    // named, never blocking, even on a release tag.
+    shim(
+        &r,
+        "govulncheck",
+        "echo '=== Informational ==='\necho 'Vulnerability #1: GO-2023-1840'\nexit 0",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-go", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("GO-2023-1840"), "{out}");
+}
+
 /// pip-audit's closing sentence decides.
 #[test]
 fn pip_audit_sentence_decides() {

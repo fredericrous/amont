@@ -128,6 +128,22 @@ pub const CHECKS: &[Builtin] = &[
         run: |ctx| hooks::rust_tools::clippy(ctx.args),
     },
     Builtin {
+        name: "pre-commit-go-vet",
+        stage: Stage::PreCommit,
+        scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"]).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::go_tools::vet(ctx.args),
+    },
+    Builtin {
+        name: "pre-commit-gofmt",
+        stage: Stage::PreCommit,
+        scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"]).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::Rewrite,
+        run: |ctx| hooks::go_tools::fmt(ctx.args),
+    },
+    Builtin {
         name: "pre-commit-kube-linter",
         stage: Stage::PreCommit,
         scope: Scope::new(
@@ -302,12 +318,20 @@ pub const CHECKS: &[Builtin] = &[
         fix: Fix::None,
         run: |ctx| hooks::pull_rebase::run(ctx.args),
     },
-    // The three dependency audits sit between the structural checks and the
+    // The four dependency audits sit between the structural checks and the
     // test suites: network-bound but seconds, where a suite is minutes —
     // and when a v* tag is in the push, failing here saves the suite's
     // whole cost. Each opts in by the LOCKFILE its tool audits: an audit
     // without a resolved tree audits a guess. On a branch push they only
     // warn; the blocking case is the release tag — see `hooks::audit`.
+    Builtin {
+        name: "pre-push-audit-go",
+        stage: Stage::PrePush,
+        scope: Scope::new(&[], &["go.sum"]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::audit::go(ctx.push.get()),
+    },
     Builtin {
         name: "pre-push-audit-js",
         stage: Stage::PrePush,
@@ -349,6 +373,15 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         run: |ctx| hooks::rust_tools::test(ctx.push.get()),
+    },
+    Builtin {
+        name: "pre-push-go-test",
+        stage: Stage::PrePush,
+        scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"])
+            .not_during(&[GitState::Bisect, GitState::Rebase]),
+        severity: Severity::Block,
+        fix: Fix::None,
+        run: |ctx| hooks::go_tools::test(ctx.push.get()),
     },
     Builtin {
         name: "pre-push-pytest",
@@ -744,11 +777,13 @@ mod tests {
                 "pre-push-branch-pattern",
                 "pre-push-secrets",
                 "pre-push-pull-rebase",
+                "pre-push-audit-go",
                 "pre-push-audit-js",
                 "pre-push-audit-python",
                 "pre-push-audit-rust",
                 "pre-push-run-tests-js",
                 "pre-push-cargo-test",
+                "pre-push-go-test",
                 "pre-push-pytest",
             ]
         );
@@ -796,6 +831,14 @@ mod tests {
         (
             "pre-commit-clippy",
             Consumes::Exts(crate::hooks::rust_tools::RUST_PATHS),
+        ),
+        (
+            "pre-commit-go-vet",
+            Consumes::Exts(crate::hooks::go_tools::GO_PATHS),
+        ),
+        (
+            "pre-commit-gofmt",
+            Consumes::Exts(crate::hooks::go_tools::EXTS),
         ),
         (
             "pre-commit-kube-linter",
@@ -852,6 +895,10 @@ mod tests {
         (
             "pre-push-cargo-test",
             Consumes::Exts(crate::hooks::rust_tools::RUST_PATHS),
+        ),
+        (
+            "pre-push-go-test",
+            Consumes::Exts(crate::hooks::go_tools::GO_PATHS),
         ),
     ];
 
@@ -913,6 +960,8 @@ mod tests {
         ("pre-commit-branch-pattern", false),
         ("pre-commit-cargo-fmt", true),
         ("pre-commit-clippy", false),
+        ("pre-commit-go-vet", false),
+        ("pre-commit-gofmt", true),
         ("pre-commit-kube-linter", false),
         ("pre-commit-kubeconform", false),
         ("pre-commit-lint-js", false),
@@ -930,11 +979,13 @@ mod tests {
         ("pre-push-branch-protect", false),
         ("pre-push-branch-pattern", false),
         ("pre-push-pull-rebase", false),
+        ("pre-push-audit-go", false),
         ("pre-push-audit-js", false),
         ("pre-push-audit-python", false),
         ("pre-push-audit-rust", false),
         ("pre-push-run-tests-js", false),
         ("pre-push-cargo-test", false),
+        ("pre-push-go-test", false),
         ("pre-push-pytest", false),
     ];
 
@@ -969,7 +1020,7 @@ mod tests {
     /// the point of the refactor: there is no second table to disagree with.
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 28);
+        assert_eq!(CHECKS.len(), 32);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(
