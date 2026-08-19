@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
       - run: npm ci
-      - run: npx --no-install eslint . # pre-commit-lint-js — delete if no eslint config
+      - run: npx --no-install eslint --max-warnings 0 . # pre-commit-lint-js — delete if no eslint config
       # pre-push-run-tests-js runs whichever gate scripts the package defines,
       # cheapest first; --if-present mirrors "only what the repo declares".
       - run: npm run typecheck --if-present

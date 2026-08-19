@@ -28,6 +28,13 @@ prints the condition each inert check is waiting on.
 - **fires when** — the scope. `always` means it has no file condition.
 - **fixes** — the check can rewrite the file rather than only complain. Those
   rewrites are staged; see [run modes](index-fidelity-and-run-modes.md).
+- Linters with a warning class run at **zero warnings**: eslint gets
+  `--max-warnings 0`, yamllint `--strict`, pyright `--warnings`, and clippy
+  has always run with `-D warnings`. A warning that exits 0 is a list nobody
+  is forced to read — a human scrolls past it, an agent reads "passed" and
+  moves on — so a finding either blocks or it does not exist. A repository
+  that wants the old behaviour downgrades the check:
+  `git config amont.severity.lint-js warn`.
 - Checks marked **soft** warn and skip when their tool is missing, rather than
   blocking a commit, because CI is the hard gate and not every developer has
   every toolchain installed.
@@ -86,7 +93,7 @@ nineteen still report.
 | `pre-commit-gofmt` | `.go` + `go.mod` | `gofmt`, handed exactly the staged files. **fixes** |
 | `pre-commit-kube-linter` | `.yaml` `.yml` + `.kube-linter*.yaml`/`.yml` | kube-linter. **soft** |
 | `pre-commit-kubeconform` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Schema-validates rendered manifests. **soft** |
-| `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint, only in repos that carry an eslint config. |
+| `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint at zero warnings (`--max-warnings 0`), only in repos that carry an eslint config. |
 | `pre-commit-lint-json-yaml` | `.json` `.yaml` `.yml` | Parses staged JSON/YAML so a syntax error never reaches the repo. **soft** |
 | `pre-commit-merge-conflict` | always | Refuses staged files still carrying conflict markers. |
 | `pre-commit-package-lock` | `package.json` | Keeps `package.json` and its lockfile in step, scoped per directory — one project's lockfile does not satisfy another's in a monorepo, and a `package.json` with no lockfile beside it never demands one. |

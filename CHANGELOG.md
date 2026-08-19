@@ -6,6 +6,18 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.7.3 — 2026-08-19
+
+- **Linters run at zero warnings.** eslint exits 0 under any number of
+  warning-level findings, yamllint under warning-level rules, pyright under
+  warning diagnostics — so those findings accumulated into a list nobody
+  was forced to read: a human scrolls past it, an agent reads "passed" and
+  moves on. The three now get `--max-warnings 0`, `--strict` and
+  `--warnings` respectively (clippy always had `-D warnings`), the CI
+  templates say the same thing, and a repository that wants the old
+  behaviour has the existing per-check downgrade:
+  `git config amont.severity.lint-js warn`.
+
 ## v1.7.2 — 2026-08-19
 
 - **The CI backstop, stated and shipped.** amont deliberately does not run

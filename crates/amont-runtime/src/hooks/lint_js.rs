@@ -59,11 +59,13 @@ pub fn run(args: &[std::ffi::OsString]) -> Outcome {
     // e.g. `-x.js` would otherwise be read as a flag by eslint's own parser,
     // and putting `--` before the forwarded args instead would not separate
     // the files from anything — it would only separate ITSELF from `args`.
-    let mut extra: Vec<String> = args
-        .iter()
-        .filter_map(|a| a.to_str())
-        .map(str::to_owned)
-        .collect();
+    // Zero warnings, not zero errors: eslint exits 0 under any number of
+    // warning-level findings, and a warn list nobody is forced to read only
+    // grows — a human scrolls past it, an agent reads "passed" and moves on.
+    // Ours goes FIRST, so a repository that genuinely wants a budget can
+    // forward its own `--max-warnings` and have the later value win.
+    let mut extra: Vec<String> = vec!["--max-warnings".to_string(), "0".to_string()];
+    extra.extend(args.iter().filter_map(|a| a.to_str()).map(str::to_owned));
     extra.push("--".to_string());
     extra.extend(files);
     if !run_tool(&root, &argv, &extra) {
