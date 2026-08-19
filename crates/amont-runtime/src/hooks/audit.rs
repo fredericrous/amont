@@ -140,6 +140,35 @@ fn read_npm_audit(exit_ok: bool, out: &str) -> Report {
     }
 }
 
+/// `govulncheck`: the GO- ids decide, the exit code classifies them — the
+/// same split cargo-audit taught. The tool exits non-zero only when the
+/// analysed CODE is affected; ids with a clean exit are the informational
+/// section (vulnerable modules whose functions are never called), which is
+/// advisory-grade. No ids plus a refusal to exit clean is a tool that never
+/// answered (no network, no vulnerability database).
+fn read_govulncheck(exit_ok: bool, out: &str) -> Report {
+    let mut ids: Vec<String> = out
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .filter(|w| {
+            w.len() >= 12
+                && w.starts_with("GO-")
+                && w[3..7].bytes().all(|b| b.is_ascii_digit())
+                && w.as_bytes()[7] == b'-'
+                && w[8..].bytes().all(|b| b.is_ascii_digit())
+        })
+        .map(|w| w.to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    match (ids.is_empty(), exit_ok) {
+        (true, true) => Report::Clean,
+        (true, false) => Report::CouldNotCheck,
+        (false, true) => Report::Advisories(ids),
+        (false, false) => Report::Vulnerabilities(ids),
+    }
+}
+
 /// `pip-audit`: its own closing sentence decides.
 fn read_pip_audit(exit_ok: bool, out: &str) -> Report {
     if out.contains("No known vulnerabilities found") {
@@ -211,6 +240,26 @@ pub fn js(refs: &[PushRef]) -> Outcome {
     conclude(
         "audit-js",
         read_npm_audit(exit_ok, &out),
+        releasing(refs),
+        &out,
+    )
+}
+
+pub fn go(refs: &[PushRef]) -> Outcome {
+    if common::which("govulncheck").is_none() {
+        common::warn(
+            "audit-go: govulncheck is not installed \
+             (go install golang.org/x/vuln/cmd/govulncheck@latest) — the audit did NOT run",
+        );
+        return Outcome::Unavailable;
+    }
+    let argv = vec![common::program("govulncheck"), "./...".into()];
+    let Some((exit_ok, out)) = audited(&argv) else {
+        return Outcome::Unavailable;
+    };
+    conclude(
+        "audit-go",
+        read_govulncheck(exit_ok, &out),
         releasing(refs),
         &out,
     )
@@ -310,6 +359,41 @@ mod tests {
         assert_eq!(
             read_npm_audit(false, "npm ERR! network ENOTFOUND\n"),
             Report::CouldNotCheck
+        );
+    }
+
+    /// The cargo-audit split, spoken in Go: ids decide, the exit code says
+    /// whether the analysed code is actually affected.
+    #[test]
+    fn govulncheck_ids_decide_not_the_exit_code() {
+        assert_eq!(
+            read_govulncheck(true, "No vulnerabilities found.\n"),
+            Report::Clean
+        );
+        assert_eq!(
+            read_govulncheck(false, "vulncheck: fetching vulnerability database: dial tcp: lookup vuln.go.dev: no such host\n"),
+            Report::CouldNotCheck
+        );
+        // Informational: the module is vulnerable, the analysed code never
+        // calls it — exit 0, ids present.
+        assert_eq!(
+            read_govulncheck(
+                true,
+                "=== Informational ===\nVulnerability #1: GO-2023-1840\n  More info: https://pkg.go.dev/vuln/GO-2023-1840\n"
+            ),
+            Report::Advisories(vec!["GO-2023-1840".into()])
+        );
+        assert_eq!(
+            read_govulncheck(
+                false,
+                "Vulnerability #1: GO-2022-0969\n  Your code calls it.\nGO-2022-0969 again\n"
+            ),
+            Report::Vulnerabilities(vec!["GO-2022-0969".into()])
+        );
+        // A lookalike is not an id.
+        assert_eq!(
+            read_govulncheck(true, "GO-20XX-0001 GO-2023-1"),
+            Report::Clean
         );
     }
 

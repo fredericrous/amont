@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.10 — 2026-08-19
+
+- **The Go language track.** Four new checks give Go repositories the same
+  lane Rust has had: `pre-commit-gofmt` (handed exactly the staged files;
+  repairs and re-stages under `amont.fix true`), `pre-commit-go-vet`
+  (`go vet ./...` per touched module — a `go.mod` dependency bump alone
+  still vets), `pre-push-go-test` (`go test ./...` per touched module,
+  against the pushed tree, per ref), and `pre-push-audit-go`
+  (`govulncheck`, opted in by a `go.sum`; informational findings warn,
+  code-affecting vulnerabilities block a `v*` tag push like the other
+  audits). All scoped: a repo without Go never invokes the toolchain.
+  Thirty-two built-in checks.
+
 ## v1.6.9 — 2026-08-19
 
 - **Debug leftovers are caught in every language, not just JS.**
