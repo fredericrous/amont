@@ -3,10 +3,14 @@
 mod common;
 use common::Repo;
 
-fn check(src: &str) -> bool {
+fn check_file(name: &str, src: &str) -> bool {
     let r = Repo::new();
-    r.stage("f.ts", src);
+    r.stage(name, src);
     r.hook("pre-commit-ban-terms", &[]).passed()
+}
+
+fn check(src: &str) -> bool {
+    check_file("f.ts", src)
 }
 
 #[test]
@@ -93,12 +97,91 @@ fn removing_a_violation_is_not_committing_one() {
     assert!(r.hook("pre-commit-ban-terms", &[]).passed());
 }
 
-/// Only JS-ish files are searched.
+/// Only the languages the terms declare are searched.
 #[test]
 fn other_file_types_are_ignored() {
     let r = Repo::new();
-    r.stage("notes.md", "debugger;\n");
+    r.stage("notes.md", "debugger;\ndbg!(x)\nbreakpoint()\n");
     assert!(r.hook("pre-commit-ban-terms", &[]).passed());
+}
+
+/// A term stays in its own language: `debugger` is a fine Rust identifier,
+/// and `dbg` a fine JS one.
+#[test]
+fn a_term_does_not_cross_languages() {
+    assert!(check_file("f.rs", "let debugger = 1;\n"));
+    assert!(check_file("f.ts", "const dbg = (x) => x; dbg!(1);\n"));
+    assert!(check_file("f.py", "debugger = 1\n"));
+}
+
+#[test]
+fn rust_debug_leftovers_are_rejected() {
+    for src in [
+        "fn main() { dbg!(1); }\n",
+        "fn main() { std::dbg!(1); }\n",
+        "fn f() -> u32 { dbg!(compute()) }\n",
+    ] {
+        assert!(
+            !check_file("f.rs", src),
+            "should have been rejected: {src:?}"
+        );
+    }
+}
+
+/// A term named in Rust comments, strings, or raw strings is discussion.
+#[test]
+fn rust_prose_and_literals_are_accepted() {
+    for src in [
+        "// dbg!(x) is banned here\nfn f() {}\n",
+        "let s = \"dbg!(x)\";\n",
+        "let s = r#\"dbg!(\"x\")\"#;\n",
+        "/* /* nested */ dbg!(1) */\nfn f() {}\n",
+        "fn f<'a>(x: &'a str) -> &'a str { x }\n",
+    ] {
+        assert!(
+            check_file("f.rs", src),
+            "should have been accepted: {src:?}"
+        );
+    }
+}
+
+/// The char literal that would open a phantom string if misread: code after
+/// `'"'` must still be scanned.
+#[test]
+fn a_quote_char_literal_does_not_hide_rust_code() {
+    assert!(!check_file("f.rs", "let c = '\"'; dbg!(1);\n"));
+}
+
+#[test]
+fn python_debug_leftovers_are_rejected() {
+    for src in [
+        "breakpoint()\n",
+        "import pdb; pdb.set_trace()\n",
+        "import ipdb; ipdb.set_trace()\n",
+        "s = f\"{breakpoint()}\"\n", // an f-string interpolation is code
+    ] {
+        assert!(
+            !check_file("f.py", src),
+            "should have been rejected: {src:?}"
+        );
+    }
+}
+
+#[test]
+fn python_prose_and_literals_are_accepted() {
+    for src in [
+        "# breakpoint() lives here\nx = 1\n",
+        "s = 'breakpoint()'\n",
+        "def f():\n    \"\"\"docs mentioning pdb.set_trace()\"\"\"\n",
+        "s = f\"breakpoint( {x}\"\n", // f-string TEXT is still a string
+        "self.breakpoint(1)\n",       // somebody else's API
+        "set_trace()\n",              // bare, no module
+    ] {
+        assert!(
+            check_file("f.py", src),
+            "should have been accepted: {src:?}"
+        );
+    }
 }
 
 /// End to end, through stage 1's `git diff -G` prefilter as well as the

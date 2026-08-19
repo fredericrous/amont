@@ -6,6 +6,18 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.6.9 — 2026-08-19
+
+- **Debug leftovers are caught in every language, not just JS.**
+  `pre-commit-ban-terms` — until now JS/TS-only (`describe.only`, `fit(`,
+  `debugger`) — learns Rust and Python: a staged `dbg!(…)`, `breakpoint()`,
+  `pdb.set_trace()` or `ipdb.set_trace()` refuses the commit the same way.
+  Each language gets its own comment/string blanker, so a term named in a
+  doc comment, a raw string `r#"…"#`, or a docstring stays discussion,
+  while a call inside an f-string interpolation (`f"{breakpoint()}"`) is
+  still code and still caught. Same check, same `hook.skip ban-terms`
+  escape, no new configuration.
+
 ## v1.6.8 — 2026-08-16
 
 - **The large-file guard.** Git history never forgets a megabyte: a staged
