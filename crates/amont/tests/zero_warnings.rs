@@ -32,19 +32,23 @@ fn recording_shim(r: &Repo, name: &str) {
 }
 
 fn run_check(r: &Repo, check: &str) -> String {
+    // PATH is the shim dir ALONE, holding the recording shim plus a symlink
+    // to the real git — so resolution cannot wander off to uv, npx, a venv,
+    // or a real tool the machine happens to have. The CI runners resolve
+    // pyright through uv where a laptop falls through to PATH; a test about
+    // WHICH FLAGS reach the tool must not depend on that difference.
+    let dir = r.path(".git/toolshims");
+    let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|d| d.join("git"))
+        .find(|p| p.is_file())
+        .expect("git on PATH");
+    let _ = std::os::unix::fs::symlink(git, dir.join("git"));
     let out = Command::new(env!("CARGO_BIN_EXE_amont"))
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg(check)
         .current_dir(&r.dir)
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                r.path(".git/toolshims").display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
+        .env("PATH", dir.display().to_string())
         .stdin(Stdio::null())
         .output()
         .expect("run");
