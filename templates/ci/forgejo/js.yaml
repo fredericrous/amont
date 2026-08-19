@@ -18,13 +18,49 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
+      # amont.attest: when every pre-push block gate passed locally, amont
+      # left a SIGNED note (refs/notes/amont-attest) on the pushed commit.
+      # Verified here with stock git + ssh-keygen — amont itself still does
+      # not run in CI. A test step is skipped only when (a) the signature
+      # verifies against the allowed_signers file committed in this repo,
+      # (b) the attested tree is EXACTLY the tree checked out here, and
+      # (c) the step's gate is named in the attestation. Any failure leaves
+      # `covered` empty and every gated step simply runs — the only thing an
+      # attestation can ever save is a redundant run. Requires
+      # .forgejo/allowed_signers with a line like:
+      #   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
+      - id: attest
+        run: |
+          command -v ssh-keygen >/dev/null || exit 0
+          git fetch origin '+refs/notes/amont-attest:refs/notes/amont-attest' 2>/dev/null || exit 0
+          # HEAD on a push; on a PR's merge commit, the note lives on HEAD^2
+          # (the branch tip) — the tree check below still compares against
+          # what is actually checked out, so a stale merge never skips.
+          for c in HEAD HEAD^2; do
+            note=$(git notes --ref amont-attest show "$c" 2>/dev/null) && break
+          done
+          [ -n "$note" ] || exit 0
+          payload=$(printf '%s\n' "$note" | sed -n '/^$/q;p')
+          sig=$(printf '%s\n' "$note" | sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p')
+          [ -n "$sig" ] || exit 0
+          [ "$(printf '%s\n' "$payload" | sed -n 1p)" = amont-attest-v1 ] || exit 0
+          tree=$(printf '%s\n' "$payload" | awk '$1=="tree"{print $2}')
+          [ -n "$tree" ] && [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ] || exit 0
+          printf '%s\n' "$sig" >/tmp/amont-attest.sig
+          printf '%s\n' "$payload" | ssh-keygen -Y verify \
+              -f .forgejo/allowed_signers -I you@example.com \
+              -n amont-attest -s /tmp/amont-attest.sig >/dev/null 2>&1 || exit 0
+          echo "covered=$(printf '%s\n' "$payload" | awk '$1=="gates"{sub(/^gates */,""); print}')" >>"$GITHUB_OUTPUT"
       - run: npm ci
       - run: npx --no-install eslint --max-warnings 0 . # pre-commit-lint-js — delete if no eslint config
       # pre-push-run-tests-js runs whichever gate scripts the package defines,
       # cheapest first; --if-present mirrors "only what the repo declares".
       - run: npm run typecheck --if-present
+        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
       - run: npm run test:unit --if-present
+        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
       - run: npm run test --if-present
+        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
 
   # pre-push-audit-js's split: advisory on branches, blocking on a v* release.
   audit:

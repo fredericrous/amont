@@ -260,6 +260,22 @@ pushed, and your tree is not touched. It costs a second checkout and a build
 that cannot reuse your `target/` cache, which is why it is opt-in rather than
 the default.
 
+## `amont.attest` / `amont.attestKey` — sign what pre-push proved, for CI
+
+```sh
+git config amont.attest true
+```
+
+Off by default. With it on, a push whose pre-push block gates all passed
+leaves an `ssh-keygen`-signed note on each pushed tip in
+`refs/notes/amont-attest` — binding the pushed **tree**, the names of the
+gates that passed, and the amont version — and pushes that ref to the same
+remote, so CI can verify the note and skip the test steps it names.
+`amont.attestKey` points at the signing key; unset, it means
+`~/.ssh/amont-attest`. The verifying side, the trust statement being made,
+and why every failure falls back to CI running the tests are in
+[the CI backstop](ci.md#skipping-what-pre-push-already-proved).
+
 ## `amont.trusted`
 
 Set by `amont trust`, read by everything that decides whether a declared
@@ -282,6 +298,7 @@ git config --global commit.template ~/.config/git/git-templates/message
 | `GIT_HOOKS_BIN` | Absolute path to the binary a shim should use. First candidate in the shim's resolution order. |
 | `AMONT_BIN_DIR` | Where `amont install` and the installer script put binaries. Default `~/.local/bin`. |
 | `AMONT_VERSION` | Pins the version the installer script fetches. |
+| `AMONT_ATTEST_PUSH` | Set by amont itself on the notes push [`amont.attest`](#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci) makes, so the recursive pre-push stands down. Not for humans. |
 | `NO_COLOR` | Honoured, as is a non-tty stdout. |
 
 ## Repository-declared checks

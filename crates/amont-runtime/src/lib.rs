@@ -18,7 +18,15 @@
 //! amont --hooks-dir <dir> pre-commit [args…]
 //! ```
 
+/// Serialises every test that moves the process cwd. `gate_stamp` and
+/// `attest` both talk to "the repository at cwd" and each carried its own
+/// mutex — which serialised each module against itself and raced the two
+/// against each other, failing only under a full parallel `cargo test`.
+#[cfg(test)]
+pub(crate) static TEST_CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod agents_md;
+pub mod attest;
 pub mod bypass;
 pub mod check;
 pub mod commit_style;

@@ -1398,6 +1398,7 @@ fn uninstall_repo_hooks() -> Result<(), String> {
     // `hook.skip` and `amont.severity` stay: those are the user's statements
     // about their repository, not ours.
     crate::gate_stamp::forget();
+    crate::attest::forget();
     crate::bypass::forget();
     crate::skew::forget();
     // `--unset-all` exits 5 when the key is absent; not a failure here.

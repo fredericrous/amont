@@ -211,11 +211,10 @@ mod tests {
     }
 
     /// The module talks to the repo at the process cwd; these tests each set
-    /// it. Serialised because cwd is process-global.
-    static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    /// it. Serialised via the crate-wide lock, because cwd is process-global
+    /// and `attest`'s tests move it too.
     fn in_repo<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = CWD.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
         let r = f();
