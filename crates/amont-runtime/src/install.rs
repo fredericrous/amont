@@ -451,6 +451,143 @@ pub fn run(force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `amont enroll` — the machine-level standing grant, made one command.
+///
+/// The team-rollout problem in one sentence: hooks only protect the machines
+/// that installed them, and only npm repositories can self-install on clone.
+/// `enroll` is the other half — run ONCE per machine, it arranges for every
+/// FUTURE `git clone` and `git init` to arrive with the shims already baked:
+///
+///   1. the binary lands somewhere stable (`install_binary`'s rules);
+///   2. the template dir is populated (`populate_template_dir`'s guards);
+///   3. `init.templateDir` is pointed at it — the one write `install` always
+///      left to the user, because a standing grant should be typed, not
+///      inherited. `enroll` IS that typing.
+///
+/// With `--conventions declared` it also writes `amont.conventions`, so the
+/// grant is safe on a machine that clones other people's projects: those get
+/// the safety net only, and the house rules wait for a committed
+/// `amont.conf`. See `dispatch::conventions_apply`.
+///
+/// Existing clones are deliberately untouched — a standing grant reaches
+/// forward, not backward. The output names the two remedies.
+pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
+    // Validate the flag BEFORE writing anything: an enroll that half-runs
+    // and then rejects its own argument has still changed global state.
+    match conventions {
+        None | Some("declared") | Some("everywhere") => {}
+        Some(other) => {
+            return Err(format!(
+                "amont enroll --conventions takes `declared` or `everywhere`, not {other:?}"
+            ));
+        }
+    }
+    let binary = install_binary()?;
+    populate_template_dir(&binary, false)?;
+    let hooks = template_hooks_dir();
+    let templates = hooks
+        .parent()
+        .ok_or_else(|| "template hooks dir has no parent".to_string())?
+        .to_path_buf();
+    point_template_dir_at(&templates)?;
+
+    match conventions {
+        Some(word) => {
+            if !crate::git::succeeds(&["config", "--global", "amont.conventions", word]) {
+                return Err("could not write amont.conventions to the global git config".into());
+            }
+            println!(
+                "{} amont.conventions = {} (global)",
+                valid_sign(),
+                highlight(word)
+            );
+            if word == "declared" {
+                println!("    House rules run only in repositories that commit an amont.conf;");
+                println!("    the safety net (conflicts, secrets, size, debug leftovers) runs");
+                println!("    everywhere.");
+            }
+        }
+        None => {
+            println!(
+                "{} conventions currently apply everywhere. On a machine that also",
+                warning_sign()
+            );
+            println!("    clones other people's projects, consider:");
+            println!(
+                "        {}",
+                highlight("amont enroll --conventions declared")
+            );
+        }
+    }
+
+    println!();
+    println!("Enrolled. Every future `git clone` and `git init` gets the hooks.");
+    println!("Repositories cloned before now are untouched — wire them with");
+    println!("    {}   (one repository)", highlight("amont init"));
+    println!(
+        "    {}   (every repository under a root)",
+        highlight("amont-fleet install --root <dir>")
+    );
+    println!(
+        "Undo with {}.",
+        highlight("git config --global --unset init.templateDir")
+    );
+    Ok(())
+}
+
+/// Point `init.templateDir` at `templates` — or refuse, loudly, when it
+/// already points somewhere else. Overwriting it would silently disable
+/// whatever the user's OTHER template dir was installing, which is the exact
+/// shape of failure the husky refusal exists to prevent, one level up.
+fn point_template_dir_at(templates: &std::path::Path) -> Result<(), String> {
+    let want = templates.to_string_lossy().into_owned();
+    let current = crate::git::stdout(&["config", "--global", "--get", "init.templateDir"])
+        .filter(|s| !s.is_empty());
+    match current {
+        None => {
+            if !crate::git::succeeds(&["config", "--global", "init.templateDir", &want]) {
+                return Err("could not write init.templateDir to the global git config".into());
+            }
+            println!(
+                "{} init.templateDir = {} (global)",
+                valid_sign(),
+                highlight(&want)
+            );
+            Ok(())
+        }
+        Some(existing) if same_dir(&existing, &want) => {
+            println!(
+                "{} init.templateDir already points here ({})",
+                valid_sign(),
+                highlight(&existing)
+            );
+            Ok(())
+        }
+        Some(existing) => Err(format!(
+            "init.templateDir is already set to {existing} — something else installs
+             hooks on this machine. Overwriting it would silently disable that.
+             Decide which one wins, then either unset it
+             (git config --global --unset init.templateDir) and re-run
+             `amont enroll`, or leave enrollment to it."
+        )),
+    }
+}
+
+/// The same directory, spelled two ways: canonicalize both when possible so
+/// a symlinked config dir still counts as "already ours".
+fn same_dir(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (
+        std::path::Path::new(a).canonicalize(),
+        std::path::Path::new(b).canonicalize(),
+    ) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// `amont init` — wire up THIS repository, and touch nothing else.
 ///
 /// The verb a package manager can call. `"prepare": "amont init"` in a

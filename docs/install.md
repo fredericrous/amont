@@ -300,6 +300,17 @@ retired shims, which are a different thing entirely.
 
 ### Everywhere, forever — a real opt-in
 
+```console
+$ amont enroll
+```
+
+One command: it puts the binary somewhere stable, populates the template
+directory, and points `init.templateDir` at it — refusing, loudly, if that
+key already points somewhere else. Add `--conventions declared` on a machine
+that also clones other people's projects, so those get only the safety net;
+the full story is [Rolling out to a team](team-rollout.md). The manual
+spelling, for anyone who prefers to see every write:
+
 ```sh
 mkdir -p ~/.config/git
 git clone https://github.com/fredericrous/amont.git ~/.config/git/git-templates

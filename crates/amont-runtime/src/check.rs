@@ -330,7 +330,34 @@ pub trait Check: Sync {
     fn fix(&self) -> Fix {
         Fix::None
     }
+    /// How far the check reaches when `amont.conventions` is `declared` —
+    /// see [`Reach`]. Externals default to `Convention`, which costs them
+    /// nothing: a declared check only exists where an `amont.conf` does,
+    /// and that is exactly the declaration the mode asks for.
+    fn reach(&self) -> Reach {
+        Reach::Convention
+    }
     fn run(&self, ctx: &Ctx) -> Outcome;
+}
+
+/// How far a check reaches into repositories that never asked for it.
+///
+/// With `git config --global amont.conventions declared`, hooks installed by
+/// a standing grant (`init.templateDir`) split in two: `Safety` checks run in
+/// EVERY repository, because their findings are mistakes in any codebase — a
+/// conflict marker, a leaked credential, a hundred-megabyte blob, a
+/// `debugger;` left in the diff. `Convention` checks run only where the
+/// repository has committed an `amont.conf` — they are one team's house
+/// rules (commit shapes, branch names, lint severities, test gates), and a
+/// clone of somebody else's project did not agree to them.
+///
+/// The default mode is `everywhere`, where this distinction is inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A mistake anywhere: runs regardless of declaration.
+    Safety,
+    /// A house rule: runs only where the repository declares amont.
+    Convention,
 }
 
 /// A check compiled into the binary.
@@ -342,6 +369,8 @@ pub struct Builtin {
     pub run: fn(&Ctx) -> Outcome,
     /// Almost always `Fix::None`; see `CHECKS`.
     pub fix: Fix,
+    /// Almost always `Convention`; the exceptions are pinned in the registry.
+    pub reach: Reach,
 }
 
 impl Check for Builtin {
@@ -359,6 +388,9 @@ impl Check for Builtin {
     }
     fn fix(&self) -> Fix {
         self.fix
+    }
+    fn reach(&self) -> Reach {
+        self.reach
     }
     fn run(&self, ctx: &Ctx) -> Outcome {
         (self.run)(ctx)

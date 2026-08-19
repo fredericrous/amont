@@ -809,6 +809,12 @@ pub struct Manifest {
     /// one executes `<program> --version` for a name the repository chose,
     /// which is exactly the consent the trust model exists to collect.
     pub pins: Vec<ToolPin>,
+    /// Whether an `amont.conf` EXISTS in this repository — the committed
+    /// declaration that this project subscribes to amont's conventions.
+    /// Presence, not content: an empty file declares, and declaring executes
+    /// nothing, so this is safe to read before any trust decision. What the
+    /// file SAYS stays trust-gated above.
+    pub declared: bool,
 }
 
 /// Read and trust-gate `root`'s manifest.
@@ -828,11 +834,18 @@ pub fn load(root: &Path) -> Manifest {
     // Non-UTF-8 yields nothing, as it always has: `parse` takes a `&str`,
     // and a manifest we cannot read as text is one we cannot act on. Not
     // lossy — that would invent a manifest nobody wrote.
+    let declared = root.join(MANIFEST).exists();
     let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
-        return Manifest::default();
+        return Manifest {
+            declared,
+            ..Manifest::default()
+        };
     };
     let Ok(text) = String::from_utf8(bytes.clone()) else {
-        return Manifest::default();
+        return Manifest {
+            declared,
+            ..Manifest::default()
+        };
     };
     let state = crate::trust::state_of(root, &bytes);
     let externals = gate(parse(&text), state);
@@ -847,7 +860,11 @@ pub fn load(root: &Path) -> Manifest {
     } else {
         Vec::new()
     };
-    Manifest { externals, pins }
+    Manifest {
+        externals,
+        pins,
+        declared,
+    }
 }
 
 /// Check every trusted pin against the tool actually on this machine, and say

@@ -121,6 +121,34 @@ limit can never accommodate) is reported by `amont list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
+## `amont.conventions`
+
+```console
+$ git config --global amont.conventions declared
+```
+
+`everywhere` (the default) or `declared`. In `declared` mode the house
+rules — commit-message shape, branch patterns, lint/format gates, test
+suites, audits, auto-rebase — run only in repositories that commit an
+`amont.conf` (an empty one declares), while the safety net (merge-conflict,
+secrets, large-files, ban-terms) keeps running everywhere. This is what
+makes a machine-wide standing grant (`amont enroll`, `init.templateDir`)
+safe on a machine that also clones other people's projects. A held-back
+stage announces itself in one line; `amont list` reports the state, and
+`--json` carries it as `"conventions_apply"`. An unrecognised value falls
+back to `everywhere`, loudly.
+
+## `amont.largeFileWarn` / `amont.largeFileBlock`
+
+```console
+$ git config amont.largeFileWarn 25
+$ git config amont.largeFileBlock 500
+```
+
+The two thresholds of [`pre-commit-large-files`](checks.md#pre-commit), in
+megabytes: a staged file over the first is named (default 10), one over the
+second blocks (default 100 — GitHub's own refusal line).
+
 ## `amont.recordBypasses` — whether a dodged gate is tallied
 
 ```sh
