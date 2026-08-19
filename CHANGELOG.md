@@ -6,6 +6,14 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.7.4 — 2026-08-19
+
+- **v1.7.3, delivered** (that tag's builds died on the runners' apt mirror
+  three times; like v1.7.0 it published nothing). The install step now
+  rewrites `/etc/apt/apt-mirrors.txt` — the runner routes apt through
+  `mirror+file:`, so v1.7.2's rewrite of the sources files alone still let
+  every fetch start at the Azure mirror.
+
 ## v1.7.3 — 2026-08-19
 
 - **Linters run at zero warnings.** eslint exits 0 under any number of
