@@ -105,7 +105,21 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - name: Install cross-compilation packages
         if: matrix.packages != ''
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+        # The Azure apt mirror hung `apt-get update` for the full 30-minute
+        # job budget — three release attempts in a row (v1.7.0, 2026-08-19),
+        # each stalling after `noble-security InRelease` with the build never
+        # reached. Three defences, each sufficient alone: the canonical
+        # archive instead of the Azure mirror, a per-fetch timeout with
+        # retries, and a step budget so a hang costs five minutes and a
+        # cheap `gh run rerun --failed`, not the release.
+        timeout-minutes: 5
+        run: |
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 install -y ${{ matrix.packages }}
       - name: Point cargo at the cross linker
         if: matrix.linker != ''
         run: |

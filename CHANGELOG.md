@@ -6,6 +6,15 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.7.1 — 2026-08-19
+
+- **v1.7.0, delivered.** Same features as below; the v1.7.0 tag never
+  shipped because the release runners' apt mirror hung the Linux
+  cross-builds for their whole 30-minute budget, three attempts in a row.
+  The install step now uses the canonical archive, bounds and retries every
+  fetch, and carries its own five-minute budget — a mirror outage costs a
+  cheap rerun, not the release.
+
 ## v1.7.0 — 2026-08-19
 
 - **The team-rollout story.** Hooks only protect the machines that
