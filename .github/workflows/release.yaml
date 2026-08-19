@@ -114,6 +114,14 @@ jobs:
         # cheap `gh run rerun --failed`, not the release.
         timeout-minutes: 5
         run: |
+          # The runner routes apt through `mirror+file:/etc/apt/apt-mirrors.txt`,
+          # so rewriting the sources files alone still let every fetch start at
+          # the Azure mirror — the v1.7.3 logs show `Ign:` lines against
+          # azure.archive after the sed had already run. Rewrite the mirror
+          # LIST, which is the knob the image actually reads.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf 'http://archive.ubuntu.com/ubuntu\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
