@@ -39,7 +39,10 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         ));
         return Outcome::Unavailable;
     };
-    let argv = vec![bin, "-c".to_string(), config];
+    // `--strict`: warning-level findings fail the run too. Without it
+    // yamllint exits 0 under any number of warnings — see lint_js for why an
+    // ever-growing warn list is worse than a block.
+    let argv = vec![bin, "--strict".to_string(), "-c".to_string(), config];
     // `--` before the file list: a staged file named e.g. `-x.yaml` would
     // otherwise be read as a flag by yamllint's own (argparse) parser.
     let mut with_files = vec!["--".to_string()];

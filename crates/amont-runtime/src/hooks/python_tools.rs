@@ -233,7 +233,10 @@ pub fn pyright(_args: &[std::ffi::OsString]) -> Outcome {
     // pyright resolves it against the working directory `run_tool` already
     // sets. Git reports staged paths relative to the repository root with
     // forward slashes on every platform, so this is safe to prepend blindly.
-    let with_files: Vec<String> = files.iter().map(|f| format!("./{f}")).collect();
+    // `--warnings` first: exit non-zero on warning diagnostics too, not just
+    // errors — see lint_js for why an unread warn list is worse than a block.
+    let mut with_files: Vec<String> = vec!["--warnings".to_string()];
+    with_files.extend(files.iter().map(|f| format!("./{f}")));
     if !run_tool(&root, &argv, &with_files) {
         fail("Pyright type errors. Please fix");
         return Outcome::Failed;

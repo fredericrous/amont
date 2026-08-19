@@ -20,7 +20,7 @@ jobs:
       - uses: https://code.forgejo.org/actions/checkout@v4
       - run: pip install ruff pyright pytest
       - run: ruff check . # pre-commit-ruff
-      - run: pyright # pre-commit-pyright — delete if unconfigured
+      - run: pyright --warnings # pre-commit-pyright — delete if unconfigured
       - run: pytest # pre-push-pytest
 
   # pre-push-audit-python's split: advisory on branches, blocking on a v* release.
