@@ -261,3 +261,24 @@ pub fn template_hook(name: &str) -> PathBuf {
         .join("../../templates/hooks")
         .join(name)
 }
+
+/// Run a command that executes a binary some test COPIED into place,
+/// retrying `ETXTBSY`. On Linux, another thread's fork-to-exec window can
+/// briefly hold a write descriptor on the file (descriptors are
+/// process-wide, and `fork` duplicates all of them), and executing it in
+/// that window fails with "Text file busy". The window is microseconds;
+/// the flake it produced on the ubuntu runner was real twice in one day.
+/// Never retries any other error — a missing or broken binary is an answer.
+pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::io::Result<Output> {
+    let mut delay = std::time::Duration::from_millis(10);
+    for tries_left in [4u8, 3, 2, 1, 0] {
+        match cmd.output() {
+            Err(e) if tries_left > 0 && e.raw_os_error() == Some(26) => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            other => return other,
+        }
+    }
+    unreachable!("the zero-tries arm returns")
+}

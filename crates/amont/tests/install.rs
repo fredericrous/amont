@@ -5,6 +5,8 @@
 //! that the refusal path really does leave a checkout untouched — the failure
 //! that has already happened twice.
 
+mod common;
+use common::output_retrying_etxtbsy;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,14 +31,13 @@ impl Sandbox {
     /// Run the installer with HOME and XDG pointed inside the sandbox, so a bug
     /// cannot reach the developer's real configuration.
     fn install(&self, cwd: &Path) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
-            .arg("install")
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+        cmd.arg("install")
             .current_dir(cwd)
             .env("HOME", &self.0)
             .env("USERPROFILE", &self.0)
-            .env("XDG_CONFIG_HOME", self.path(".config"))
-            .output()
-            .expect("run amont install");
+            .env("XDG_CONFIG_HOME", self.path(".config"));
+        let out = output_retrying_etxtbsy(&mut cmd).expect("run amont install");
         (
             out.status.code().unwrap_or(-1),
             format!(
@@ -1292,8 +1293,8 @@ fn amont_bin_dir_still_forces_a_copy() {
 
 /// Invoke a specific copy of the binary, with `dir` on PATH.
 fn run_from(s: &Sandbox, exe: &Path, cwd: &Path, dir: &str) -> (i32, String) {
-    let out = Command::new(exe)
-        .arg("install")
+    let mut cmd = Command::new(exe);
+    cmd.arg("install")
         .current_dir(cwd)
         .env("HOME", &s.0)
         .env("USERPROFILE", &s.0)
@@ -1305,9 +1306,8 @@ fn run_from(s: &Sandbox, exe: &Path, cwd: &Path, dir: &str) -> (i32, String) {
         // that runner with no git at all. Matching is by file IDENTITY, not by
         // name, so an unrelated amont already on PATH cannot be mistaken
         // for this one.
-        .env("PATH", path_with(dir))
-        .output()
-        .expect("run amont install");
+        .env("PATH", path_with(dir));
+    let out = output_retrying_etxtbsy(&mut cmd).expect("run amont install");
     (
         out.status.code().unwrap_or(-1),
         format!(
