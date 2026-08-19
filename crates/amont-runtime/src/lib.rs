@@ -420,6 +420,7 @@ pub fn print_json(
     pushed: bool,
     listings: &[CheckListing],
     bypasses: &bypass::Ledger,
+    conventions_apply: bool,
 ) {
     let checks: Vec<String> = listings
         .iter()
@@ -466,6 +467,7 @@ pub fn print_json(
             format!("\"commit_style\":{}", commit_style_json(&style, &rows)),
             format!("\"branch_style\":{}", branch_style_json()),
             format!("\"bypasses\":{}", bypasses_json(bypasses)),
+            json::bool_field("conventions_apply", conventions_apply),
         ])
     );
 }
@@ -557,8 +559,15 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
     let listings = gather_checks(opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
+    let conventions_apply = dispatch::conventions_apply(&manifest);
     if opts.json {
-        print_json(opts.stage, opts.pushed, &listings, &bypasses);
+        print_json(
+            opts.stage,
+            opts.pushed,
+            &listings,
+            &bypasses,
+            conventions_apply,
+        );
     } else {
         print_text(&listings);
         // Not filtered by `--stage`: commit style belongs to no stage, and
@@ -567,6 +576,12 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         let (style, rows) = commit_style::describe();
         print_commit_style(&style, &rows);
         print_bypasses(&bypasses);
+        if !conventions_apply {
+            println!(
+                "\n  ! conventions held back — no amont.conf here and amont.conventions \
+                 is `declared`; only the safety net runs"
+            );
+        }
     }
     0
 }

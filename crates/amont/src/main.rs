@@ -61,6 +61,8 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   restore        bring back unstaged changes a killed pre-commit left parked
   agents-md      write the agent-guidance block [--check: report drift only]
                  [--path <file>]
+  enroll         the machine-level standing grant: every future clone gets
+                 the hooks [--conventions declared|everywhere]
 
   --help         this text        --version   the binary's version
 
@@ -81,6 +83,7 @@ enum Sub {
     Trust,
     Restore,
     AgentsMd,
+    Enroll,
 }
 
 impl Sub {
@@ -107,6 +110,7 @@ impl Sub {
             Sub::Trust => 6,
             Sub::Restore => 7,
             Sub::AgentsMd => 8,
+            Sub::Enroll => 9,
         }
     }
 }
@@ -116,7 +120,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 9] = [
+const SUBCOMMANDS: [(&str, Sub); 10] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -126,6 +130,7 @@ const SUBCOMMANDS: [(&str, Sub); 9] = [
     ("trust", Sub::Trust),
     ("restore", Sub::Restore),
     ("agents-md", Sub::AgentsMd),
+    ("enroll", Sub::Enroll),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -292,6 +297,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Run => (&["--all-files"], &["--hooks-dir"]),
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
+        Sub::Enroll => (&[], &["--conventions"]),
     }
 }
 
@@ -397,7 +403,36 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Trust => report(amont_runtime::trust::command(args)),
         Sub::Run => run_mode(args),
         Sub::AgentsMd => agents_md(args),
+        // `amont enroll` — the machine-level standing grant: template dir +
+        // `init.templateDir`, optionally scoping the conventions to declared
+        // repositories. One command in the onboarding doc instead of one
+        // `amont init` per clone per person.
+        Sub::Enroll => {
+            let conventions = match flag_value(args, "--conventions") {
+                Ok(v) => v,
+                Err(msg) => {
+                    eprintln!("amont: {msg}");
+                    return 2;
+                }
+            };
+            report(amont_runtime::install::enroll(conventions.as_deref()))
+        }
     }
+}
+
+/// The value following `--<flag>`, when present.
+fn flag_value(rest: &[OsString], flag: &str) -> Result<Option<String>, String> {
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        if a == flag {
+            return iter
+                .next()
+                .and_then(|v| v.to_str())
+                .map(|v| Some(v.to_string()))
+                .ok_or_else(|| format!("{flag} requires a value"));
+        }
+    }
+    Ok(None)
 }
 
 /// `Result<(), String>` → an exit code, printing the error. The shape four of

@@ -40,6 +40,34 @@ fn selected(stage: Stage, manifest: &crate::manifest::Manifest) -> Vec<&dyn Chec
     selected_during(stage, &[], manifest)
 }
 
+/// Do this repository's hooks apply the CONVENTIONS, or only the safety net?
+///
+/// `git config amont.conventions declared` (usually `--global`, set by
+/// `amont enroll`) scopes the house rules to repositories that commit an
+/// `amont.conf` — the standing grant of `init.templateDir` then becomes safe
+/// to hand a whole team: a clone of somebody else's project gets conflict,
+/// secret, size and debug-leftover protection, and none of this team's
+/// opinions about commit subjects or branch names. The default,
+/// `everywhere`, keeps today's behaviour exactly.
+///
+/// Presence of the manifest is the declaration; its CONTENT stays
+/// trust-gated. Reading presence executes nothing, so no consent is needed.
+pub fn conventions_apply(manifest: &crate::manifest::Manifest) -> bool {
+    manifest.declared || !declared_mode()
+}
+
+/// One config read per process — this sits on the hook path of every commit.
+fn declared_mode() -> bool {
+    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        crate::config::enumerated_or(
+            "amont.conventions",
+            &["everywhere", "declared"],
+            "everywhere",
+        ) == "declared"
+    })
+}
+
 /// The checks for a stage, minus `hook.skip` and minus anything that declares
 /// it does not run during an operation currently in progress.
 fn selected_during<'a>(
@@ -84,6 +112,26 @@ fn selected_during<'a>(
                 .map(|c| c.name())
                 .collect::<Vec<_>>()
                 .join(", ")
+        );
+    }
+
+    // The conventions split, last: a held-back check was neither skipped (a
+    // choice about THIS repository) nor paused (a property of the moment) —
+    // this repository simply never subscribed. One line, count not names:
+    // in the clone-of-somebody-else's-project case this prints on every
+    // commit, and fifteen names every time is how a safety message becomes
+    // scroll-past noise.
+    if conventions_apply(manifest) {
+        return kept;
+    }
+    let (kept, held): (Vec<_>, Vec<_>) = kept
+        .into_iter()
+        .partition(|check| check.reach() == crate::check::Reach::Safety);
+    if !held.is_empty() {
+        println!(
+            "{} {} convention check(s) held back — no amont.conf here and              amont.conventions is `declared`; the safety net still runs",
+            warning_sign(),
+            held.len(),
         );
     }
     kept
@@ -595,6 +643,7 @@ mod tests {
             severity,
             run: |_| Outcome::Passed,
             fix: crate::check::Fix::None,
+            reach: crate::check::Reach::Convention,
         }
     }
 
@@ -717,6 +766,7 @@ mod tests {
             severity: Severity::Block,
             run: |_| panic!("this check died"),
             fix: crate::check::Fix::None,
+            reach: crate::check::Reach::Convention,
         };
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));

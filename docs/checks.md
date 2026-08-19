@@ -58,6 +58,18 @@ Appends the issue id found in the branch name to the footer: JIRA first
 Only for a commit you are authoring. `-m`, `-t`, a merge, a squash and
 `--amend` all pass a source in `$2` and are left alone.
 
+## The safety net vs the conventions
+
+With `git config --global amont.conventions declared` — the mode
+[`amont enroll`](team-rollout.md) offers for machines that also clone other
+people's projects — the checks split in two. Five are the **safety net**
+and run in every repository, declared or not: `merge-conflict`,
+`large-files`, both `secrets` checks, and `ban-terms` — findings that are
+mistakes in any codebase, with near-zero false positives. Everything else,
+the `commit-msg`/`prepare-commit-msg` hooks included, is a **convention**
+and runs only where the repository commits an `amont.conf`. The default
+mode, `everywhere`, keeps the distinction inert.
+
 ## `pre-commit`
 
 All twenty run **concurrently**, and a panic in one is isolated so the other

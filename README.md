@@ -157,6 +157,19 @@ writes a tracked file or a directory. The full semantics:
 **Everywhere, forever** — an opt-in, and a real one:
 
 ```sh
+amont enroll --conventions declared
+```
+
+One command per machine: every future `git clone` and `git init` arrives
+with the hooks. `--conventions declared` keeps the house rules (commit
+shapes, branch names, gates) scoped to repositories that commit an
+`amont.conf`, while the safety net — conflict markers, secrets, oversized
+files, debug leftovers — runs everywhere. That split is what makes the
+grant safe on a machine that also clones other people's projects, and it
+is the backbone of [rolling amont out to a team](docs/team-rollout.md).
+The manual spelling:
+
+```sh
 git config --global init.templateDir ~/.config/git/git-templates/templates
 ```
 

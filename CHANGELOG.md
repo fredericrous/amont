@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.7.0 — 2026-08-19
+
+- **The team-rollout story.** Hooks only protect the machines that
+  installed them, and only npm repositories could self-install on clone.
+  Three pieces close the gap:
+  - **`amont enroll`** — the machine-level standing grant as one command:
+    binary, template directory, and `init.templateDir`, refusing to
+    overwrite a template dir that already belongs to something else, and
+    idempotent. Every future `git clone` and `git init` arrives with the
+    hooks; onboarding is two lines, once per machine.
+  - **`amont.conventions declared`** — what makes that grant safe on a
+    machine that also clones other people's projects. The house rules
+    (commit shapes, branch names, lint/format gates, suites, audits,
+    auto-rebase, the `commit-msg`/`prepare-commit-msg` hooks) run only in
+    repositories that commit an `amont.conf` — an empty file declares,
+    and presence executes nothing, so no trust decision is needed. The
+    safety net (`merge-conflict`, `secrets` at both stages,
+    `large-files`, `ban-terms`) runs everywhere. Held-back stages say so
+    in one line; `amont list` reports the state, `--json` carries
+    `"conventions_apply"`. The default, `everywhere`, changes nothing.
+  - **[Rolling out to a team](https://fredericrous.github.io/amont/team-rollout.html)**
+    — the doc chapter: the recipe, and honesty about what stays
+    unsolved (hooks are advisory; the backstop belongs in CI).
+- `amont.largeFileWarn` / `amont.largeFileBlock` are now in the
+  configuration page's key table, where the other keys already were.
+
 ## v1.6.10 — 2026-08-19
 
 - **The Go language track.** Four new checks give Go repositories the same

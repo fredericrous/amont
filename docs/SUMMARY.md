@@ -5,6 +5,7 @@
 # Using amont
 
 - [Installing and activating](install.md)
+- [Rolling out to a team](team-rollout.md)
 - [The checks](checks.md)
 - [Where the hooks fit in your flow](coding-flow.md)
 - [Commit and branch conventions](commit-convention.md)

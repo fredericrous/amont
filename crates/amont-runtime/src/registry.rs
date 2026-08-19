@@ -14,7 +14,9 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use crate::check::{Builtin, Check, Fix, GitState, Outcome, Scope, Severity, Stage, Verdict};
+use crate::check::{
+    Builtin, Check, Fix, GitState, Outcome, Reach, Scope, Severity, Stage, Verdict,
+};
 use crate::pushrefs::PushRefs;
 use crate::{dispatch, hooks};
 
@@ -45,8 +47,22 @@ pub type HookFn = fn(&Ctx) -> Verdict;
 pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("pre-commit", dispatch::pre_commit),
     ("pre-push", dispatch::pre_push),
-    ("commit-msg", |ctx| hooks::commit_msg::run(ctx.args)),
+    // The message hooks are pure convention — a subject shape and a decoration
+    // — so under `amont.conventions declared` they quietly stand down in a
+    // repository that never subscribed. Quietly: the pre-commit stage has
+    // already said, once, that the conventions are held back here; a second
+    // and third line every commit would be the noise that gets amont
+    // uninstalled. post-commit stays: it records, never opines.
+    ("commit-msg", |ctx| {
+        if !dispatch::conventions_apply(ctx.manifest) {
+            return Verdict::Proceed;
+        }
+        hooks::commit_msg::run(ctx.args)
+    }),
     ("prepare-commit-msg", |ctx| {
+        if !dispatch::conventions_apply(ctx.manifest) {
+            return Verdict::Proceed;
+        }
         hooks::prepare_commit_msg::run(ctx.args)
     }),
     ("post-commit", |ctx| hooks::post_commit::run(ctx)),
@@ -89,6 +105,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::k8s::argo_lint(ctx.args),
     },
     Builtin {
@@ -97,6 +114,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::files(hooks::ban_terms::EXTS),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Safety,
         run: |ctx| hooks::ban_terms::run(ctx.name, ctx.args),
     },
     // The push-time contract, said at the first commit — when renaming the
@@ -109,6 +127,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Warn,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |_ctx| hooks::branch_pattern::early(),
     },
     Builtin {
@@ -117,6 +136,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(hooks::rust_tools::EXTS, &["Cargo.toml"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::Rewrite,
+        reach: Reach::Convention,
         run: |ctx| hooks::rust_tools::fmt(ctx.args),
     },
     Builtin {
@@ -125,6 +145,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(hooks::rust_tools::EXTS, &["Cargo.toml"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::rust_tools::clippy(ctx.args),
     },
     Builtin {
@@ -133,6 +154,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::go_tools::vet(ctx.args),
     },
     Builtin {
@@ -141,6 +163,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::Rewrite,
+        reach: Reach::Convention,
         run: |ctx| hooks::go_tools::fmt(ctx.args),
     },
     Builtin {
@@ -153,6 +176,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::k8s::kube_linter(ctx.args),
     },
     Builtin {
@@ -165,6 +189,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::k8s::kubeconform(ctx.args),
     },
     Builtin {
@@ -173,6 +198,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Safety,
         run: |_ctx| hooks::large_files::staged(),
     },
     Builtin {
@@ -181,6 +207,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(hooks::lint_js::EXTS, &["package.json"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::lint_js::run(ctx.args),
     },
     Builtin {
@@ -189,6 +216,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::files(hooks::lint_json_yaml::EXTS).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::lint_json_yaml::run(ctx.args),
     },
     Builtin {
@@ -197,6 +225,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Safety,
         run: |ctx| hooks::merge_conflict::run(ctx.name, ctx.args),
     },
     Builtin {
@@ -205,6 +234,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(&[], &["package.json"]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::package_lock::run(ctx.args),
     },
     Builtin {
@@ -224,6 +254,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::Rewrite,
+        reach: Reach::Convention,
         run: |ctx| hooks::prettier::run(ctx.args),
     },
     Builtin {
@@ -240,6 +271,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::python_tools::pyright(ctx.args),
     },
     Builtin {
@@ -252,6 +284,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::Rewrite,
+        reach: Reach::Convention,
         run: |ctx| hooks::python_tools::ruff(ctx.args),
     },
     // A staged credential is a ten-second fix; a pushed one is an
@@ -263,6 +296,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Safety,
         run: |_ctx| hooks::secrets::staged(),
     },
     Builtin {
@@ -271,6 +305,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::usual_name::run(ctx.args),
     },
     Builtin {
@@ -283,6 +318,7 @@ pub const CHECKS: &[Builtin] = &[
         .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::yamllint::run(ctx.args),
     },
     // ---- pre-push, cheapest and most decisive first ----
@@ -292,6 +328,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::branch_protect::run(ctx.push.get()),
     },
     Builtin {
@@ -300,6 +337,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::branch_pattern::run(ctx.push.get(), ctx.args),
     },
     Builtin {
@@ -308,6 +346,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS,
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Safety,
         run: |ctx| hooks::secrets::pushed(ctx.push.get()),
     },
     Builtin {
@@ -316,6 +355,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::ALWAYS.not_during(&[GitState::Rebase, GitState::Merge]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::pull_rebase::run(ctx.args),
     },
     // The four dependency audits sit between the structural checks and the
@@ -330,6 +370,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(&[], &["go.sum"]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::audit::go(ctx.push.get()),
     },
     Builtin {
@@ -338,6 +379,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(&[], &["package-lock.json"]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::audit::js(ctx.push.get()),
     },
     Builtin {
@@ -346,6 +388,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(&[], &["requirements.txt"]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::audit::python(ctx.push.get()),
     },
     Builtin {
@@ -354,6 +397,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope::new(&[], &["Cargo.lock"]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::audit::rust(ctx.push.get()),
     },
     Builtin {
@@ -363,6 +407,7 @@ pub const CHECKS: &[Builtin] = &[
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::run_tests::run(ctx.push.get(), &ctx.manifest.externals),
     },
     Builtin {
@@ -372,6 +417,7 @@ pub const CHECKS: &[Builtin] = &[
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::rust_tools::test(ctx.push.get()),
     },
     Builtin {
@@ -381,6 +427,7 @@ pub const CHECKS: &[Builtin] = &[
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::go_tools::test(ctx.push.get()),
     },
     Builtin {
@@ -390,6 +437,7 @@ pub const CHECKS: &[Builtin] = &[
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
+        reach: Reach::Convention,
         run: |ctx| hooks::python_tools::pytest(ctx.push.get()),
     },
 ];
@@ -646,7 +694,7 @@ pub fn one_named<'a>(name: &str, manifest: &'a crate::manifest::Manifest) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use super::{lookup, Overrides, Severity, Stage, CHECKS, ENTRYPOINTS};
+    use super::{lookup, Overrides, Reach, Severity, Stage, CHECKS, ENTRYPOINTS};
     use std::collections::BTreeSet;
 
     /// The batch reader must land on the same answer as the authority.
@@ -1018,6 +1066,33 @@ mod tests {
 
     /// The reconciliation tests that used to live here are gone, and that is
     /// the point of the refactor: there is no second table to disagree with.
+    /// The safety net is exactly the checks whose findings are mistakes in
+    /// ANY codebase, with near-zero false positives — a conflict marker, an
+    /// oversized blob, a leaked credential, a debug leftover in YOUR diff.
+    /// Everything else is a house rule, and a house rule must not fire in a
+    /// repository that never subscribed. Growing this list is a decision,
+    /// not a default: lint-json-yaml stays OUT because Helm templates are
+    /// invalid YAML and blocking a contribution to somebody else's chart
+    /// repo is exactly the false positive this split exists to prevent.
+    #[test]
+    fn the_safety_net_is_exactly_the_low_false_positive_set() {
+        let safety: Vec<&str> = CHECKS
+            .iter()
+            .filter(|c| c.reach == Reach::Safety)
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            safety,
+            vec![
+                "pre-commit-ban-terms",
+                "pre-commit-large-files",
+                "pre-commit-merge-conflict",
+                "pre-commit-secrets",
+                "pre-push-secrets",
+            ]
+        );
+    }
+
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
         assert_eq!(CHECKS.len(), 32);
