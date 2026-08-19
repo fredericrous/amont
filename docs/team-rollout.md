@@ -92,8 +92,10 @@ opts into `declared`.
    $ amont enroll --conventions declared
    ```
 2. **Each repository, once ever** (committed, travels with the clone):
-   - commit an `amont.conf` — empty declares; [custom checks](custom-checks.md)
-     and `tool` pins can come later;
+   - commit an `amont.conf` — empty declares; [custom checks](custom-checks.md),
+     [committed policy](custom-checks.md#repo-policy--severity-and-skip-lines)
+     (`severity`/`skip` lines for the built-ins) and `tool` pins can come
+     later;
    - JS repositories additionally get `"prepare": "amont init"` so even an
      unenrolled machine is covered by `npm install`.
 3. **Repositories cloned before enrollment**: `amont init` in one,

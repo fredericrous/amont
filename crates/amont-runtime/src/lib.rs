@@ -40,6 +40,7 @@ pub mod install;
 pub mod json;
 pub mod live;
 pub mod manifest;
+pub mod policy;
 pub mod pushed_tree;
 pub mod pushrefs;
 pub mod registry;
@@ -170,6 +171,10 @@ pub struct CheckListing {
     /// fleet's own severity column (see `amont-fleet/src/severities.rs`).
     pub effective_severity: check::Severity,
     pub severity_overridden: bool,
+    /// Where the winning override came from, only when one applies —
+    /// strictly additive next to `severity_overridden`, whose meaning is
+    /// unchanged.
+    pub severity_source: Option<registry::Source>,
     pub fix: check::Fix,
     pub status: Status,
     /// Empty when `status == Status::Runs`; the same prose the text output
@@ -253,7 +258,19 @@ pub fn gather_checks(
             let (status, reason) = if let Some(w) = unusable_why {
                 (Status::Unusable, format!("{} {w}", manifest::MANIFEST))
             } else if skipped {
-                (Status::Skipped, "skipped via hook.skip".to_string())
+                // Which source? Policy skips read differently from machine
+                // skips — the legend and the fleet detail pane echo this
+                // wording, so the three move together.
+                let via = if policy::current()
+                    .skips
+                    .iter()
+                    .any(|s| skip_suppresses(name, s))
+                {
+                    "skipped via amont.conf"
+                } else {
+                    "skipped via hook.skip"
+                };
+                (Status::Skipped, via.to_string())
             } else if applies {
                 (Status::Runs, String::new())
             } else {
@@ -275,6 +292,10 @@ pub fn gather_checks(
 
             let declared_severity = check.severity();
             let effective_severity = overrides.of(check);
+            let severity_source = overrides
+                .applied_with_source(name)
+                .map(|(_, _, src)| src)
+                .filter(|_| declared_severity != effective_severity);
             out.push(CheckListing {
                 id: name.to_string(),
                 short_name: short_name(name).to_string(),
@@ -287,6 +308,7 @@ pub fn gather_checks(
                 declared_severity,
                 effective_severity,
                 severity_overridden: declared_severity != effective_severity,
+                severity_source,
                 fix: check.fix(),
                 status,
                 reason,
@@ -447,6 +469,10 @@ pub fn print_json(
                 json::string_field("declared_severity", l.declared_severity.as_str()),
                 json::string_field("effective_severity", l.effective_severity.as_str()),
                 json::bool_field("severity_overridden", l.severity_overridden),
+                json::opt_string_field(
+                    "severity_source",
+                    l.severity_source.map(registry::Source::as_str),
+                ),
                 json::string_field("fix", l.fix.as_str()),
                 json::string_field(
                     "status",
@@ -565,6 +591,8 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     // Loaded HERE, with the repository this command is standing in — the
     // owned-manifest shape every entrypoint now follows. See manifest::load.
     let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
+    // INVARIANT: policy installed immediately after every manifest::load.
+    policy::install(manifest.policy.clone());
     let listings = gather_checks(opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
     let conventions_apply = dispatch::conventions_apply(&manifest);
@@ -644,7 +672,21 @@ fn describe(s: crate::check::Scope) -> String {
     }
 }
 
+/// The machine's `hook.skip` entries PLUS the trusted policy's `skip`
+/// lines — the union every resolution site sees. Callers that must tell the
+/// two apart (the dispatcher announces them separately) use
+/// [`skips_by_source`].
 pub fn configured_skips() -> Vec<String> {
+    policy::union_skips(machine_skips(), policy::current())
+}
+
+/// `(machine, policy)` — the split the announcements need: "you decided
+/// this" and "your team decided this" are different things to be told.
+pub fn skips_by_source() -> (Vec<String>, Vec<String>) {
+    (machine_skips(), policy::current().skips.clone())
+}
+
+fn machine_skips() -> Vec<String> {
     let Ok(out) = Command::new("git")
         .args(["config", "--get-all", "hook.skip"])
         .stderr(Stdio::null())

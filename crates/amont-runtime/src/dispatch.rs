@@ -158,18 +158,47 @@ fn announce_skips(dropped: &[&str]) {
     if dropped.is_empty() {
         return;
     }
-    let plural = if dropped.len() == 1 {
-        "check"
-    } else {
-        "checks"
+    // Two lines, not one: "you decided this" (hook.skip on this machine)
+    // and "your team decided this" (a skip line in the committed
+    // amont.conf) are different things to be told — the same reason paused
+    // and held-back get their own sentences. A name both sources suppress
+    // is announced as the machine's: the local decision is the nearer one.
+    let (machine, _policy) = crate::skips_by_source();
+    let (yours, theirs): (Vec<&&str>, Vec<&&str>) = dropped
+        .iter()
+        .partition(|name| machine.iter().any(|s| crate::skip_suppresses(name, s)));
+    let say = |names: &[&&str], via: &str| {
+        if names.is_empty() {
+            return;
+        }
+        let plural = if names.len() == 1 { "check" } else { "checks" };
+        println!(
+            "{} {} {plural} skipped by {}: {}",
+            warning_sign(),
+            names.len(),
+            highlight(via),
+            names.iter().map(|n| **n).collect::<Vec<_>>().join(", ")
+        );
     };
-    println!(
-        "{} {} {plural} skipped by {}: {}",
-        warning_sign(),
-        dropped.len(),
-        highlight("hook.skip"),
-        dropped.join(", ")
-    );
+    say(&yours, "hook.skip");
+    say(&theirs, "amont.conf");
+}
+
+/// Say, once per stage, what the manifest's policy could not do — withheld
+/// behind trust, or aiming at names that exist nowhere. Policy that silently
+/// does not apply is a silent behaviour change, which is the one kind this
+/// codebase does not allow itself.
+fn announce_policy_state(manifest: &crate::manifest::Manifest) {
+    if let Some(why) = manifest.policy_withheld {
+        println!(
+            "{} {} policy not applied: {why}",
+            warning_sign(),
+            highlight(crate::manifest::MANIFEST),
+        );
+    }
+    for note in &manifest.policy_notes {
+        println!("{} {}", warning_sign(), note);
+    }
 }
 
 /// Run every item concurrently and collect `(name, code)` in the INPUT order.
@@ -241,6 +270,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     // Before anything runs: a pinned tool at the wrong version makes every
     // verdict below it suspect, and the warning costs one --version per pin.
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
+    announce_policy_state(ctx.manifest);
     let in_progress = crate::git_states_in_progress();
     let checks = selected_during(Stage::PreCommit, &in_progress, ctx.manifest);
 
@@ -604,6 +634,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         return Verdict::Proceed;
     }
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
+    announce_policy_state(ctx.manifest);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
     let severities = Overrides::read();
     // pre-push had NO state guard at all, with a comment admitting it existed

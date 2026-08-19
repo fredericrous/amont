@@ -736,7 +736,7 @@ fn offer_trust() {
 
     println!();
     println!(
-        "{} {} declares checks that would run on your commits:",
+        "{} {} declares checks and policy that would apply to your commits:",
         warning_sign(),
         crate::manifest::MANIFEST
     );

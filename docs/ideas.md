@@ -49,7 +49,8 @@ be reimplemented as a hook.
 Ask whether it belongs in the binary at all. A check that is right for your
 repository — a house lint, a schema check, a smoke test — can be declared in
 `amont.conf` today, shared with your team by committing it, and skipped or
-downgraded by the same `hook.skip` and `amont.severity` keys as any built-in.
+downgraded by the same `hook.skip` and `amont.severity` keys as any built-in —
+or by committed `severity`/`skip` policy lines in the same file.
 A built-in earns its place by being right for *most* repositories, and by being
 inert in the rest.
 

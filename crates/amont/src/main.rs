@@ -466,6 +466,10 @@ fn run_mode(args: &[OsString]) -> i32 {
     let manifest = amont_runtime::manifest::load(std::path::Path::new(
         &amont_runtime::hooks::common::repo_root(),
     ));
+    // INVARIANT: the policy is installed immediately after EVERY
+    // manifest::load, before any config read in the process — check_timeout
+    // and friends cache on first read.
+    amont_runtime::policy::install(manifest.policy.clone());
     // Resolve a short name to its full id BEFORE the push-ref decision:
     // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`
     // must say so rather than fail on an upstream it was never going to use.
@@ -618,6 +622,10 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     let manifest = amont_runtime::manifest::load(std::path::Path::new(
         &amont_runtime::hooks::common::repo_root(),
     ));
+    // INVARIANT: the policy is installed immediately after EVERY
+    // manifest::load, before any config read in the process — check_timeout
+    // and friends cache on first read.
+    amont_runtime::policy::install(manifest.policy.clone());
     let ctx = registry::Ctx {
         name: hook,
         args,

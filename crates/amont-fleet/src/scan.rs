@@ -61,6 +61,11 @@ impl DeclaredCheck {
 fn declared_checks(repo: &Path) -> Vec<DeclaredCheck> {
     amont_runtime::manifest::read_lines(repo)
         .into_iter()
+        // Only CHECK lines: a tool pin used to fall through `into_parts` as
+        // an error here and count as `broken` in the TUI — a manifest doing
+        // exactly what the docs suggest looked damaged. Policy lines get
+        // their own surfacing (a later change); neither is a check.
+        .filter(|line| line.is_check())
         .map(|line| {
             let (name, stage, parsed) = line.into_parts();
             DeclaredCheck {

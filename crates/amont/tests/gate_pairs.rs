@@ -197,3 +197,38 @@ fn a_dodged_custom_gate_reaches_the_bypass_ledger() {
         .expect("a dodged gate leaves a ledger");
     assert!(ledger.contains(" check"), "{ledger:?}");
 }
+
+/// A committed `severity` line downgrading the commit-time twin removes its
+/// power to vouch: an unstamped gate correctly runs again at push. The
+/// policy weakened the commit side, not the push side.
+#[test]
+fn a_policy_downgraded_pair_cannot_vouch() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "severity pre-commit-check warn\n\
+         pre-commit  check  *.txt  block  node gate.js\n\
+         pre-push    check  *.txt  block  node gate.js\n",
+    );
+    r.commit("chore: pair plus policy");
+    trust_and_install(&r);
+
+    r.stage("a.txt", "hello\n");
+    let out = r.git(&["commit", "-q", "-m", "feat: through a warn gate"]);
+    assert!(out.status.success(), "commit failed");
+    assert_eq!(runs(&r), 1, "the commit-time side still ran");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("gated at commit instead"),
+        "a warn-severity run must not vouch: {out}"
+    );
+    assert_eq!(runs(&r), 2, "the push side ran again");
+}

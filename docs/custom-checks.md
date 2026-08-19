@@ -122,6 +122,41 @@ check — one that reports on every commit and says which line and what was wron
 Silently ignoring it would mean a check somebody committed months ago has never
 run once and nothing ever said so.
 
+## Repo policy — `severity` and `skip` lines
+
+The manifest can also carry the TEAM's decisions about the built-ins, so
+"clippy is warn-only here" is a committed, reviewed line instead of sixty
+people running the same `git config` incantation:
+
+```
+severity  clippy          warn     # runs, reports, does not block — here
+severity  pre-push-pytest block    # and this one always blocks
+skip      yamllint                 # never runs in this repository
+```
+
+Targets use the same three-way naming as `hook.skip` — full id, short name,
+or a whole trigger — and a target that names no check here is reported once
+per run, with its line number, rather than silently doing nothing.
+
+**Trust-gated, like everything else this file says.** Untrusted policy is
+inert and announced (`amont.conf policy not applied: …`) — a repository you
+cloned to read cannot weaken your safety net until you consent, and the
+trust prompt shows the policy lines you are consenting to.
+
+**Precedence is a specificity ladder, per key**: built-in default < system
+config < global config < **policy** < local config < worktree < command
+(`git -c`). Your `git config --global` preferences yield to the team's
+committed decision; your LOCAL config in that repository still beats it —
+the developer owns their machine, and every documented escape hatch keeps
+working. Between DIFFERENT keys naming the same check, key specificity
+decides regardless of source: a policy `severity pre-commit-clippy …`
+outranks a local `amont.severity.pre-commit`, and vice versa a local full id
+outranks a policy trigger. Skips are a union of all sources — nothing can
+un-skip, so there is no conflict to order.
+
+(On a git too old for `--show-scope`, this degrades fail-safe: ALL git
+config beats policy. See [configuration](configuration.md).)
+
 ## What a repository cannot do
 
 **Take a built-in's id.** `pre-push  branch-protect  …` is refused: it would
@@ -138,6 +173,13 @@ one this is.
 **Declare the same id twice.** The second is refused: it could not be addressed
 by `hook.skip` or by a severity override, so it would run anonymously. Two lines
 with the same name on *different* stages are two ids, and both run.
+
+**Grant its own trust, or reach the machine-level knobs.** Policy stops at
+severities and skips: `amont.fix` (rewriting your working tree), the trust
+decision itself, `amont.conventions`, and the observability opt-outs stay
+per-machine — a committed file must not change what already-approved
+commands are permitted to DO, which is a different consent than "I read
+these commands".
 
 **Run before the built-ins.** Externals are appended to each stage, always. A
 third-party command must not be able to delay `pre-push-branch-protect`, and
