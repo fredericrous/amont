@@ -328,6 +328,18 @@ turns on the accurate answer — the suite runs in a throwaway checkout of the
 commits being pushed, and your tree is not touched. It costs a second checkout
 and a build that cannot reuse your `target/` cache, which is why it is opt-in.
 
+### Telling CI about it
+
+The gate stamps above stay local by design — an unsigned note is only as
+honest as whoever can write the ref. Their signed successor can travel:
+with `git config amont.attest true`, a push whose block gates all passed
+leaves an `ssh-keygen`-signed note on each pushed tip in
+`refs/notes/amont-attest` and sends that ref along, and CI may then skip
+the test steps the attestation names — but only for exactly the attested
+tree, and only after the signature verifies. The whole contract, including
+what CI must check and why every failure mode falls back to running the
+tests, lives in [the CI backstop](ci.md#skipping-what-pre-push-already-proved).
+
 ## Adding one
 
 A check is a module plus one registry entry in

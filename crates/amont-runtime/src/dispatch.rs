@@ -597,6 +597,12 @@ pub enum Named {
 }
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
+    // The notes push `attest` makes re-enters this hook; its ref list is only
+    // ever the attest ref, so there is nothing to prove — and proving it
+    // would recurse.
+    if crate::attest::push_guard_active() {
+        return Verdict::Proceed;
+    }
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
     let severities = Overrides::read();
@@ -609,6 +615,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let names: Vec<&str> = pre_push_checks.iter().map(|c| c.name()).collect();
         crate::live::Stage::begin(&names)
     });
+    // What actually PASSED, for the attestation at the bottom. `Warned` and
+    // `Unavailable` stay out — "could not run" is not "passed" — and a
+    // commit-time-gated pair counts, because its stamps say the check ran on
+    // every pushed tree.
+    let mut passed: Vec<String> = Vec::new();
     for (idx, check) in pre_push_checks.iter().enumerate() {
         let _sink = stage.as_ref().map(|s| s.enter(idx));
         let _flush = stage
@@ -634,6 +645,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                         valid_sign(),
                         highlight(&ext.short_name),
                     );
+                    passed.push(check.name().to_string());
                     continue;
                 }
                 crate::hooks::run_tests::PairVerdict::Unstamped(n) => {
@@ -657,7 +669,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             manifest: ctx.manifest,
         };
         match check.run(&sub) {
-            Outcome::Passed => {}
+            Outcome::Passed => passed.push(check.name().to_string()),
             // Announced, never fatal: a check that could not run has not
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
@@ -685,6 +697,18 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 }
             },
         }
+    }
+    // Every block gate passed — say so to CI, if this repository opted in.
+    // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
+    // `ctx.push` may consume stdin, and a disabled repo should leave stdin
+    // exactly as it found it.
+    if !passed.is_empty() && crate::attest::enabled() {
+        let remote = ctx
+            .args
+            .first()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        crate::attest::attest_push(&remote, ctx.push.get(), &passed);
     }
     Verdict::Proceed
 }

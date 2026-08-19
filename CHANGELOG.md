@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.8.0 — 2026-08-19
+
+- **Signed test attestations: CI can skip what pre-push already proved.**
+  With `git config amont.attest true`, a push whose block gates all passed
+  leaves a signed note (`refs/notes/amont-attest`) on each pushed tip and
+  sends the ref along to the remote. The note binds the **tree hash** (the
+  content the gates actually ran against — a reword or tree-preserving
+  rebase keeps its attestation, a single changed byte loses it), the names
+  of the gates that PASSED (`Warned`/`Unavailable` never appear — "could
+  not run" is not "passed"), and the amont version, signed with
+  `ssh-keygen -Y sign` (key: `amont.attestKey`, default
+  `~/.ssh/amont-attest`). CI verifies with stock git + ssh-keygen against a
+  committed `allowed_signers` file and skips a test step only when the
+  attested tree is exactly the tree it checked out AND the step's gate is
+  named — amont itself still does not run in CI. Fail-open in one direction
+  only, same doctrine as the gate stamps: any failure anywhere means CI
+  runs the tests; an attestation can only ever save a redundant run. The
+  four Forgejo CI templates now carry the verify step. Off by default.
+
 ## v1.7.4 — 2026-08-19
 
 - **v1.7.3, delivered** (that tag's builds died on the runners' apt mirror

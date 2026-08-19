@@ -1,0 +1,526 @@
+//! The signed successor to [`crate::gate_stamp`]: an attestation CI can trust.
+//!
+//! `gate_stamp` answers a LOCAL question — "did the push gate already run on
+//! this commit?" — and its notes deliberately never leave the machine, because
+//! an unsigned note is only as honest as whoever can write the ref. This
+//! module answers the REMOTE version of the same question: "may CI skip a
+//! test job because the equivalent gate already passed here?" — and for that
+//! the note has to travel, so it has to be signed.
+//!
+//! Shape of the note, attached to each pushed tip in `refs/notes/amont-attest`:
+//!
+//! ```text
+//! amont-attest-v1
+//! tree <tree the gates ran against>
+//! gates <names of the pre-push checks that PASSED>
+//! amont <version that produced it>
+//!
+//! -----BEGIN SSH SIGNATURE-----
+//! …signature over the four lines above…
+//! -----END SSH SIGNATURE-----
+//! ```
+//!
+//! The signature covers the **tree**, not the commit: tests read content, not
+//! messages, so a reword or a tree-preserving rebase keeps its attestation —
+//! the same reasoning as `gate_stamp`'s tree binding. CI's skip condition is
+//! tree equality with its own checkout plus a valid signature over exactly
+//! that tree, verified with stock `ssh-keygen -Y verify` against an
+//! `allowed_signers` file committed in the consuming repository. amont itself
+//! still never runs in CI (`docs/ci.md`) — CI verifies a document.
+//!
+//! Signing uses `ssh-keygen -Y sign` as a subprocess, like every other tool
+//! this crate talks to. Hand-rolling ed25519 in a zero-dependency crate would
+//! be the one thing worse than a dependency.
+//!
+//! Every failure mode points the same direction as `gate_stamp`'s: no key, a
+//! signer that errors, a note git refused, a notes push the remote rejected —
+//! all mean "no attestation", and no attestation means CI RUNS the tests.
+//! Nothing here can let an untested tree skip CI; it can only cost a
+//! redundant run.
+//!
+//! One sharp edge is the notes push itself: `git push` from inside pre-push
+//! runs pre-push again. The child carries [`PUSH_GUARD`] in its environment
+//! and the dispatcher yields immediately when it sees it — checking a ref
+//! list that is only ever `refs/notes/amont-attest` would be work spent
+//! proving nothing.
+
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+use crate::pushrefs::PushRef;
+
+/// First token of every note body. Versioned like `gate_stamp::FORMAT`: a
+/// future amont that changes the payload bumps this, and CI's verifier reads
+/// an unknown version as "no attestation".
+pub const FORMAT: &str = "amont-attest-v1";
+
+/// The notes ref, spelled the way `git notes --ref` wants it.
+pub const NOTES_REF: &str = "amont-attest";
+
+/// The same ref, fully qualified — the push refspec and `update-ref -d` both
+/// need it.
+pub const NOTES_FULL_REF: &str = "refs/notes/amont-attest";
+
+/// The `ssh-keygen -Y` namespace, on both the signing and verifying side.
+/// Namespaces exist so a signature minted for one purpose cannot be replayed
+/// for another; an `allowed_signers` entry pinned to this namespace accepts
+/// nothing else.
+pub const NAMESPACE: &str = "amont-attest";
+
+/// Environment marker carried by the notes push so the recursive pre-push
+/// invocation stands down. See the module doc.
+pub const PUSH_GUARD: &str = "AMONT_ATTEST_PUSH";
+
+/// The opt-in switch. Off by default: an attestation is a statement to
+/// another system, and amont does not speak for a repository that never
+/// asked it to.
+const TOGGLE: &str = "amont.attest";
+
+/// Where the signing key lives when the repository does not say.
+const KEY_CONFIG: &str = "amont.attestKey";
+const KEY_DEFAULT: &str = ".ssh/amont-attest";
+
+/// Is the recursive-push marker set on THIS invocation?
+pub fn push_guard_active() -> bool {
+    std::env::var_os(PUSH_GUARD).is_some()
+}
+
+/// Has this repository opted in?
+pub fn enabled() -> bool {
+    crate::config::boolean_or(TOGGLE, false)
+}
+
+/// The signing key path: `amont.attestKey`, else `~/.ssh/amont-attest`.
+///
+/// Read like `amont.knownIdentity` is — a raw string through git, unset
+/// collapsing to the default — because a path has no shape git could
+/// validate for us anyway.
+fn key_path() -> Option<PathBuf> {
+    if let Some(k) = crate::git::stdout(&["config", "--get", KEY_CONFIG]) {
+        if !k.is_empty() {
+            return Some(PathBuf::from(k));
+        }
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(KEY_DEFAULT))
+}
+
+/// The exact bytes the signature covers. One datum per line, trailing
+/// newline included — CI reconstructs this from the note text, so the shape
+/// is a contract, not a convenience.
+pub fn payload(tree: &str, gates: &[String]) -> String {
+    format!(
+        "{FORMAT}\ntree {tree}\ngates {}\namont {}\n",
+        gates.join(" "),
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// `ssh-keygen -Y sign` over `payload`, armored signature back. `None` for
+/// every failure — a missing binary, a missing key, a signer that said no —
+/// because an attestation we cannot mint is simply one CI never sees.
+fn sign(payload: &str, key: &std::path::Path) -> Option<String> {
+    use std::io::Write;
+    let mut child = Command::new("ssh-keygen")
+        .args(["-Y", "sign", "-n", NAMESPACE, "-f"])
+        .arg(key)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(payload.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sig = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    sig.starts_with("-----BEGIN SSH SIGNATURE-----")
+        .then_some(sig)
+}
+
+/// `ssh-keygen -Y verify`: is `sig` a valid signature over `payload` by a
+/// `principal` key listed in `allowed_signers` for our namespace?
+///
+/// The runtime never gates on this — CI verifies with its own stock tooling —
+/// but owning the verifying half keeps the roundtrip honest in tests and
+/// gives a future `amont attest verify` its engine.
+pub fn verify(
+    payload: &str,
+    sig: &str,
+    allowed_signers: &std::path::Path,
+    principal: &str,
+) -> bool {
+    use std::io::Write;
+    // -Y verify takes the signature as a FILE; the payload rides stdin.
+    let sig_file = std::env::temp_dir().join(format!(
+        "amont-attest-verify-{}-{:p}.sig",
+        std::process::id(),
+        &sig
+    ));
+    if std::fs::write(&sig_file, format!("{sig}\n")).is_err() {
+        return false;
+    }
+    let ok = (|| {
+        let mut child = Command::new("ssh-keygen")
+            .args(["-Y", "verify", "-n", NAMESPACE, "-I", principal, "-f"])
+            .arg(allowed_signers)
+            .arg("-s")
+            .arg(&sig_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        child.stdin.take()?.write_all(payload.as_bytes()).ok()?;
+        child.wait().ok().map(|s| s.success())
+    })()
+    .unwrap_or(false);
+    let _ = std::fs::remove_file(&sig_file);
+    ok
+}
+
+/// pre-push, after every block gate has passed: attest each pushed tip and
+/// send the notes ref to the remote being pushed.
+///
+/// `gates` is what the dispatcher saw actually PASS — `Warned` and
+/// `Unavailable` never appear in it, because "could not run" is not
+/// "passed". Empty means nothing testlike ran, and an attestation listing
+/// no gates would be a signed way of saying nothing.
+///
+/// Best-effort throughout, and quiet about it: pre-push has already printed
+/// its verdicts, and a push that works minus its CI shortcut is not a
+/// problem anyone needs to solve at push time.
+pub fn attest_push(remote: &str, refs: &[PushRef], gates: &[String]) {
+    if gates.is_empty() || remote.is_empty() || !enabled() {
+        return;
+    }
+    let Some(key) = key_path() else { return };
+    if !key.exists() {
+        crate::config::complain(
+            TOGGLE,
+            &format!("signing key {} does not exist", key.display()),
+            "no attestation (CI will run the tests)",
+        );
+        return;
+    }
+    let mut noted = false;
+    for r in refs {
+        if is_zero(&r.local_oid) {
+            continue; // deleting a ref pushes no code
+        }
+        let spec = format!("{}^{{tree}}", r.local_oid);
+        let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
+            continue;
+        };
+        let body = match sign(&payload(&tree, gates), &key) {
+            Some(sig) => format!("{}\n{sig}", payload(&tree, gates)),
+            None => continue,
+        };
+        if crate::git::succeeds(&[
+            "notes",
+            "--ref",
+            NOTES_REF,
+            "add",
+            "-f",
+            "-m",
+            &body,
+            &r.local_oid,
+        ]) {
+            noted = true;
+        }
+    }
+    if noted && push_notes(remote) {
+        crate::say!(
+            "{} attested {} for CI ({})",
+            crate::ui::valid_sign(),
+            crate::ui::highlight(&gates.join(" ")),
+            NOTES_REF,
+        );
+    }
+}
+
+/// Push the notes ref, marked so the recursive pre-push yields.
+///
+/// Not `git::succeeds` — that helper cannot set an environment variable, and
+/// the guard is the entire point of this wrapper existing.
+fn push_notes(remote: &str) -> bool {
+    let refspec = format!("{NOTES_FULL_REF}:{NOTES_FULL_REF}");
+    Command::new("git")
+        .args(["push", remote, &refspec])
+        .env(PUSH_GUARD, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// A ref oid that is all zeros — git's spelling of "no object" in the
+/// pre-push ref list, for any hash width.
+fn is_zero(oid: &str) -> bool {
+    !oid.is_empty() && oid.bytes().all(|b| b == b'0')
+}
+
+/// uninstall: forget the local ref. The copies already pushed to remotes are
+/// statements we made and stand by; only OUR bookkeeping is removed — the
+/// same line `gate_stamp::forget` draws.
+pub fn forget() {
+    let _ = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Real repositories and real keys: every function here is a conversation
+    /// with git or ssh-keygen, and a mocked conversation tests the one we
+    /// imagined. Same doctrine as `gate_stamp`'s tests.
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("attest-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn repo(name: &str) -> PathBuf {
+        let d = dir(name);
+        git(&d, &["init", "-q", "--template=", "."]);
+        git(&d, &["config", "user.email", "t@t.test"]);
+        git(&d, &["config", "user.name", "t"]);
+        d
+    }
+
+    /// A throwaway ed25519 key plus the `allowed_signers` line CI would
+    /// commit for it, namespace-pinned exactly as the docs instruct.
+    fn keypair(d: &Path) -> (PathBuf, PathBuf) {
+        let key = d.join("attest_key");
+        let ok = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+            .arg(&key)
+            .status()
+            .expect("ssh-keygen must exist for these tests")
+            .success();
+        assert!(ok, "keygen failed");
+        let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = d.join("allowed_signers");
+        std::fs::write(
+            &signers,
+            format!("t@t.test namespaces=\"{NAMESPACE}\" {pubkey}"),
+        )
+        .unwrap();
+        (key, signers)
+    }
+
+    /// The module talks to the repo at the process cwd; serialised against
+    /// every other cwd-moving test via the crate-wide lock.
+    fn in_repo<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        let r = f();
+        std::env::set_current_dir(prev).unwrap();
+        r
+    }
+
+    #[test]
+    fn the_payload_is_the_documented_contract() {
+        let p = payload(
+            "abc123",
+            &["pre-push-pytest".into(), "pre-push-cargo-test".into()],
+        );
+        let lines: Vec<&str> = p.lines().collect();
+        assert_eq!(lines[0], FORMAT);
+        assert_eq!(lines[1], "tree abc123");
+        assert_eq!(lines[2], "gates pre-push-pytest pre-push-cargo-test");
+        assert_eq!(lines[3], format!("amont {}", env!("CARGO_PKG_VERSION")));
+        assert!(
+            p.ends_with('\n'),
+            "CI reconstructs these bytes; the trailing newline is part of them"
+        );
+    }
+
+    #[test]
+    fn sign_verify_roundtrip_and_tamper_rejection() {
+        let d = dir("roundtrip");
+        let (key, signers) = keypair(&d);
+        let p = payload("deadbeef", &["pre-push-pytest".into()]);
+        let sig = sign(&p, &key).expect("signing with a real key succeeds");
+        assert!(verify(&p, &sig, &signers, "t@t.test"));
+        // One byte of the tree changed: the signature must not carry over —
+        // this is the entire difference between this module and gate_stamp.
+        let tampered = payload("deadbeee", &["pre-push-pytest".into()]);
+        assert!(!verify(&tampered, &sig, &signers, "t@t.test"));
+        // The right payload under the wrong principal is also no.
+        assert!(!verify(&p, &sig, &signers, "someone@else.test"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_missing_key_signs_nothing() {
+        assert!(sign("anything", Path::new("/nonexistent/key")).is_none());
+    }
+
+    /// The full journey: a repo with the toggle on pushes, and the BARE
+    /// remote ends up holding a note whose payload verifies and matches the
+    /// pushed tree. This is everything CI relies on, minus CI.
+    #[test]
+    fn an_enabled_push_leaves_a_verifiable_note_on_the_remote() {
+        let d = dir("e2e");
+        let (key, signers) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo("e2e-work");
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let push_ref = PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: head.clone(),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        };
+        in_repo(&work, || {
+            attest_push("origin", &[push_ref], &["pre-push-run-tests-js".into()]);
+        });
+        // The note exists on the REMOTE — the whole point is that it travels.
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]);
+        assert!(!body.is_empty(), "no note reached the remote");
+        let (p, sig) = body
+            .split_once("\n\n")
+            .expect("payload, blank line, signature");
+        let p = format!("{p}\n"); // the blank-line split ate payload's trailing newline
+        assert!(p.starts_with(FORMAT));
+        assert!(
+            p.contains(&format!("tree {tree}")),
+            "attests the pushed tree"
+        );
+        assert!(
+            verify(&p, sig, &signers, "t@t.test"),
+            "the remote copy verifies"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Off by default: a repo that never opted in makes no statement, even
+    /// with everything else in place.
+    #[test]
+    fn no_opt_in_means_no_note() {
+        let d = dir("optout");
+        let (key, _) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo("optout-work");
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let push_ref = PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: head.clone(),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        };
+        in_repo(&work, || {
+            attest_push("origin", &[push_ref], &["pre-push-run-tests-js".into()]);
+        });
+        assert!(
+            git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty(),
+            "an un-opted-in repo attested something"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A deletion pushes no code; an empty gate list says nothing. Neither
+    /// may produce a note even in an enabled repo.
+    #[test]
+    fn deletions_and_empty_gates_attest_nothing() {
+        let d = dir("nothing");
+        let (key, _) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo("nothing-work");
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let deletion = PushRef {
+            local_ref: "(delete)".into(),
+            local_oid: "0".repeat(40),
+            remote_ref: "refs/heads/gone".into(),
+            remote_oid: head.clone(),
+        };
+        let real = PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: head,
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        };
+        in_repo(&work, || {
+            attest_push("origin", &[deletion], &["pre-push-pytest".into()]);
+            attest_push("origin", &[real], &[]);
+        });
+        assert!(git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn zero_oids_of_any_width_are_zero() {
+        assert!(is_zero(&"0".repeat(40)));
+        assert!(is_zero(&"0".repeat(64)));
+        assert!(!is_zero("0a0000"));
+        assert!(!is_zero(""));
+    }
+
+    #[test]
+    fn forget_removes_the_local_ref() {
+        let work = repo("forget");
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        git(
+            &work,
+            &["notes", "--ref", NOTES_REF, "add", "-m", "x", "HEAD"],
+        );
+        in_repo(&work, forget);
+        assert!(git(&work, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
+        let _ = std::fs::remove_dir_all(&work);
+    }
+}
