@@ -6,6 +6,21 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.11.2 — 2026-08-20
+
+- **An attestation no longer vouches for a gate that had nothing to do.**
+  Caught on a real note in the wild: a JS-only push minted
+  `gates … pre-push-cargo-test pre-push-go-test pre-push-pytest`, because a
+  language gate with no files of its language finds no crate/module root and
+  returns `Passed` having run NOTHING. Right for a push gate — there was
+  nothing to object to — and wrong for an attestation. Harmless in a
+  single-language repository, unsound in a mixed one: CI would skip a suite
+  nobody had run on that tree. The attestation now lists only gates whose
+  declared `scope` the push actually touched; unscoped checks (secrets,
+  branch-protect) still count, because they really do run every time, and a
+  push whose changed files cannot be computed vouches for nothing scoped —
+  the direction that makes CI run the suite.
+
 ## v1.11.1 — 2026-08-20
 
 - **`amont attest covered` found no signers from a subdirectory, and said
