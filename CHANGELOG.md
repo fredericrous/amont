@@ -6,6 +6,23 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.13.1 — 2026-08-20
+
+- **`amont agents-md` now writes a CLAUDE.md signpost beside AGENTS.md.**
+  Claude Code loads `CLAUDE.md`; the tool-neutral convention is
+  `AGENTS.md`. A repository carrying only the latter was handing an agent
+  no guidance at all — including this repository, whose block had sat in
+  `AGENTS.md` since August and drifted unnoticed. The guidance still has
+  ONE home; the signpost is a generated, marker-delimited pointer to it,
+  so `--check` reports a stale signpost exactly as it reports a stale
+  block, and `amont-fleet fix --apply --agents-md` writes both. A
+  hand-written "see AGENTS.md" line would have been the one part able to
+  rot in silence; this cannot.
+- The block's timeout paragraph gained one sentence: run `git commit` and
+  `git push` **bare** and check the effect, because trimming their output
+  with `| tail` reports the pipe's exit status and a killed or rejected
+  run then reads as success.
+
 ## v1.13.0 — 2026-08-20
 
 - **"git could not answer" stopped reading as "nothing is stamped".** Four

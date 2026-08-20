@@ -197,6 +197,32 @@ pub fn apply(plan: &FixPlan) -> Outcome {
                 }
             }
         }
+        // The CLAUDE.md signpost is half of the pair — writing the block
+        // without it leaves Claude Code, which loads CLAUDE.md and not
+        // AGENTS.md, seeing no guidance at all. Same re-check-then-write
+        // rule, and `NotPresent` counts as "write it": across the fleet the
+        // signpost is usually the file that does not exist yet.
+        if w.path.file_name().is_some_and(|n| n != "CLAUDE.md") {
+            let pointer = w.path.with_file_name("CLAUDE.md");
+            match amont_runtime::agents_md::check_pointer(&pointer) {
+                Ok(amont_runtime::agents_md::CheckResult::MatchesGenerated) => {}
+                Ok(_) => match amont_runtime::agents_md::write_pointer(&pointer) {
+                    Ok(()) => written += 1,
+                    Err(e) => {
+                        return Outcome::Failed {
+                            error: e,
+                            at: pointer.display().to_string(),
+                        }
+                    }
+                },
+                Err(e) => {
+                    return Outcome::Failed {
+                        error: e,
+                        at: pointer.display().to_string(),
+                    }
+                }
+            }
+        }
     }
 
     Outcome::Applied { removed, written }
@@ -452,14 +478,31 @@ mod tests {
         .unwrap();
 
         let out = apply(&p);
+        // The block was skipped; the SIGNPOST was still missing, so the one
+        // counted write is that — the common state across the fleet, where
+        // AGENTS.md exists and CLAUDE.md does not.
         assert!(
-            matches!(out, Outcome::Applied { written: 0, .. }),
-            "must not count a write it skipped: {out:?}"
+            matches!(out, Outcome::Applied { written: 1, .. }),
+            "the skipped block must not be counted, the signpost must: {out:?}"
         );
         assert_eq!(
             std::fs::read_to_string(abs.join("AGENTS.md")).unwrap(),
             amont_runtime::agents_md::generate_block(),
             "must still be exactly the generated block, not doubled or corrupted"
+        );
+        assert_eq!(
+            std::fs::read_to_string(abs.join("CLAUDE.md")).unwrap(),
+            amont_runtime::agents_md::generate_pointer(),
+            "the signpost is what got written"
+        );
+
+        // And with BOTH current there is genuinely nothing to do — the
+        // original guarantee of this test, now stated for the pair.
+        let p2 = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false);
+        let out2 = apply(&p2);
+        assert!(
+            matches!(out2, Outcome::Applied { written: 0, .. }),
+            "must not count a write it skipped: {out2:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

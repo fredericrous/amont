@@ -59,8 +59,9 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  `run pre-push` for the push gate, or one check by name
                  [--all-files] [--hooks-dir <dir>]
   restore        bring back unstaged changes a killed pre-commit left parked
-  agents-md      write the agent-guidance block [--check: report drift only]
-                 [--path <file>]
+  agents-md      write the agent-guidance block into AGENTS.md, plus the
+                 CLAUDE.md signpost pointing at it (both generated, both
+                 checked) [--check: report drift only] [--path <file>]
   enroll         the machine-level standing grant: every future clone gets
                  the hooks [--conventions declared|everywhere]
   attest         `attest covered` — print the gate names a VALID signed
@@ -635,7 +636,28 @@ fn agents_md(args: &[OsString]) -> i32 {
         }
     };
     if check_only {
-        match amont_runtime::agents_md::check(&path) {
+        // Both files are generated, so both are checked; the worst verdict
+        // wins. A signpost left behind by an older amont is exactly the
+        // silent rot this pair exists to make impossible.
+        let pointer_code = pointer_path(&path).map_or(0, |p| {
+            match amont_runtime::agents_md::check_pointer(&p) {
+                Ok(amont_runtime::agents_md::CheckResult::Drifted) => {
+                    eprintln!(
+                        "{}: signpost drifted from the generated one — run `amont agents-md`",
+                        p.display()
+                    );
+                    1
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+                // NotPresent is not drift: the signpost is opt-in, exactly
+                // as the block it points at is.
+                Ok(_) => 0,
+            }
+        });
+        let block_code = match amont_runtime::agents_md::check(&path) {
             Ok(amont_runtime::agents_md::CheckResult::NotPresent) => {
                 println!(
                     "{}: not present (opt-in — run without --check to add it)",
@@ -658,12 +680,24 @@ fn agents_md(args: &[OsString]) -> i32 {
                 eprintln!("{e}");
                 1
             }
-        }
+        };
+        block_code.max(pointer_code)
     } else {
         match amont_runtime::agents_md::write(&path) {
             Ok(()) => {
                 println!("wrote {}", path.display());
-                0
+                pointer_path(&path).map_or(0, |p| {
+                    match amont_runtime::agents_md::write_pointer(&p) {
+                        Ok(()) => {
+                            println!("wrote {} (signpost)", p.display());
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            1
+                        }
+                    }
+                })
             }
             Err(e) => {
                 eprintln!("{e}");
@@ -671,6 +705,20 @@ fn agents_md(args: &[OsString]) -> i32 {
             }
         }
     }
+}
+
+/// Where the CLAUDE.md signpost goes, given where the block went.
+///
+/// `None` when the block IS `CLAUDE.md` — writing a signpost to the file
+/// that already holds the guidance would replace it with a pointer to
+/// itself. Sits beside the block rather than at the repo root so
+/// `--path docs/AGENTS.md` keeps the pair together and the relative
+/// `[AGENTS.md](AGENTS.md)` link in the signpost stays correct.
+fn pointer_path(block: &std::path::Path) -> Option<PathBuf> {
+    if block.file_name()? == "CLAUDE.md" {
+        return None;
+    }
+    Some(block.with_file_name("CLAUDE.md"))
 }
 
 /// Dispatch a git-invoked hook. `args` is whatever git passed, verbatim.

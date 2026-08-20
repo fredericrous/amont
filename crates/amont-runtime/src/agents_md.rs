@@ -56,7 +56,10 @@ build), and pre-push can run the test suite. Give both commands a timeout\n\
 of at least 10 minutes instead of your tooling's default. A push killed\n\
 mid-suite pushed nothing; a commit killed mid-check committed nothing, and\n\
 your unstaged work stays parked until the next run says how to recover it.\n\
-Neither is the checks failing — it is the timeout.\n\
+Neither is the checks failing — it is the timeout. Run both bare and check\n\
+the effect (`git log --oneline -1`, `git ls-remote origin <branch>`):\n\
+trimming their output with `| tail` reports the pipe's exit status, so a\n\
+killed or rejected run reads as success.\n\
 \n\
 Never bypass with `--no-verify`. To change enforcement, downgrade it\n\
 intentionally instead:\n\
@@ -68,6 +71,28 @@ git config amont.severity.<check-id> warn\n\
 `commit-msg` takes neither `hook.skip` nor a severity override. Write the\n\
 message it asks for, or change what it asks for — `amont setup`, or\n\
 `amont.commit.*` directly.\n\
+{END}\n"
+    )
+}
+
+/// The `CLAUDE.md` pointer, START and END inclusive.
+///
+/// Claude Code loads `CLAUDE.md`; the tool-neutral convention is
+/// `AGENTS.md`. Writing the whole block into both would be two copies to
+/// drift apart, so the guidance keeps ONE home and this is a generated
+/// signpost to it — inside the same markers, so `--check` reports a stale
+/// pointer exactly as it reports a stale block. A hand-written "see
+/// AGENTS.md" line is the one part that could rot silently; this cannot.
+pub fn generate_pointer() -> String {
+    format!(
+        "{START}\n\
+## Git hooks (amont)\n\
+\n\
+This repository enforces pre-commit / pre-push checks that can REJECT a\n\
+commit or a push. What runs, the branch-name rule, and why `git commit`\n\
+and `git push` both need a timeout of at least 10 minutes are in\n\
+[AGENTS.md](AGENTS.md) — read it before committing. Both files are\n\
+generated: run `amont agents-md` after changing either.\n\
 {END}\n"
     )
 }
@@ -113,14 +138,27 @@ fn marker_range(text: &str) -> Result<Option<Range<usize>>, MarkerState> {
 ///   untouched; the marked span is replaced.
 /// - markers malformed (exactly one present, or out of order) → refused.
 pub fn desired_file_content(existing: &str) -> Result<String, MarkerState> {
+    desired_with(existing, &generate_block())
+}
+
+/// The same splice, for the pointer.
+pub fn desired_pointer_content(existing: &str) -> Result<String, MarkerState> {
+    desired_with(existing, &generate_pointer())
+}
+
+/// The splice itself, with the text to splice as a parameter — block and
+/// pointer differ only in what goes between the markers, and two copies of
+/// this logic would be two places for the "append vs replace" rules to
+/// disagree.
+fn desired_with(existing: &str, block: &str) -> Result<String, MarkerState> {
     match marker_range(existing)? {
         Some(range) => Ok(format!(
             "{}{}{}",
             &existing[..range.start],
-            generate_block(),
+            block,
             &existing[range.end..]
         )),
-        None if existing.is_empty() => Ok(generate_block()),
+        None if existing.is_empty() => Ok(block.to_string()),
         None => {
             let sep = if existing.ends_with("\n\n") {
                 ""
@@ -129,14 +167,23 @@ pub fn desired_file_content(existing: &str) -> Result<String, MarkerState> {
             } else {
                 "\n\n"
             };
-            Ok(format!("{existing}{sep}{}", generate_block()))
+            Ok(format!("{existing}{sep}{block}"))
         }
     }
 }
 
 pub fn write(path: &Path) -> Result<(), String> {
+    write_with(path, &generate_block())
+}
+
+/// Write the CLAUDE.md signpost.
+pub fn write_pointer(path: &Path) -> Result<(), String> {
+    write_with(path, &generate_pointer())
+}
+
+fn write_with(path: &Path, block: &str) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let content = desired_file_content(&existing).map_err(|_| {
+    let content = desired_with(&existing, block).map_err(|_| {
         format!(
             "{}: has an unpaired amont marker — fix or remove it by hand, \
              then re-run `amont agents-md`",
@@ -159,6 +206,15 @@ pub enum CheckResult {
 }
 
 pub fn check(path: &Path) -> Result<CheckResult, String> {
+    check_with(path, &generate_block())
+}
+
+/// Is the CLAUDE.md signpost the one this binary generates?
+pub fn check_pointer(path: &Path) -> Result<CheckResult, String> {
+    check_with(path, &generate_pointer())
+}
+
+fn check_with(path: &Path, block: &str) -> Result<CheckResult, String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     match marker_range(&existing) {
         Err(_) => Err(format!(
@@ -167,7 +223,7 @@ pub fn check(path: &Path) -> Result<CheckResult, String> {
         )),
         Ok(None) => Ok(CheckResult::NotPresent),
         Ok(Some(range)) => {
-            if existing[range] == generate_block() {
+            if &existing[range] == block {
                 Ok(CheckResult::MatchesGenerated)
             } else {
                 Ok(CheckResult::Drifted)
@@ -183,6 +239,33 @@ mod tests {
     #[test]
     fn no_file_produces_just_the_block() {
         assert_eq!(desired_file_content("").unwrap(), generate_block());
+    }
+
+    /// The signpost is generated and self-checking — the whole reason it is
+    /// a marked block rather than a hand-written "see AGENTS.md" line, which
+    /// would be the one part of the pair able to rot in silence.
+    #[test]
+    fn the_pointer_is_generated_and_therefore_checkable() {
+        let p = generate_pointer();
+        assert!(p.starts_with(START) && p.ends_with(&format!("{END}\n")));
+        assert!(p.contains("AGENTS.md"), "it has to name where to look");
+        assert_ne!(p, generate_block(), "a signpost, not a second copy");
+        assert!(
+            !p.contains("amont list --json"),
+            "the registry command lives in ONE place; duplicating it here is \
+             the drift this design avoids"
+        );
+        // Round-trips through the same splice as the block: appended to a
+        // repo's existing CLAUDE.md, then replaced in place next time.
+        let existing = "# Notes\n\nsomething the repo wrote\n";
+        let once = desired_pointer_content(existing).unwrap();
+        assert!(once.starts_with(existing), "never touches what was there");
+        assert!(once.ends_with(&p));
+        assert_eq!(
+            desired_pointer_content(&once).unwrap(),
+            once,
+            "re-running is a no-op, so `--check` can be trusted"
+        );
     }
 
     #[test]
