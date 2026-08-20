@@ -352,6 +352,22 @@ cannot even read is named too, rather than passed over in silence. `hook.skip`
 and `amont.severity` are never touched, because those are your statements
 about your repository, not ours.
 
+It does forget **its own bookkeeping**, and says which parts it forgot: the
+gate stamps and attestation notes, the bypass ledger, the version-skew
+marker, the known-identity memo — each of which only ever said "amont
+checked this", which stops being true once the hooks are gone — and the
+`amont.conf` trust record. That last one is a deliberate choice: trust is
+consent for a committed file to run commands, and uninstalling is a request
+to stop running them, so a later reinstall asks again rather than silently
+re-honouring a review from a year ago. Re-granting is one `amont trust`,
+which shows you the file. `amont-fleet uninstall` now does the same sweep in
+every repository it disarms, instead of leaving that bookkeeping behind in
+all of them.
+
+What no uninstall ever touches is **work you have not committed**: an
+interrupted run's parked changes stay in `$GIT_DIR/amont-held`, and
+`amont restore` keeps working after the hooks are gone.
+
 It also takes the shims back out of the template directory, and — if
 `init.templateDir` is still set — says so loudly, with the command to unset it.
 Without that, an uninstall you believed had finished would leave every future

@@ -326,6 +326,7 @@ fn main() -> ExitCode {
     if args.mode == Mode::Uninstall {
         let mut removed = 0usize;
         let mut repos = 0usize;
+        let mut forgotten = 0usize;
         let mut left: Vec<(PathBuf, amont_runtime::hookfile::Refuse)> = Vec::new();
         let mut failed: Vec<(PathBuf, std::io::Error)> = Vec::new();
         for repo in scan.repos.iter().filter(|r| r.managed) {
@@ -341,10 +342,34 @@ fn main() -> ExitCode {
                 removed += result.removed.len();
                 println!("  {} {} shims", shown(&repo.path), result.removed.len());
             }
+            // Only where shims actually came out: a repository we could not
+            // disarm keeps its stamps, because those stamps are still true.
+            // Bookkeeping is swept by the RUNTIME's own list, not a second
+            // one here that could fall behind it.
+            if !result.removed.is_empty() {
+                // `repo.path` is relative to the scan root (it is what a human
+                // recognises in a report); every git command here needs the
+                // real one, or `git -C` resolves against this process's cwd
+                // and silently forgets nothing at all.
+                let gone =
+                    amont_runtime::install::forget_bookkeeping_in(&args.root.join(&repo.path));
+                if !gone.is_empty() {
+                    forgotten += 1;
+                    println!("    forgot {}", gone.join(", "));
+                }
+            }
             left.append(&mut result.left);
             failed.append(&mut result.failed);
         }
         println!("{removed} shims removed from {repos} repositories");
+        if forgotten > 0 {
+            // Named, not silent: revoking trust and deleting a stamp ref are
+            // real changes to a repository, and the fleet does them 200 times.
+            println!(
+                "amont's own bookkeeping (stamps, ledgers, trust) forgotten in \
+                 {forgotten} repositories"
+            );
+        }
         // Both blocks are printed even when empty-adjacent, because the whole
         // bug was that neither existed: three different failures collapsed into
         // one silent skip and the summary said `0 shims removed from 0
@@ -372,7 +397,7 @@ fn main() -> ExitCode {
                 );
             }
         }
-        println!("hook.skip and amont.severity were left alone.");
+        println!("hook.skip and amont.severity were left alone, as was any held work.");
         // A shim that is still installed and still running, after the user
         // asked for it to be gone, is not a success.
         return if failed.is_empty() {

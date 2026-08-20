@@ -299,10 +299,22 @@ fn now_epoch() -> u64 {
 }
 
 /// uninstall: the ledger is OUR bookkeeping, gone with the hooks.
-pub fn forget() {
-    if let Some(path) = ledger_path() {
-        let _ = std::fs::remove_file(&path);
-    }
+pub fn forget() -> bool {
+    ledger_path().is_some_and(|path| std::fs::remove_file(&path).is_ok())
+}
+
+/// The same, for a repository this process is not standing in — what the
+/// fleet needs, and it must resolve the path the way git would THERE:
+/// `--git-common-dir` differs per repository, and a linked worktree's
+/// ledger lives with its main checkout.
+pub fn forget_in(repo: &Path) -> bool {
+    let Some(dir) = crate::git::stdout_in(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) else {
+        return false;
+    };
+    std::fs::remove_file(Path::new(&dir).join(LEDGER)).is_ok()
 }
 
 #[cfg(test)]

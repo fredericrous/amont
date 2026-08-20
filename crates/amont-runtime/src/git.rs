@@ -68,6 +68,22 @@ pub fn stdout_in(dir: &std::path::Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// [`succeeds`] for a repository this process is not standing in — the shape
+/// the fleet needs to UNDO something (delete a ref it wrote) rather than ask
+/// about it. Output discarded; `false` covers "git could not run" too.
+pub fn succeeds_in(dir: &std::path::Path, args: &[&str]) -> bool {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    retrying(|| cmd.status())
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// stdout of a git command that itself reads a list from stdin — `diff-tree
 /// --stdin`, fed a list of commits, is the only caller today. Lossy but
 /// untrimmed: every line is a path, and the caller trims those itself.

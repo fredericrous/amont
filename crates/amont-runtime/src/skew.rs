@@ -125,10 +125,16 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// uninstall: the marker is OUR bookkeeping, gone with the hooks.
-pub fn forget() {
-    if let Some(path) = marker_path() {
-        let _ = std::fs::remove_file(&path);
-    }
+pub fn forget() -> bool {
+    marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok())
+}
+
+/// The same, for a repository this process is not standing in.
+pub fn forget_in(repo: &std::path::Path) -> bool {
+    let Some(dir) = crate::git::stdout_in(repo, &["rev-parse", "--absolute-git-dir"]) else {
+        return false;
+    };
+    std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok()
 }
 
 #[cfg(test)]

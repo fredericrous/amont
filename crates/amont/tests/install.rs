@@ -1368,3 +1368,75 @@ fn path_with(dir: &str) -> std::ffi::OsString {
     dirs.extend(std::env::split_paths(&inherited));
     std::env::join_paths(dirs).expect("join PATH")
 }
+
+/// Trust is CONSENT to run commands a file names, and uninstall is a request
+/// to stop running them. Keeping the record would re-honour that consent
+/// silently on the next install — for bytes reviewed once, long ago.
+#[test]
+fn uninstall_revokes_trust_and_keeps_the_users_own_work() {
+    let s = Sandbox::new("uninstall-trust");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    assert_eq!(s.install(&repo).0, 0);
+    std::fs::write(repo.join("amont.conf"), "skip yamllint\n").expect("write manifest");
+    assert_eq!(run_verb(&s, &repo, &["trust"]).0, 0);
+    let trusted = |what: &str| -> String {
+        String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["config", "--local", "--get", what])
+                .output()
+                .expect("git")
+                .stdout,
+        )
+        .trim()
+        .to_string()
+    };
+    assert!(
+        !trusted("amont.trusted").is_empty(),
+        "fixture: trust granted"
+    );
+
+    // Work parked by an interrupted run, and a hook somebody else wrote.
+    let git_dir = repo.join(".git");
+    std::fs::create_dir_all(git_dir.join("amont-held")).expect("mkdir");
+    std::fs::write(git_dir.join("amont-held/index"), b"amont-held-v1\0").expect("write");
+
+    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        trusted("amont.trusted").is_empty(),
+        "trust survived uninstall — a reinstall would re-honour it:\n{out}"
+    );
+    assert!(
+        out.contains("forgot") && out.contains("trust"),
+        "what was forgotten must be said out loud:\n{out}"
+    );
+    assert!(
+        git_dir.join("amont-held/index").exists(),
+        "uninstall deleted PARKED WORK — the one thing it must never touch:\n{out}"
+    );
+    // The manifest itself is the repository's file, not ours.
+    assert!(repo.join("amont.conf").exists(), "{out}");
+}
+
+/// The ledger and stamp marker are bookkeeping about hooks that are leaving.
+#[test]
+fn uninstall_forgets_its_own_bookkeeping() {
+    let s = Sandbox::new("uninstall-bookkeeping");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    assert_eq!(s.install(&repo).0, 0);
+    let git_dir = repo.join(".git");
+    std::fs::write(git_dir.join("amont-bypasses"), "amont-bypasses-v1\n").expect("write");
+    std::fs::write(git_dir.join("amont-skew"), "amont-skew-v1\n1.0.0\n").expect("write");
+
+    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !git_dir.join("amont-bypasses").exists(),
+        "the bypass ledger outlived the hooks it describes:\n{out}"
+    );
+    assert!(!git_dir.join("amont-skew").exists(), "{out}");
+}
