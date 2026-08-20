@@ -79,6 +79,12 @@ pub fn record(scripts: &[&str]) {
     // `GIT_INDEX_FILE`, so `git commit -a`'s temporary index answers here
     // too. Pure read of the index: writes objects, touches no ref.
     let Some(tree) = crate::git::stdout(&["write-tree"]) else {
+        // Not "nothing ran": git could not name the tree, so nothing may be
+        // vouched for. Dropping the marker is the fail-safe half (the gate
+        // re-runs at push); saying so is the half that was missing.
+        crate::hooks::common::warn(
+            "git would not name the staged tree — this commit records no gate stamp",
+        );
         let _ = std::fs::remove_file(&path);
         return;
     };
@@ -120,6 +126,9 @@ pub fn bind_to_head() -> Vec<String> {
         return Vec::new();
     }
     let Some(head_tree) = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]) else {
+        crate::hooks::common::warn(
+            "git would not name this commit's tree — no gate stamp was written",
+        );
         return Vec::new();
     };
     // A different tree means this commit is not the one pre-commit judged —
@@ -131,7 +140,12 @@ pub fn bind_to_head() -> Vec<String> {
     if !crate::git::succeeds(&[
         "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, "HEAD",
     ]) {
-        return Vec::new(); // a note git refused is not a stamp
+        // A note git refused is not a stamp — and the push will re-run these
+        // checks, which is right but looks arbitrary unless it is said.
+        crate::hooks::common::warn(
+            "git refused to write the gate stamp — these checks will run again at push",
+        );
+        return Vec::new();
     }
     scripts.iter().map(|s| s.to_string()).collect()
 }
@@ -147,7 +161,19 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
         return out;
     }
     let Some(list) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "list"]) else {
-        return out; // no ref yet: nothing is stamped
+        // NOT the absent-ref case, whatever an older comment here claimed:
+        // `notes list` exits 0 with empty output when the ref does not exist,
+        // so that arrives as `Some("")` and falls through as "nothing is
+        // stamped" — correctly. Reaching HERE means git could not answer at
+        // all. Same verdict (the gates re-run: never skip work on a question
+        // we could not ask), different sentence, because a transient git
+        // failure that reads as "nothing is stamped" is indistinguishable
+        // from the real thing — which is exactly how one flaky spawn cost a
+        // day of not-diagnosing.
+        crate::hooks::common::warn(
+            "git would not list the gate stamps — every gated check will run again",
+        );
+        return out;
     };
     let noted: HashSet<&str> = list
         .lines()
@@ -355,6 +381,28 @@ mod tests {
                 stamps_for(std::slice::from_ref(&head)).is_empty(),
                 "a note without the format token was trusted"
             );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An absent notes ref is `Some("")`, not `None` — the distinction the
+    /// warning on that branch depends on. If git ever starts failing here
+    /// instead, this test fails and the warning stops being a lie.
+    #[test]
+    fn a_repo_with_no_stamps_answers_emptily_rather_than_failing() {
+        let dir = repo("no-stamps");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "chore: a"]);
+        in_repo(&dir, || {
+            assert_eq!(
+                crate::git::stdout(&["notes", "--ref", NOTES_REF, "list"]).as_deref(),
+                Some(""),
+                "an absent notes ref must be an ANSWER, not a failure — the \
+                 no-stamps path and the git-is-broken path are told apart by it"
+            );
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(stamps_for(&[head]).is_empty());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
