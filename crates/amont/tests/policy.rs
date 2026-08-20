@@ -301,3 +301,97 @@ fn degraded_git_lets_all_config_beat_policy() {
     );
     assert_ne!(code, 0, "degraded mode: global config beats policy: {out}");
 }
+
+/// `set` ships a threshold: a 2 MB file warns under a committed 1 MB line.
+#[test]
+fn a_set_line_ships_a_threshold() {
+    let r = Repo::new();
+    manifest(&r, "set largeFileWarn 1\n");
+    let big = vec![b'x'; 2 * 1024 * 1024];
+    std::fs::write(r.path("blob.bin"), &big).unwrap();
+    r.git(&["add", "blob.bin"]);
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "warn tier does not block: {}", run.stdout);
+    assert!(run.says("blob.bin"), "the file is named: {}", run.stdout);
+}
+
+/// Local config still beats a committed threshold.
+#[test]
+fn local_config_beats_a_set_line() {
+    let r = Repo::new();
+    manifest(&r, "set largeFileWarn 1\n");
+    r.git(&["config", "amont.largeFileWarn", "1000"]);
+    let big = vec![b'x'; 2 * 1024 * 1024];
+    std::fs::write(r.path("blob.bin"), &big).unwrap();
+    r.git(&["add", "blob.bin"]);
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(
+        !run.says("blob.bin"),
+        "the local 1000 MB threshold wins: {}",
+        run.stdout
+    );
+}
+
+/// Commit style travels: a committed subjectMax reaches commit-msg — a
+/// SEPARATE process, which is what the install-at-every-load invariant buys.
+#[test]
+fn a_set_line_reaches_commit_msg() {
+    let r = Repo::new();
+    manifest(&r, "set commit.subjectMax 20\n");
+    let msg = r.path("msg.txt");
+    std::fs::write(&msg, "feat: much too long for twenty\n").unwrap();
+    let run = r.hook("commit-msg", &[msg.to_str().unwrap()]);
+    assert!(!run.passed(), "20-char budget enforced: {}", run.stdout);
+
+    std::fs::write(&msg, "feat: short\n").unwrap();
+    let run = r.hook("commit-msg", &[msg.to_str().unwrap()]);
+    assert!(run.passed(), "{}", run.stdout);
+}
+
+/// Untrusted `set` lines are inert like every other policy line.
+#[test]
+fn an_untrusted_set_line_is_inert() {
+    let r = Repo::new();
+    r.stage("amont.conf", "set commit.subjectMax 20\n");
+    let msg = r.path("msg.txt");
+    std::fs::write(&msg, "feat: much too long for twenty\n").unwrap();
+    let run = r.hook("commit-msg", &[msg.to_str().unwrap()]);
+    assert!(
+        run.passed(),
+        "untrusted policy must not bind: {}",
+        run.stdout
+    );
+}
+
+/// A key policy may not reach is a loud, positioned gap — `fix` above all,
+/// because a committed file must not change what trusted commands may DO.
+#[test]
+fn an_unsettable_key_is_a_positioned_gap() {
+    let r = Repo::new();
+    manifest(&r, "set fix true\n");
+    r.stage("a.txt", "x\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(
+        run.says("not a policy-settable key"),
+        "the refusal is named: {}",
+        run.stdout
+    );
+}
+
+/// The display tells the truth: a policy-supplied value shows its origin.
+#[test]
+fn list_shows_the_policy_scope_for_settings() {
+    let r = Repo::new();
+    manifest(&r, "set commit.subjectMax 50\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("list")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont list");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("(amont.conf)"), "{text}");
+    assert!(text.contains("50"), "{text}");
+}

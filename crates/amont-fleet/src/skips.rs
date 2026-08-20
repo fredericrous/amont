@@ -111,7 +111,7 @@ pub fn read(repo: &Path) -> Vec<SkipEntry> {
     else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&out.stdout)
+    let mut entries: Vec<SkipEntry> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             // `file:/path/to/config\tvalue`
@@ -126,7 +126,25 @@ pub fn read(repo: &Path) -> Vec<SkipEntry> {
                 suppresses: suppressed_by(value),
             })
         })
-        .collect()
+        .collect();
+    // The committed policy's skips, shown under their own origin — and only
+    // when TRUSTED, because untrusted policy does not run and a dashboard
+    // showing it as active would report a suppression the dispatcher never
+    // applies. The runtime's own parse, never a second one.
+    if amont_runtime::trust::state(repo) == amont_runtime::trust::State::Trusted {
+        let lines = amont_runtime::manifest::read_lines(repo);
+        let (policy, _notes) = amont_runtime::policy::Policy::from_lines(&lines);
+        for value in policy.skips {
+            entries.push(SkipEntry {
+                suppresses: suppressed_by(&value),
+                scope: Scope::Other {
+                    origin: "amont.conf".to_string(),
+                },
+                value,
+            });
+        }
+    }
+    entries
 }
 
 #[cfg(test)]

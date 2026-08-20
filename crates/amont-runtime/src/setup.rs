@@ -58,6 +58,15 @@ struct Answer {
 }
 
 pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
+    // INVARIANT: policy installed immediately after every manifest::load —
+    // setup DISPLAYS effective values, and without the policy it would show
+    // pre-policy state as "current" and offer to re-write it. What setup
+    // WRITES is --local/--global git config, so the ladder stays correct
+    // either way; only the display needed the truth.
+    if let Ok(root) = crate::hooks::common::repo_root_checked() {
+        let manifest = crate::manifest::load(std::path::Path::new(&root));
+        crate::policy::install(manifest.policy.clone());
+    }
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let asked_local = args.iter().any(|a| a == "--local");
     let asked_global = args.iter().any(|a| a == "--global");

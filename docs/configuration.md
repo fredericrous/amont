@@ -26,14 +26,17 @@ skipping `lint-js` leaves `lint-json-yaml` alone — a skip can never silently
 couple two checks whose names happen to share a prefix.
 
 **Where committed policy sits.** A trusted `amont.conf` can carry
-[`severity` and `skip` lines](custom-checks.md#repo-policy--severity-and-skip-lines).
+[`severity`, `skip`, and `set` lines](custom-checks.md#repo-policy--severity-skip-and-set-lines).
 For one key, the ladder is: built-in default < system < global < **policy** <
 local < worktree < command — the team's committed decision beats your global
 preferences, and your local config in that repository beats the team. Between
 different keys naming the same check, specificity (full id > short name >
 trigger) decides regardless of source. Skips union across every source. On a
 git too old for `--show-scope` (< 2.26) this degrades fail-safe to "all git
-config beats policy".
+config beats policy". A `set` line reaches an allowlist of the keys on this
+page — the thresholds, commit style, `autoRebase`, `timeout`,
+`testPushedTree` — and never `fix`, `trusted`, `conventions`, or the
+observability opt-outs, which stay per-machine.
 
 ## `hook.skip` — do not run it
 

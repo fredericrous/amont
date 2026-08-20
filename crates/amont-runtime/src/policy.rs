@@ -34,11 +34,15 @@ pub struct Policy {
     pub severities: Vec<(String, Severity)>,
     /// Skip targets, resolved by the same three-way naming `hook.skip` uses.
     pub skips: Vec<String>,
+    /// Committed defaults for allowlisted config keys, by FULL git key
+    /// (`amont.timeout`). Values are raw strings — GIT parses them at read
+    /// time (`config::typed_literal`), so no second config dialect exists.
+    pub settings: std::collections::BTreeMap<String, String>,
 }
 
 impl Policy {
     pub fn is_empty(&self) -> bool {
-        self.severities.is_empty() && self.skips.is_empty()
+        self.severities.is_empty() && self.skips.is_empty() && self.settings.is_empty()
     }
 
     /// Collect the policy from parsed lines, and say which targets name
@@ -72,11 +76,19 @@ impl Policy {
             };
             let target = match what {
                 PolicyLine::Severity { target, .. } | PolicyLine::Skip { target } => target,
+                PolicyLine::Set { key, value } => {
+                    // Allowlisted at parse; later lines overwrite earlier
+                    // ones, the same rule config itself applies.
+                    policy.settings.insert(key.clone(), value.clone());
+                    continue;
+                }
             };
             if !names_something(target) {
                 let kind = match what {
                     PolicyLine::Severity { .. } => "severity",
                     PolicyLine::Skip { .. } => "skip",
+                    // Set lines took the `continue` above; unreachable here.
+                    PolicyLine::Set { .. } => unreachable!("set lines have no target"),
                 };
                 notes.push(format!(
                     "{}:{lineno}: {kind} {target:?} names no check here",
@@ -89,6 +101,7 @@ impl Policy {
                     policy.severities.push((target.clone(), *severity));
                 }
                 PolicyLine::Skip { target } => policy.skips.push(target.clone()),
+                PolicyLine::Set { .. } => unreachable!("set lines have no target"),
             }
         }
         (policy, notes)
@@ -112,6 +125,7 @@ pub fn current() -> &'static Policy {
     static EMPTY: Policy = Policy {
         severities: Vec::new(),
         skips: Vec::new(),
+        settings: std::collections::BTreeMap::new(),
     };
     POLICY.get().unwrap_or(&EMPTY)
 }
@@ -200,6 +214,7 @@ mod tests {
         let p = Policy {
             severities: Vec::new(),
             skips: vec!["yamllint".into(), "clippy".into()],
+            settings: std::collections::BTreeMap::new(),
         };
         let got = union_skips(vec!["clippy".into()], &p);
         assert_eq!(got, vec!["clippy".to_string(), "yamllint".to_string()]);

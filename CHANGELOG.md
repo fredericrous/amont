@@ -6,6 +6,28 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.9.0 — 2026-08-20
+
+- **The manifest carries the team's policy.** A trusted `amont.conf` can now
+  say `severity clippy warn`, `skip yamllint`, and `set commit.subjectMax 50`
+  — committed, reviewed lines instead of sixty people running the same
+  `git config` incantation. Trust-gated like everything else in that file:
+  untrusted policy is inert and says so once per run, and the trust prompt
+  shows the policy you are consenting to. Precedence is a specificity
+  ladder per key — default < system < global < **policy** < local <
+  worktree < command — so the team's decision beats your global
+  preferences and your local config in that repository still beats the
+  team. Skips union across all sources and announce their origin
+  separately ("by hook.skip" vs "by amont.conf"). `set` reaches an
+  allowlist only (thresholds, commit style, `autoRebase`, `timeout`,
+  `testPushedTree`) — never `amont.fix` or the trust decision itself,
+  because a committed file must not change what already-approved commands
+  may DO. `amont list` (and `--json`, additively) now names each
+  severity's source; the fleet dashboard shows policy rows with origin
+  `amont.conf`, folded into the same ladder the dispatcher uses. On a git
+  too old for `--show-scope` (< 2.26) precedence degrades fail-safe: all
+  git config beats policy.
+
 ## v1.8.0 — 2026-08-19
 
 - **Signed test attestations: CI can skip what pre-push already proved.**

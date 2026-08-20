@@ -316,6 +316,10 @@ drifted merely because `__AMONT_BIN__` was replaced.
   the last — so a local `block` beats a global `warn`. Counting every entry made
   the column report a downgrade that never happens; the shadowed entry is still
   shown in the detail pane, marked `overridden`, because somebody wrote it.
+  A trusted `amont.conf` contributes rows too — its skips and severity lines
+  appear with origin `amont.conf`, folded into the same ladder the dispatcher
+  uses (policy above global, below local), so a policy `warn` a local config
+  re-blocks is shown but not counted.
 - `SKIPS` and `WARN` are deliberately two columns, not one total. A skipped check
   does not run; a downgraded one runs, prints its failure, and lets the commit
   through. Summing them would hide the second — which is the one that looks like
