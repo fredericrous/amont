@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.13.2 — 2026-08-20
+
+- **The generated block is Prettier-clean, so amont stops contradicting
+  itself.** amont ships `pre-commit-prettier`, and its own `AGENTS.md` /
+  `CLAUDE.md` failed it: Prettier wants a blank line after an opening HTML
+  comment, `_emphasis_` rather than `*emphasis*`, and a blank line before a
+  closing one. Every JS repository was therefore stuck between two amont
+  checks — and `prettier --write` on a generated file is exactly what
+  `agents-md --check` then reports as drift, so satisfying one check
+  created the drift the other exists to prevent. The generator now emits
+  what Prettier wants; a unit test pins all three rules, and the real
+  `prettier --check` was run against both files to confirm.
+
 ## v1.13.1 — 2026-08-20
 
 - **`amont agents-md` now writes a CLAUDE.md signpost beside AGENTS.md.**
