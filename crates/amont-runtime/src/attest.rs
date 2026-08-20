@@ -638,8 +638,24 @@ mod tests {
             ],
         );
         in_repo(&clone, || {
+            let got = covered(&signers, "t@t.test");
+            if got.is_none() {
+                // Windows-only diagnosis aid: which link of the chain broke?
+                let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
+                let fetched = crate::git::succeeds(&["fetch", "origin", &refspec]);
+                let note = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", "HEAD"]);
+                let tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
+                println!("covered diagnostics: fetched={fetched} tree={tree:?} note={note:?}");
+                if let Some(body) = &note {
+                    if let Some((p, s)) = split_note(body) {
+                        println!("split ok; verify={}", verify(&p, &s, &signers, "t@t.test"));
+                    } else {
+                        println!("split_note failed on body bytes {:?}", body.as_bytes());
+                    }
+                }
+            }
             assert_eq!(
-                covered(&signers, "t@t.test").as_deref(),
+                got.as_deref(),
                 Some("pre-push-pytest"),
                 "a fresh clone verifies the attestation and reads the gates"
             );
