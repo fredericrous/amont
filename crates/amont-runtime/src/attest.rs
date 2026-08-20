@@ -605,6 +605,12 @@ mod tests {
         let remote = d.join("remote.git");
         std::fs::create_dir_all(&remote).unwrap();
         git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        // The fixture pushes to `main`; a bare init on a machine whose
+        // init.defaultBranch is the historical default leaves HEAD on
+        // `master`, and a clone of that repository checks out NOTHING —
+        // `covered` then answers None with a perfectly good note sitting in
+        // the ref. Caught only in CI: dev machines set main globally.
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         let work = repo("covered-work");
         git(
             &work,
@@ -638,24 +644,8 @@ mod tests {
             ],
         );
         in_repo(&clone, || {
-            let got = covered(&signers, "t@t.test");
-            if got.is_none() {
-                // Windows-only diagnosis aid: which link of the chain broke?
-                let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
-                let fetched = crate::git::succeeds(&["fetch", "origin", &refspec]);
-                let note = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", "HEAD"]);
-                let tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
-                println!("covered diagnostics: fetched={fetched} tree={tree:?} note={note:?}");
-                if let Some(body) = &note {
-                    if let Some((p, s)) = split_note(body) {
-                        println!("split ok; verify={}", verify(&p, &s, &signers, "t@t.test"));
-                    } else {
-                        println!("split_note failed on body bytes {:?}", body.as_bytes());
-                    }
-                }
-            }
             assert_eq!(
-                got.as_deref(),
+                covered(&signers, "t@t.test").as_deref(),
                 Some("pre-push-pytest"),
                 "a fresh clone verifies the attestation and reads the gates"
             );
