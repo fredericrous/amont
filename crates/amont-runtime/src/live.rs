@@ -292,7 +292,11 @@ fn region(entries: &[(String, f64)], width: usize) -> String {
 
 /// `$COLUMNS` when it is exported and sane, else a conservative 100 — the
 /// region's lines are short and an ioctl is not worth its portability.
-fn term_width() -> usize {
+///
+/// Public because `amont-agent` prints sampled commands and needs the same
+/// answer. A second copy of this would be a second place for the fallback and
+/// the sanity floor to drift.
+pub fn term_width() -> usize {
     std::env::var("COLUMNS")
         .ok()
         .and_then(|c| c.parse::<usize>().ok())

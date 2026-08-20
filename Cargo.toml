@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/amont", "crates/amont-fleet", "crates/amont-runtime"]
+members = ["crates/amont", "crates/amont-agent", "crates/amont-fleet", "crates/amont-runtime"]
 
 # The floor for the COMMIT PATH — `amont` and `amont-runtime`, which
 # inherit this. Not a guess: 1.73 was run against those two crates and failed
