@@ -199,7 +199,22 @@ pub fn resolve_tool(root: &str, tool: &str) -> Option<Vec<String>> {
 /// when it is unset. Found by the Windows CI job on its first run, where
 /// `which("git")` returned None on a machine that plainly has git.
 pub fn which(tool: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
+    which_on(&std::env::var_os("PATH")?, tool)
+}
+
+/// [`which`] against an EXPLICIT path list — the seam its own test needs.
+///
+/// The test that pins the Windows extension order used to `set_var("PATH")`
+/// around the call, which is process-global: for the length of that call
+/// every OTHER test in the binary — 340 of them, running in parallel, many
+/// spawning git — had a PATH containing one fake tool and nothing else. A
+/// git spawned in that window fails with "not found", which is not a
+/// transient `git::retrying` may retry (correctly: it is a hard error), so
+/// the caller reads it as git's ANSWER. In `gate_stamp` that answer is
+/// "nothing is stamped". Passing the path in deletes the shared state
+/// rather than guarding it — a lock only protects the callers who remember
+/// to take it, and every future test here would have to remember.
+pub fn which_on(path: &std::ffi::OsStr, tool: &str) -> Option<String> {
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
@@ -210,7 +225,7 @@ pub fn which(tool: &str) -> Option<String> {
     } else {
         Vec::new()
     };
-    for dir in std::env::split_paths(&path) {
+    for dir in std::env::split_paths(path) {
         // On Windows the EXTENSION forms come first. A node install ships both
         // `npm` (an extensionless shell script, for MSYS) and `npm.cmd` in the
         // same directory; preferring the bare name hands CreateProcess a shell
@@ -707,12 +722,10 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(dir.join("faketool"), "#!/bin/sh\n").unwrap();
         std::fs::write(dir.join("faketool.cmd"), "@echo off\n").unwrap();
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", &dir);
-        let found = which("faketool").unwrap();
-        if let Some(p) = saved {
-            std::env::set_var("PATH", p);
-        }
+        // The path is PASSED, never installed into this process: see
+        // `which_on`. The old spelling swapped the real PATH out from under
+        // every other test in this binary for the length of the call.
+        let found = which_on(dir.as_os_str(), "faketool").unwrap();
         assert!(found.ends_with(".cmd"), "got {found}");
         let _ = std::fs::remove_dir_all(&dir);
     }

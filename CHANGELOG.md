@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.13.0 — 2026-08-20
+
+- **"git could not answer" stopped reading as "nothing is stamped".** Four
+  paths in the gate-stamp machinery treated a failed git call exactly like
+  a clean negative answer: no tree to record, no stamp to bind, no stamps
+  to find. The verdict was already the safe one — the gates re-run, never
+  skip work on a question that could not be asked — but it was silent, so
+  a single transient git failure was indistinguishable from an ordinary
+  unstamped commit. Each now says which happened. (An absent notes ref is
+  NOT one of these: `git notes list` answers 0 with empty output there, and
+  a test now pins that, because the whole distinction rests on it.)
+- **One test no longer swaps the whole process's `PATH` out from under the
+  others.** The Windows extension-order test set `PATH` to a temp directory
+  for the length of one call, while ~340 tests ran in parallel around it —
+  any git spawned in that window failed with "not found", which is a hard
+  error nothing retries, and the caller read it as git's answer. `which`
+  gained a `which_on(path, tool)` seam so the test passes its path instead
+  of installing it; `which` itself is unchanged for every caller.
+
 ## v1.12.1 — 2026-08-20
 
 - **An attestation no longer vouches for a gate that had nothing to do.**
