@@ -341,3 +341,92 @@ fn auto_rebase_off_advises_and_never_mutates() {
         .to_string();
     assert_eq!(before, after, "advisory mode rebased anyway");
 }
+
+/// Offline is not "your branch was deleted". `ls-remote --exit-code` exits 2
+/// for a missing ref and 128 for a failed connection, and the hook used to
+/// read both as the first — a wrong diagnosis someone acts on.
+#[test]
+fn offline_reads_as_unreachable_not_deleted() {
+    let r = with_origin();
+    r.git(&["checkout", "-q", "-b", "feat/offline"]);
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/offline"]);
+    // The upstream is configured and healthy; now the network "goes away".
+    r.git(&["remote", "set-url", "origin", "/nonexistent/nowhere.git"]);
+    let run = r.hook("pre-push-pull-rebase", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        run.says("Could not reach"),
+        "offline must read as unreachable:\n{}",
+        run.output()
+    );
+    assert!(
+        !run.says("no longer exists"),
+        "offline must NOT read as a deleted upstream:\n{}",
+        run.output()
+    );
+}
+
+/// A remote that accepts the connection and then says nothing must not hold
+/// the push hostage: the probe is killed at its deadline and the sync is
+/// skipped, honestly. `amont.timeout 1` shrinks the probe budget to 1s, so
+/// the hung shim's 30s sleep proves the kill rather than the wait.
+#[cfg(unix)]
+#[test]
+fn a_hung_remote_is_cut_at_the_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = with_origin();
+    r.git(&["checkout", "-q", "-b", "feat/hung"]);
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/hung"]);
+    r.git(&["config", "amont.timeout", "1"]);
+
+    let real = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("sh")
+            .stdout,
+    )
+    .expect("utf8");
+    let real = real.trim().to_string();
+    let shims = r.path(".git/gitshim");
+    std::fs::create_dir_all(&shims).expect("mkdir");
+    std::fs::write(
+        shims.join("git"),
+        format!("#!/bin/sh\ncase \"$1\" in ls-remote) sleep 30 ;; esac\nexec {real} \"$@\"\n"),
+    )
+    .expect("write");
+    std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+
+    let started = std::time::Instant::now();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amont"));
+    cmd.arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push-pull-rebase")
+        .current_dir(&r.dir)
+        .stdin(std::process::Stdio::null())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                shims.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+    let out = cmd.output().expect("run hook");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{text}");
+    assert!(
+        text.contains("did not answer within"),
+        "the deadline must be named:\n{text}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "the probe was not killed at its deadline (took {:?})",
+        started.elapsed()
+    );
+}

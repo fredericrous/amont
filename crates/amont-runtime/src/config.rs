@@ -237,6 +237,15 @@ pub fn enumerated(key: &str, allowed: &[&'static str]) -> Value<&'static str> {
 /// Deduplicated because a key read twice in one run is a detail of how the
 /// code is arranged, and repeating the warning would make it look like two
 /// separate mistakes.
+/// A free-form string key, policy-aware. Untyped reads have no `--type`
+/// for git to refuse, so `Bad` cannot arise — this is Set-or-not.
+pub fn string_value(key: &str) -> Option<String> {
+    match resolve(key, None) {
+        Value::Set(v) => Some(v),
+        _ => None,
+    }
+}
+
 pub fn complain(key: &str, why: &str, using: &str) {
     static SAID: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
     let said = SAID.get_or_init(|| Mutex::new(BTreeSet::new()));

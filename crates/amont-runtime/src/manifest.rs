@@ -223,6 +223,7 @@ pub const SETTABLE: &[&str] = &[
     "autoRebase",
     "timeout",
     "testPushedTree",
+    "minVersion",
 ];
 
 impl PolicyLine {

@@ -170,14 +170,30 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         .and_then(|a| a.to_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("origin");
-    // `None` here means git failed, which is NOT the same as "no branches" —
-    // treat only a successful, empty listing as the initial-push case.
-    if git::stdout(&["ls-remote", "--heads", remote]).is_some_and(|s| s.is_empty()) {
-        crate::say!(
-            "{} Remote has no branches yet (initial push). Name is authorized.",
-            valid_sign()
-        );
-        return Outcome::Passed;
+    // `--exit-code` turns the answer into exit codes — 2 for "connected,
+    // zero refs", 0 for "has branches" — so nothing here reads (or waits
+    // on) the listing itself. Bounded: this is a network round-trip asked
+    // before a purely local check, and offline used to hang it. Anything
+    // other than a clean "zero refs" answer falls through to the pattern
+    // check — git failing is NOT the same as "no branches".
+    match git::probe(
+        &["ls-remote", "--exit-code", "--heads", remote],
+        super::common::network_probe_budget(),
+    ) {
+        git::Probe::Exit(2) => {
+            crate::say!(
+                "{} Remote has no branches yet (initial push). Name is authorized.",
+                valid_sign()
+            );
+            return Outcome::Passed;
+        }
+        git::Probe::TimedOut(secs) => {
+            crate::say!(
+                "{} {remote} did not answer within {secs}s — checking the name anyway.",
+                warning_sign()
+            );
+        }
+        _ => {}
     }
 
     // Per offending ref, so a multi-ref push names them all rather than

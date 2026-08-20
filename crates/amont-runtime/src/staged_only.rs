@@ -879,7 +879,35 @@ pub fn install_signal_handler() {
     }
 }
 
-#[cfg(not(unix))]
+/// The Windows twin: `SetConsoleCtrlHandler` instead of `signal(2)`. The
+/// system already runs the handler on a fresh thread, so there is no
+/// self-pipe dance — `restore()` is called directly (its `ENTER_LOCK`
+/// synchronisation against a mid-`enter()` signal is the same on both
+/// platforms), and returning FALSE hands the event to the default handler,
+/// which terminates the process: the exit stays honest about being killed.
+/// Before this, Ctrl-C mid-check on Windows orphaned the held patch and the
+/// recovery was "your next commit is blocked, run `amont restore`" — the
+/// platform with the fewest git-hooks veterans got the scariest failure.
+///
+/// Raw FFI rather than a crate for the same reason as the unix externs
+/// below: this binary ships dependency-free, and this is one kernel32 call
+/// with a stable signature. Covers Ctrl-C, Ctrl-Break, and console-closed.
+#[cfg(windows)]
+pub fn install_signal_handler() {
+    extern "system" fn on_ctrl(_event: u32) -> i32 {
+        StagedOnly::restore();
+        0 // FALSE: pass to the default handler, which terminates
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: extern "system" fn(u32) -> i32, add: i32) -> i32;
+    }
+    unsafe {
+        SetConsoleCtrlHandler(on_ctrl, 1);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn install_signal_handler() {}
 
 /// The write end of the self-pipe a signal handler wakes the watcher thread

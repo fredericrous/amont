@@ -389,6 +389,9 @@ amont-fleet fix --apply --root ~/Developer
 ## Windows
 
 Everything works, with one setup difference: there is no symlink.
+(The `amont trust` prompt reads the console directly — `CONIN$`, the
+platform's `/dev/tty` — and Ctrl-C mid-check restores your parked
+unstaged changes before dying, both same as unix.)
 
 The one-liner for this platform is PowerShell:
 

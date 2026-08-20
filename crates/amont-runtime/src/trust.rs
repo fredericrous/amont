@@ -279,8 +279,29 @@ pub fn confirm(prompt: &str) -> bool {
     matches!(line.trim_start().chars().next(), Some('y') | Some('Y'))
 }
 
-/// Windows has no `/dev/tty`; treat it as nobody to ask, which declines.
-#[cfg(not(unix))]
+/// `CONIN$` is the console's `/dev/tty`: it reaches the keyboard even when
+/// git handed this hook a pipe for stdin. Opening it fails where there is
+/// no console at all (a service, CI), which correctly reads as nobody to
+/// ask. Before this, Windows always declined — `amont trust` could never
+/// be granted interactively there, so every declared check spent its life
+/// politely disabled for the Windows minority of a team.
+#[cfg(windows)]
+pub fn confirm(prompt: &str) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    let Ok(con) = std::fs::File::open("CONIN$") else {
+        return false;
+    };
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if BufReader::new(con).read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim_start().chars().next(), Some('y') | Some('Y'))
+}
+
+/// Neither `/dev/tty` nor a console: nobody to ask, which declines.
+#[cfg(not(any(unix, windows)))]
 pub fn confirm(_prompt: &str) -> bool {
     false
 }

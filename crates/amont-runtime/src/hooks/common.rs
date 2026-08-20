@@ -303,6 +303,20 @@ pub fn check_timeout() -> u64 {
     *TIMEOUT.get_or_init(|| crate::config::integer_or("amont.timeout", 600, 0..=86_400) as u64)
 }
 
+/// The deadline for a network PROBE — an `ls-remote` asked before the real
+/// work, not the work itself. Capped at 30s below [`check_timeout`]: a
+/// probe answers in a second or two when the network is there at all, and
+/// a healthy `amont.timeout` of ten minutes is sized for a test suite, not
+/// for deciding whether the remote is reachable. Shrinking `amont.timeout`
+/// below the cap shrinks this too, and `0` keeps meaning no deadline —
+/// somebody who disabled the clock disabled all of it.
+pub fn network_probe_budget() -> u64 {
+    match check_timeout() {
+        0 => 0,
+        t => t.min(30),
+    }
+}
+
 /// What became of a command run under the deadline.
 pub enum Ran {
     Status(std::process::ExitStatus),
@@ -446,7 +460,10 @@ pub fn capture_within(cmd: &mut Command) -> Option<(Ran, String)> {
 
 /// The deadline loop over an already-spawned child — shared by the
 /// inherited and captured runners.
-fn wait_within(child: &mut std::process::Child, budget_secs: u64) -> std::io::Result<Ran> {
+pub(crate) fn wait_within(
+    child: &mut std::process::Child,
+    budget_secs: u64,
+) -> std::io::Result<Ran> {
     if budget_secs == 0 {
         return child.wait().map(Ran::Status);
     }
