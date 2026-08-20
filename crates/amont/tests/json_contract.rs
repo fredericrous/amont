@@ -144,23 +144,41 @@ fn every_emitted_field_is_documented_and_every_documented_field_is_emitted() {
     // The other direction: the table cannot promise a field the code stopped
     // emitting. Only the rows of the checks table are checked, since that is
     // the list this page claims is exhaustive.
-    let table = doc
+    //
+    // The table ends at the first line that is not a row — NOT at a blank
+    // line found by splitting on "\n\n", which is what this did first. That
+    // spelling never matched on Windows, where the checkout is CRLF, so the
+    // "table" ran on into the rest of the page and every row of the checks
+    // CATALOGUE was read as a promised JSON field. `str::lines` splits on
+    // both endings and drops the `\r`, so the scan below is the same on
+    // every platform.
+    let after = doc
         .split("| field | what it says |")
         .nth(1)
-        .expect("the field table")
-        .split("\n\n")
-        .next()
-        .expect("the table body");
-    for row in table.lines().filter(|l| l.starts_with("| `")) {
-        let name = row
-            .trim_start_matches("| `")
-            .split('`')
-            .next()
-            .expect("a fenced field name");
+        .expect("the field table");
+    let mut rows = 0usize;
+    for line in after.lines().map(str::trim) {
+        if line.starts_with("| ---") || line.is_empty() {
+            if rows > 0 {
+                break; // a blank line after the rows: the table is over
+            }
+            continue; // the header's own tail, and the separator row
+        }
+        let Some(rest) = line.strip_prefix("| `") else {
+            break; // prose again
+        };
+        let name = rest.split('`').next().expect("a fenced field name");
         assert!(
             fields.iter().any(|f| f == name),
             "docs/checks.md promises check field `{name}`, which `list --json` \
              does not emit: {fields:?}"
         );
+        rows += 1;
     }
+    assert!(
+        rows >= fields.len(),
+        "the table scan found only {rows} rows for {} emitted fields — the \
+         scanner is broken, and a broken scanner passes vacuously",
+        fields.len()
+    );
 }
