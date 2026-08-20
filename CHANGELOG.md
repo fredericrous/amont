@@ -6,8 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.12.0 — 2026-08-20
+## v1.12.1 — 2026-08-20
 
+- **An attestation no longer vouches for a gate that had nothing to do.**
+  Caught on a real note in the wild: a JS-only push minted
+  `gates … pre-push-cargo-test pre-push-go-test pre-push-pytest`, because a
+  language gate with no files of its language finds no crate/module root and
+  returns `Passed` having run NOTHING. Right for a push gate — there was
+  nothing to object to — and wrong for an attestation. Harmless in a
+  single-language repository, unsound in a mixed one: CI would skip a suite
+  nobody had run on that tree. The attestation now lists only gates whose
+  declared `scope` the push actually touched; unscoped checks (secrets,
+  branch-protect) still count, because they really do run every time, and a
+  push whose changed files cannot be computed vouches for nothing scoped —
+  the direction that makes CI run the suite.
 - **Uninstall forgets what it wrote — everywhere.** `amont uninstall` swept
   its own repository's bookkeeping but left the `amont.conf` trust record
   behind, so a reinstall silently re-honoured consent given to a file
@@ -21,6 +33,8 @@ missing here.
   `amont.severity` stay untouched, as always, and so does uncommitted work
   — parked changes in `$GIT_DIR/amont-held` survive any uninstall, because
   `amont restore` has to keep working after the hooks are gone.
+
+## v1.12.0 — 2026-08-20
 
 ## v1.11.1 — 2026-08-20
 
