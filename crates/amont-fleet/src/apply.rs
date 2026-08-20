@@ -197,6 +197,32 @@ pub fn apply(plan: &FixPlan) -> Outcome {
                 }
             }
         }
+        // The CLAUDE.md signpost is half of the pair — writing the block
+        // without it leaves Claude Code, which loads CLAUDE.md and not
+        // AGENTS.md, seeing no guidance at all. Same re-check-then-write
+        // rule, and `NotPresent` counts as "write it": across the fleet the
+        // signpost is usually the file that does not exist yet.
+        if w.path.file_name().is_some_and(|n| n != "CLAUDE.md") {
+            let pointer = w.path.with_file_name("CLAUDE.md");
+            match amont_runtime::agents_md::check_pointer(&pointer) {
+                Ok(amont_runtime::agents_md::CheckResult::MatchesGenerated) => {}
+                Ok(_) => match amont_runtime::agents_md::write_pointer(&pointer) {
+                    Ok(()) => written += 1,
+                    Err(e) => {
+                        return Outcome::Failed {
+                            error: e,
+                            at: pointer.display().to_string(),
+                        }
+                    }
+                },
+                Err(e) => {
+                    return Outcome::Failed {
+                        error: e,
+                        at: pointer.display().to_string(),
+                    }
+                }
+            }
+        }
     }
 
     Outcome::Applied { removed, written }
