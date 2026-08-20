@@ -742,9 +742,34 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .first()
             .map(|a| a.to_string_lossy().into_owned())
             .unwrap_or_default();
-        crate::attest::attest_push(&remote, ctx.push.get(), &passed);
+        let changed = crate::pushrefs::changed_files(ctx.push.get());
+        let vouched = attestable(&pre_push_checks, &passed, &changed);
+        crate::attest::attest_push(&remote, ctx.push.get(), &vouched);
     }
     Verdict::Proceed
+}
+
+/// Of the checks that passed, the ones an attestation may actually VOUCH for.
+///
+/// A language gate whose scope the push never touched returns `Passed` having
+/// run nothing — `cargo_test` walks its refs, finds no crate root, and falls
+/// out of the loop green. That is right for a push gate (there was nothing to
+/// object to) and wrong for an attestation: a JS-only push was minting
+/// `gates … pre-push-cargo-test pre-push-go-test pre-push-pytest`, and in a
+/// MIXED repository CI would then skip a suite that nobody ran on that tree.
+///
+/// The declared `scope` is the honest filter, and the same data `amont list`
+/// already reports. Unscoped checks (`Scope::ALWAYS` — branch-protect,
+/// secrets) match everything and are vouched for, which is accurate: they
+/// really did run. An empty `changed` vouches for nothing scoped, which is
+/// the safe direction — CI runs the suite.
+fn attestable(checks: &[&dyn Check], passed: &[String], changed: &[String]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|c| passed.iter().any(|p| p == c.name()))
+        .filter(|c| c.scope().matches(changed))
+        .map(|c| c.name().to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -768,6 +793,57 @@ mod tests {
             fix: crate::check::Fix::None,
             reach: crate::check::Reach::Convention,
         }
+    }
+
+    /// A pre-push gate scoped to one language's files.
+    const fn scoped(name: &'static str, exts: &'static [&'static str]) -> Builtin {
+        Builtin {
+            name,
+            stage: Stage::PrePush,
+            scope: Scope::new(exts, &[]),
+            severity: Severity::Block,
+            run: |_| Outcome::Passed,
+            fix: crate::check::Fix::None,
+            reach: crate::check::Reach::Convention,
+        }
+    }
+
+    /// The over-claim this filter exists to stop, caught in the wild: a
+    /// JS-only push minted `gates … pre-push-cargo-test pre-push-go-test
+    /// pre-push-pytest`, because each of those gates finds nothing of its
+    /// language to do and returns `Passed` having run NOTHING. Harmless in a
+    /// single-language repo, unsound in a mixed one — CI would skip a suite
+    /// nobody ran on that tree.
+    #[test]
+    fn a_gate_whose_language_the_push_never_touched_is_not_vouched_for() {
+        let js = scoped("pre-push-run-tests-js", &[".ts", ".js"]);
+        let rust = scoped("pre-push-cargo-test", &[".rs"]);
+        let py = scoped("pre-push-pytest", &[".py"]);
+        let always = stub("pre-push-secrets", Severity::Block);
+        let checks: Vec<&dyn Check> = vec![&js, &rust, &py, &always];
+        let passed: Vec<String> = checks.iter().map(|c| c.name().to_string()).collect();
+
+        let changed = vec!["app/routes/home.ts".to_string()];
+        let vouched = attestable(&checks, &passed, &changed);
+        assert_eq!(
+            vouched,
+            vec![
+                "pre-push-run-tests-js".to_string(),
+                "pre-push-secrets".to_string()
+            ],
+            "only the gate that had work, plus the unscoped one that always runs"
+        );
+
+        // Nothing computed about the push vouches for nothing scoped — the
+        // safe direction, since CI then runs the suite.
+        assert_eq!(
+            attestable(&checks, &passed, &[]),
+            vec!["pre-push-secrets".to_string()]
+        );
+
+        // A check that did NOT pass is never vouched for, whatever its scope.
+        let only_rust_passed = vec!["pre-push-cargo-test".to_string()];
+        assert!(attestable(&checks, &only_rust_passed, &changed).is_empty());
     }
 
     /// No overrides configured. `report` takes them as a VALUE now, so its
