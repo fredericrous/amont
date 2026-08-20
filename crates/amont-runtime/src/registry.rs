@@ -467,15 +467,118 @@ pub fn severity_key(check: &str) -> String {
 /// lands on the same answer `--get` gives. That equivalence is not assumed:
 /// `the_batch_agrees_with_the_authority` pins it against `effective_override`.
 #[derive(Debug, Default, Clone)]
-pub struct Overrides(std::collections::BTreeMap<String, Severity>);
+pub struct Overrides(std::collections::BTreeMap<String, (Severity, Source)>);
+
+/// Where an override came from — machine config or the repository's
+/// committed policy. `amont list` reports it; nothing on the commit path
+/// consults it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Config,
+    Policy,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Config => "config",
+            Source::Policy => "policy",
+        }
+    }
+}
 
 impl Overrides {
+    /// Machine config AND the installed repo policy, folded on the
+    /// specificity ladder: system < global < POLICY < local < worktree <
+    /// command. `--show-scope` labels each config line; on a git too old to
+    /// know the flag (exit 129 → `None`) this degrades, deliberately, to
+    /// "ALL git config beats policy" — the fail-safe direction, because the
+    /// alternative was an EMPTY override set silently discarding both.
     pub fn read() -> Overrides {
-        Overrides::from_config(crate::git::stdout(&[
+        let policy = crate::policy::current();
+        match crate::git::stdout(&[
             "config",
+            "--show-scope",
             "--get-regexp",
             r"^amont\.severity\.",
-        ]))
+        ]) {
+            Some(scoped) => Overrides::from_scoped(&scoped, policy),
+            // `--get-regexp` with no matches ALSO exits non-zero, so `None`
+            // here can mean "no keys" as well as "old git" — both fold the
+            // same way: nothing below, policy, nothing above.
+            None => {
+                let plain = crate::git::stdout(&["config", "--get-regexp", r"^amont\.severity\."]);
+                let mut o = Overrides::default();
+                o.fold_plain(plain.as_deref().unwrap_or_default(), Source::Config);
+                let mut with_policy = Overrides::default();
+                with_policy.fold_policy(policy);
+                for (k, v) in o.0 {
+                    with_policy.0.insert(k, v);
+                }
+                with_policy
+            }
+        }
+    }
+
+    /// Fold `--show-scope` output around the installed policy. Scope words
+    /// `system`/`global` fold BELOW policy; everything else — `local`,
+    /// `worktree`, `command`, and any word a future git invents — folds
+    /// ABOVE, because misreading a local as below would let a file pulled
+    /// from a remote silently override a person's explicit setting on their
+    /// own machine, and that is the worse direction to fail in.
+    pub fn from_scoped(scoped: &str, policy: &crate::policy::Policy) -> Overrides {
+        let mut below = String::new();
+        let mut above = String::new();
+        for line in scoped.lines() {
+            let Some((scope, rest)) = line.split_once('\t') else {
+                continue;
+            };
+            match scope {
+                "system" | "global" => {
+                    below.push_str(rest);
+                    below.push('\n');
+                }
+                _ => {
+                    above.push_str(rest);
+                    above.push('\n');
+                }
+            }
+        }
+        let mut o = Overrides::default();
+        o.fold_plain(&below, Source::Config);
+        o.fold_policy(policy);
+        o.fold_plain(&above, Source::Config);
+        o
+    }
+
+    /// Policy entries are insert-only: a bad severity word was refused at
+    /// parse time and never reaches here.
+    fn fold_policy(&mut self, policy: &crate::policy::Policy) {
+        for (target, severity) in &policy.severities {
+            self.0.insert(target.clone(), (*severity, Source::Policy));
+        }
+    }
+
+    /// The original fold: later entries overwrite, an unrecognised value
+    /// CLEARS the key rather than shadowing a valid earlier one. Kept as the
+    /// single implementation both `from_config` and the ladder halves use.
+    fn fold_plain(&mut self, text: &str, source: Source) {
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once(' ') else {
+                continue;
+            };
+            let Some(check) = key.strip_prefix("amont.severity.") else {
+                continue;
+            };
+            match Severity::parse(value.trim()) {
+                Some(sev) => {
+                    self.0.insert(check.to_string(), (sev, source));
+                }
+                None => {
+                    self.0.remove(check);
+                }
+            }
+        }
     }
 
     /// Built from `--get-regexp`-shaped text (`amont.severity.<check>
@@ -486,28 +589,9 @@ impl Overrides {
     /// ask this — the one place that must not get precedence wrong — rather
     /// than re-deriving it from the lines by hand.
     pub fn from_config(out: Option<String>) -> Overrides {
-        let mut map = std::collections::BTreeMap::new();
-        for line in out.as_deref().unwrap_or_default().lines() {
-            let Some((key, value)) = line.split_once(' ') else {
-                continue;
-            };
-            let Some(check) = key.strip_prefix("amont.severity.") else {
-                continue;
-            };
-            // Later entries overwrite earlier ones — git's own precedence,
-            // observed rather than reimplemented.
-            match Severity::parse(value.trim()) {
-                Some(s) => {
-                    map.insert(check.to_string(), s);
-                }
-                // An unrecognised value is not an override at all, and must not
-                // shadow a valid earlier one either.
-                None => {
-                    map.remove(check);
-                }
-            }
-        }
-        Overrides(map)
+        let mut o = Overrides::default();
+        o.fold_plain(out.as_deref().unwrap_or_default(), Source::Config);
+        o
     }
 
     /// The configured key that applies to `check`, and what it says.
@@ -517,13 +601,22 @@ impl Overrides {
     /// wins, which is the rule anybody would guess and the only one that lets
     /// you downgrade a whole trigger and then exempt one check from it.
     pub fn applied_to(&self, check: &str) -> Option<(&str, Severity)> {
+        self.applied_with_source(check)
+            .map(|(pattern, severity, _)| (pattern, severity))
+    }
+
+    /// As `applied_to`, keeping WHERE the winning key came from — the one
+    /// reader (`amont list`) that reports provenance asks here rather than
+    /// re-deriving the answer a second way.
+    pub fn applied_with_source(&self, check: &str) -> Option<(&str, Severity, Source)> {
         self.0
             .iter()
-            .filter_map(|(pattern, severity)| {
-                crate::names_check(check, pattern).map(|m| (m, pattern.as_str(), *severity))
+            .filter_map(|(pattern, (severity, source))| {
+                crate::names_check(check, pattern)
+                    .map(|m| (m, pattern.as_str(), *severity, *source))
             })
-            .max_by_key(|(m, _, _)| *m)
-            .map(|(_, pattern, severity)| (pattern, severity))
+            .max_by_key(|(m, _, _, _)| *m)
+            .map(|(_, pattern, severity, source)| (pattern, severity, source))
     }
 
     /// The severity to apply to `check`, override or declared.
@@ -616,11 +709,19 @@ pub fn effective_key(repo: Option<&Path>, check: &str) -> Option<String> {
 }
 
 fn overrides_in(repo: Option<&Path>) -> Overrides {
-    let args = ["config", "--get-regexp", r"^amont\.severity\."];
-    Overrides::from_config(match repo {
-        None => crate::git::stdout(&args),
-        Some(dir) => crate::git::stdout_in(dir, &args),
-    })
+    match repo {
+        // The current repository: same fold the dispatcher uses, policy
+        // included — `amont run <check>` resolves through here and must not
+        // disagree with the stage that would have run it.
+        None => Overrides::read(),
+        // Somebody ELSE's repository (the fleet's per-repo question): never
+        // this process's policy — the store belongs to the repo the process
+        // is standing in, and a scanner walks many.
+        Some(dir) => Overrides::from_config(crate::git::stdout_in(
+            dir,
+            &["config", "--get-regexp", r"^amont\.severity\."],
+        )),
+    }
 }
 
 /// Built-in checks for one stage, in declared order.
@@ -738,7 +839,7 @@ mod tests {
             "git applies the last entry"
         );
         assert_eq!(
-            batch.0.get("pre-commit-merge-conflict").copied(),
+            batch.0.get("pre-commit-merge-conflict").map(|(s, _)| *s),
             authority,
             "the batch reader disagreed with `--get`"
         );
@@ -753,7 +854,7 @@ mod tests {
             "amont.severity.a warn\namont.severity.a advisory\namont.severity.b warn".to_string(),
         ));
         assert_eq!(o.0.get("a"), None, "a typo must not leave `warn` standing");
-        assert_eq!(o.0.get("b").copied(), Some(Severity::Warn));
+        assert_eq!(o.0.get("b").map(|(s, _)| *s), Some(Severity::Warn));
     }
 
     #[test]

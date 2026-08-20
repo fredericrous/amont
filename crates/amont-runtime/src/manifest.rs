@@ -73,6 +73,8 @@ pub enum ParseError {
     BadSeverity(String),
     /// A `tool` line with the wrong shape.
     BadTool,
+    /// A `severity`/`skip` line with the wrong shape; carries the usage.
+    BadPolicyLine(&'static str),
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -107,6 +109,7 @@ impl std::fmt::Display for ParseError {
                 f,
                 "a tool pin is exactly `tool <program> <version-substring>`"
             ),
+            ParseError::BadPolicyLine(usage) => write!(f, "a policy line is `{usage}`"),
             ParseError::FixOnPrePush => write!(
                 f,
                 "`fix` is only for pre-commit — a pre-push hook must not rewrite files"
@@ -183,11 +186,41 @@ pub struct ToolPin {
     pub want: String,
 }
 
+/// A committed policy statement about a BUILT-IN (or declared) check — the
+/// team's decision, shipped with the repository, trust-gated like everything
+/// else the manifest says. See `policy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyLine {
+    /// `severity <check|short-name|trigger> warn|block`
+    Severity { target: String, severity: Severity },
+    /// `skip <check|short-name|trigger>`
+    Skip { target: String },
+}
+
+impl PolicyLine {
+    /// The one-line rendering the trust prompt shows — consent must see the
+    /// policy it is granting.
+    pub fn describe(&self) -> String {
+        match self {
+            PolicyLine::Severity { target, severity } => {
+                format!("severity  {target}  {}", severity.as_str())
+            }
+            PolicyLine::Skip { target } => format!("skip      {target}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
     Usable(Declared),
     /// A tool version pin — carries no check.
     Tool(ToolPin),
+    /// A policy statement — carries no check either. The line number rides
+    /// along because a "names no check here" note must point somewhere.
+    Policy {
+        what: PolicyLine,
+        lineno: usize,
+    },
     Broken {
         /// The declared name, or `<file>:<lineno>` when the line has none — a
         /// gap has to be nameable to be reportable.
@@ -205,22 +238,36 @@ impl Line {
         match self {
             Line::Usable(d) => &d.name,
             Line::Tool(pin) => &pin.program,
+            Line::Policy {
+                what: PolicyLine::Severity { target, .. } | PolicyLine::Skip { target },
+                ..
+            } => target,
             Line::Broken { name, .. } => name,
         }
+    }
+
+    /// Does this line declare a CHECK? `Tool` and `Policy` lines do not, and
+    /// every consumer that projects lines into checks — `parse`, the trust
+    /// prompt, the fleet's declared column — must filter on this rather than
+    /// pattern-match variants it will forget to extend. A `Broken` line IS a
+    /// check (one that runs to Unavailable and says why).
+    pub fn is_check(&self) -> bool {
+        matches!(self, Line::Usable(_) | Line::Broken { .. })
     }
     pub fn stage(&self) -> Stage {
         match self {
             Line::Usable(d) => d.stage,
             // A pin has no stage; it is verified at both. The value only
-            // feeds displays that will not ask a pin for one.
-            Line::Tool(_) => Stage::PreCommit,
+            // feeds displays that will not ask a pin for one. Policy lines
+            // likewise — `is_check()` keeps both out of anything that would.
+            Line::Tool(_) | Line::Policy { .. } => Stage::PreCommit,
             Line::Broken { stage, .. } => *stage,
         }
     }
     /// `Some(reason)` when this line declares a check that cannot run.
     pub fn broken(&self) -> Option<String> {
         match self {
-            Line::Usable(_) | Line::Tool(_) => None,
+            Line::Usable(_) | Line::Tool(_) | Line::Policy { .. } => None,
             Line::Broken { lineno, why, .. } => Some(format!("line {lineno}: {why}")),
         }
     }
@@ -244,7 +291,11 @@ impl Line {
         let stage = self.stage();
         let parsed = match self {
             Line::Usable(d) => Ok(d),
+            // Reachable only through a consumer that skipped `is_check()` —
+            // kept total so the type stays honest, worded so a leak is
+            // recognisable in whatever display it lands in.
             Line::Tool(pin) => Err(format!("tool pin: {} {}", pin.program, pin.want)),
+            Line::Policy { what, .. } => Err(format!("policy: {}", what.describe())),
             Line::Broken { lineno, why, .. } => Err(format!("line {lineno}: {why}")),
         };
         (name, stage, parsed)
@@ -631,6 +682,53 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             ),
         };
     }
+    // `severity` and `skip` were never valid stages either — the same
+    // keyword claim `tool` made. Fixed arity; anything else is a positional
+    // gap, never a phantom check named after its target (a broken
+    // `severity clippy loud` must not mint `pre-commit-clippy`).
+    if line == "severity" || line.starts_with("severity ") || line.starts_with("severity\t") {
+        let mut it = line.split_whitespace().skip(1);
+        return match (it.next(), it.next(), it.next()) {
+            (Some(target), Some(word), None) => match Severity::parse(word) {
+                Some(severity) => Line::Policy {
+                    what: PolicyLine::Severity {
+                        target: target.to_string(),
+                        severity,
+                    },
+                    lineno,
+                },
+                None => broken_at(
+                    lineno,
+                    format!("{MANIFEST}:{lineno}"),
+                    None,
+                    ParseError::BadSeverity(word.to_string()),
+                ),
+            },
+            _ => broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadPolicyLine("severity <check> warn|block"),
+            ),
+        };
+    }
+    if line == "skip" || line.starts_with("skip ") || line.starts_with("skip\t") {
+        let mut it = line.split_whitespace().skip(1);
+        return match (it.next(), it.next()) {
+            (Some(target), None) => Line::Policy {
+                what: PolicyLine::Skip {
+                    target: target.to_string(),
+                },
+                lineno,
+            },
+            _ => broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadPolicyLine("skip <check>"),
+            ),
+        };
+    }
     let (fields, command) = match tokenise(line) {
         Some(t) => t,
         // No name to report: fall back to the position, which is the only
@@ -773,7 +871,7 @@ impl From<Line> for External {
 pub fn parse(text: &str) -> Vec<External> {
     parse_lines(text)
         .into_iter()
-        .filter(|l| !matches!(l, Line::Tool(_)))
+        .filter(Line::is_check)
         .map(External::from)
         .collect()
 }
@@ -815,6 +913,17 @@ pub struct Manifest {
     /// nothing, so this is safe to read before any trust decision. What the
     /// file SAYS stays trust-gated above.
     pub declared: bool,
+    /// Committed `severity`/`skip` policy — POPULATED ONLY WHEN TRUSTED,
+    /// like the pins: applying a repository's opinion about your safety net
+    /// is exactly the consent the trust model collects. See `policy`.
+    pub policy: crate::policy::Policy,
+    /// `trust::why(state)` when policy lines exist but the manifest is not
+    /// trusted — the dispatchers say it once per stage, because policy that
+    /// silently does not apply is a silent behaviour change.
+    pub policy_withheld: Option<&'static str>,
+    /// `severity`/`skip` targets that name no check here, with positions —
+    /// a typo in committed policy must be loud, not a phantom check.
+    pub policy_notes: Vec<String>,
 }
 
 /// Read and trust-gate `root`'s manifest.
@@ -848,22 +957,50 @@ pub fn load(root: &Path) -> Manifest {
         };
     };
     let state = crate::trust::state_of(root, &bytes);
-    let externals = gate(parse(&text), state);
-    let pins = if state == crate::trust::State::Trusted {
-        parse_lines(&text)
-            .into_iter()
+    let lines = parse_lines(&text);
+    let externals = gate(
+        lines
+            .iter()
+            .filter(|l| l.is_check())
+            .cloned()
+            .map(External::from)
+            .collect(),
+        state,
+    );
+    let trusted = state == crate::trust::State::Trusted;
+    let pins = if trusted {
+        lines
+            .iter()
             .filter_map(|l| match l {
-                Line::Tool(pin) => Some(pin),
+                Line::Tool(pin) => Some(pin.clone()),
                 _ => None,
             })
             .collect()
     } else {
         Vec::new()
     };
+    let has_policy = lines.iter().any(|l| matches!(l, Line::Policy { .. }));
+    let (policy, policy_notes) = if trusted {
+        crate::policy::Policy::from_lines(&lines)
+    } else {
+        (crate::policy::Policy::default(), Vec::new())
+    };
+    // NOTE: load() computes but never INSTALLS the policy — the entrypoints
+    // do, immediately after this returns and before any config read. A
+    // multi-repo walker (the fleet) reads `read_lines` and must never seed
+    // the process-global store.
+    let policy_withheld = if has_policy && !trusted {
+        crate::trust::why(state)
+    } else {
+        None
+    };
     Manifest {
         externals,
         pins,
         declared,
+        policy,
+        policy_withheld,
+        policy_notes,
     }
 }
 
@@ -956,6 +1093,9 @@ mod tests {
             Line::Broken { why, .. } => why.clone(),
             Line::Usable(d) => panic!("{} parsed when it should not have", d.name),
             Line::Tool(pin) => panic!("{} parsed as a pin, not a broken line", pin.program),
+            Line::Policy { what, .. } => {
+                panic!("{} parsed as policy, not a broken line", what.describe())
+            }
         }
     }
 
@@ -964,6 +1104,9 @@ mod tests {
             Line::Usable(d) => d,
             Line::Broken { name, why, .. } => panic!("{name} failed to parse: {why}"),
             Line::Tool(pin) => panic!("{} is a tool pin, not a declaration", pin.program),
+            Line::Policy { what, .. } => {
+                panic!("{} is policy, not a declaration", what.describe())
+            }
         }
     }
 

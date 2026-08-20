@@ -193,7 +193,13 @@ pub fn describe(repo: &Path) -> String {
 pub fn describe_source(text: &str) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    for line in crate::manifest::parse_lines(text) {
+    let lines = crate::manifest::parse_lines(text);
+    // Policy and tool-pin lines are rendered as their own blocks below —
+    // they are not checks, and running them through the check table printed
+    // them as `! broken`, which told the person consenting that something
+    // was WRONG with the very lines they were being asked to approve.
+    let (checks, rest): (Vec<_>, Vec<_>) = lines.into_iter().partition(|l| l.is_check());
+    for line in checks {
         let (name, stage, parsed) = line.into_parts();
         // Every field here is repo-controlled, and this is the text somebody
         // is about to say yes to. Sanitised BEFORE the padding, so the column
@@ -219,6 +225,34 @@ pub fn describe_source(text: &str) -> String {
                     crate::ui::sanitize(&why.to_string())
                 );
             }
+        }
+    }
+    let pins: Vec<String> = rest
+        .iter()
+        .filter_map(|l| match l {
+            crate::manifest::Line::Tool(pin) => {
+                Some(format!("tool      {}  {}", pin.program, pin.want))
+            }
+            _ => None,
+        })
+        .collect();
+    let policy: Vec<String> = rest
+        .iter()
+        .filter_map(|l| match l {
+            crate::manifest::Line::Policy { what, .. } => Some(what.describe()),
+            _ => None,
+        })
+        .collect();
+    if !policy.is_empty() {
+        let _ = writeln!(out, "    and sets policy for built-in checks:");
+        for p in policy {
+            let _ = writeln!(out, "      {}", crate::ui::sanitize(&p));
+        }
+    }
+    if !pins.is_empty() {
+        let _ = writeln!(out, "    and pins tool versions (verified, warn-only):");
+        for p in pins {
+            let _ = writeln!(out, "      {}", crate::ui::sanitize(&p));
         }
     }
     out
