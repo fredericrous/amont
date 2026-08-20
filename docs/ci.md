@@ -105,10 +105,11 @@ alongside the branch. The note is a four-line payload plus an SSH
 signature over exactly those bytes:
 
 ```text
-amont-attest-v1
+amont-attest-v2
 tree <the tree the gates ran against>
 gates pre-push-cargo-test pre-push-audit-rust
-amont 1.8.0
+platform aarch64-macos
+amont 1.9.0
 
 -----BEGIN SSH SIGNATURE-----
 …
@@ -134,7 +135,41 @@ executes amont — the templates' `attest` step verifies the note with stock
 3. the step's own gate is **named** in `gates`. The list holds only checks
    that PASSED — `Warned` and `Unavailable` never appear, because "could
    not run" is not "passed" — so a CI step with no local mirror (an e2e
-   suite, an image build) is never skippable by construction.
+   suite, an image build) is never skippable by construction;
+4. the attestation's **platform** is the platform asking. A pass is a pass
+   *on something*.
+
+### A matrix asks the fourth question for you
+
+`cargo test` green on an arm64 Mac is no evidence at all about the Windows
+leg of a matrix — and a mechanism that let one laptop retire three
+platforms' CI would be the unsound version of this whole idea. So the note
+records where the suite ran, and `amont attest covered` defaults to
+requiring that platform to equal the verifier's own:
+
+| leg | attestation says | outcome |
+|---|---|---|
+| `macos-latest` | `platform aarch64-macos` | skips — that suite really ran here |
+| `ubuntu-latest` | `platform aarch64-macos` | runs |
+| `windows-latest` | `platform aarch64-macos` | runs |
+
+No per-leg configuration: every leg runs the same one-liner and only the
+matching one finds anything covering it. amont's own CI is the worked
+example — a laptop push retires the macOS leg's `cargo test` and leaves
+the other two exactly as they were.
+
+For a suite whose result genuinely does not depend on where it ran — a
+pure-JS unit run, most pytest suites — the workflow says so, once, in a
+line that is committed and reviewed like any other:
+
+```yaml
+- id: attest
+  run: echo "covered=$(amont attest covered --platform any)" >>"$GITHUB_OUTPUT"
+```
+
+That is a claim about the suite, so make it where the suite is defined
+rather than on the signing side: the machine holding the key should not
+get to decide that its results travel.
 
 The templates spell the verification out in portable sh, so a runner needs
 nothing beyond git and ssh-keygen. Where the amont binary is already on the

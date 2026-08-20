@@ -52,7 +52,12 @@ use crate::pushrefs::PushRef;
 /// First token of every note body. Versioned like `gate_stamp::FORMAT`: a
 /// future amont that changes the payload bumps this, and CI's verifier reads
 /// an unknown version as "no attestation".
-pub const FORMAT: &str = "amont-attest-v1";
+///
+/// v1 → v2 added the `platform` line. The bump is the point: a v1 verifier
+/// has no idea the tests it is about to skip ran on a different operating
+/// system, and reading v2 as unknown makes it run them. Fail-safe in the
+/// only direction this module ever fails.
+pub const FORMAT: &str = "amont-attest-v2";
 
 /// The notes ref, spelled the way `git notes --ref` wants it.
 pub const NOTES_REF: &str = "amont-attest";
@@ -105,13 +110,29 @@ fn key_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(KEY_DEFAULT))
 }
 
+/// Where a suite ran, as `<arch>-<os>` — `aarch64-macos`, `x86_64-linux`,
+/// `x86_64-windows`.
+///
+/// Coarser than a target triple on purpose: the libc flavour is not
+/// something `std` can answer, and the question a CI matrix actually asks is
+/// "did this run on MY leg". Coarse and honest beats precise and guessed.
+pub fn platform() -> String {
+    format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+}
+
 /// The exact bytes the signature covers. One datum per line, trailing
 /// newline included — CI reconstructs this from the note text, so the shape
 /// is a contract, not a convenience.
+///
+/// `platform` is signed alongside the gates because a pass is a pass **on
+/// something**: `cargo test` green on an arm64 Mac says nothing about the
+/// Windows leg of a matrix, and a note that omitted where it ran invited
+/// exactly that skip.
 pub fn payload(tree: &str, gates: &[String]) -> String {
     format!(
-        "{FORMAT}\ntree {tree}\ngates {}\namont {}\n",
+        "{FORMAT}\ntree {tree}\ngates {}\nplatform {}\namont {}\n",
         gates.join(" "),
+        platform(),
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -257,7 +278,16 @@ pub fn attest_push(remote: &str, refs: &[PushRef], gates: &[String]) {
 /// This is amont running in CI, which `docs/ci.md` forbids for CHECKS — the
 /// line held is narrower than the slogan: CI still never runs a check
 /// through amont; this verifies a document about checks that already ran.
-pub fn covered(signers: &std::path::Path, principal: &str) -> Option<String> {
+/// `require_platform` is the leg asking. `Some("x86_64-linux")` covers only
+/// a suite that ran there; `None` is the caller stating that this suite's
+/// result does not depend on where it ran (a pure-JS unit run, say) and is
+/// spelled `--platform any` in a committed workflow, where it is reviewed
+/// like any other line of the repository.
+pub fn covered(
+    signers: &std::path::Path,
+    principal: &str,
+    require_platform: Option<&str>,
+) -> Option<String> {
     let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
     let _ = crate::git::succeeds(&["fetch", "origin", &refspec]);
     let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])?;
@@ -276,24 +306,35 @@ pub fn covered(signers: &std::path::Path, principal: &str) -> Option<String> {
         let Some((payload, sig)) = split_note(&body) else {
             continue;
         };
+        // By prefix, not by position: the payload has grown a line once
+        // already, and a positional reader silently mis-assigns every field
+        // after an insertion rather than failing.
         let mut lines = payload.lines();
         if lines.next() != Some(FORMAT) {
             continue;
         }
-        let Some(tree) = lines.next().and_then(|l| l.strip_prefix("tree ")) else {
+        let field = |name: &str| {
+            payload
+                .lines()
+                .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(' ')))
+                .map(str::trim)
+        };
+        let (Some(tree), Some(gates), Some(ran_on)) =
+            (field("tree"), field("gates"), field("platform"))
+        else {
             continue;
         };
-        if tree != head_tree {
-            continue;
+        if tree != head_tree || gates.is_empty() {
+            continue; // wrong content, or a signed way of saying nothing
         }
-        let Some(gates) = lines.next().and_then(|l| l.strip_prefix("gates ")) else {
+        // The leg asking is not the leg that ran: a macOS `cargo test` is no
+        // evidence about Windows. `None` means the caller has stated this
+        // suite is platform-independent.
+        if require_platform.is_some_and(|want| want != ran_on) {
             continue;
-        };
-        if gates.trim().is_empty() {
-            continue; // a signed way of saying nothing is still nothing
         }
         if verify(&payload, &sig, signers, principal) {
-            return Some(gates.trim().to_string());
+            return Some(gates.to_string());
         }
     }
     None
@@ -438,7 +479,8 @@ mod tests {
         assert_eq!(lines[0], FORMAT);
         assert_eq!(lines[1], "tree abc123");
         assert_eq!(lines[2], "gates pre-push-pytest pre-push-cargo-test");
-        assert_eq!(lines[3], format!("amont {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(lines[3], format!("platform {}", platform()));
+        assert_eq!(lines[4], format!("amont {}", env!("CARGO_PKG_VERSION")));
         assert!(
             p.ends_with('\n'),
             "CI reconstructs these bytes; the trailing newline is part of them"
@@ -645,12 +687,24 @@ mod tests {
         );
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, "t@t.test").as_deref(),
+                covered(&signers, "t@t.test", Some(&platform())).as_deref(),
                 Some("pre-push-pytest"),
                 "a fresh clone verifies the attestation and reads the gates"
             );
             assert_eq!(
-                covered(&signers, "someone@else.test"),
+                covered(&signers, "t@t.test", None).as_deref(),
+                Some("pre-push-pytest"),
+                "`any` covers a platform-independent suite"
+            );
+            // The matrix case this exists for: another leg asking about a
+            // suite that never ran there.
+            assert_eq!(
+                covered(&signers, "t@t.test", Some("s390x-aix")),
+                None,
+                "a pass on one platform is not evidence about another"
+            );
+            assert_eq!(
+                covered(&signers, "someone@else.test", None),
                 None,
                 "an unlisted principal covers nothing"
             );
@@ -662,7 +716,7 @@ mod tests {
         git(&clone, &["add", "b.ts"]);
         git(&clone, &["commit", "-qm", "chore: b"]);
         in_repo(&clone, || {
-            assert_eq!(covered(&signers, "t@t.test"), None, "drifted tree");
+            assert_eq!(covered(&signers, "t@t.test", None), None, "drifted tree");
         });
         // Forgery: replace the remote's note with an unsigned one. covered's
         // own fetch pulls it in, and it must read as "no attestation".
@@ -684,7 +738,7 @@ mod tests {
         git(&clone, &["reset", "-q", "--hard", &head]);
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, "t@t.test"),
+                covered(&signers, "t@t.test", None),
                 None,
                 "a foreign note is not a stamp"
             );

@@ -8,6 +8,18 @@ missing here.
 
 ## v1.9.0 — 2026-08-20
 
+- **An attestation says where it ran, and a matrix leg only skips its own
+  platform's work.** The note gained a `platform` line (`aarch64-macos`,
+  `x86_64-linux`, …) and the format is now `amont-attest-v2`;
+  `amont attest covered` defaults to requiring it to match the verifier's
+  own platform, so a laptop's `cargo test` retires the macOS leg of a
+  matrix and leaves the Linux and Windows legs untouched — with no per-leg
+  configuration, since every leg runs the same one-liner. A suite whose
+  result really is platform-independent says so in the committed workflow
+  with `--platform any`, which is a claim about the suite and therefore
+  belongs where the suite is defined, not on the machine holding the key.
+  The version bump is the safety: a v1 verifier cannot know a v2 note ran
+  somewhere else, so it reads it as no attestation and runs the tests.
 - **`amont attest covered` — the attestation's verifying side as a CLI
   verb.** CI's step collapses from a 30-line sh block to
   `echo "covered=$(amont attest covered)" >> "$GITHUB_OUTPUT"`: fetch the

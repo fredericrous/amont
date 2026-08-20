@@ -67,6 +67,9 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  attestation covers for the tree checked out here (CI's
                  one-liner; prints nothing and exits 0 on any failure)
                  [--signers <file>] [--principal <id>]
+                 [--platform <arch-os>|any: which leg is asking; defaults
+                 to this machine's, so a matrix leg only skips work that
+                 really ran on ITS platform]
 
   --help         this text        --version   the binary's version
 
@@ -305,7 +308,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
-        Sub::Attest => (&[], &["--signers", "--principal"]),
+        Sub::Attest => (&[], &["--signers", "--principal", "--platform"]),
     }
 }
 
@@ -436,12 +439,13 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 eprint!("{USAGE}");
                 return 2;
             }
-            let (signers, principal) = match (
+            let (signers, principal, platform) = match (
                 flag_value(args, "--signers"),
                 flag_value(args, "--principal"),
+                flag_value(args, "--platform"),
             ) {
-                (Ok(s), Ok(p)) => (s, p),
-                (Err(msg), _) | (_, Err(msg)) => {
+                (Ok(s), Ok(p), Ok(pl)) => (s, p, pl),
+                (Err(msg), _, _) | (_, Err(msg), _) | (_, _, Err(msg)) => {
                     eprintln!("amont: {msg}");
                     return 2;
                 }
@@ -457,7 +461,20 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             else {
                 return 0; // an empty signers file names nobody to verify as
             };
-            if let Some(gates) = amont_runtime::attest::covered(&signers, &principal) {
+            // Default: this machine's platform. A matrix leg therefore skips
+            // only work that really ran on ITS platform, with no per-leg
+            // configuration — the ubuntu and windows legs of a Rust matrix
+            // simply find nothing covering them and run. `any` is the
+            // deliberate, committed statement that a suite's result does not
+            // depend on where it ran.
+            let want = match platform.as_deref() {
+                Some("any") => None,
+                Some(explicit) => Some(explicit.to_string()),
+                None => Some(amont_runtime::attest::platform()),
+            };
+            if let Some(gates) =
+                amont_runtime::attest::covered(&signers, &principal, want.as_deref())
+            {
                 println!("{gates}");
             }
             0
