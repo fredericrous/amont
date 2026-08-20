@@ -188,6 +188,40 @@ fn read_pip_audit(exit_ok: bool, out: &str) -> Report {
     }
 }
 
+/// The `site-packages` of the environment this project actually uses, if
+/// one is on disk.
+///
+/// `$VIRTUAL_ENV` first — an activated environment is the one whose imports
+/// are live — then the `.venv` uv and PEP 668 tooling create by convention.
+/// Layout differs by platform: `lib/python3.13/site-packages` everywhere
+/// except Windows, which uses `Lib/site-packages`, so the python-version
+/// directory is discovered rather than guessed.
+fn venv_site_packages(root: &str) -> Option<String> {
+    let candidates = std::env::var_os("VIRTUAL_ENV")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain(std::iter::once(std::path::Path::new(root).join(".venv")));
+    for venv in candidates {
+        let windows = venv.join("Lib").join("site-packages");
+        if windows.is_dir() {
+            return Some(windows.to_string_lossy().into_owned());
+        }
+        let Ok(entries) = std::fs::read_dir(venv.join("lib")) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if !e.file_name().to_string_lossy().starts_with("python") {
+                continue;
+            }
+            let sp = e.path().join("site-packages");
+            if sp.is_dir() {
+                return Some(sp.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 /// Run one audit tool from the repo root and read its answer.
 fn audited(argv: &[String]) -> Option<(bool, String)> {
     let root = common::repo_root();
@@ -273,11 +307,39 @@ pub fn python(refs: &[PushRef]) -> Outcome {
         );
         return Outcome::Unavailable;
     }
-    let argv = vec![
-        common::program("pip-audit"),
-        "-r".into(),
-        "requirements.txt".into(),
-    ];
+    let root = common::repo_root();
+    let argv = if std::path::Path::new(&root)
+        .join("requirements.txt")
+        .exists()
+    {
+        vec![
+            common::program("pip-audit"),
+            "-r".into(),
+            "requirements.txt".into(),
+        ]
+    } else if let Some(site_packages) = venv_site_packages(&root) {
+        // A uv/PEP-621 project has no requirements.txt, and EXPORTING one
+        // does not work either: `uv export` emits the workspace's own
+        // members and any private-index dependency, and pip-audit resolves
+        // a requirements file in a throwaway venv that can reach neither —
+        // it dies on "No matching distribution found". Auditing the
+        // INSTALLED tree resolves nothing, and is the truer question
+        // anyway: these are the versions actually imported.
+        vec![
+            common::program("pip-audit"),
+            "--path".into(),
+            site_packages,
+            // Workspace members are installed editable and are not on
+            // PyPI; without this each one is a line of noise.
+            "--skip-editable".into(),
+        ]
+    } else {
+        common::warn(
+            "audit-python: no requirements.txt, and no virtualenv to audit \
+             (looked at $VIRTUAL_ENV and .venv) — the audit did NOT run",
+        );
+        return Outcome::Unavailable;
+    };
     let Some((exit_ok, out)) = audited(&argv) else {
         return Outcome::Unavailable;
     };
@@ -292,6 +354,44 @@ pub fn python(refs: &[PushRef]) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// uv projects have no `requirements.txt`, so the venv is the only thing
+    /// left to audit — and before this, `audit-python` looked for nothing
+    /// else and reported "the audit did NOT run" forever. Six repositories
+    /// in one fleet were in exactly that state, one of them carrying 53
+    /// known vulnerabilities nobody had been told about.
+    #[test]
+    fn a_uv_project_is_audited_through_its_venv() {
+        let root = std::env::temp_dir().join(format!("audit-venv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Nothing on disk: nothing to audit, and we say so rather than
+        // inventing a target.
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(venv_site_packages(root.to_str().unwrap()), None);
+
+        // The posix layout, with the python version DISCOVERED — hard-coding
+        // `python3.13` would silently stop finding it after an upgrade.
+        let sp = root.join(".venv/lib/python3.13/site-packages");
+        std::fs::create_dir_all(&sp).unwrap();
+        assert_eq!(
+            venv_site_packages(root.to_str().unwrap()),
+            Some(sp.to_string_lossy().into_owned())
+        );
+
+        // The Windows layout, which has no version directory at all.
+        let win = std::env::temp_dir().join(format!("audit-venv-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&win);
+        let wsp = win.join(".venv/Lib/site-packages");
+        std::fs::create_dir_all(&wsp).unwrap();
+        assert_eq!(
+            venv_site_packages(win.to_str().unwrap()),
+            Some(wsp.to_string_lossy().into_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&win);
+    }
 
     fn tag(name: &str) -> PushRef {
         PushRef {

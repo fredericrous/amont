@@ -6,6 +6,28 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.13.3 — 2026-08-20
+
+- **`audit-python` understands uv projects, instead of never running.** It
+  invoked `pip-audit -r requirements.txt` and nothing else, so a PEP-621 /
+  uv project — which has `pyproject.toml` and `uv.lock` and no
+  `requirements.txt` — reported *"the audit did NOT run"* on every push,
+  forever. Found across a whole fleet: six Python repositories in that
+  state, one of them carrying 53 known vulnerabilities in 8 packages that
+  nobody had been told about. Installing `pip-audit` did not help and could
+  not have; the invocation was the bug.
+  It now audits the INSTALLED tree (`pip-audit --path <venv>/site-packages
+  --skip-editable`) when there is no requirements file. Exporting one is
+  not an option: `uv export` emits workspace members and private-index
+  dependencies, and pip-audit resolves a requirements file in a throwaway
+  venv that can reach neither, dying on "No matching distribution found".
+  The installed tree also happens to be the truer question — those are the
+  versions actually imported. `$VIRTUAL_ENV` wins over `.venv`, the python
+  version directory is discovered rather than guessed, and the Windows
+  `Lib/site-packages` layout is handled. With neither a requirements file
+  nor a virtualenv it still reports Unavailable, now naming both places it
+  looked.
+
 ## v1.13.2 — 2026-08-20
 
 - **The generated block is Prettier-clean, so amont stops contradicting
