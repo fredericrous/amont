@@ -8,6 +8,17 @@ missing here.
 
 ## v1.9.0 — 2026-08-20
 
+- **`amont attest covered` — the attestation's verifying side as a CLI
+  verb.** CI's step collapses from a 30-line sh block to
+  `echo "covered=$(amont attest covered)" >> "$GITHUB_OUTPUT"`: fetch the
+  notes ref, find the note on `HEAD` (or `HEAD^2` for a PR merge
+  checkout), insist on the format version and on tree equality with the
+  checkout, verify via `ssh-keygen -Y verify`, print the covered gate
+  names. Empty output and exit 0 on every failure — fail-open is the
+  contract, not the workflow author's option. `--signers`/`--principal`
+  default to the committed `allowed_signers` (`.forgejo/` then `.github/`)
+  and the first principal it names. The public templates keep the portable
+  sh and mention the one-liner.
 - **The manifest carries the team's policy.** A trusted `amont.conf` can now
   say `severity clippy warn`, `skip yamllint`, and `set commit.subjectMax 50`
   — committed, reviewed lines instead of sixty people running the same
