@@ -442,9 +442,23 @@ fn commit_style_json(style: &commit_style::Style, rows: &[commit_style::Setting]
     json::object(&all)
 }
 
-/// `{"stage_filter": ..., "pushed": ..., "checks": [...]}` — an object, not a
-/// bare array, so a field can be added later without changing the top-level
-/// shape.
+/// The format id this document declares, as its first field.
+///
+/// Every other machine-readable thing this tool writes carries one and
+/// REFUSES what it does not recognise — `amont-gate-v1`, `amont-held-v1`,
+/// `amont-skew-v1`, `amont-bypasses-v1`, and `amont-attest-v2`, whose bump
+/// exists precisely so a v1 verifier reads a v2 note as no note rather than
+/// misreading it. This document, the most public machine surface of the
+/// three, carried none: a reader had no way to state which contract it was
+/// written against, so a rename here would land as a silently different
+/// answer rather than a failure. Bump the version when a field's MEANING
+/// changes or one is removed; adding a field keeps it, which is what the
+/// object shape below was already for.
+pub const LIST_FORMAT: &str = "amont-list-v1";
+
+/// `{"format": "amont-list-v1", "stage_filter": ..., "checks": [...]}` — an
+/// object, not a bare array, so a field can be added later without changing
+/// the top-level shape.
 pub fn print_json(
     stage_filter: Option<check::Stage>,
     pushed: bool,
@@ -495,6 +509,7 @@ pub fn print_json(
     println!(
         "{}",
         json::object(&[
+            json::string_field("format", LIST_FORMAT),
             json::opt_string_field("stage_filter", stage_filter.map(check::Stage::as_str)),
             json::bool_field("pushed", pushed),
             format!("\"checks\":{}", json::array(&checks)),

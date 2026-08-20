@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.14.0 — 2026-08-20
+
+- **`amont list --json` says which contract it is, and the field names are
+  pinned to the page that documents them.** The document now opens with
+  `"format": "amont-list-v1"` — every other machine-readable thing this tool
+  writes carries a version and refuses what it does not recognise, and its
+  most public one carried none. Bump it when a field's meaning changes or a
+  field goes; adding a field does not, which is what the object shape was
+  always for. `docs/checks.md` gained the envelope list and a table of every
+  `checks[]` field, and a test now fails if the code emits a field the page
+  does not name **or** the page promises one the code does not emit. The
+  failure this closes is quiet by nature: a reader who guesses a field name
+  gets `null` back, not an error, and `null` reads as a plausible answer —
+  "nothing is skipped", "no override". That happened while verifying a
+  release, and the wrong number looked entirely right.
+
 ## v1.13.3 — 2026-08-20
 
 - **`audit-python` understands uv projects, instead of never running.** It
