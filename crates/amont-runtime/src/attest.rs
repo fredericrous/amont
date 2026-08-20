@@ -240,6 +240,99 @@ pub fn attest_push(remote: &str, refs: &[PushRef], gates: &[String]) {
     }
 }
 
+/// `amont attest covered` — the verifying side, as CI's one-liner.
+///
+/// Answers "which gates does a VALID attestation cover for the tree checked
+/// out here?", doing everything the workflow snippet used to spell out in
+/// sh: freshen the notes ref (best-effort), look for a note on `HEAD` and —
+/// for a PR's merge commit — on `HEAD^2`, insist on the format version,
+/// insist the attested tree is byte-for-byte `HEAD^{tree}`, and verify the
+/// signature against `allowed_signers`. Thirty lines of workflow copied into
+/// every repository is exactly the drift this binary exists to end.
+///
+/// `None` for every failure, and the CLI prints nothing and exits 0 on
+/// `None` — fail-open is the caller's contract, not its option. A CI step
+/// reading empty output runs its tests, which is always the safe answer.
+///
+/// This is amont running in CI, which `docs/ci.md` forbids for CHECKS — the
+/// line held is narrower than the slogan: CI still never runs a check
+/// through amont; this verifies a document about checks that already ran.
+pub fn covered(signers: &std::path::Path, principal: &str) -> Option<String> {
+    let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
+    let _ = crate::git::succeeds(&["fetch", "origin", &refspec]);
+    let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])?;
+    // HEAD first: a push event's checkout IS the attested commit. HEAD^2
+    // second: a PR checkout is a merge commit git made a moment ago, whose
+    // second parent is the pushed tip that carries the note — and the tree
+    // comparison below still measures against what is ACTUALLY checked out,
+    // so a merge whose tree drifted from the tested tip never skips.
+    for candidate in ["HEAD", "HEAD^2"] {
+        let Some(commit) = crate::git::stdout(&["rev-parse", "--verify", candidate]) else {
+            continue;
+        };
+        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &commit]) else {
+            continue;
+        };
+        let Some((payload, sig)) = split_note(&body) else {
+            continue;
+        };
+        let mut lines = payload.lines();
+        if lines.next() != Some(FORMAT) {
+            continue;
+        }
+        let Some(tree) = lines.next().and_then(|l| l.strip_prefix("tree ")) else {
+            continue;
+        };
+        if tree != head_tree {
+            continue;
+        }
+        let Some(gates) = lines.next().and_then(|l| l.strip_prefix("gates ")) else {
+            continue;
+        };
+        if gates.trim().is_empty() {
+            continue; // a signed way of saying nothing is still nothing
+        }
+        if verify(&payload, &sig, signers, principal) {
+            return Some(gates.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Where a repository keeps its `allowed_signers` when the caller does not
+/// say — the Forgejo location first, the GitHub one second. `None` when
+/// neither exists, which the CLI reads as "nothing is covered".
+pub fn default_signers() -> Option<PathBuf> {
+    [".forgejo/allowed_signers", ".github/allowed_signers"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+}
+
+/// The first principal an `allowed_signers` file names — the identity to
+/// verify against when the caller does not pass `--principal`. One key, one
+/// principal is the overwhelmingly common shape of this file; a multi-signer
+/// team passes the flag.
+pub fn first_principal(signers: &std::path::Path) -> Option<String> {
+    let body = std::fs::read_to_string(signers).ok()?;
+    body.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string)
+}
+
+/// A note body back into the exact bytes that were signed, plus the
+/// signature block. The blank-line split ate the payload's trailing newline;
+/// it is part of the signed bytes, so it goes back.
+fn split_note(body: &str) -> Option<(String, String)> {
+    let (payload, sig) = body.split_once("\n\n")?;
+    if !sig.starts_with("-----BEGIN SSH SIGNATURE-----") {
+        return None;
+    }
+    Some((format!("{payload}\n"), sig.to_string()))
+}
+
 /// Push the notes ref, marked so the recursive pre-push yields.
 ///
 /// Not `git::succeeds` — that helper cannot set an environment variable, and
@@ -497,6 +590,99 @@ mod tests {
             attest_push("origin", &[real], &[]);
         });
         assert!(git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The half CI actually calls, from CI's own vantage point: a fresh
+    /// clone. `covered` fetches the notes ref itself, verifies, and answers
+    /// with the gates — then stops answering the moment the tree drifts or
+    /// the note is replaced by something unsigned.
+    #[test]
+    fn covered_answers_in_a_fresh_clone_and_rejects_drift_and_forgery() {
+        let d = dir("covered");
+        let (key, signers) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo("covered-work");
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let push_ref = PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: head.clone(),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        };
+        in_repo(&work, || {
+            attest_push("origin", &[push_ref], &["pre-push-pytest".into()]);
+        });
+        let clone = d.join("ci-checkout");
+        git(
+            &d,
+            &[
+                "clone",
+                "-q",
+                "--template=",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        in_repo(&clone, || {
+            assert_eq!(
+                covered(&signers, "t@t.test").as_deref(),
+                Some("pre-push-pytest"),
+                "a fresh clone verifies the attestation and reads the gates"
+            );
+            assert_eq!(
+                covered(&signers, "someone@else.test"),
+                None,
+                "an unlisted principal covers nothing"
+            );
+        });
+        // Tree drift: a new commit in the checkout is not the attested tree.
+        std::fs::write(clone.join("b.ts"), "y").unwrap();
+        git(&clone, &["config", "user.email", "t@t.test"]);
+        git(&clone, &["config", "user.name", "t"]);
+        git(&clone, &["add", "b.ts"]);
+        git(&clone, &["commit", "-qm", "chore: b"]);
+        in_repo(&clone, || {
+            assert_eq!(covered(&signers, "t@t.test"), None, "drifted tree");
+        });
+        // Forgery: replace the remote's note with an unsigned one. covered's
+        // own fetch pulls it in, and it must read as "no attestation".
+        git(
+            &work,
+            &[
+                "notes", "--ref", NOTES_REF, "add", "-f", "-m", "garbage", &head,
+            ],
+        );
+        git(
+            &work,
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}"),
+            ],
+        );
+        git(&clone, &["reset", "-q", "--hard", &head]);
+        in_repo(&clone, || {
+            assert_eq!(
+                covered(&signers, "t@t.test"),
+                None,
+                "a foreign note is not a stamp"
+            );
+        });
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
     }

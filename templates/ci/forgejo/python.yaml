@@ -23,6 +23,9 @@ jobs:
       # leaves `covered` empty and the gated steps run. Requires
       # .forgejo/allowed_signers; full explanation in the js template and
       # https://fredericrous.github.io/amont/ci.html
+      # With the amont binary on the runner, this whole step is one line
+      # doing the same dance in the one tested place:
+      #   echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
       - id: attest
         run: |
           command -v ssh-keygen >/dev/null || exit 0

@@ -29,6 +29,9 @@ jobs:
       # attestation can ever save is a redundant run. Requires
       # .forgejo/allowed_signers with a line like:
       #   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
+      # With the amont binary on the runner, this whole step is one line
+      # doing the same dance in the one tested place:
+      #   echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
       - id: attest
         run: |
           command -v ssh-keygen >/dev/null || exit 0

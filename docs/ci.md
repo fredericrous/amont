@@ -136,6 +136,26 @@ executes amont — the templates' `attest` step verifies the note with stock
    not run" is not "passed" — so a CI step with no local mirror (an e2e
    suite, an image build) is never skippable by construction.
 
+The templates spell the verification out in portable sh, so a runner needs
+nothing beyond git and ssh-keygen. Where the amont binary is already on the
+runner (a self-hosted runner image, say), the whole step collapses to one
+line that does the same dance — fetch the ref, find the note on `HEAD` or
+`HEAD^2`, compare trees, verify — in the one tested place instead of a
+30-line block copied into every repository:
+
+```yaml
+- id: attest
+  run: echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
+```
+
+`attest covered` prints the covered gate names or nothing, and exits 0
+either way — fail-open is the contract, not an option the workflow author
+might forget. `--signers` and `--principal` default to the committed
+`allowed_signers` file (`.forgejo/` first, `.github/` second) and the first
+principal it names. This is the one job amont does in CI, and it does not
+repeal the rule above: verifying a document about checks that already ran
+is not running a check.
+
 What signs is the machine that ran the tests, so the trust statement is
 exactly "whoever holds `amont.attestKey` vouches for this tree" — the same
 trust you extend by pushing at all when you are the only committer. On a
