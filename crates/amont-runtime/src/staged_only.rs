@@ -39,7 +39,12 @@
 //! worktree. See [`Held`].
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+// Only the unix signal path keeps integer statics (the self-pipe fd and the
+// pending signal); Windows hands its handler a fresh thread and needs
+// neither, so an unconditional import is an unused one there.
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
 use std::sync::Mutex;
 
 use crate::ui::{error_sign, warning_sign};
