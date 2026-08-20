@@ -39,6 +39,48 @@ prints the condition each inert check is waiting on.
   blocking a commit, because CI is the hard gate and not every developer has
   every toolchain installed.
 
+## `--json`, the machine contract
+
+`amont list --json` is what an agent or a script reads instead of parsing the
+human table, so its field names are a contract rather than an implementation
+detail. Every document it prints declares which contract it is:
+
+```json
+{"format": "amont-list-v1", "stage_filter": null, "pushed": false, "checks": [...]}
+```
+
+Assert that `format` before reading anything else, the same way this tool
+refuses a gate stamp or an attestation whose version it does not know. The
+version changes when a field's MEANING changes or a field is removed; adding
+a field does not change it, which is why the top level is an object rather
+than a bare array.
+
+**Envelope**: `format`, `stage_filter`, `pushed`, `checks`, `commit_style`,
+`branch_style`, `bypasses`, `conventions_apply`.
+
+**Each entry of `checks`**:
+
+| field | what it says |
+| --- | --- |
+| `id` | `<trigger>-<name>`, the full spelling |
+| `short_name` | the name without its trigger |
+| `stage` | which trigger runs it |
+| `source` | `builtin`, or `declared` for an `amont.conf` check |
+| `declared_severity` | what the check ships as |
+| `effective_severity` | what it is here, after overrides |
+| `severity_overridden` | whether those two differ |
+| `severity_source` | `config` or `policy` when overridden, else `null` |
+| `fix` | whether it can rewrite the file |
+| `status` | `ready`, `inert`, `skipped`, `unavailable` |
+| `reason` | why, in the words the text view uses |
+| `scope_files` | extensions it fires on (`[]` means always) |
+| `scope_opt_in` | files whose presence opts the repository in |
+| `command` | the command a declared check runs, else `null` |
+
+A field named here and absent there — or the reverse — is a bug this page's
+own test fails on, because a reader who guesses a field name gets `null`
+rather than an error, and `null` reads as a perfectly plausible answer.
+
 ## `commit-msg`
 
 Validates the summary line and reformats the message. `--no-verify` skips it
