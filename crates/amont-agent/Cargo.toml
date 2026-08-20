@@ -1,0 +1,52 @@
+[package]
+name = "amont-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A guard that inspects a shell command before Claude Code runs it"
+readme = "../../README.md"
+keywords = ["claude", "hooks", "guard", "shell", "git"]
+categories = ["development-tools", "command-line-utilities"]
+
+# NOT `rust-version.workspace = true`, for the same reason `amont-fleet` refuses
+# it: the workspace floor of 1.74 is a verified claim about the
+# dependency-free COMMIT PATH, and this crate is not on it. Stating a floor here
+# means stating the one this crate's own tree imposes.
+#
+# 1.74 is what `cargo +1.74.0 check -p amont-agent` accepts against the
+# committed Cargo.lock — serde_json's floor is far below it, and nothing in this
+# crate reaches past `std::io::IsTerminal` (1.70).
+#
+# The honest caveat, which belongs here rather than in a commit message: CI's
+# `msrv` job runs `cargo "+$MSRV" check -p amont -p amont-runtime`. It does NOT
+# check this crate, so unlike the workspace floor this number has no guard and
+# will drift the first time a dependency raises its own. Either add
+# `-p amont-agent` there, or read this line as documentation rather than a
+# promise.
+rust-version = "1.74"
+
+[dependencies]
+# The runtime is reached for its `json` emitter (so `--json` here looks like
+# `amont list --json`), `ui::sanitize`, `config`, and `hookfile`'s atomic swap.
+amont-runtime.workspace = true
+
+# For READING, not writing. Two things need a real parser and neither is ours:
+# Claude Code's hook payload, and the user's `settings.json`.
+#
+# Deliberately no `serde` derive. The payload's shape is defined by somebody
+# else and grows between releases; `Value` plus hand-written accessors turns a
+# missing or retyped field into "no opinion", which is this crate's whole
+# posture. A `#[derive(Deserialize)]` struct turns the same field into a hard
+# parse error, and the temptation is then to treat that error as an opinion.
+#
+# `preserve_order` is load-bearing, not cosmetic: without it, rewriting a user's
+# hand-edited `settings.json` reorders their keys alphabetically and produces a
+# diff that looks like we rewrote the file. We did.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# NO [dev-dependencies]. `serde_json` above is a normal dependency and is
+# therefore already in scope for this crate's tests — restating it buys nothing
+# and costs two places to bump. (`crates/amont` keeps its dev-dependency on it
+# precisely because there it must NOT reach the shipped binary.)
