@@ -122,7 +122,7 @@ check — one that reports on every commit and says which line and what was wron
 Silently ignoring it would mean a check somebody committed months ago has never
 run once and nothing ever said so.
 
-## Repo policy — `severity` and `skip` lines
+## Repo policy — `severity`, `skip`, and `set` lines
 
 The manifest can also carry the TEAM's decisions about the built-ins, so
 "clippy is warn-only here" is a committed, reviewed line instead of sixty
@@ -157,6 +157,32 @@ un-skip, so there is no conflict to order.
 (On a git too old for `--show-scope`, this degrades fail-safe: ALL git
 config beats policy. See [configuration](configuration.md).)
 
+### `set` — committed thresholds and commit style
+
+The same file can carry the numeric and style knobs the checks consult:
+
+```
+set  largeFileWarn     1      # warn above 1 MB, in this repository
+set  commit.subjectMax 50     # the whole team's subject budget
+```
+
+`set <key> <value>` takes the key exactly as you would write it after
+`git config amont.` — matched case-insensitively, values parsed by git
+itself, so `set largeFileBlock 2k` means what `git config` would mean by
+it and a bad value complains the same way. The same ladder applies: a
+policy value beats your global config, and your local config in that
+repository still beats the policy.
+
+Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
+`commit.gitmoji`, `commit.subjectMax`, `commit.descriptionMax`,
+`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`. Any other
+key is refused with its line number — most deliberately `amont.fix`,
+because a committed file must not change what already-trusted commands
+may DO to your working tree (see below). One caveat worth reading before
+committing it: `set timeout` accepts the full configured range, including
+`86400` and `0` (which disables the per-check deadline entirely) — a
+review of that line is a review of how long a hook may hang everyone.
+
 ## What a repository cannot do
 
 **Take a built-in's id.** `pre-push  branch-protect  …` is refused: it would
@@ -175,11 +201,11 @@ by `hook.skip` or by a severity override, so it would run anonymously. Two lines
 with the same name on *different* stages are two ids, and both run.
 
 **Grant its own trust, or reach the machine-level knobs.** Policy stops at
-severities and skips: `amont.fix` (rewriting your working tree), the trust
-decision itself, `amont.conventions`, and the observability opt-outs stay
-per-machine — a committed file must not change what already-approved
-commands are permitted to DO, which is a different consent than "I read
-these commands".
+severities, skips, and the allowlisted `set` keys: `amont.fix` (rewriting
+your working tree), the trust decision itself, `amont.conventions`, and
+the observability opt-outs stay per-machine — a committed file must not
+change what already-approved commands are permitted to DO, which is a
+different consent than "I read these commands".
 
 **Run before the built-ins.** Externals are appended to each stage, always. A
 third-party command must not be able to delay `pre-push-branch-protect`, and

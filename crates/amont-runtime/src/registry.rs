@@ -506,17 +506,10 @@ impl Overrides {
             // `--get-regexp` with no matches ALSO exits non-zero, so `None`
             // here can mean "no keys" as well as "old git" — both fold the
             // same way: nothing below, policy, nothing above.
-            None => {
-                let plain = crate::git::stdout(&["config", "--get-regexp", r"^amont\.severity\."]);
-                let mut o = Overrides::default();
-                o.fold_plain(plain.as_deref().unwrap_or_default(), Source::Config);
-                let mut with_policy = Overrides::default();
-                with_policy.fold_policy(policy);
-                for (k, v) in o.0 {
-                    with_policy.0.insert(k, v);
-                }
-                with_policy
-            }
+            None => Overrides::from_plain_with_policy_below(
+                crate::git::stdout(&["config", "--get-regexp", r"^amont\.severity\."]),
+                policy,
+            ),
         }
     }
 
@@ -548,6 +541,20 @@ impl Overrides {
         o.fold_plain(&below, Source::Config);
         o.fold_policy(policy);
         o.fold_plain(&above, Source::Config);
+        o
+    }
+
+    /// The DEGRADED fold — policy below every config scope, i.e. all git
+    /// config beats policy — for a git that cannot label scopes. `pub`
+    /// because the fleet's severity column must degrade the same way the
+    /// dispatcher does, not invent a third opinion.
+    pub fn from_plain_with_policy_below(
+        plain: Option<String>,
+        policy: &crate::policy::Policy,
+    ) -> Overrides {
+        let mut o = Overrides::default();
+        o.fold_policy(policy);
+        o.fold_plain(plain.as_deref().unwrap_or_default(), Source::Config);
         o
     }
 

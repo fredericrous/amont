@@ -73,8 +73,10 @@ pub enum ParseError {
     BadSeverity(String),
     /// A `tool` line with the wrong shape.
     BadTool,
-    /// A `severity`/`skip` line with the wrong shape; carries the usage.
+    /// A `severity`/`skip`/`set` line with the wrong shape; carries the usage.
     BadPolicyLine(&'static str),
+    /// A `set` line naming a key policy may not reach.
+    UnsettableKey(String),
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -110,6 +112,10 @@ impl std::fmt::Display for ParseError {
                 "a tool pin is exactly `tool <program> <version-substring>`"
             ),
             ParseError::BadPolicyLine(usage) => write!(f, "a policy line is `{usage}`"),
+            ParseError::UnsettableKey(k) => write!(
+                f,
+                "set {k:?} is not a policy-settable key — see docs/custom-checks.md"
+            ),
             ParseError::FixOnPrePush => write!(
                 f,
                 "`fix` is only for pre-commit — a pre-push hook must not rewrite files"
@@ -195,7 +201,29 @@ pub enum PolicyLine {
     Severity { target: String, severity: Severity },
     /// `skip <check|short-name|trigger>`
     Skip { target: String },
+    /// `set <key> <value>` — a committed default for an allowlisted
+    /// `amont.*` config key. `key` is the FULL git key (`amont.timeout`),
+    /// canonicalised from whatever case the file used, because git keys are
+    /// case-insensitive and a policy file stricter than git is a trap.
+    Set { key: String, value: String },
 }
+
+/// The keys `set` may reach, in canonical spelling. Deliberately absent:
+/// `fix` (a committed file must not change what already-trusted commands may
+/// DO to your working tree — a different consent than "I read these
+/// commands"), `trusted`, `conventions`, `recordBypasses`, `progress`,
+/// `knownIdentity`, and the `severity.*` family (its own line kind).
+pub const SETTABLE: &[&str] = &[
+    "largeFileWarn",
+    "largeFileBlock",
+    "commit.gitmoji",
+    "commit.subjectMax",
+    "commit.descriptionMax",
+    "commit.bodyWrap",
+    "autoRebase",
+    "timeout",
+    "testPushedTree",
+];
 
 impl PolicyLine {
     /// The one-line rendering the trust prompt shows — consent must see the
@@ -206,6 +234,7 @@ impl PolicyLine {
                 format!("severity  {target}  {}", severity.as_str())
             }
             PolicyLine::Skip { target } => format!("skip      {target}"),
+            PolicyLine::Set { key, value } => format!("set       {key}  {value}"),
         }
     }
 }
@@ -242,6 +271,10 @@ impl Line {
                 what: PolicyLine::Severity { target, .. } | PolicyLine::Skip { target },
                 ..
             } => target,
+            Line::Policy {
+                what: PolicyLine::Set { key, .. },
+                ..
+            } => key,
             Line::Broken { name, .. } => name,
         }
     }
@@ -726,6 +759,37 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                 format!("{MANIFEST}:{lineno}"),
                 None,
                 ParseError::BadPolicyLine("skip <check>"),
+            ),
+        };
+    }
+    if line == "set" || line.starts_with("set ") || line.starts_with("set\t") {
+        let mut it = line.split_whitespace().skip(1);
+        return match (it.next(), it.next(), it.next()) {
+            (Some(key), Some(value), None) => {
+                // Case-insensitive against the allowlist, canonical spelling
+                // stored — `set commit.subjectmax 72` must work, because git
+                // would have accepted the key in any case.
+                match SETTABLE.iter().find(|k| k.eq_ignore_ascii_case(key)) {
+                    Some(canonical) => Line::Policy {
+                        what: PolicyLine::Set {
+                            key: format!("amont.{canonical}"),
+                            value: value.to_string(),
+                        },
+                        lineno,
+                    },
+                    None => broken_at(
+                        lineno,
+                        format!("{MANIFEST}:{lineno}"),
+                        None,
+                        ParseError::UnsettableKey(key.to_string()),
+                    ),
+                }
+            }
+            _ => broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadPolicyLine("set <key> <value>"),
             ),
         };
     }

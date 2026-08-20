@@ -67,6 +67,108 @@ fn typed(key: &str, ty: &str) -> Value<String> {
     }
 }
 
+/// As [`typed`], but reading a POLICY-SUPPLIED literal instead of the
+/// machine's config: `git -c <key>=<raw> config --type=<ty> --get <key>`.
+/// GIT parses the value, so `Value::Bad` and `complain` work unchanged and
+/// no second config dialect exists — the founding argument of this module.
+fn typed_literal(key: &str, raw: &str, ty: Option<&str>) -> Value<String> {
+    let assignment = format!("{key}={raw}");
+    let mut args: Vec<&str> = vec!["-c", &assignment, "config"];
+    let type_flag = ty.map(|t| format!("--type={t}"));
+    if let Some(tf) = &type_flag {
+        args.push(tf);
+    }
+    args.extend(["--get", key]);
+    let Some(out) = git::output(&args) else {
+        return Value::Unset;
+    };
+    match out.code {
+        0 => Value::Set(out.stdout),
+        1 => Value::Unset,
+        _ => Value::Bad {
+            why: first_line(&out.stderr),
+        },
+    }
+}
+
+/// The ladder, as a short-circuit rather than a general mechanism:
+///
+///   policy has no value for `key`      → [`typed`], byte-for-byte as before
+///   key set at local/worktree/command  → [`typed`] — the machine wins
+///   otherwise                          → [`typed_literal`] — policy wins
+///
+/// The invariant this shape buys: a repository with no `set` lines spawns
+/// not one extra git process anywhere — the scoped scan below runs only
+/// when the policy actually carries settings.
+fn resolve(key: &str, ty: Option<&str>) -> Value<String> {
+    let policy = crate::policy::current();
+    let Some(raw) = policy.settings.get(key) else {
+        return match ty {
+            Some(t) => typed(key, t),
+            None => untyped(key),
+        };
+    };
+    if key_set_above_policy(key) {
+        return match ty {
+            Some(t) => typed(key, t),
+            None => untyped(key),
+        };
+    }
+    typed_literal(key, raw, ty)
+}
+
+/// The raw read `enumerated` has always done, factored so `resolve` can
+/// route it.
+fn untyped(key: &str) -> Value<String> {
+    let Some(out) = git::output(&["config", "--get", key]) else {
+        return Value::Unset;
+    };
+    match out.code {
+        0 => Value::Set(out.stdout),
+        1 => Value::Unset,
+        _ => Value::Bad {
+            why: first_line(&out.stderr),
+        },
+    }
+}
+
+/// Is `key` set at a scope that outranks policy (local/worktree/command)?
+///
+/// One lazily-cached `git config --show-scope --get-regexp '^amont\.'` for
+/// the whole process — this is the PRECEDENCE reader, deliberately separate
+/// from [`scope_of`], which is `--show-origin`-based and display-oriented.
+/// Scope words `system`/`global` rank below policy; every other word —
+/// `local`, `worktree`, `command`, and whatever a future git invents —
+/// ranks above, because misreading a local as below would let a file pulled
+/// from a remote silently override a person's explicit machine setting.
+///
+/// On a git too old for `--show-scope` the cache is `None` and this
+/// DEGRADES fail-safe: any set key counts as above, i.e. all git config
+/// beats policy.
+fn key_set_above_policy(key: &str) -> bool {
+    static SCOPED: std::sync::OnceLock<Option<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    let above = SCOPED.get_or_init(|| {
+        crate::git::stdout(&["config", "--show-scope", "--get-regexp", r"^amont\."]).map(|scoped| {
+            scoped
+                .lines()
+                .filter_map(|line| {
+                    let (scope, rest) = line.split_once('\t')?;
+                    match scope {
+                        "system" | "global" => None,
+                        _ => rest.split_whitespace().next().map(str::to_ascii_lowercase),
+                    }
+                })
+                .collect()
+        })
+    });
+    match above {
+        Some(set) => set.contains(&key.to_ascii_lowercase()),
+        // Degraded: no scope information — any set key beats policy.
+        None => untyped(key).is_set(),
+    }
+}
+
 /// Git's `fatal:` line, without the noise around it. Empty stderr still yields
 /// something printable, because a warning that names no cause is a puzzle.
 fn first_line(stderr: &str) -> String {
@@ -80,7 +182,7 @@ fn first_line(stderr: &str) -> String {
 }
 
 pub fn boolean(key: &str) -> Value<bool> {
-    match typed(key, "bool") {
+    match resolve(key, Some("bool")) {
         Value::Set(v) => match v.as_str() {
             "true" => Value::Set(true),
             "false" => Value::Set(false),
@@ -96,7 +198,7 @@ pub fn boolean(key: &str) -> Value<bool> {
 /// An integer, in git's own spelling — which includes the `k`/`m`/`g` suffixes
 /// git accepts, since `--type=int` expands them before we see them.
 pub fn integer(key: &str) -> Value<i64> {
-    match typed(key, "int") {
+    match resolve(key, Some("int")) {
         Value::Set(v) => match v.parse::<i64>() {
             Ok(n) => Value::Set(n),
             Err(_) => Value::Bad {
@@ -115,12 +217,9 @@ pub fn integer(key: &str) -> Value<i64> {
 /// every accepted spelling, because a rejection that does not say what was
 /// wanted sends the reader to the documentation for a list we already hold.
 pub fn enumerated(key: &str, allowed: &[&'static str]) -> Value<&'static str> {
-    let Some(out) = git::output(&["config", "--get", key]) else {
-        return Value::Unset;
-    };
-    match out.code {
-        0 => {
-            let got = out.stdout.trim().to_ascii_lowercase();
+    match resolve(key, None) {
+        Value::Set(v) => {
+            let got = v.trim().to_ascii_lowercase();
             match allowed.iter().find(|a| a.eq_ignore_ascii_case(&got)) {
                 Some(hit) => Value::Set(hit),
                 None => Value::Bad {
@@ -128,10 +227,8 @@ pub fn enumerated(key: &str, allowed: &[&'static str]) -> Value<&'static str> {
                 },
             }
         }
-        1 => Value::Unset,
-        _ => Value::Bad {
-            why: first_line(&out.stderr),
-        },
+        Value::Unset => Value::Unset,
+        Value::Bad { why } => Value::Bad { why },
     }
 }
 
@@ -219,17 +316,40 @@ pub fn enumerated_or(key: &str, allowed: &[&'static str], default: &'static str)
 /// `contains`.
 pub fn present(prefix: &str) -> BTreeSet<String> {
     let pattern = format!("^{}", regex_escape(prefix));
+    let policy_names = || -> BTreeSet<String> {
+        crate::policy::current()
+            .settings
+            .keys()
+            .filter(|k| {
+                k.to_ascii_lowercase()
+                    .starts_with(&prefix.to_ascii_lowercase())
+            })
+            .map(|k| k.to_ascii_lowercase())
+            .collect()
+    };
     let Some(out) = git::output(&["config", "--get-regexp", &pattern]) else {
-        return BTreeSet::new();
+        return policy_names();
     };
     if out.code != 0 {
-        return BTreeSet::new();
+        return policy_names();
     }
-    out.stdout
+    let mut names: BTreeSet<String> = out
+        .stdout
         .lines()
         .filter_map(|l| l.split_whitespace().next())
         .map(|k| k.to_ascii_lowercase())
-        .collect()
+        .collect();
+    names.extend(
+        crate::policy::current()
+            .settings
+            .keys()
+            .filter(|k| {
+                k.to_ascii_lowercase()
+                    .starts_with(&prefix.to_ascii_lowercase())
+            })
+            .map(|k| k.to_ascii_lowercase()),
+    );
+    names
 }
 
 /// Is `key` among the names [`present`] returned? Case-insensitive, because
@@ -265,6 +385,8 @@ pub enum Scope {
     Global,
     System,
     CommandLine,
+    /// The value in effect comes from the repository's committed policy.
+    Policy,
     Other,
 }
 
@@ -276,6 +398,7 @@ impl Scope {
             Scope::Global => "global",
             Scope::System => "system",
             Scope::CommandLine => "command line",
+            Scope::Policy => "amont.conf",
             Scope::Other => "other",
         }
     }
@@ -286,6 +409,12 @@ impl Scope {
 /// `Default` for a key nobody set, which is also the answer when git cannot be
 /// asked — the value in use is the shipped one either way.
 pub fn scope_of(key: &str) -> Scope {
+    // Display mirrors resolution: policy owns the key unless something above
+    // it on the ladder set it. The precedence answer comes from the same
+    // classifier `resolve` uses, never re-derived from file paths.
+    if crate::policy::current().settings.contains_key(key) && !key_set_above_policy(key) {
+        return Scope::Policy;
+    }
     let Some(out) = git::output(&["config", "--show-origin", "--get", key]) else {
         return Scope::Default;
     };

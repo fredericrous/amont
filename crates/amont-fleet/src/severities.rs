@@ -132,7 +132,16 @@ pub fn read(repo: &Path) -> Vec<SeverityOverride> {
     else {
         return Vec::new();
     };
-    resolve(repo, parse(&String::from_utf8_lossy(&out.stdout)))
+    // The committed policy's severity lines, ONLY when trusted — untrusted
+    // policy does not apply, and a WARN column counting a downgrade the
+    // dispatcher never enforces is the exact bug this module's doc records.
+    let policy = if amont_runtime::trust::state(repo) == amont_runtime::trust::State::Trusted {
+        let lines = amont_runtime::manifest::read_lines(repo);
+        amont_runtime::policy::Policy::from_lines(&lines).0
+    } else {
+        amont_runtime::policy::Policy::default()
+    };
+    resolve(repo, parse(&String::from_utf8_lossy(&out.stdout)), &policy)
 }
 
 /// Turn raw entries into resolved ones by asking which value git applies.
@@ -158,7 +167,11 @@ pub fn read(repo: &Path) -> Vec<SeverityOverride> {
 ///   dispatcher actually applies to `pre-commit-clippy`; the WARN column
 ///   counting `pre-commit warn` as covering that check anyway was reporting a
 ///   downgrade nothing enforces.
-fn resolve(repo: &Path, raws: Vec<RawEntry>) -> Vec<SeverityOverride> {
+fn resolve(
+    repo: &Path,
+    raws: Vec<RawEntry>,
+    policy: &amont_runtime::policy::Policy,
+) -> Vec<SeverityOverride> {
     let mut applied: BTreeMap<&str, Option<String>> = BTreeMap::new();
     for raw in &raws {
         if !applied.contains_key(raw.check.as_str()) {
@@ -174,14 +187,51 @@ fn resolve(repo: &Path, raws: Vec<RawEntry>) -> Vec<SeverityOverride> {
         }
     }
 
-    // The same lines `read` already fetched, re-fed to the runtime's own
-    // fold — not a second `git config` sweep, and not a local guess at what
-    // "precedence order" means.
-    let config_text: String = raws
-        .iter()
-        .map(|r| format!("amont.severity.{} {}\n", r.check, r.value))
-        .collect();
-    let overrides = amont_runtime::registry::Overrides::from_config(Some(config_text));
+    // The runtime's own fold, policy included — the ladder needs scope
+    // labels, so this asks `--show-scope` in THAT repository and degrades
+    // exactly as the dispatcher degrades (all config beats policy) when the
+    // git there is too old to label scopes.
+    let overrides = match amont_runtime::git::stdout_in(
+        repo,
+        &[
+            "config",
+            "--show-scope",
+            "--get-regexp",
+            r"^amont\.severity\.",
+        ],
+    ) {
+        Some(scoped) => amont_runtime::registry::Overrides::from_scoped(&scoped, policy),
+        None => amont_runtime::registry::Overrides::from_plain_with_policy_below(
+            Some(
+                raws.iter()
+                    .map(|r| format!("amont.severity.{} {}\n", r.check, r.value))
+                    .collect(),
+            ),
+            policy,
+        ),
+    };
+
+    let policy_rows = policy.severities.iter().map(|(target, severity)| {
+        // Effective when the fold's winner for some covered check is THIS
+        // key, sourced from policy — the same duplicates-count-as-winners
+        // stance the config rows take.
+        let effective = covers(target).iter().any(|check| {
+            overrides
+                .applied_with_source(check)
+                .is_some_and(|(k, _, src)| {
+                    k == target && src == amont_runtime::registry::Source::Policy
+                })
+        });
+        SeverityOverride {
+            effective,
+            check: target.clone(),
+            level: Level::of(severity.as_str()),
+            value: severity.as_str().to_string(),
+            scope: crate::skips::Scope::Other {
+                origin: "amont.conf".to_string(),
+            },
+        }
+    });
 
     raws.iter()
         .map(|r| {
@@ -211,6 +261,7 @@ fn resolve(repo: &Path, raws: Vec<RawEntry>) -> Vec<SeverityOverride> {
                 scope: r.scope.clone(),
             }
         })
+        .chain(policy_rows)
         .collect()
 }
 
