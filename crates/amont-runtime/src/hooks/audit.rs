@@ -372,7 +372,15 @@ mod tests {
 
         // The posix layout, with the python version DISCOVERED — hard-coding
         // `python3.13` would silently stop finding it after an upgrade.
-        let sp = root.join(".venv/lib/python3.13/site-packages");
+        // Joined segment by segment, NOT as one "a/b/c" literal: on Windows
+        // the literal keeps its forward slashes while the code under test
+        // returns backslashes, and the test fails on a difference that is
+        // only in the expectation.
+        let sp = root
+            .join(".venv")
+            .join("lib")
+            .join("python3.13")
+            .join("site-packages");
         std::fs::create_dir_all(&sp).unwrap();
         assert_eq!(
             venv_site_packages(root.to_str().unwrap()),
@@ -382,7 +390,7 @@ mod tests {
         // The Windows layout, which has no version directory at all.
         let win = std::env::temp_dir().join(format!("audit-venv-win-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&win);
-        let wsp = win.join(".venv/Lib/site-packages");
+        let wsp = win.join(".venv").join("Lib").join("site-packages");
         std::fs::create_dir_all(&wsp).unwrap();
         assert_eq!(
             venv_site_packages(win.to_str().unwrap()),
