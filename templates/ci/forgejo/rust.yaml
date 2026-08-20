@@ -23,6 +23,12 @@ jobs:
       # leaves `covered` empty and the gated steps run. Requires
       # .forgejo/allowed_signers; full explanation in the js template and
       # https://fredericrous.github.io/amont/ci.html
+      # With the amont binary on the runner, this whole step is one line
+      # doing the same dance in the one tested place:
+      #   echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
+      # It defaults to THIS machine's platform, so a matrix leg skips only
+      # work that really ran on its own platform; `--platform any` is the
+      # deliberate statement that a suite is platform-independent.
       - id: attest
         run: |
           command -v ssh-keygen >/dev/null || exit 0
@@ -34,7 +40,14 @@ jobs:
           payload=$(printf '%s\n' "$note" | sed -n '/^$/q;p')
           sig=$(printf '%s\n' "$note" | sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p')
           [ -n "$sig" ] || exit 0
-          [ "$(printf '%s\n' "$payload" | sed -n 1p)" = amont-attest-v1 ] || exit 0
+          [ "$(printf '%s\n' "$payload" | sed -n 1p)" = amont-attest-v2 ] || exit 0
+          # A pass is a pass ON SOMETHING: only an attestation minted on
+          # THIS platform may retire this leg's work. Drop these three
+          # lines only if the suite genuinely does not depend on where it
+          # ran (the binary spells that `--platform any`).
+          case "$(uname -m)" in arm64|aarch64) arch=aarch64 ;; *) arch=$(uname -m) ;; esac
+          case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) os=windows ;; esac
+          [ "$(printf '%s\n' "$payload" | awk '$1=="platform"{print $2}')" = "$arch-$os" ] || exit 0
           tree=$(printf '%s\n' "$payload" | awk '$1=="tree"{print $2}')
           [ -n "$tree" ] && [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ] || exit 0
           printf '%s\n' "$sig" >/tmp/amont-attest.sig
