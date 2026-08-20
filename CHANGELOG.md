@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.12.0 — 2026-08-20
+
+- **Uninstall forgets what it wrote — everywhere.** `amont uninstall` swept
+  its own repository's bookkeeping but left the `amont.conf` trust record
+  behind, so a reinstall silently re-honoured consent given to a file
+  somebody reviewed once, long ago; `amont-fleet uninstall` removed shims
+  from every repository and swept none of them, leaving a stamp ref, a
+  ledger and a trust record in each. Both now call one shared list — gate
+  stamps, attestation notes, bypass ledger, skew marker, known-identity
+  memo, trust — and say out loud which parts they forgot. Trust is revoked
+  on purpose: consent defaults to no everywhere else here, and re-granting
+  is one `amont trust`, which shows you the file again. `hook.skip` and
+  `amont.severity` stay untouched, as always, and so does uncommitted work
+  — parked changes in `$GIT_DIR/amont-held` survive any uninstall, because
+  `amont restore` has to keep working after the hooks are gone.
+
 ## v1.11.1 — 2026-08-20
 
 - **`amont attest covered` found no signers from a subdirectory, and said

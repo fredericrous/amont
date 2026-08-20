@@ -411,8 +411,13 @@ fn is_zero(oid: &str) -> bool {
 /// uninstall: forget the local ref. The copies already pushed to remotes are
 /// statements we made and stand by; only OUR bookkeeping is removed — the
 /// same line `gate_stamp::forget` draws.
-pub fn forget() {
-    let _ = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
+pub fn forget() -> bool {
+    crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF])
+}
+
+/// The same, for a repository this process is not standing in.
+pub fn forget_in(repo: &std::path::Path) -> bool {
+    crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF])
 }
 
 #[cfg(test)]

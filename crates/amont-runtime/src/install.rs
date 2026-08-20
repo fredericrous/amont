@@ -1313,6 +1313,52 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Everything this tool ever wrote into ONE repository, forgotten — the
+/// single list, so the two uninstall paths cannot drift apart.
+///
+/// `amont uninstall` swept its own repository and the fleet's `uninstall`
+/// swept none of them: it removed shims from 200 repositories and left 200
+/// ledgers, stamp refs and trust records behind, each one a statement about
+/// hooks that are no longer there. Both now call this.
+///
+/// **Trust is revoked here, and that is a deliberate reversal.** The record
+/// is keyed on the manifest's content, so keeping it would re-honour the
+/// consent automatically on a reinstall — for bytes somebody reviewed once,
+/// possibly a year ago, in a repository they since asked amont to stop
+/// running in. Consent defaults to no everywhere else in this codebase
+/// (untrusted manifests are inert, policy is withheld); it defaults to no
+/// here too. Re-granting is one `amont trust`, which shows the file again.
+///
+/// **What is never touched**: `hook.skip` and `amont.severity` (the user's
+/// statements about their repository, not ours), and above all the held
+/// store — `$GIT_DIR/amont-held` and `amont-preserved` hold UNCOMMITTED
+/// WORK. An uninstall that deletes those loses the very thing the parking
+/// machinery exists to protect; `amont restore` must keep working after the
+/// hooks are gone.
+pub fn forget_bookkeeping_in(repo: &Path) -> Vec<&'static str> {
+    let mut gone = Vec::new();
+    if crate::gate_stamp::forget_in(repo) {
+        gone.push("gate stamps");
+    }
+    if crate::attest::forget_in(repo) {
+        gone.push("attestations");
+    }
+    if crate::bypass::forget_in(repo) {
+        gone.push("bypass ledger");
+    }
+    if crate::skew::forget_in(repo) {
+        gone.push("version-skew marker");
+    }
+    // `--unset-all` exits 5 when the key is absent; that is not a removal.
+    if crate::git::succeeds_in(repo, &["config", "--unset-all", "amont.knownIdentity"]) {
+        gone.push("known-identity memo");
+    }
+    if crate::trust::recorded(repo).is_some() && crate::trust::revoke(repo).is_ok() {
+        gone.push("amont.conf trust");
+    }
+    gone
+}
+
 /// Remove our shims from the repository we are standing in, naming everything
 /// we did not take and why.
 ///
@@ -1392,17 +1438,16 @@ fn uninstall_repo_hooks() -> Result<(), String> {
             println!("{} left alone: {reason}", warning_sign());
         }
     }
-    // The gate stamps, the bypass ledger and the seen-identity memo are OUR
-    // bookkeeping — they only ever say "amont checked this" (or "didn't"),
-    // which stops being true of anything the moment the hooks are gone.
-    // `hook.skip` and `amont.severity` stay: those are the user's statements
-    // about their repository, not ours.
-    crate::gate_stamp::forget();
-    crate::attest::forget();
-    crate::bypass::forget();
-    crate::skew::forget();
-    // `--unset-all` exits 5 when the key is absent; not a failure here.
-    let _ = crate::git::succeeds(&["config", "--unset-all", "amont.knownIdentity"]);
+    // Our bookkeeping only ever says "amont checked this" (or "didn't"),
+    // which stops being true of anything the moment the hooks are gone. One
+    // list, shared with the fleet — see `forget_bookkeeping_in` for what is
+    // deliberately NOT taken.
+    if let Ok(root) = crate::hooks::common::repo_root_checked() {
+        let gone = forget_bookkeeping_in(Path::new(&root));
+        if !gone.is_empty() {
+            println!("{} forgot {}", valid_sign(), gone.join(", "));
+        }
+    }
     Ok(())
 }
 

@@ -176,11 +176,18 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 ///
 /// The stamps are OUR bookkeeping — unlike `hook.skip` and `amont.severity`,
 /// which are the user's statements and are never touched.
-pub fn forget() {
-    if let Some(path) = marker_path() {
-        let _ = std::fs::remove_file(&path);
-    }
-    let _ = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
+pub fn forget() -> bool {
+    let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());
+    let notes = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
+    marker || notes
+}
+
+/// The same, for a repository this process is not standing in.
+pub fn forget_in(repo: &std::path::Path) -> bool {
+    let marker = crate::git::stdout_in(repo, &["rev-parse", "--absolute-git-dir"])
+        .is_some_and(|dir| std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok());
+    let notes = crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF]);
+    marker || notes
 }
 
 #[cfg(test)]
