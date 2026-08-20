@@ -744,6 +744,12 @@ mod tests {
     /// sabotaging a real index.
     #[test]
     fn restage_distinguishes_nothing_from_failure() {
+        // `restage` runs `git add` in the PROCESS cwd, so this test depends
+        // on that cwd as surely as one that moves it — see `crate::TEST_CWD`.
+        // Without the lock it ran inside whatever fixture `gate_stamp` had
+        // moved into, and took that repository's index.lock out from under
+        // its own commit.
+        let _cwd = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
         let outside = std::env::temp_dir()
             .join("amont-restage-outside-any-repo")
             .to_string_lossy()

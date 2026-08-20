@@ -1594,6 +1594,28 @@ mod tests {
         }
     }
 
+    /// The bytes that SHIP carry no carriage return.
+    ///
+    /// `SHIM` is an `include_str!`, so it is whatever the build host's
+    /// checkout held — and with no `.gitattributes` that was CRLF on
+    /// Windows, whose git defaults `core.autocrlf` to true. v1.14.0's
+    /// `amont.exe` embedded `#!/bin/sh\r\n` and its archive shipped an
+    /// 82-CR `pre-commit`, so every install there wrote a shell script with
+    /// a carriage return in the shebang. This asserts the fix from the only
+    /// side that matters — the compiled-in bytes — rather than trusting the
+    /// attributes file to keep working. It runs on the Windows job, which is
+    /// the checkout that could regress.
+    #[test]
+    fn the_embedded_shim_carries_no_carriage_return() {
+        assert!(
+            !SHIM.contains('\r'),
+            "the embedded shim has CRLF line endings: this binary would \
+             install `#!/bin/sh\\r` as a POSIX sh hook. `.gitattributes` \
+             declares templates/hooks/* as eol=lf — has it been removed, or \
+             is this checkout stale?"
+        );
+    }
+
     /// The whole point of the module. A directory holding tracked files is the
     /// source checkout reached through a symlink, and emptying it destroys work.
     #[test]
