@@ -202,6 +202,8 @@ fn govulncheck_ids_decide_both_ways() {
 #[test]
 fn pip_audit_sentence_decides() {
     let r = repo();
+    // The pip-style path: a requirements file is what gets audited.
+    std::fs::write(r.path("requirements.txt"), "requests==2.0.0\n").expect("write");
     shim(
         &r,
         "pip-audit",
@@ -217,4 +219,45 @@ fn pip_audit_sentence_decides() {
     );
     let (code, out) = push_check(&r, "pre-push-audit-python", "refs/tags/v1.0.0");
     assert_eq!(code, 0, "{out}");
+}
+
+/// A uv project has no `requirements.txt` — it has a venv. Before this, the
+/// check looked only for the file, found none, and reported "the audit did
+/// NOT run" on every push forever; a whole fleet of Python repositories was
+/// in that state with nobody told. Driven through the real binary, so the
+/// argv it builds is what is being pinned.
+#[test]
+fn a_uv_project_audits_its_venv_not_a_missing_requirements_file() {
+    let r = repo();
+    std::fs::write(r.path("pyproject.toml"), "[project]\nname = \"x\"\n").expect("write");
+    std::fs::create_dir_all(r.path(".venv/lib/python3.13/site-packages")).expect("mkdir");
+    // The shim proves the tool was actually invoked: it only speaks when
+    // asked about a --path, so reaching this output means the venv route
+    // was taken rather than the requirements one.
+    shim(
+        &r,
+        "pip-audit",
+        "case \"$*\" in *--path*) echo 'Found 3 known vulnerabilities in 2 packages'; exit 1;; \
+         *) echo 'wrong invocation: '\"$*\"; exit 2;; esac",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-python", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "a release must refuse a vulnerable tree: {out}");
+    assert!(
+        out.contains("Found 3 known vulnerabilities"),
+        "the tool's own sentence should decide: {out}"
+    );
+
+    // And with neither input, it still says so rather than inventing one.
+    let bare = repo();
+    shim(
+        &bare,
+        "pip-audit",
+        "echo 'No known vulnerabilities found'\nexit 0",
+    );
+    let (code, out) = push_check(&bare, "pre-push-audit-python", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "unavailable never blocks: {out}");
+    assert!(
+        out.contains("did NOT run"),
+        "silence would be the bug this fixes: {out}"
+    );
 }
