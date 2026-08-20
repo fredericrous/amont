@@ -6,6 +6,18 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.11.1 — 2026-08-20
+
+- **`amont attest covered` found no signers from a subdirectory, and said
+  nothing about it.** It resolved `.forgejo/allowed_signers` relative to the
+  working directory, so a workflow step carrying a `working-directory` — a
+  monorepo running its matrix inside `packages/<x>` — found no signers file,
+  printed nothing, and fail-opened *forever*: the suite still ran, CI stayed
+  green, and no output anywhere said the gate was dead. The path is now
+  anchored to the repository root. Fail-open is the right behaviour for a
+  failure; it is the wrong behaviour for a permanent misconfiguration, and
+  silence made the two indistinguishable.
+
 ## v1.11.0 — 2026-08-20
 
 - **A repository can say which amont it means.** `set minVersion 1.11.0`

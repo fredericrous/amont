@@ -343,10 +343,21 @@ pub fn covered(
 /// Where a repository keeps its `allowed_signers` when the caller does not
 /// say — the Forgejo location first, the GitHub one second. `None` when
 /// neither exists, which the CLI reads as "nothing is covered".
+/// Resolved from the REPOSITORY ROOT, not the working directory. A workflow
+/// that sets `working-directory` (a monorepo running a matrix inside
+/// `packages/<x>`, say) puts the step in a subdirectory, where a relative
+/// `.forgejo/allowed_signers` does not exist — and the CLI would then find no
+/// signers, print nothing, and fail open FOREVER. Silently: the suite still
+/// runs, CI still passes, and nothing anywhere says the gate is dead. That is
+/// the worst shape a fail-open can take, so the path is anchored.
 pub fn default_signers() -> Option<PathBuf> {
+    let root = crate::git::stdout(&["rev-parse", "--show-toplevel"]).map(PathBuf::from);
     [".forgejo/allowed_signers", ".github/allowed_signers"]
         .into_iter()
-        .map(PathBuf::from)
+        .map(|rel| match &root {
+            Some(root) => root.join(rel),
+            None => PathBuf::from(rel),
+        })
         .find(|p| p.exists())
 }
 
@@ -744,6 +755,31 @@ mod tests {
             );
         });
         let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The silent-death case: a workflow step running with a
+    /// `working-directory` inside the repo must still find the committed
+    /// signers file. Before this, `default_signers` looked relative to the
+    /// cwd, found nothing, and every such repo fail-opened forever with no
+    /// symptom — CI stayed green and the gate simply never fired.
+    #[test]
+    fn default_signers_is_found_from_a_subdirectory() {
+        let work = repo("signers-subdir");
+        std::fs::create_dir_all(work.join(".forgejo")).unwrap();
+        std::fs::write(work.join(".forgejo/allowed_signers"), "t@t.test x\n").unwrap();
+        let sub = work.join("packages").join("thing");
+        std::fs::create_dir_all(&sub).unwrap();
+        in_repo(&sub, || {
+            let found = default_signers().expect("resolved from the repo root, not the cwd");
+            assert!(found.ends_with(".forgejo/allowed_signers"));
+            assert!(found.exists(), "the path it returns must be usable as-is");
+            assert_eq!(
+                first_principal(&found).as_deref(),
+                Some("t@t.test"),
+                "and readable from there"
+            );
+        });
         let _ = std::fs::remove_dir_all(&work);
     }
 
