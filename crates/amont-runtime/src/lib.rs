@@ -18,10 +18,23 @@
 //! amont --hooks-dir <dir> pre-commit [args…]
 //! ```
 
-/// Serialises every test that moves the process cwd. `gate_stamp` and
-/// `attest` both talk to "the repository at cwd" and each carried its own
-/// mutex — which serialised each module against itself and raced the two
-/// against each other, failing only under a full parallel `cargo test`.
+/// Serialises every test that moves the process cwd **or depends on it**.
+///
+/// The second half of that sentence was missing, and it cost a day. The
+/// lock started as "movers only" — `gate_stamp` and `attest`, which both
+/// talk to "the repository at cwd" and each carried its own mutex, so each
+/// was serialised against itself and raced against the other. But a mover
+/// is only half the hazard: a test that READS the ambient cwd is just as
+/// exposed, because production code spawns git without `-C`. While
+/// `gate_stamp` held cwd inside its fixture, `restage_distinguishes_
+/// nothing_from_failure` ran `git add` — landing in that fixture and
+/// taking its `.git/index.lock`, so the fixture's own `git commit` failed
+/// 128 and the panic surfaced three lines later as a missing gate stamp.
+/// Roughly one run in forty, and unreadable until the fixtures started
+/// reporting git's exit status.
+///
+/// So: if a test moves the cwd, or calls anything that spawns git without
+/// naming a directory, it takes this lock.
 #[cfg(test)]
 pub(crate) static TEST_CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

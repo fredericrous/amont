@@ -1,0 +1,22 @@
+# The hook shims are POSIX `sh`, and they must be LF in EVERY checkout —
+# not because CRLF is untidy, but because the binary embeds these bytes at
+# compile time (`install::SHIM`, an `include_str!`). Nothing here declared a
+# line ending, so each checkout obeyed its own `core.autocrlf`, and Git for
+# Windows defaults that to true: the v1.14.0 Windows release shipped
+# `templates/hooks/pre-commit` with 82 CR bytes, and `amont.exe` carried
+# `#!/bin/sh\r\n` embedded — so every `amont install` there wrote hooks with
+# a carriage return in the shebang. Git for Windows tolerates it today (its
+# CI runs a real commit through those shims), which is exactly why nothing
+# caught it: a release artifact that differs by BUILD HOST, and a `\r` in a
+# shell script waiting to end up inside a value.
+# BOTH copies: the repository's installable set, and the one the crate
+# embeds (`include_str!("../templates/hooks/pre-commit")`). A pattern
+# containing a slash is anchored to this file's directory, so the plain
+# `templates/hooks/*` below does NOT reach the crate's copy — which is
+# precisely the file that ends up inside the binary.
+templates/hooks/* text eol=lf
+crates/amont-runtime/templates/hooks/* text eol=lf
+*.sh text eol=lf
+
+# The installers people pipe into a shell, for the same reason.
+install/install.sh text eol=lf

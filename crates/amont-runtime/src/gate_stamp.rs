@@ -233,6 +233,14 @@ mod tests {
         dir
     }
 
+    /// A fixture git call that FAILS where it fails.
+    ///
+    /// This used to discard the exit status, and that is how a rare flake
+    /// stayed unreadable for a day: if the setup `git commit` did not
+    /// happen, the test carried on to an unborn HEAD, and the panic landed
+    /// three lines later on a missing gate stamp — a product-shaped
+    /// failure for a fixture-shaped cause. Same rule the checks obey:
+    /// git failing is not git answering.
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -240,6 +248,13 @@ mod tests {
             .args(args)
             .output()
             .expect("git");
+        assert!(
+            out.status.success(),
+            "fixture: git {args:?} in {} exited {:?}: {}",
+            dir.display(),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 

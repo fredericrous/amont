@@ -6,6 +6,38 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.15.0 — 2026-08-20
+
+- **The Windows build stopped shipping CRLF hooks.** This repository tracked
+  no `.gitattributes`, so every checkout obeyed its own `core.autocrlf` —
+  and Git for Windows defaults that to true. The consequence was not
+  cosmetic: `install::SHIM` is an `include_str!`, so the Windows runner's
+  CRLF checkout was compiled INTO the binary. v1.14.0's `amont.exe` carried
+  `#!/bin/sh\r\n`, its archive shipped an 82-CR `pre-commit`, and every
+  `amont install` there wrote a POSIX shell script with a carriage return in
+  the shebang. Git for Windows tolerates it — its CI runs a real commit
+  through those shims, which is exactly why nothing caught it — but a
+  release artifact that differs by BUILD HOST is not a thing to leave
+  standing. `.gitattributes` now pins both copies of the shims (the
+  installable set and the one the crate embeds, which a root-anchored
+  pattern would have missed) plus every `.sh` to `eol=lf`, and a test
+  asserts the compiled-in bytes carry no `\r` — checked from the side that
+  actually ships, on the Windows job that could regress it.
+- **The gate-stamp flake is fixed, and it was a lock with half a
+  contract.** `TEST_CWD` serialised the tests that MOVE the process cwd —
+  but not the ones that merely depend on it, and production code spawns git
+  without `-C`. So while `gate_stamp` held the cwd inside its fixture,
+  `restage_distinguishes_nothing_from_failure` ran `git add` there, took
+  that repository's `index.lock`, and the fixture's own `git commit` failed
+  128; the panic then landed three lines later on a missing gate stamp.
+  Roughly one run in forty. The cwd-reading test now takes the same lock and
+  the lock says what it covers. Verified: 2 reproductions in 85 runs before,
+  0 in 60 after.
+- **The fixtures report git's exit status**, which is what made the above
+  findable at all — `gate_stamp` and `attest` discarded it, turning a setup
+  command that never ran into a product-shaped failure further down. Same
+  rule the checks themselves obey: git failing is not git answering.
+
 ## v1.14.0 — 2026-08-20
 
 - **`amont list --json` says which contract it is, and the field names are
