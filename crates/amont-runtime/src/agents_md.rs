@@ -31,6 +31,7 @@ pub fn generate_block() -> String {
         .join(", ");
     format!(
         "{START}\n\
+\n\
 ## Git hooks (amont)\n\
 \n\
 This repository enforces pre-commit / pre-push checks. Ask the registry\n\
@@ -41,7 +42,7 @@ amont list --json\n\
 amont list --json --stage pre-push --pushed  # exactly what pushing next gates\n\
 ```\n\
 \n\
-Each check reports its *effective* severity (`block`/`warn`, including any\n\
+Each check reports its _effective_ severity (`block`/`warn`, including any\n\
 `amont.severity.*` override) and whether it fires here. The same output\n\
 carries `commit_style`: the subject and description limits `commit-msg`\n\
 enforces, and where the type's gitmoji is placed. It also carries\n\
@@ -71,6 +72,7 @@ git config amont.severity.<check-id> warn\n\
 `commit-msg` takes neither `hook.skip` nor a severity override. Write the\n\
 message it asks for, or change what it asks for — `amont setup`, or\n\
 `amont.commit.*` directly.\n\
+\n\
 {END}\n"
     )
 }
@@ -86,6 +88,7 @@ message it asks for, or change what it asks for — `amont setup`, or\n\
 pub fn generate_pointer() -> String {
     format!(
         "{START}\n\
+\n\
 ## Git hooks (amont)\n\
 \n\
 This repository enforces pre-commit / pre-push checks that can REJECT a\n\
@@ -93,6 +96,7 @@ commit or a push. What runs, the branch-name rule, and why `git commit`\n\
 and `git push` both need a timeout of at least 10 minutes are in\n\
 [AGENTS.md](AGENTS.md) — read it before committing. Both files are\n\
 generated: run `amont agents-md` after changing either.\n\
+\n\
 {END}\n"
     )
 }
@@ -239,6 +243,41 @@ mod tests {
     #[test]
     fn no_file_produces_just_the_block() {
         assert_eq!(desired_file_content("").unwrap(), generate_block());
+    }
+
+    /// Both generated files must satisfy Prettier's markdown defaults,
+    /// because amont ALSO ships `pre-commit-prettier`: when the two
+    /// disagree, every JS repository is left choosing between two amont
+    /// checks, and `prettier --write` on a generated file is what
+    /// `agents-md --check` then reports as drift. Encoding the three rules
+    /// that bit us — blank line after an HTML comment, `_emphasis_` not
+    /// `*emphasis*`, blank line before a trailing HTML comment — keeps the
+    /// unit suite honest without making it shell out to node.
+    #[test]
+    fn the_generated_markdown_satisfies_prettier() {
+        for (what, text) in [("block", generate_block()), ("pointer", generate_pointer())] {
+            assert!(
+                text.starts_with(&format!("{START}\n\n")),
+                "{what}: prettier wants a blank line after the opening comment"
+            );
+            assert!(
+                text.ends_with(&format!("\n\n{END}\n")),
+                "{what}: prettier wants a blank line before the closing comment"
+            );
+            // A `*` OPENING emphasis is what prettier rewrites. A trailing
+            // one inside a code span (`amont.severity.*`) is untouched, so
+            // the rule is "no `*` immediately followed by a letter" rather
+            // than "no `*`".
+            let opener = text
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'*' && w[1].is_ascii_alphanumeric());
+            assert!(
+                !opener,
+                "{what}: prettier rewrites *emphasis* into _emphasis_, and a \
+                 formatted file then reads as drift — emit underscores"
+            );
+        }
     }
 
     /// The signpost is generated and self-checking — the whole reason it is
