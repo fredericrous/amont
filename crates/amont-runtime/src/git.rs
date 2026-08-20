@@ -166,6 +166,61 @@ pub fn output(args: &[&str]) -> Option<Output> {
     })
 }
 
+/// How a bounded network probe ended. Exit codes stay visible because the
+/// callers need to keep git's answers apart: `ls-remote --exit-code` exits
+/// **2** for "connected, no such ref" and **128** for "could not connect",
+/// and reading those as one boolean is how offline got reported as
+/// "upstream deleted".
+pub enum Probe {
+    /// Ran to completion with this exit code.
+    Exit(i32),
+    /// Killed at the deadline; carries the budget it exceeded, in seconds.
+    TimedOut(u64),
+    /// Could not spawn, or died to a signal — "git did not answer".
+    Failed,
+}
+
+/// A git command that TALKS TO THE NETWORK, killed at `budget_secs`.
+///
+/// Every other runner in this module waits forever, which is correct for
+/// local plumbing — a `rev-parse` that hangs means the machine is already
+/// lost. A network verb hanging is Tuesday: captive portal, VPN split
+/// brain, a remote that accepts the TCP connect and then says nothing.
+/// Unbounded, that held the push hostage inside the index hold with no
+/// deadline anywhere; the learned response is `--no-verify`, permanently.
+/// `budget_secs == 0` means no deadline (the same opt-out `amont.timeout`
+/// honours). Output is discarded — network callers decide on exit codes.
+pub fn probe(args: &[&str], budget_secs: u64) -> Probe {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if budget_secs == 0 {
+        return match retrying(|| cmd.status()) {
+            Ok(s) => s.code().map(Probe::Exit).unwrap_or(Probe::Failed),
+            Err(_) => Probe::Failed,
+        };
+    }
+    let Ok(mut child) = retrying(|| cmd.spawn()) else {
+        return Probe::Failed;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => return s.code().map(Probe::Exit).unwrap_or(Probe::Failed),
+            Ok(None) => {}
+            Err(_) => return Probe::Failed,
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Probe::TimedOut(budget_secs);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// True when the command exits 0. Output discarded.
 pub fn succeeds(args: &[&str]) -> bool {
     let mut cmd = Command::new("git");

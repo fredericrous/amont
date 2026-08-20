@@ -395,3 +395,59 @@ fn list_shows_the_policy_scope_for_settings() {
     assert!(text.contains("(amont.conf)"), "{text}");
     assert!(text.contains("50"), "{text}");
 }
+
+/// A committed version floor: a repository can finally SAY which amont it
+/// means. Warn-only — an out-of-date binary is advice, never a gate.
+#[test]
+fn a_min_version_from_policy_warns_when_the_binary_is_older() {
+    let r = Repo::new();
+    manifest(&r, "set minVersion 99.0.0\n");
+    r.stage("a.txt", "x\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "warn-only, never a gate: {}", run.stdout);
+    assert!(
+        run.says("asks for amont") && run.says("99.0.0"),
+        "the floor is announced: {}",
+        run.stdout
+    );
+}
+
+/// A floor the binary already clears says nothing at all.
+#[test]
+fn a_satisfied_min_version_is_silent() {
+    let r = Repo::new();
+    manifest(&r, "set minVersion 0.1.0\n");
+    r.stage("a.txt", "x\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(!run.says("asks for amont"), "{}", run.stdout);
+}
+
+/// Garbage in the floor is a complaint, not a silent nothing — and not a
+/// block either.
+#[test]
+fn a_malformed_min_version_complains_and_moves_on() {
+    let r = Repo::new();
+    manifest(&r, "set minVersion banana\n");
+    r.stage("a.txt", "x\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(
+        run.says("not a version"),
+        "bad values are named: {}",
+        run.stdout
+    );
+}
+
+/// The ladder holds for the floor too: your machine can silence a floor the
+/// repository committed.
+#[test]
+fn local_config_overrides_a_policy_min_version() {
+    let r = Repo::new();
+    manifest(&r, "set minVersion 99.0.0\n");
+    r.git(&["config", "amont.minVersion", "0.1.0"]);
+    r.stage("a.txt", "x\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(!run.says("asks for amont"), "local wins: {}", run.stdout);
+}

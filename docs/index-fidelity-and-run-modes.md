@@ -415,7 +415,10 @@ Rules, all of which wanted tests and all of which now have them, in
   signal. Restoring from a thread of its own rather than from the interrupted
   call stack introduced a race with `enter()`, which `ENTER_LOCK` closes; the
   test that found it is
-  `ctrl_c_mid_run_still_restores_and_dies_by_the_signal`.
+  `ctrl_c_mid_run_still_restores_and_dies_by_the_signal`. Windows has the
+  same net via `SetConsoleCtrlHandler` (Ctrl-C, Ctrl-Break, console
+  closed) — the handler already runs on its own thread there, restores
+  under the same lock, and then lets the default action terminate.
 - **A recovery path for when even that fails**: `amont restore` puts back
   what this tool parked. Belt and braces, because the handler can itself be
   interrupted.

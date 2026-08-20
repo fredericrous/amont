@@ -279,8 +279,66 @@ pub fn confirm(prompt: &str) -> bool {
     matches!(line.trim_start().chars().next(), Some('y') | Some('Y'))
 }
 
-/// Windows has no `/dev/tty`; treat it as nobody to ask, which declines.
-#[cfg(not(unix))]
+/// `CONIN$` is the console's `/dev/tty`: it reaches the keyboard even when
+/// something else holds stdin. Before this, Windows always declined —
+/// `amont trust` could never be granted interactively there, so every
+/// declared check spent its life politely disabled for the Windows
+/// minority of a team.
+///
+/// **Gated on stdin actually being a console**, which is the whole
+/// difference between this and `/dev/tty`. Opening `/dev/tty` FAILS with no
+/// controlling terminal, so unix gets its "nobody to ask" answer for free;
+/// `CONIN$` opens whenever the process has a console at all — which a CI
+/// runner does — and then blocks forever on a read nobody will answer.
+/// That is not hypothetical: it hung four install tests until the Windows
+/// job timed out, at 20 minutes, the first time this shipped without the
+/// gate. A redirected stdin (git handing a hook a pipe, a test using
+/// `Stdio::null()`, a script piping input) therefore declines, exactly as
+/// before — the prompt is for a human who typed a command, and a human who
+/// typed a command has a console on stdin.
+#[cfg(windows)]
+pub fn confirm(prompt: &str) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    if !stdin_is_a_console() {
+        return false;
+    }
+    let Ok(con) = std::fs::File::open("CONIN$") else {
+        return false;
+    };
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if BufReader::new(con).read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim_start().chars().next(), Some('y') | Some('Y'))
+}
+
+/// Whether stdin is a real console rather than a pipe, a file, or `NUL`.
+///
+/// `GetConsoleMode` succeeds only for a console handle — the standard way
+/// to ask on Windows, and one kernel32 call, so this stays dependency-free
+/// like the signal handler in `staged_only`.
+#[cfg(windows)]
+fn stdin_is_a_console() -> bool {
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    }
+    let mut mode = 0u32;
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if handle.is_null() {
+            return false;
+        }
+        GetConsoleMode(handle, &mut mode) != 0
+    }
+}
+
+/// Neither `/dev/tty` nor a console: nobody to ask, which declines.
+#[cfg(not(any(unix, windows)))]
 pub fn confirm(_prompt: &str) -> bool {
     false
 }

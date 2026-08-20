@@ -168,11 +168,38 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     //     `git pull --rebase` would fail on the missing ref and read as a
     //     conflict, wrongly blocking the push. Only asked when a rebase may
     //     actually happen: it is this check's per-push network round-trip.
-    if auto && !git::succeeds(&["ls-remote", "--exit-code", "--heads", &remote, branch]) {
-        crate::say!(
-            "{} Upstream {upstream} no longer exists on the remote (merged + auto-deleted?) — skipping sync.", warning_sign()
-        );
-        return Outcome::Passed;
+    if auto {
+        // Bounded, and the exit codes kept apart: `--exit-code` exits 2 for
+        // "connected, the ref is gone" and 128 for "could not connect", and
+        // this used to read both as the first — offline was reported as
+        // "upstream deleted", which is a diagnosis someone acts on.
+        let budget = super::common::network_probe_budget();
+        match git::probe(
+            &["ls-remote", "--exit-code", "--heads", &remote, branch],
+            budget,
+        ) {
+            git::Probe::Exit(0) => {} // upstream exists — carry on to the sync
+            git::Probe::Exit(2) => {
+                crate::say!(
+                    "{} Upstream {upstream} no longer exists on the remote (merged + auto-deleted?) — skipping sync.", warning_sign()
+                );
+                return Outcome::Passed;
+            }
+            git::Probe::Exit(_) | git::Probe::Failed => {
+                crate::say!(
+                    "{} Could not reach {remote} (offline?) — skipping sync.",
+                    warning_sign()
+                );
+                return Outcome::Passed;
+            }
+            git::Probe::TimedOut(secs) => {
+                crate::say!(
+                    "{} {remote} did not answer within {secs}s — skipping sync.",
+                    warning_sign()
+                );
+                return Outcome::Passed;
+            }
+        }
     }
 
     // 3. Diverged → warn and DO NOT rebase, but carry on to the default-branch
@@ -232,26 +259,48 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         // the verified pair from 2a/2b, and repeating them here means this
         // sync can never again silently use something other than what was
         // just checked.
-        if git::succeeds(&["pull", "--rebase", &remote, branch]) {
-            // HEAD moved; the oids git handed THIS push on stdin have not.
-            // Carrying on would run the suite against packages selected from
-            // commits git is no longer pushing, and the server refuses the
-            // stale objects as non-fast-forward regardless. Fail fast, with
-            // the good news first.
-            crate::say!(
-                "{} Rebased onto {upstream}. This push's refs predate the rebase — push again.",
-                warning_sign()
-            );
-            return Outcome::Failed;
+        // Under the full `amont.timeout` deadline — this is real work (a
+        // fetch plus a rebase), not a probe, but it is still a network verb
+        // and a hung fetch used to hold the push hostage with no clock
+        // anywhere. The probe above only proved the remote ANSWERS; it says
+        // nothing about how the transfer goes.
+        match git::probe(
+            &["pull", "--rebase", &remote, branch],
+            super::common::check_timeout(),
+        ) {
+            git::Probe::Exit(0) => {
+                // HEAD moved; the oids git handed THIS push on stdin have
+                // not. Carrying on would run the suite against packages
+                // selected from commits git is no longer pushing, and the
+                // server refuses the stale objects as non-fast-forward
+                // regardless. Fail fast, with the good news first.
+                crate::say!(
+                    "{} Rebased onto {upstream}. This push's refs predate the rebase — push again.",
+                    warning_sign()
+                );
+                return Outcome::Failed;
+            }
+            git::Probe::TimedOut(secs) => {
+                // Abort so the tree is never left half-rebased.
+                let _ = git::succeeds(&["rebase", "--abort"]);
+                crate::say!(
+                    "{} pull --rebase did not finish within {secs}s (rebase aborted, tree restored).",
+                    error_sign()
+                );
+                crate::say!("    Sync manually: {}", highlight("git pull --rebase"));
+                return Outcome::Failed;
+            }
+            git::Probe::Exit(_) | git::Probe::Failed => {
+                // Abort so the tree is never left half-rebased.
+                let _ = git::succeeds(&["rebase", "--abort"]);
+                crate::say!(
+                    "{} pull --rebase hit conflicts (rebase aborted, tree restored).",
+                    error_sign()
+                );
+                crate::say!("    Resolve manually: {}", highlight("git pull --rebase"));
+                return Outcome::Failed;
+            }
         }
-        // Abort so the tree is never left half-rebased.
-        let _ = git::succeeds(&["rebase", "--abort"]);
-        crate::say!(
-            "{} pull --rebase hit conflicts (rebase aborted, tree restored).",
-            error_sign()
-        );
-        crate::say!("    Resolve manually: {}", highlight("git pull --rebase"));
-        return Outcome::Failed;
     } else {
         crate::say!("{} Branch is in sync with its upstream", valid_sign());
     }

@@ -290,7 +290,14 @@ fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
     let mut cmd = Command::new(program("kubeconform"));
     cmd.args(&argv).current_dir(root).stdin(Stdio::from(out));
     let conform = super::common::bounded_success(&mut cmd, "kubeconform");
-    let built = build.wait().map(|s| s.success()).unwrap_or(false);
+    // kubeconform's deadline closes the pipe, which normally ends kustomize
+    // too — but a kustomize hung BEFORE writing (a remote base fetching over
+    // the network, say) never feels the pipe close, and an unbounded wait
+    // here would inherit its hang. Same clock, and a kill on expiry.
+    let built = matches!(
+        super::common::wait_within(&mut build, super::common::check_timeout()),
+        Ok(super::common::Ran::Status(s)) if s.success()
+    );
     built && conform
 }
 

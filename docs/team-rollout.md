@@ -112,9 +112,11 @@ no per-repo step, nothing to forget.
   the hook becomes the fast feedback, not the enforcement — [the CI
   backstop](ci.md) ships copyable workflow templates for exactly that.
 - **Version skew.** Enrolled machines resolve whatever binary they have;
-  two teammates on different amont versions run different check sets,
-  silently, until a shim is newer than a binary (which warns). Pin the
-  version in your installer of choice if this matters to you.
+  two teammates on different amont versions run different check sets until
+  a shim is newer than a binary (which warns). Commit the floor:
+  `set minVersion 1.11.0` in `amont.conf` makes every older binary say so
+  on each commit — warn-only, but no longer silent. Pin the exact version
+  in your installer of choice if you need more than a floor.
 - **Machines that never enrolled.** The fleet dashboard sees one
   machine's checkouts. A teammate who skipped onboarding is invisible —
   which is one more reason the real backstop belongs in CI.

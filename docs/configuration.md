@@ -35,8 +35,8 @@ trigger) decides regardless of source. Skips union across every source. On a
 git too old for `--show-scope` (< 2.26) this degrades fail-safe to "all git
 config beats policy". A `set` line reaches an allowlist of the keys on this
 page — the thresholds, commit style, `autoRebase`, `timeout`,
-`testPushedTree` — and never `fix`, `trusted`, `conventions`, or the
-observability opt-outs, which stay per-machine.
+`testPushedTree`, `minVersion` — and never `fix`, `trusted`,
+`conventions`, or the observability opt-outs, which stay per-machine.
 
 ## `hook.skip` — do not run it
 
@@ -238,6 +238,28 @@ tells tooling to allow a whole commit or push.
 
 The kill reaches the command itself; a grandchild it detached may survive,
 orphaned, but the commit is no longer hostage to it.
+
+The same clock bounds the push path's own network verbs: `pull-rebase`'s
+sync runs under the full budget, and the reachability *probes*
+(`ls-remote` before a sync, the initial-push check) under the smaller of
+this and 30 seconds — a probe answers in a second or two when the network
+is there at all, and a captive portal must not get ten minutes to say
+nothing. `0` disables these deadlines too.
+
+## `amont.minVersion` — the amont this repository means
+
+```sh
+git config amont.minVersion 1.11.0
+```
+
+Rarely set by hand — the committable spelling is `set minVersion 1.11.0`
+in a trusted [`amont.conf`](custom-checks.md#repo-policy--severity-skip-and-set-lines),
+which is the point: a binary one release behind answers every hook name
+and simply *lacks* a check, silently, and nothing in the repository could
+say which amont the team meant. A binary older than the floor gets one
+warning line per stage naming both versions. Warn-only, deliberately:
+blocking commits for being out of date teaches `--no-verify`, and a
+binary too old to know this key cannot honour it anyway.
 ## `amont.knownIdentity` — identities usual-name has vouched for
 
 Written by the tool, not by you: when `pre-commit-usual-name` finds your

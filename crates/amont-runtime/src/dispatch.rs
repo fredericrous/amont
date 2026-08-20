@@ -199,6 +199,9 @@ fn announce_policy_state(manifest: &crate::manifest::Manifest) {
     for note in &manifest.policy_notes {
         println!("{} {}", warning_sign(), note);
     }
+    // The version floor rides the same two call sites: once per stage,
+    // beside the other "this repository expects something you lack" lines.
+    crate::skew::announce_minimum();
 }
 
 /// Run every item concurrently and collect `(name, code)` in the INPUT order.

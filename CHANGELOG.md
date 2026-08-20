@@ -6,6 +6,30 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.11.0 — 2026-08-20
+
+- **A repository can say which amont it means.** `set minVersion 1.11.0`
+  in a trusted `amont.conf` (or plain `amont.minVersion` config) puts a
+  version floor in the repository itself: a binary older than the floor
+  says so once per stage, naming both versions. Warn-only — a binary one
+  release behind used to lack the team's newest checks *silently*, and
+  nothing committed could even say so.
+- **The push path's network verbs have deadlines.** `pull-rebase`'s
+  reachability probe and `branch-pattern`'s initial-push check are killed
+  at min(`amont.timeout`, 30s); the sync itself and `kustomize build` run
+  under the full `amont.timeout`. Offline now reads as "could not reach
+  the remote — skipping sync" instead of the wrong diagnosis "upstream no
+  longer exists" (ls-remote's exit codes 2 and 128 are finally kept
+  apart), and a remote that accepts the connection and then says nothing
+  can no longer hold a push hostage. `amont.timeout 0` still disables
+  every deadline.
+- **Windows gets the safety-critical paths.** `amont trust` can be granted
+  interactively (the prompt reads `CONIN$`, the console's `/dev/tty` —
+  before this, Windows always declined, so declared checks stayed
+  politely disabled), and Ctrl-C mid-check restores parked unstaged
+  changes before dying, via `SetConsoleCtrlHandler` — same contract as
+  the unix signal handler, same lock against the mid-park race.
+
 ## v1.10.0 — 2026-08-20
 
 - **An attestation says where it ran, and a matrix leg only skips its own

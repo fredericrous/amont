@@ -175,7 +175,10 @@ repository still beats the policy.
 
 Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.gitmoji`, `commit.subjectMax`, `commit.descriptionMax`,
-`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`. Any other
+`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`, and
+`minVersion` — the last being the team's version floor: a binary older
+than `set minVersion 1.11.0` says so once per stage, warn-only, instead
+of silently lacking the checks the team added since. Any other
 key is refused with its line number — most deliberately `amont.fix`,
 because a committed file must not change what already-trusted commands
 may DO to your working tree (see below). One caveat worth reading before
