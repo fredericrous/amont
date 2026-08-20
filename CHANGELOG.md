@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.9.0 — 2026-08-20
+## v1.10.0 — 2026-08-20
 
 - **An attestation says where it ran, and a matrix leg only skips its own
   platform's work.** The note gained a `platform` line (`aarch64-macos`,
@@ -31,6 +31,9 @@ missing here.
   default to the committed `allowed_signers` (`.forgejo/` then `.github/`)
   and the first principal it names. The public templates keep the portable
   sh and mention the one-liner.
+
+## v1.9.0 — 2026-08-20
+
 - **The manifest carries the team's policy.** A trusted `amont.conf` can now
   say `severity clippy warn`, `skip yamllint`, and `set commit.subjectMax 50`
   — committed, reviewed lines instead of sixty people running the same
