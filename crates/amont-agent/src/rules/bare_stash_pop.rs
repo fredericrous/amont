@@ -29,8 +29,13 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             continue;
         }
         let ops = cmd.operands();
-        // operands()[0] is `stash` itself; the verb follows it.
-        let verb = ops.get(1)?.text.as_str();
+        // operands()[0] is `stash` itself; the verb follows it. `continue`, NOT
+        // `?`: a bare `git stash` has no verb, and returning here would abandon
+        // the whole scan — so `git stash; …; git stash pop` (the canonical
+        // save/restore round-trip) went unseen.
+        let Some(verb) = ops.get(1).map(|w| w.text.as_str()) else {
+            continue;
+        };
         if verb != "pop" && verb != "apply" {
             continue;
         }
@@ -55,8 +60,17 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
 }
 
 fn names_a_stash(t: &str) -> bool {
+    // `stash@{0}` is the SHARED top of stack — the very entry a bare pop would
+    // take. Naming it is not a choice of WHICH entry, so it carries the same
+    // risk and the rule still fires. (A reviewed case says exactly this: a pop
+    // of `stash@{0}` from inside a worktree.)
+    if t == "stash@{0}" || t == "refs/stash@{0}" {
+        return false;
+    }
     t.starts_with("stash@{")
-        || t.starts_with("refs/stash")
+        // any other ref namespace, including the per-worktree `refs/wtstash/<n>`
+        // pattern people use precisely to avoid the shared ref
+        || t.starts_with("refs/")
         || (t.len() >= 7 && t.bytes().all(|c| c.is_ascii_hexdigit()))
 }
 
