@@ -31,6 +31,21 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+/// The Claude Code config directory.
+///
+/// `$CLAUDE_CONFIG_DIR` wins because that is the override Claude Code itself
+/// honours. `$HOME` is not enough on its own: Windows usually leaves it unset
+/// and uses `%USERPROFILE%`, and this repository ships a Windows installer and
+/// gates a Windows CI job, so "no home directory" there would mean install and
+/// the journal both silently giving up.
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(std::path::PathBuf::from(d));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(std::path::PathBuf::from(home).join(".claude"))
+}
+
 /// How we recognise our own handler on the way back out. Matched on the
 /// command's file name, so moving the binary does not orphan the entry.
 pub const BIN: &str = "amont-agent";
@@ -45,13 +60,7 @@ pub enum Scope {
 impl Scope {
     pub fn path(self, project: &Path) -> Option<PathBuf> {
         match self {
-            Scope::User => {
-                let base = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-                    Some(d) => PathBuf::from(d),
-                    None => PathBuf::from(std::env::var_os("HOME")?).join(".claude"),
-                };
-                Some(base.join("settings.json"))
-            }
+            Scope::User => Some(config_dir()?.join("settings.json")),
             Scope::Project => Some(project.join(".claude").join("settings.json")),
             Scope::ProjectLocal => Some(project.join(".claude").join("settings.local.json")),
         }

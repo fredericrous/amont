@@ -63,11 +63,17 @@ fn an_uninstalled_guard_is_reported_and_exits_nonzero() {
 #[test]
 fn a_missing_binary_is_reported_as_broken() {
     let h = Home::new("missing-bin");
+    // Built from the scratch dir rather than written as `/nonexistent/...`,
+    // because that literal is NOT absolute on Windows — `doctor` then correctly
+    // reported "not an absolute path" and this test, which had assumed POSIX
+    // path semantics, failed on the Windows runner while the code was right.
+    let missing = h.0.join("nowhere").join("amont-agent");
+    assert!(missing.is_absolute(), "the fixture must be absolute");
     std::fs::write(
         h.settings(),
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "/nonexistent/bin/amont-agent", "args": ["hook"]}
+                {"type": "command", "command": missing, "args": ["hook"]}
             ]}]}
         }))
         .unwrap(),
