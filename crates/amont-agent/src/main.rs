@@ -20,8 +20,10 @@
 
 mod backtest;
 mod civil;
+mod corpus;
 mod decision;
 mod doctor;
+mod graduate;
 mod hook;
 mod journal;
 mod payload;
@@ -43,6 +45,9 @@ usage: amont-agent <command>
   uninstall [--write]   remove exactly what install added
   status                every rule, its stance, and what it has seen
   doctor                is the guard installed, runnable, and actually firing?
+  corpus check          replay every reviewed judgement through the rules
+  graduate <rule> --to advise|deny
+  demote <rule>         back to observing, no questions asked
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
@@ -59,6 +64,7 @@ backtest/explain flags:
   --since <YYYY-MM-DD>  ignore entries before this day
   --rule <id>           restrict to one rule (repeatable)
   --sample <n>          sample matches to print per rule
+  --format cases        emit matches as reviewable case lines (explain only)
   --json                machine-readable output
 ";
 
@@ -68,18 +74,24 @@ enum Sub {
     Uninstall,
     Status,
     Doctor,
+    Corpus,
+    Graduate,
+    Demote,
     Backtest,
     Explain,
     Check,
     Rules,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 9] = [
+const SUBCOMMANDS: [(&str, Sub); 12] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
     ("status", Sub::Status),
     ("doctor", Sub::Doctor),
+    ("corpus", Sub::Corpus),
+    ("graduate", Sub::Graduate),
+    ("demote", Sub::Demote),
     ("backtest", Sub::Backtest),
     ("explain", Sub::Explain),
     ("check", Sub::Check),
@@ -165,6 +177,9 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+            Sub::Corpus => run_corpus(&args),
+            Sub::Graduate => run_graduate(&args, true),
+            Sub::Demote => run_graduate(&args, false),
             Sub::Backtest => run_backtest(&args, false),
             Sub::Explain => run_backtest(&args, true),
             Sub::Check => run_check(&args),
@@ -184,6 +199,9 @@ struct Flags {
     only: Vec<String>,
     sample: Option<usize>,
     json: bool,
+    format: Option<String>,
+    to: Option<String>,
+    force: bool,
     rest: Vec<String>,
 }
 
@@ -214,6 +232,9 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 );
             }
             "--json" => f.json = true,
+            "--format" => f.format = Some(value(&mut i, &a)?),
+            "--to" => f.to = Some(value(&mut i, &a)?),
+            "--force" => f.force = true,
             "--write" => f.write = true,
             "--reformat" => f.reformat = true,
             "--project" => f.project = true,
@@ -276,10 +297,41 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
         tool: "Bash",
         since: f.since,
     };
-    let samples = f.sample.unwrap_or(if explain { 40 } else { 2 });
+    let as_cases = explain && f.format.as_deref() == Some("cases");
+    if let Some(other) = f.format.as_deref() {
+        if other != "cases" {
+            eprintln!("amont-agent: --format takes `cases`, not `{other}`");
+            return ExitCode::from(2);
+        }
+    }
+    // A review dump wants everything, not a sample: the point is to look at
+    // each match once and decide.
+    let samples = f.sample.unwrap_or(if as_cases {
+        usize::MAX
+    } else if explain {
+        40
+    } else {
+        2
+    });
     match backtest::run(&scan, &chosen, samples) {
         Ok(report) => {
-            if f.json {
+            if as_cases {
+                // Every line starts unreviewed. The file this is appended to is
+                // the same format the reviewer edits in place — one format, so
+                // the review is a single pass with no export step to forget.
+                println!("{}", corpus::HEADER);
+                let mut seen = std::collections::BTreeSet::new();
+                for group in &report.samples {
+                    for sample in group {
+                        if seen.insert(sample.command.clone()) {
+                            print!(
+                                "{}",
+                                corpus::line_for(corpus::Verdict::Unreviewed, &sample.command)
+                            );
+                        }
+                    }
+                }
+            } else if f.json {
                 println!("{}", report.to_json(&roots));
             } else {
                 print!("{}", report.render(&roots));
@@ -428,4 +480,120 @@ fn run_status() -> ExitCode {
         println!("\njournal: {}", p.display());
     }
     ExitCode::SUCCESS
+}
+
+fn run_corpus(args: &[OsString]) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    match f.rest.first().map(String::as_str) {
+        Some("check") | None => {}
+        Some(other) => {
+            eprintln!("amont-agent: corpus takes `check`, not `{other}`");
+            return ExitCode::from(2);
+        }
+    }
+    let mut healthy = true;
+    for rule in rules::RULES {
+        let score = corpus::score(rule);
+        if score.reviewed == 0 && score.unreviewed == 0 {
+            println!("{:<18} no cases yet", rule.id);
+            continue;
+        }
+        let precision = match score.precision() {
+            Some(p) => format!("{:.0}%", p * 100.0),
+            None => "unmeasured".to_string(),
+        };
+        println!(
+            "{:<18} {} reviewed ({} negative), {} unreviewed, precision {precision}",
+            rule.id, score.reviewed, score.negatives, score.unreviewed
+        );
+        for d in &score.disagreements {
+            healthy = false;
+            println!(
+                "  {}:{} expected {} — {}",
+                corpus::path_for(rule.id).display(),
+                d.line,
+                d.expected.as_str(),
+                corpus::escape(&d.command)
+            );
+        }
+    }
+    if healthy {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(id) = f.rest.first() else {
+        eprintln!("amont-agent: name a rule");
+        return ExitCode::from(2);
+    };
+    let Some(rule) = rules::by_id(id) else {
+        let known: Vec<&str> = rules::RULES.iter().map(|r| r.id).collect();
+        eprintln!("amont-agent: no rule `{id}` — known: {}", known.join(", "));
+        return ExitCode::from(2);
+    };
+    let to = if promoting {
+        let Some(to) = f.to.as_deref().and_then(rules::Stance::parse) else {
+            eprintln!("amont-agent: graduate needs --to advise|deny");
+            return ExitCode::from(2);
+        };
+        to
+    } else {
+        rules::Stance::Observe
+    };
+
+    let verdict = graduate::assess(rule, to);
+    for (ok, line) in &verdict.lines {
+        println!(
+            "  {} {line}",
+            if *ok {
+                amont_runtime::ui::valid_sign()
+            } else {
+                amont_runtime::ui::error_sign()
+            }
+        );
+    }
+    if !verdict.allowed && !f.force {
+        eprintln!(
+            "\nrefusing to move {} to {}: not enough evidence.\n\
+             Review its matches first:\n  \
+             amont-agent explain {} --format cases >> {}\n\
+             then label each line and re-run. `--force` overrides and is recorded as forced.",
+            rule.id,
+            to.as_str(),
+            rule.id,
+            corpus::path_for(rule.id).display()
+        );
+        return ExitCode::from(2);
+    }
+    match graduate::set(rule, to) {
+        Ok(()) => {
+            println!(
+                "{} is now `{}`{}",
+                rule.id,
+                to.as_str(),
+                if verdict.allowed { "" } else { " (forced)" }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("amont-agent: could not record the stance: {why}");
+            ExitCode::from(2)
+        }
+    }
 }

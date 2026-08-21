@@ -170,23 +170,31 @@ fn redact_word(word: &str) -> String {
     let trimmed = word.trim_end();
     let tail = &word[trimmed.len()..];
 
-    // `--password=x`, `--token x` handled by the assignment case below; this
-    // covers the `=`-joined form and bare `NAME=value` env assignments.
+    // A URL is handled as a URL, because the `NAME=value` rule below cannot see
+    // the difference between an assignment and a query string. It used to try,
+    // with `API` among its needles — so `/api/v1/repos/…?limit=5"` matched,
+    // everything after the `=` was replaced including the closing quote, and a
+    // perfectly ordinary curl became unparseable shell. The corpus caught it.
+    if let Some(scheme) = trimmed.find("://") {
+        let mut out = String::from(&trimmed[..scheme + 3]);
+        let rest = &trimmed[scheme + 3..];
+        // `https://user:pass@host`
+        let rest = match rest.find('@') {
+            Some(at) if !rest[..at].contains('/') => {
+                out.push_str("***:***");
+                &rest[at..]
+            }
+            _ => rest,
+        };
+        out.push_str(&redact_query(rest));
+        return out + tail;
+    }
+    // `--password=x`, `GITHUB_TOKEN=x`. Only where the name reads like a flag
+    // or an identifier: a name carrying a path separator is not an assignment.
     if let Some(eq) = trimmed.find('=') {
         let (name, _) = trimmed.split_at(eq);
-        let upper = name.to_ascii_uppercase();
-        if ["TOKEN", "SECRET", "PASSWORD", "KEY", "PASSWD", "API"]
-            .iter()
-            .any(|needle| upper.contains(needle))
-        {
-            return format!("{name}=*** {tail}").trim_end().to_string() + tail;
-        }
-    }
-    // `https://user:pass@host`
-    if let Some(scheme) = trimmed.find("://") {
-        if let Some(at) = trimmed[scheme + 3..].find('@') {
-            let host = &trimmed[scheme + 3 + at..];
-            return format!("{}://***:***{host}{tail}", &trimmed[..scheme]);
+        if !name.contains('/') && !name.contains(':') && secret_named(name) {
+            return format!("{name}=***") + tail;
         }
     }
     // Bare credential shapes.
@@ -205,6 +213,54 @@ fn redact_word(word: &str) -> String {
         }
     }
     word.to_string()
+}
+
+/// Does this name say "the thing after the `=` is a credential"?
+///
+/// `API` is deliberately absent: on its own it matches every `/api/` in every
+/// URL. `API_KEY` and `APIKEY` are still caught, by `KEY`.
+fn secret_named(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "KEY", "CREDENTIAL"]
+        .iter()
+        .any(|needle| upper.contains(needle))
+}
+
+/// Redact only the values of secret-named query parameters, leaving the rest of
+/// the URL — and, critically, any trailing quote — intact.
+///
+/// The user's own standing rule is that a secret riding in a URL is still a
+/// secret, so `?token=…` must go; `?limit=5` must not.
+fn redact_query(rest: &str) -> String {
+    let Some(q) = rest.find('?') else {
+        return rest.to_string();
+    };
+    let (base, query) = rest.split_at(q + 1);
+    let mut out = String::from(base);
+    // Keep whatever closes the word (a quote, a comma) attached to the last
+    // parameter rather than swallowed by it.
+    for (i, param) in query.split('&').enumerate() {
+        if i > 0 {
+            out.push('&');
+        }
+        match param.split_once('=') {
+            Some((name, value)) if secret_named(name) => {
+                let keep: String = value
+                    .chars()
+                    .rev()
+                    .take_while(|c| !c.is_alphanumeric() && *c != '-' && *c != '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                out.push_str(name);
+                out.push_str("=***");
+                out.push_str(&keep);
+            }
+            _ => out.push_str(param),
+        }
+    }
+    out
 }
 
 fn now() -> u64 {
@@ -311,6 +367,48 @@ mod tests {
     fn control_bytes_are_escaped_not_stored_raw() {
         let got = redact_and_trim("git push \u{1b}[8m hidden");
         assert!(!got.contains('\u{1b}'), "{got}");
+    }
+
+    /// The bug the corpus found. `API` was a secret-name needle, so `/api/v1/`
+    /// in any URL matched, everything after the first `=` was replaced — the
+    /// closing quote included — and an ordinary curl became unparseable shell.
+    /// A redactor that mangles benign commands makes its own output useless.
+    #[test]
+    fn an_api_path_is_not_a_secret_assignment() {
+        let raw = r#"curl -sS "http://localhost:3000/api/v1/repos/x/actions/tasks?limit=5" | jq"#;
+        assert_eq!(redact(raw), raw, "a benign URL was rewritten");
+    }
+
+    /// But a secret riding in a URL is still a secret.
+    #[test]
+    fn a_secret_query_parameter_is_still_redacted() {
+        let got = redact("curl \"https://hooks.example.com/x?token=abc123def456&limit=5\"");
+        assert!(!got.contains("abc123def456"), "{got}");
+        assert!(
+            got.contains("limit=5"),
+            "the benign parameter survived: {got}"
+        );
+        assert!(got.ends_with('"'), "the closing quote survived: {got}");
+    }
+
+    /// Redaction must not turn a readable command into one the lexer refuses,
+    /// or every redacted sample becomes useless for review.
+    #[test]
+    fn redaction_leaves_a_command_the_lexer_can_still_read() {
+        for raw in [
+            r#"curl -sS "http://x/api/v1/tasks?limit=5" | jq '.total'"#,
+            r#"GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaa git push origin main"#,
+            r#"git commit -m "msg" --no-verify && git push"#,
+        ] {
+            let redacted = redact(raw);
+            assert!(
+                !matches!(
+                    crate::shell::lex(&redacted),
+                    crate::shell::Parsed::Opaque(_)
+                ),
+                "redaction made this unreadable: {redacted}"
+            );
+        }
     }
 
     #[test]

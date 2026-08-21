@@ -20,6 +20,14 @@ use crate::transcript::{self, Scan, ScanError, Stats};
 pub struct Sample {
     pub day: Day,
     pub cwd: String,
+    /// The whole command, redacted. `--format cases` needs it in full so the
+    /// case can be replayed through the rules later; the excerpt below is for
+    /// a human skimming the terminal.
+    ///
+    /// Redacted even though this is only ever printed, because the intended
+    /// destination is a file that gets committed — and a curated corpus is
+    /// exactly the kind of place a token goes unnoticed for a year.
+    pub command: String,
     /// Centred on the match, not on the head of the command — a sample printed
     /// from the head of a 2 KB script shows text unrelated to the match, and
     /// then human review reviews the wrong thing.
@@ -77,6 +85,7 @@ pub fn run(
                     samples[i].push(Sample {
                         day: call.day,
                         cwd: short_cwd(call.cwd),
+                        command: crate::journal::redact(call.command),
                         excerpt: excerpt(call.command, found.span.start, found.span.end),
                     });
                 }
