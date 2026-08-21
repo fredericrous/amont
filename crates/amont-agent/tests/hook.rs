@@ -224,9 +224,14 @@ fn control_bytes_never_reach_the_output_raw() {
 fn only_the_emitter_writes_to_stdout() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
+    // Exempt: the emitter itself, and the modules that only ever run under a
+    // CLI verb a person typed. What makes those safe is that nothing reachable
+    // from `hook` calls them — `decide` dispatches to the rules, the journal and
+    // the emitter, and to nothing here.
+    const NOT_THE_HOOK_PATH: &[&str] = &["decision.rs", "main.rs", "doctor.rs", "backtest.rs"];
     walk(&src, &mut |path, text| {
-        if path.ends_with("decision.rs") || path.ends_with("main.rs") {
-            return; // the emitter, and the CLI verbs that are not the hook
+        if NOT_THE_HOOK_PATH.iter().any(|name| path.ends_with(name)) {
+            return;
         }
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");

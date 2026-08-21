@@ -21,6 +21,7 @@
 mod backtest;
 mod civil;
 mod decision;
+mod doctor;
 mod hook;
 mod journal;
 mod payload;
@@ -41,6 +42,7 @@ usage: amont-agent <command>
   install [--write]     add the hook to settings.json (prints it by default)
   uninstall [--write]   remove exactly what install added
   status                every rule, its stance, and what it has seen
+  doctor                is the guard installed, runnable, and actually firing?
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
@@ -65,17 +67,19 @@ enum Sub {
     Install,
     Uninstall,
     Status,
+    Doctor,
     Backtest,
     Explain,
     Check,
     Rules,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 8] = [
+const SUBCOMMANDS: [(&str, Sub); 9] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
     ("status", Sub::Status),
+    ("doctor", Sub::Doctor),
     ("backtest", Sub::Backtest),
     ("explain", Sub::Explain),
     ("check", Sub::Check),
@@ -151,6 +155,16 @@ fn main() -> ExitCode {
             Sub::Install => run_install(&args, true),
             Sub::Uninstall => run_install(&args, false),
             Sub::Status => run_status(),
+            Sub::Doctor => {
+                // Non-zero when the guard is not doing anything, so this is
+                // usable from a cron job or a SessionStart check without
+                // anybody having to read the text.
+                if doctor::report(&doctor::run()) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
             Sub::Backtest => run_backtest(&args, false),
             Sub::Explain => run_backtest(&args, true),
             Sub::Check => run_check(&args),
