@@ -118,6 +118,15 @@ install-fleet:
 	@echo "  amont-fleet tui      the dashboard"
 	@echo "  amont-fleet fix      what would change (dry run; --apply to write)"
 
+install-agent:
+	@cargo build --release --quiet -p amont-agent
+	@mkdir -p $(INSTALL_BIN_DIR)
+	@install -m 0755 $(MAKEFILE_DIR)target/release/amont-agent $(INSTALL_BIN_DIR)/amont-agent
+	@echo "installed $(INSTALL_BIN_DIR)/amont-agent"
+	@echo "  amont-agent install --write   add the hook to Claude Code settings"
+	@echo "  amont-agent doctor            is it installed, runnable, and firing?"
+	@echo "  amont-agent backtest          replay your transcripts through the rules"
+
 # Push the shim SET to every repo. Only needed when a hook is added, removed
 # or renamed — ordinary binary fixes reach all repos via `make install`, since
 # every shim points at the one binary.
@@ -132,4 +141,4 @@ propagate:
 deps:
 	@./scripts/check-no-deps.sh
 
-.PHONY: all chmodx build test lint check install install-fleet propagate deps
+.PHONY: install-agent all chmodx build test lint check install install-fleet propagate deps

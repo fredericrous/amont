@@ -50,8 +50,12 @@ for row in "${TARGETS[@]}"; do
     IFS='|' read -r target pkg os cpu libc <<< "$row"
 
     name="amont-${VERSION}-${target}"
-    exe=amont
-    [ "$os" = "win32" ] && exe=amont.exe
+    # Every binary the archive carries. `npm/platform/package.json.in` lists
+    # `bin/` as a DIRECTORY, so a package ships whatever is put in there and
+    # this loop is the whole change needed to add one.
+    suffix=
+    [ "$os" = "win32" ] && suffix=.exe
+    exe="amont$suffix"
 
     # Unpack into a scratch dir rather than reading the archive twice. A missing
     # archive is fatal: publishing five of six packages would leave `amont`'s
@@ -68,14 +72,15 @@ for row in "${TARGETS[@]}"; do
         die "no archive for $target (looked for $ARTIFACTS/$name.tar.gz and .zip)"
     fi
 
-    src="$scratch/$name/$exe"
-    [ -f "$src" ] || die "$name archive holds no $exe"
-
     mkdir -p "$OUT/$pkg/bin"
-    cp "$src" "$OUT/$pkg/bin/$exe"
-    # npm preserves the mode of files in the tarball; a binary that arrives
-    # without +x fails at the first commit with "permission denied".
-    chmod 0755 "$OUT/$pkg/bin/$exe"
+    for b in amont amont-fleet amont-agent; do
+        src="$scratch/$name/$b$suffix"
+        [ -f "$src" ] || die "$name archive holds no $b$suffix"
+        cp "$src" "$OUT/$pkg/bin/$b$suffix"
+        # npm preserves the mode of files in the tarball; a binary that arrives
+        # without +x fails at the first commit with "permission denied".
+        chmod 0755 "$OUT/$pkg/bin/$b$suffix"
+    done
 
     # `libc` is a real npm/pnpm resolution field, and the ONLY thing separating
     # the two linux-x64 packages. Without it both match a linux/x64 host and the
@@ -124,9 +129,11 @@ say "amont"
 
 for row in "${TARGETS[@]}"; do
     IFS='|' read -r _ pkg os _ _ <<< "$row"
-    exe=amont
-    [ "$os" = "win32" ] && exe=amont.exe
-    [ -x "$OUT/$pkg/bin/$exe" ] || die "$pkg/bin/$exe missing or not executable"
+    suffix=
+    [ "$os" = "win32" ] && suffix=.exe
+    for b in amont amont-fleet amont-agent; do
+        [ -x "$OUT/$pkg/bin/$b$suffix" ] || die "$pkg/bin/$b$suffix missing or not executable"
+    done
     python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/$pkg/package.json" \
         || die "$pkg/package.json is not valid JSON"
 done

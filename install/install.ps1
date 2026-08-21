@@ -124,7 +124,7 @@ try {
     $src = Join-Path $tmp $name
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
-    foreach ($exe in @('amont.exe', 'amont-fleet.exe')) {
+    foreach ($exe in @('amont.exe', 'amont-fleet.exe', 'amont-agent.exe')) {
         $from = Join-Path $src $exe
         if (Test-Path $from) {
             $to = Join-Path $BinDir $exe

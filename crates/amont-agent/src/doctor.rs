@@ -282,14 +282,27 @@ fn liveness(installs: &[Install]) -> Finding {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
 
-    let newest_session = transcript::roots(&[])
+    let sessions = transcript::roots(&[])
         .ok()
         .map(|r| transcript::files(&r))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let stamp = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    };
+    let newest_session = sessions
         .iter()
-        .filter_map(|p| std::fs::metadata(p).ok()?.modified().ok())
-        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .filter_map(|p| stamp(std::fs::metadata(p).ok()?.modified()))
+        .max();
+    // When a session BEGAN, not when it was last written to. A session that is
+    // open right now has its transcript appended to continuously, so its mtime
+    // races ahead of any install and makes every ongoing session look like a
+    // new one. Creation time is the question actually being asked, and where
+    // the filesystem will not answer it we stay lenient rather than accuse.
+    let newest_start = sessions
+        .iter()
+        .filter_map(|p| stamp(std::fs::metadata(p).ok()?.created()))
         .max();
 
     // The journal is written on every firing, so a recent entry is independent
@@ -340,8 +353,10 @@ fn liveness(installs: &[Install]) -> Finding {
         .unwrap_or(0);
 
     let (Some(session), Some(beat)) = (newest_session, beat) else {
-        let session = newest_session.unwrap_or(0);
-        if session <= installed_at {
+        // `None` means the filesystem does not report creation times; treat
+        // that as "cannot prove a session started", which is the lenient read.
+        let started_since = newest_start.is_some_and(|s| s > installed_at);
+        if !started_since {
             return Finding::warn(
                 "installed, but no session has started since",
                 "start a new Claude Code session and run this again to confirm it fires"
