@@ -20,8 +20,14 @@
 
 mod backtest;
 mod civil;
+mod decision;
+mod hook;
+mod journal;
+mod payload;
 mod rules;
+mod settings;
 mod shell;
+mod stance;
 mod transcript;
 
 use std::ffi::OsString;
@@ -31,10 +37,20 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: amont-agent <command>
 
+  hook                  read a Claude Code payload on stdin, decide
+  install [--write]     add the hook to settings.json (prints it by default)
+  uninstall [--write]   remove exactly what install added
+  status                every rule, its stance, and what it has seen
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
   rules                 every rule, its default stance and its evidence
+
+install/uninstall flags:
+  --write               actually edit the file
+  --reformat            accept a normalised file when we cannot match its style
+  --project             .claude/settings.json instead of ~/.claude
+  --local               .claude/settings.local.json
 
 backtest/explain flags:
   --transcripts <dir>   where the .jsonl transcripts live
@@ -45,13 +61,21 @@ backtest/explain flags:
 ";
 
 enum Sub {
+    Hook,
+    Install,
+    Uninstall,
+    Status,
     Backtest,
     Explain,
     Check,
     Rules,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 4] = [
+const SUBCOMMANDS: [(&str, Sub); 8] = [
+    ("hook", Sub::Hook),
+    ("install", Sub::Install),
+    ("uninstall", Sub::Uninstall),
+    ("status", Sub::Status),
     ("backtest", Sub::Backtest),
     ("explain", Sub::Explain),
     ("check", Sub::Check),
@@ -116,6 +140,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Invocation::Sub { name, args } => match name {
+            // `hook` takes no flags: everything it needs arrives on stdin.
+            // Claude Code may pass `--event <name>` for readability, and it is
+            // accepted and ignored — the payload names its own event, and
+            // trusting argv over the payload would let the two disagree.
+            Sub::Hook => {
+                let _ = args;
+                hook::run()
+            }
+            Sub::Install => run_install(&args, true),
+            Sub::Uninstall => run_install(&args, false),
+            Sub::Status => run_status(),
             Sub::Backtest => run_backtest(&args, false),
             Sub::Explain => run_backtest(&args, true),
             Sub::Check => run_check(&args),
@@ -126,6 +161,10 @@ fn main() -> ExitCode {
 
 #[derive(Default)]
 struct Flags {
+    write: bool,
+    reformat: bool,
+    project: bool,
+    local: bool,
     transcripts: Vec<PathBuf>,
     since: Option<civil::Day>,
     only: Vec<String>,
@@ -161,6 +200,10 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 );
             }
             "--json" => f.json = true,
+            "--write" => f.write = true,
+            "--reformat" => f.reformat = true,
+            "--project" => f.project = true,
+            "--local" => f.local = true,
             other if other.starts_with('-') => return Err(format!("unknown flag `{other}`")),
             other => f.rest.push(other.to_string()),
         }
@@ -280,6 +323,95 @@ fn run_rules() -> ExitCode {
             r.evidence.per_1000,
             r.evidence.measured
         );
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_install(args: &[OsString], adding: bool) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    let scope = if f.local {
+        settings::Scope::ProjectLocal
+    } else if f.project {
+        settings::Scope::Project
+    } else {
+        settings::Scope::User
+    };
+    let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let Some(path) = scope.path(&project) else {
+        eprintln!("amont-agent: cannot find your Claude Code settings directory");
+        return ExitCode::from(2);
+    };
+    // The absolute path of THIS binary. A `PATH`-resolved command exits 127
+    // into Claude Code's non-blocking bucket the moment PATH differs, which
+    // disables the guard with nothing to notice it.
+    let bin = match std::env::current_exe() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("amont-agent: cannot resolve my own path: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let planned = if adding {
+        settings::plan_install(&path, &bin, f.reformat)
+    } else {
+        settings::plan_uninstall(&path, f.reformat)
+    };
+    let plan = match planned {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            if adding {
+                eprintln!("\n{}", settings::snippet(&bin));
+            }
+            return ExitCode::from(2);
+        }
+    };
+
+    if !f.write {
+        println!("{}", plan.change.describe(&plan.path));
+        println!("Nothing written. Re-run with --write to apply:\n");
+        print!("{}", plan.after);
+        return ExitCode::SUCCESS;
+    }
+    if matches!(plan.change, settings::Change::WouldReformat) {
+        eprintln!("{}\n", plan.change.describe(&plan.path));
+        eprint!("{}", settings::snippet(&bin));
+        return ExitCode::from(2);
+    }
+    match settings::apply(&plan) {
+        Ok(()) => {
+            println!("{}", plan.change.describe(&plan.path));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("amont-agent: could not write {}: {e}", plan.path.display());
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_status() -> ExitCode {
+    println!("{:<18}{:<10}{:<10}  evidence", "rule", "ships as", "now");
+    for r in rules::RULES {
+        let now = stance::resolve(r);
+        println!(
+            "{:<18}{:<10}{:<10}  {:.1}/1000 measured {}",
+            r.id,
+            r.default_stance.as_str(),
+            now.as_str(),
+            r.evidence.per_1000,
+            r.evidence.measured
+        );
+    }
+    if let Some(p) = journal::path() {
+        println!("\njournal: {}", p.display());
     }
     ExitCode::SUCCESS
 }

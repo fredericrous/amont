@@ -46,6 +46,12 @@ amont-runtime.workspace = true
 # diff that looks like we rewrote the file. We did.
 serde_json = { version = "1", features = ["preserve_order"] }
 
+# Only for `Value::serialize` with a custom PrettyFormatter, which is how
+# `settings.json` keeps the indentation the user chose instead of being
+# reformatted to serde_json's default. Already in the lock file via
+# `amont-fleet`, so it costs nothing new in the workspace tree.
+serde = "1"
+
 # NO [dev-dependencies]. `serde_json` above is a normal dependency and is
 # therefore already in scope for this crate's tests — restating it buys nothing
 # and costs two places to bump. (`crates/amont` keeps its dev-dependency on it
