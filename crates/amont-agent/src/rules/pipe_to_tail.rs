@@ -34,7 +34,19 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "pipe-to-tail",
-    default_stance: Stance::Observe,
+    // The only rule that ships blocking, and the only one with the evidence to
+    // justify it: seven consecutive weeks with no downward trend, while every
+    // other measured habit halved. The usual ladder — observe, then advise,
+    // then deny — exists to gather exactly the evidence that already exists
+    // here, so walking it again would only delay a decision already made.
+    //
+    // It fires on roughly one Bash call in twenty-two, which is a lot for a
+    // refusal. That is survivable only because the remedy is trivial (run the
+    // command bare) and the refusal carries it. If it turns out to be wrong,
+    // demotion is one command and takes effect immediately:
+    //
+    //     git config --global amont.agent.pipe-to-tail.stance observe
+    default_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 62.3,
         measured: "2026-08-20",

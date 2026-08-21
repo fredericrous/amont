@@ -18,9 +18,10 @@ dependencies = [
 
 [[package]]
 name = "amont-agent"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "amont-runtime",
+ "serde",
  "serde_json",
 ]
 
