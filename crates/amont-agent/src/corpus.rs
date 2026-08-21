@@ -74,12 +74,53 @@ pub struct Case {
     pub line: usize,
 }
 
-/// Where a rule's reviewed cases live.
+/// The reviewed cases that SHIP with each rule.
+///
+/// `path_for` is resolved at BUILD time, so in a release binary it names
+/// whatever machine produced the release — `graduate` there saw zero cases and
+/// refused every rule, telling the user to append to a directory that does not
+/// exist on their disk. The evidence a rule was promoted on belongs to the
+/// rule, so it travels with it.
+const EMBEDDED: &[(&str, &str)] = &[
+    (
+        "pipe-to-tail",
+        include_str!("../tests/corpus/pipe-to-tail.cases"),
+    ),
+    (
+        "bare-stash-pop",
+        include_str!("../tests/corpus/bare-stash-pop.cases"),
+    ),
+    (
+        "gh-pr-merge-auto",
+        include_str!("../tests/corpus/gh-pr-merge-auto.cases"),
+    ),
+    ("no-verify", include_str!("../tests/corpus/no-verify.cases")),
+    (
+        "git-add-broad",
+        include_str!("../tests/corpus/git-add-broad.cases"),
+    ),
+];
+
+/// The cases compiled into this binary, if this rule has any.
+pub fn embedded(rule: &str) -> Option<&'static str> {
+    EMBEDDED.iter().find(|(id, _)| *id == rule).map(|(_, t)| *t)
+}
+
+/// Where a rule's reviewed cases live IN A CHECKOUT. Only meaningful when the
+/// file is actually there — see `checkout_path_for`.
 pub fn path_for(rule: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("corpus")
         .join(format!("{rule}.cases"))
+}
+
+/// The on-disk cases file, or `None` when this is not a source checkout. Use it
+/// anywhere a path is shown to a person: printing a build-machine path as
+/// somewhere to write is worse than saying nothing.
+pub fn checkout_path_for(rule: &str) -> Option<PathBuf> {
+    let p = path_for(rule);
+    p.exists().then_some(p)
 }
 
 pub fn escape(command: &str) -> String {
@@ -148,7 +189,13 @@ pub fn parse(text: &str) -> Vec<Case> {
 }
 
 pub fn read(rule: &str) -> Vec<Case> {
-    read_at(&path_for(rule))
+    // In a checkout the file on disk WINS, so a case you just wrote counts
+    // immediately and `corpus check` still tests the tree rather than the last
+    // build. Everywhere else the embedded copy is all there is.
+    match checkout_path_for(rule) {
+        Some(p) => read_at(&p),
+        None => embedded(rule).map(parse).unwrap_or_default(),
+    }
 }
 
 pub fn read_at(path: &Path) -> Vec<Case> {
@@ -285,5 +332,47 @@ mod tests {
         assert!(!s.agrees());
         assert_eq!(s.disagreements[0].line, 1);
         assert_eq!(s.disagreements[0].expected, Verdict::NoMatch);
+    }
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+    use crate::rules::RULES;
+
+    /// `path_for` is a BUILD-time path, so an installed binary looked for its
+    /// cases on whatever machine cut the release — `graduate` saw zero
+    /// everywhere but a source checkout. The embedded copy is what makes the
+    /// evidence travel, so every rule must have one and it must be real.
+    #[test]
+    fn every_rule_ships_its_reviewed_cases() {
+        for r in RULES {
+            let text =
+                embedded(r.id).unwrap_or_else(|| panic!("rule `{}` has no embedded corpus", r.id));
+            let cases = parse(text);
+            assert!(
+                cases.iter().any(|c| c.verdict == Verdict::Match),
+                "rule `{}` ships a corpus with no positives",
+                r.id
+            );
+            assert!(
+                cases.iter().any(|c| c.verdict == Verdict::NoMatch),
+                "rule `{}` ships a corpus with no expected-negatives",
+                r.id
+            );
+        }
+    }
+
+    /// The embedded bytes and the file are the same bytes. `include_str!`
+    /// makes the compiler enforce this, and this test says so out loud: if
+    /// they ever diverge, `graduate` and the corpus test would disagree about
+    /// what the evidence is.
+    #[test]
+    fn the_embedded_copy_is_the_file() {
+        for r in RULES {
+            let on_disk = std::fs::read_to_string(path_for(r.id))
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path_for(r.id).display()));
+            assert_eq!(embedded(r.id).unwrap(), on_disk, "rule `{}`", r.id);
+        }
     }
 }

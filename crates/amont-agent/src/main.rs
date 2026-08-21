@@ -369,7 +369,11 @@ fn run_check(args: &[OsString]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     for (rule, finding) in found {
-        println!("{} [{}]", rule.id, rule.default_stance.as_str());
+        // The EFFECTIVE stance, not the shipped default: `check` answers what
+        // would happen to this command, and a rule promoted to deny reported
+        // itself as `observe` here — the one command you would run to ask
+        // whether a rule is armed was the one that lied about it.
+        println!("{} [{}]", rule.id, stance::resolve(rule).as_str());
         println!("  {}", finding.reason);
         println!("  → {}", finding.remedy);
         println!(
@@ -382,12 +386,18 @@ fn run_check(args: &[OsString]) -> ExitCode {
 
 fn run_rules() -> ExitCode {
     for r in rules::RULES {
+        // Same correction as `check`: show the stance in force. The shipped
+        // default is still worth seeing when it differs, because that
+        // difference is a decision somebody made on this machine.
+        let now = stance::resolve(r);
+        let shown = if now == r.default_stance {
+            now.as_str().to_string()
+        } else {
+            format!("{} (ships as {})", now.as_str(), r.default_stance.as_str())
+        };
         println!(
-            "{:<18} {:<8} {:>6.1}/1000  measured {}",
-            r.id,
-            r.default_stance.as_str(),
-            r.evidence.per_1000,
-            r.evidence.measured
+            "{:<18} {:<26} {:>6.1}/1000  measured {}",
+            r.id, shown, r.evidence.per_1000, r.evidence.measured
         );
     }
     ExitCode::SUCCESS
@@ -516,7 +526,9 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
             healthy = false;
             println!(
                 "  {}:{} expected {} — {}",
-                corpus::path_for(rule.id).display(),
+                corpus::checkout_path_for(rule.id)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("{}.cases", rule.id)),
                 d.line,
                 d.expected.as_str(),
                 corpus::escape(&d.command)
@@ -577,7 +589,11 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             rule.id,
             to.as_str(),
             rule.id,
-            corpus::path_for(rule.id).display()
+            corpus::checkout_path_for(rule.id)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "crates/amont-agent/tests/corpus/<rule>.cases \
+                     (in a checkout of amont — reviewing cases edits the repo)"
+                    .to_string())
         );
         return ExitCode::from(2);
     }
