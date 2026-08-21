@@ -31,6 +31,21 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+/// The Claude Code config directory.
+///
+/// `$CLAUDE_CONFIG_DIR` wins because that is the override Claude Code itself
+/// honours. `$HOME` is not enough on its own: Windows usually leaves it unset
+/// and uses `%USERPROFILE%`, and this repository ships a Windows installer and
+/// gates a Windows CI job, so "no home directory" there would mean install and
+/// the journal both silently giving up.
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(std::path::PathBuf::from(d));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(std::path::PathBuf::from(home).join(".claude"))
+}
+
 /// How we recognise our own handler on the way back out. Matched on the
 /// command's file name, so moving the binary does not orphan the entry.
 pub const BIN: &str = "amont-agent";
@@ -45,13 +60,7 @@ pub enum Scope {
 impl Scope {
     pub fn path(self, project: &Path) -> Option<PathBuf> {
         match self {
-            Scope::User => {
-                let base = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-                    Some(d) => PathBuf::from(d),
-                    None => PathBuf::from(std::env::var_os("HOME")?).join(".claude"),
-                };
-                Some(base.join("settings.json"))
-            }
+            Scope::User => Some(config_dir()?.join("settings.json")),
             Scope::Project => Some(project.join(".claude").join("settings.json")),
             Scope::ProjectLocal => Some(project.join(".claude").join("settings.local.json")),
         }
@@ -166,7 +175,7 @@ fn handler(bin: &Path) -> Value {
     })
 }
 
-fn is_ours(h: &Value) -> bool {
+pub fn is_ours(h: &Value) -> bool {
     h.get("command")
         .and_then(|c| c.as_str())
         .map(|c| {
@@ -231,6 +240,57 @@ fn read(path: &Path) -> Result<(Value, String), MergeError> {
     }
 }
 
+/// Where we install, and why each one is there.
+///
+/// `SessionStart` is not decoration. It fires once per session and writes a
+/// heartbeat, which is the ONLY way `doctor` can tell "no rule fired this week"
+/// apart from "the guard has been dead since Tuesday". Writing that heartbeat
+/// from `PreToolUse` instead would put a filesystem write on the path that runs
+/// before every shell command — the one path this crate promises to keep free.
+pub const TARGETS: &[(&str, Option<&str>)] =
+    &[("PreToolUse", Some("Bash")), ("SessionStart", None)];
+
+/// Add our handler to one event, joining an existing block rather than adding a
+/// competing one. Returns whether anything changed.
+fn ensure(
+    hooks: &mut Map<String, Value>,
+    path: &Path,
+    event: &str,
+    matcher: Option<&str>,
+    want: &Value,
+) -> Result<(), MergeError> {
+    let list = hooks
+        .entry(event.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let list = list.as_array_mut().ok_or(MergeError::WrongShape {
+        path: path.into(),
+        key: "an event",
+    })?;
+
+    for block in list.iter_mut() {
+        if block.get("matcher").and_then(|m| m.as_str()) != matcher {
+            continue;
+        }
+        let Some(handlers) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+            continue;
+        };
+        if let Some(mine) = handlers.iter_mut().find(|h| is_ours(h)) {
+            *mine = want.clone();
+        } else {
+            // Somebody else already hooks this event. Join them.
+            handlers.push(want.clone());
+        }
+        return Ok(());
+    }
+
+    let block = match matcher {
+        Some(m) => json!({ "matcher": m, "hooks": [want] }),
+        None => json!({ "hooks": [want] }),
+    };
+    list.push(block);
+    Ok(())
+}
+
 pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, MergeError> {
     let (mut doc, raw) = read(path)?;
     let (indent, nl) = shape(&raw);
@@ -241,16 +301,13 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
             change: Change::WouldReformat,
         });
     }
-    let before = if raw.is_empty() {
-        String::new()
-    } else {
-        raw.clone()
-    };
+    let before = raw.clone();
 
     let root = doc.as_object_mut().ok_or(MergeError::WrongShape {
         path: path.into(),
         key: "(root)",
     })?;
+    let existed = root.contains_key("hooks");
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -258,51 +315,19 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
         path: path.into(),
         key: "hooks",
     })?;
-    let pre = hooks
-        .entry("PreToolUse")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    let pre = pre.as_array_mut().ok_or(MergeError::WrongShape {
-        path: path.into(),
-        key: "PreToolUse",
-    })?;
 
     let want = handler(bin);
-    let mut replaced = false;
-    for block in pre.iter_mut() {
-        if block.get("matcher").and_then(|m| m.as_str()) != Some("Bash") {
-            continue;
-        }
-        if let Some(list) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-            for h in list.iter_mut() {
-                if is_ours(h) {
-                    *h = want.clone();
-                    replaced = true;
-                    break;
-                }
-            }
-            if !replaced {
-                // Somebody else already guards Bash. Join their block rather
-                // than adding a competing one.
-                list.push(want.clone());
-                replaced = true;
-            }
-        }
-        if replaced {
-            break;
-        }
+    for (event, matcher) in TARGETS {
+        ensure(hooks, path, event, *matcher, &want)?;
     }
-    let change = if replaced {
-        Change::Update
-    } else {
-        pre.push(json!({ "matcher": "Bash", "hooks": [want] }));
-        Change::Add
-    };
 
     let after = render(&doc, &indent, nl || before.is_empty());
     let change = if after == before {
         Change::AlreadyCurrent
+    } else if existed {
+        Change::Update
     } else {
-        change
+        Change::Add
     };
     Ok(Plan {
         path: path.into(),
@@ -314,13 +339,6 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
 pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
     let (mut doc, raw) = read(path)?;
     let (indent, nl) = shape(&raw);
-    if !reformat && would_reformat(&raw, &doc, &indent, nl) {
-        return Ok(Plan {
-            path: path.into(),
-            after: raw,
-            change: Change::WouldReformat,
-        });
-    }
     if raw.is_empty() {
         return Ok(Plan {
             path: path.into(),
@@ -328,34 +346,47 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
             change: Change::NothingToRemove,
         });
     }
+    if !reformat && would_reformat(&raw, &doc, &indent, nl) {
+        return Ok(Plan {
+            path: path.into(),
+            after: raw,
+            change: Change::WouldReformat,
+        });
+    }
 
     let mut removed = false;
-    if let Some(pre) = doc
-        .get_mut("hooks")
-        .and_then(|h| h.get_mut("PreToolUse"))
-        .and_then(|p| p.as_array_mut())
-    {
-        for block in pre.iter_mut() {
-            if let Some(list) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-                let before = list.len();
-                list.retain(|h| !is_ours(h));
-                removed |= list.len() != before;
+    for (event, _) in TARGETS {
+        let Some(list) = doc
+            .get_mut("hooks")
+            .and_then(|h| h.get_mut(*event))
+            .and_then(|p| p.as_array_mut())
+        else {
+            continue;
+        };
+        for block in list.iter_mut() {
+            if let Some(handlers) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                let before = handlers.len();
+                handlers.retain(|h| !is_ours(h));
+                removed |= handlers.len() != before;
             }
         }
-        // Tidy up only what became empty because of us.
-        pre.retain(|b| {
+        // Drop only what became empty because of us.
+        list.retain(|b| {
             b.get("hooks")
                 .and_then(|h| h.as_array())
                 .map(|l| !l.is_empty())
                 .unwrap_or(true)
         });
-        let empty = pre.is_empty();
-        if empty {
+        if list.is_empty() {
             if let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                hooks.remove("PreToolUse");
-                if hooks.is_empty() {
-                    doc.as_object_mut().map(|r| r.remove("hooks"));
-                }
+                hooks.remove(*event);
+            }
+        }
+    }
+    if let Some(hooks) = doc.get("hooks").and_then(|h| h.as_object()) {
+        if hooks.is_empty() {
+            if let Some(root) = doc.as_object_mut() {
+                root.remove("hooks");
             }
         }
     }
@@ -395,9 +426,14 @@ pub fn apply(plan: &Plan) -> std::io::Result<()> {
 
 /// The block to paste when we will not write it ourselves.
 pub fn snippet(bin: &Path) -> String {
-    render(
-        &json!({ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [handler(bin)] } ] } }),
-        "  ",
-        true,
-    )
+    let want = handler(bin);
+    let mut hooks = Map::new();
+    for (event, matcher) in TARGETS {
+        let block = match matcher {
+            Some(m) => json!({ "matcher": m, "hooks": [want.clone()] }),
+            None => json!({ "hooks": [want.clone()] }),
+        };
+        hooks.insert((*event).to_string(), Value::Array(vec![block]));
+    }
+    render(&json!({ "hooks": hooks }), "  ", true)
 }

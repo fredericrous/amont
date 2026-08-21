@@ -50,11 +50,7 @@ const MAX_EXCERPT: usize = 200;
 const MAX_BYTES: u64 = 256 * 1024;
 
 pub fn dir() -> Option<PathBuf> {
-    let base = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => PathBuf::from(std::env::var_os("HOME")?).join(".claude"),
-    };
-    Some(base.join("amont-agent"))
+    Some(crate::settings::config_dir()?.join("amont-agent"))
 }
 
 pub fn path() -> Option<PathBuf> {

@@ -112,13 +112,12 @@ pub fn roots(explicit: &[PathBuf]) -> Result<Roots, ScanError> {
             how: Discovery::Explicit,
         });
     }
-    let (base, how) = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(d) => (PathBuf::from(d), Discovery::ConfigDirEnv),
-        None => {
-            let home = std::env::var_os("HOME").ok_or(ScanError::NoHome)?;
-            (PathBuf::from(home).join(".claude"), Discovery::HomeDefault)
-        }
+    let how = if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+        Discovery::ConfigDirEnv
+    } else {
+        Discovery::HomeDefault
     };
+    let base = crate::settings::config_dir().ok_or(ScanError::NoHome)?;
     let projects = base.join("projects");
     if !projects.is_dir() {
         return Err(ScanError::Missing(projects));
