@@ -1,7 +1,7 @@
 //! The npm packaging describes the same six targets the release builds.
 //!
 //! Four files have to agree about that list — `release.yaml`'s build matrix,
-//! `scripts/npm-pack.sh`'s table, `npm/amont/bin/amont.js`'s resolution map, and
+//! `scripts/npm-pack.sh`'s table, `npm/amont/bin/native.js`'s resolution map, and
 //! `npm/amont/package.json.in`'s `optionalDependencies` — and nothing compiles
 //! any of them together. Every way they can disagree fails at a moment nothing
 //! can be taken back:
@@ -78,7 +78,9 @@ fn declared_packages() -> Vec<String> {
 
 /// Package names the JS wrapper knows how to resolve.
 fn wrapper_packages() -> Vec<String> {
-    let text = read("npm/amont/bin/amont.js");
+    // The map moved to `native.js` when a second wrapper (`amont-agent`) needed
+    // the same resolution logic. One copy of it, so one place to read it from.
+    let text = read("npm/amont/bin/native.js");
     let (_, after) = text.split_once("const PACKAGES").expect("PACKAGES map");
     after
         .lines()
@@ -127,7 +129,7 @@ fn the_wrapper_can_resolve_every_package_that_is_published() {
     let known = sorted(wrapper_packages());
     assert_eq!(
         declared, known,
-        "bin/amont.js resolves a different set than npm installs — a platform \
+        "bin/native.js resolves a different set than npm installs — a platform \
          with a binary would be told it has none"
     );
 }
@@ -155,8 +157,12 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     // The wrapper itself, where npm would put it — resolution walks up from
     // the file's own directory, exactly as in a real install.
     let wrapper = modules.join("amont/bin/amont.js");
+    // `amont.js` is a two-line shim over `native.js`; the fixture needs both or
+    // the require fails before any of the resolution under test happens.
+    let native = modules.join("amont/bin/native.js");
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     std::fs::copy(root().join("npm/amont/bin/amont.js"), &wrapper).unwrap();
+    std::fs::copy(root().join("npm/amont/bin/native.js"), &native).unwrap();
 
     // Candidate one: exists, is executable, cannot run — the gnu-on-musl
     // shape, faithfully. A glibc binary on musl fails exec with ENOENT (the

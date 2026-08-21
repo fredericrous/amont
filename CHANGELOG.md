@@ -6,6 +6,28 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+- **A guard that reads a shell command before Claude Code runs it.** `amont`
+  gates commit and push; it cannot see a defect that lives in the command
+  string and never reaches a git hook. `git push … | tail -5` reports the
+  pipe's exit status, so a rejected or killed push reads as success and the
+  error text is discarded with it. `amont-agent` is a Claude Code hook that
+  refuses that command and says why, and it ships in the release archives, the
+  npm packages and both installers alongside `amont` and `amont-fleet`.
+
+  Install it with `amont-agent install --write`, check on it with
+  `amont-agent doctor`, and turn any rule off with
+  `git config --global amont.agent.<rule>.stance observe`. Five rules ship;
+  only `pipe-to-tail` blocks, and only because seven weeks of measurement
+  showed it was the one habit not correcting itself. The other four observe.
+
+  Nothing here is asserted: `amont-agent backtest` replays your own transcripts
+  and reports firings per 1,000 tool calls per week, and `amont-agent corpus
+  check` replays reviewed judgements so a rule that regresses is a red build
+  rather than a metric nobody is watching. See
+  [The agent guard](https://fredericrous.github.io/amont/agent-guard.html).
+
 ## v1.15.0 — 2026-08-20
 
 - **The Windows build stopped shipping CRLF hooks.** This repository tracked
