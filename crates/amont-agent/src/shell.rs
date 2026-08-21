@@ -459,10 +459,21 @@ pub fn lex(src: &str) -> Parsed {
                     }
                 }
             }
-            b'(' | b')' | b'{' | b'}' => {
-                // Grouping. None of the rules need its semantics, and
-                // descending flat can only ever LOSE a fire, never invent one.
+            b'(' | b')' | b'{' | b'}' if word.is_none() => {
+                // Grouping, and only when it STARTS a word: `{ cmd; }`, `(sub)`.
+                // None of the rules need its semantics, and descending flat can
+                // only ever LOSE a fire, never invent one.
                 end_clause!(None, i);
+                i += 1;
+            }
+            b'{' | b'}' => {
+                // A brace ATTACHED to a word belongs to that word: `stash@{2}`,
+                // `HEAD@{1}`, `refs/stash@{0}`. Ending the clause here truncated
+                // the word to `stash@` and INVENTED a fire in bare-stash-pop —
+                // the one thing the branch above promises never to do.
+                let w = word.get_or_insert_with(|| Build::new(i));
+                w.raw.push(b[i]);
+                w.text.push(b[i]);
                 i += 1;
             }
             b' ' | b'\t' | b'\r' => {
@@ -856,6 +867,24 @@ mod tests {
 
     /// A redirect target is not argv. Without this, `git push > --force` offers
     /// a `--force` flag that was never typed as one.
+    #[test]
+    fn a_brace_attached_to_a_word_stays_in_the_word() {
+        // `stash@{2}` is ONE operand. Ending the clause at `{` truncated it to
+        // `stash@`, which turned an explicit stash reference into a bare one —
+        // the flattening comment promises to lose fires, never invent them.
+        let c = clauses("git stash pop stash@{2}");
+        assert_eq!(c.len(), 1);
+        let ops: Vec<&str> = c[0].operands().iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(ops, vec!["stash", "pop", "stash@{2}"]);
+        // A brace that STARTS a word is still grouping, not part of a word:
+        // the program is `echo`, never `{`.
+        let g = clauses("{ echo a; }");
+        assert_eq!(
+            g.iter().filter_map(|c| c.program()).collect::<Vec<_>>(),
+            vec!["echo"]
+        );
+    }
+
     #[test]
     fn a_redirect_target_is_not_argv() {
         let c = clauses("git push > --force");

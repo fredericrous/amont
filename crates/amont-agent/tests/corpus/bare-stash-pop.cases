@@ -35,3 +35,30 @@ nomatch	git stash apply refs/stash@{1}
 nomatch	git stash list | grep wip
 nomatch	git stash push -u -m "wip"
 nomatch	git stash
+
+# --- regressions: three defects found while asking whether this rule was fit
+# --- to graduate to `deny` (2026-08-21). Each line failed before the fix.
+
+# A. A bare `git stash` earlier on the line used to ABANDON the whole scan
+#    (`ops.get(1)?` returned from examine), so the canonical save/restore
+#    round-trip went unseen — the shape of a real incident that day.
+match	git stash; git stash pop
+match	git stash 2>/dev/null >/dev/null; yamllint x.yaml; git stash pop 2>/dev/null >/dev/null; echo restored
+match	git stash && git stash pop
+
+# B. The lexer ended a clause on `{`, truncating `stash@{2}` to `stash@`, so
+#    the rule fired on the very remedy it recommends. Only the QUOTED form
+#    escaped, which is an accident of lexing, not a difference in intent.
+nomatch	git stash pop stash@{2}
+nomatch	git stash apply stash@{1}
+nomatch	git stash pop --index stash@{3}
+
+# C. `names_a_stash` knew only `refs/stash`, so the per-worktree namespace that
+#    exists precisely to avoid the shared ref still fired.
+nomatch	git stash pop refs/wtstash/application-landscape
+nomatch	git stash apply refs/wtstash/homelab
+
+# The shared top of stack stays a fire however it is spelled: naming stash@{0}
+# is not a choice of WHICH entry (see the reviewed worktree case above).
+match	git stash pop refs/stash@{0}
+match	git stash apply stash@{0}
