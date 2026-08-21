@@ -6,7 +6,8 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.16.0 — 2026-08-21
+
 
 - **A guard that reads a shell command before Claude Code runs it.** `amont`
   gates commit and push; it cannot see a defect that lives in the command
@@ -27,6 +28,18 @@ missing here.
   check` replays reviewed judgements so a rule that regresses is a red build
   rather than a metric nobody is watching. See
   [The agent guard](https://fredericrous.github.io/amont/agent-guard.html).
+
+- **`bare-stash-pop` sees the round-trip, and stops firing on its own remedy.**
+  Asked whether the rule could move from `observe` to `deny` and tested it
+  first: it missed the very shape it exists to catch, because a bare `git
+  stash` earlier on the line abandoned the whole scan — so `git stash; …; git
+  stash pop` went unseen. It also fired on `git stash pop stash@{2}`, the fix
+  its own advice recommends, because the shell lexer ended a clause at `{` and
+  truncated the reference; and on `refs/wtstash/<worktree>`, the namespace
+  people adopt precisely to stop sharing `refs/stash`. `stash@{0}` still
+  fires in every spelling — it names the shared top of stack, which is what a
+  bare pop takes. The corpus grew 22 → 32 reviewed judgements, 9 → 14 of them
+  negative, one per defect.
 
 ## v1.15.0 — 2026-08-20
 
