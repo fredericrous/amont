@@ -30,6 +30,7 @@ mod payload;
 mod rules;
 mod settings;
 mod shell;
+mod stale;
 mod stance;
 mod transcript;
 

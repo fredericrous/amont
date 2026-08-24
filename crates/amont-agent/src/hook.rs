@@ -25,7 +25,7 @@ use std::process::ExitCode;
 
 use crate::decision::{self, Decision};
 use crate::journal;
-use crate::payload::{self, Bash, Event};
+use crate::payload::{self, Bash, Event, Session};
 use crate::rules::{self, Confirmed, Context, Finding, Rule, Stance};
 use crate::shell::{self, Parsed};
 
@@ -59,14 +59,56 @@ pub fn run() -> ExitCode {
 
 fn decide(raw: &str) -> Decision {
     match payload::parse(raw) {
-        Event::SessionStart => {
-            // Nothing to say, but the fact that we ran is what `doctor` uses to
-            // tell "no rule fired" apart from "the guard is dead".
+        Event::SessionStart(session) => {
+            // The fact that we ran is what `doctor` uses to tell "no rule
+            // fired" apart from "the guard is dead". Written first, so a slow
+            // fetch below can never cost the heartbeat.
             heartbeat();
-            Decision::Silent
+            on_session_start(&session)
         }
         Event::NotOurs => Decision::Silent,
         Event::PreBash(bash) => on_bash(&bash),
+    }
+}
+
+/// Where the checkout stands against the remote, stated once per session.
+///
+/// Governed by the `stale-base` rule's stance, so one key silences both the
+/// notice and the branch-creation rule: `observe` measures and journals but
+/// says nothing; anything above it speaks. There is nothing to refuse at a
+/// session opening, so `deny` speaks exactly like `advise` here.
+fn on_session_start(session: &Session) -> Decision {
+    if !session.cwd.is_dir() {
+        return Decision::Silent;
+    }
+    let rule = &rules::stale_base::RULE;
+    let stance = crate::stance::resolve(rule);
+    let Some(drift) = crate::stale::measure(&session.cwd, "HEAD") else {
+        return Decision::Silent;
+    };
+    if drift.behind == 0 {
+        return Decision::Silent;
+    }
+    let outcome = match stance {
+        Stance::Observe => "watched",
+        Stance::Advise | Stance::Deny => "advised",
+    };
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome,
+        session: &session.session,
+        repo: &drift.repo,
+        mode: "-",
+        excerpt: &format!("session start: {} behind {}", drift.behind, drift.base),
+    });
+    match stance {
+        Stance::Observe => Decision::Silent,
+        Stance::Advise | Stance::Deny => Decision::Context(format!(
+            "amont-agent/{}: {}",
+            rule.id,
+            crate::stale::notice(&drift)
+        )),
     }
 }
 

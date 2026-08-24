@@ -32,6 +32,7 @@ pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod no_verify;
 pub mod pipe_to_tail;
+pub mod stale_base;
 
 // A `fish-glob` rule was written and removed before the first commit. It caught
 // an unquoted glob inside a flag value (`--include=*.py`), which under fish is
@@ -170,6 +171,7 @@ pub const RULES: &[Rule] = &[
     gh_pr_merge_auto::RULE,
     no_verify::RULE,
     git_add_broad::RULE,
+    stale_base::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

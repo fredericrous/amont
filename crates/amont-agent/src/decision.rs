@@ -38,6 +38,10 @@ pub enum Decision {
     Advise(String),
     /// Refuse the tool call, with the reason the model will read.
     Deny(String),
+    /// Text into the model's context at session start. The same field as
+    /// `Advise`, on a different event — and there is nothing to refuse at a
+    /// session opening, so this is the only shape that event can take.
+    Context(String),
 }
 
 impl Decision {
@@ -66,6 +70,18 @@ impl Decision {
                             json::string_field("hookEventName", "PreToolUse"),
                             json::string_field("permissionDecision", "deny"),
                             json::string_field("permissionDecisionReason", &clamp(text)),
+                        ])
+                    )])
+                );
+            }
+            Decision::Context(text) => {
+                println!(
+                    "{}",
+                    json::object(&[format!(
+                        "\"hookSpecificOutput\":{}",
+                        json::object(&[
+                            json::string_field("hookEventName", "SessionStart"),
+                            json::string_field("additionalContext", &clamp(text)),
                         ])
                     )])
                 );

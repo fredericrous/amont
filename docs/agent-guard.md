@@ -41,8 +41,9 @@ changes nothing unless `--reformat` says otherwise. `uninstall` removes exactly
 what it wrote and leaves everything else byte-identical.
 
 Two entries are written: the guard on `PreToolUse`, and a `SessionStart` entry
-whose only job is to leave a heartbeat. Without the second, `doctor` cannot tell
-"nothing fired this week" from "the guard has been dead since Tuesday".
+that leaves a heartbeat and states where the checkout stands against the
+remote. Without the heartbeat, `doctor` cannot tell "nothing fired this week"
+from "the guard has been dead since Tuesday".
 
 ## Stances
 
@@ -75,9 +76,57 @@ AMONT_AGENT_OFF=1        # or switch the whole guard off for one shell
 | `gh-pr-merge-auto` | `observe` | `--auto` on a repository with no required checks, which merges immediately |
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
+| `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
 
 Only `pipe-to-tail` blocks, and only because seven consecutive weeks of
 measurement showed no downward trend while every other habit halved.
+`stale-base` advises from the start because it refuses nothing, speaks only
+after measuring a real gap, and names a failure no correcting loop can see —
+nothing fails when you build on stale code.
+
+## The session-opening notice
+
+There is a mistake no command-level rule can catch, because no command is
+wrong: a session opens in a checkout last pulled on Tuesday, the model reads
+the tree it is given, and builds a feature that landed on `origin/main` on
+Wednesday. The work is correct against the code it can see.
+
+So at `SessionStart` the guard does the one thing the model cannot do for
+itself. It refreshes `origin/main` — one branch, no tags, killed at five
+seconds, skipped when `FETCH_HEAD` is under ten minutes old so a burst of
+sessions shares one round-trip — and if `HEAD` is behind, says so:
+
+```
+amont-agent/stale-base: this checkout of amont (branch main) is 8 commits
+behind origin/main; newest there: d3b2ed5 chore(release): 1.16.0 (3 days
+ago). Work that seems missing here may already exist on origin/main —
+`git log HEAD..origin/main --oneline` lists it — and a branch or worktree
+started from HEAD inherits the gap; one started from origin/main does not.
+```
+
+It never pulls. `git pull` rewrites the working tree under whoever is using
+it, and a per-task worktree exists precisely so that nobody does that. Moving
+`refs/remotes/origin/*` is safe in every worktree at once; moving `HEAD` is
+not. If the fetch fails or times out, the notice is computed against the last
+successful fetch and says so; when it is up to date, or not in a repository,
+or there is no remote, it says nothing.
+
+The `stale-base` rule is the same fact at the moment it is about to be
+inherited: `git worktree add`, `git checkout -b` or `git switch -c` from
+`HEAD` or a local branch, while that start point is behind. The remote form
+(`… -b feat/x origin/main`) is the remedy and never fires. Both the notice and
+the rule answer to one stance key, and the fetch has its own switch:
+
+```sh
+git config --global amont.agent.stale-base.stance observe   # measure, say nothing
+git config --global amont.agent.fetch false                 # never touch the network
+git config checkout.defaultRemote forgejo                   # measure against another remote
+```
+
+`checkout.defaultRemote` is git's own key for "which remote is the remote",
+and a repository mid-migration — `origin` a mirror going stale, a second
+remote carrying the truth — sets it once for both git and the guard. With two
+remotes and no preference the guard says nothing rather than guess.
 
 ## Evidence
 
