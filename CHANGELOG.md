@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+- **A session that opens in a stale checkout is told so.** Nothing fails when
+  you build on code the remote has moved past; the feature just turns out to
+  exist already, a day later. The `SessionStart` entry `amont-agent` already
+  installs now refreshes `origin/main` (one branch, killed at 5s, skipped when
+  `FETCH_HEAD` is under ten minutes old) and, when `HEAD` is behind, states
+  the count and the newest commit it is missing. It never pulls: moving
+  `refs/remotes/origin/*` is safe in every worktree at once, moving `HEAD` is
+  not.
+
+  A sixth rule, `stale-base`, catches the moment that gap is about to be
+  inherited — `git worktree add`, `git checkout -b`, `git switch -c` from
+  `HEAD` or a local branch that is behind. It ships advising, refuses
+  nothing, and stays silent for the remedy (`… -b feat/x origin/main`).
+  `git config amont.agent.fetch false` keeps the guard off the network;
+  `checkout.defaultRemote` picks which remote counts.
+
 ## v1.16.0 — 2026-08-21
 
 

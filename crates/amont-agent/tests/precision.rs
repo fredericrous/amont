@@ -88,6 +88,19 @@ const BENIGN: &[(&str, &str)] = &[
     ("git add -- -A", "scoped"),
     (r#"git stash pop "stash@{2}""#, "scoped"),
     ("git stash apply refs/stash@{1}", "scoped"),
+    // --- a branch started from the remote is the remedy, not the mistake ---
+    (
+        "git fetch origin -q && git worktree add ../x-wt-y -b feat/y origin/main",
+        "remote-base",
+    ),
+    (
+        "git fetch forgejo main -q && git checkout -B fix/x forgejo/main 2>&1 | tail -1",
+        "remote-base",
+    ),
+    ("git switch -c feat/y upstream/main", "remote-base"),
+    ("git checkout -t origin/feat/y", "remote-base"),
+    ("git worktree add ../x feat/existing", "remote-base"),
+    ("git worktree add --detach ../x", "remote-base"),
     // --- ordinary work that touches none of the rules ----------------------
     ("cargo test --workspace", "ordinary"),
     ("npm run build && npm run test", "ordinary"),
@@ -180,6 +193,10 @@ fn the_smaller_rules_catch_their_own_shapes() {
     assert!(fires_rule("git commit --no-verify -m x", "no-verify"));
     assert!(fires_rule("git add -A", "git-add-broad"));
     assert!(fires_rule("git add .", "git-add-broad"));
+    assert!(fires_rule("git worktree add ../x -b feat/y", "stale-base"));
+    assert!(fires_rule("git worktree add ../x", "stale-base"));
+    assert!(fires_rule("git checkout -b feat/y", "stale-base"));
+    assert!(fires_rule("git switch -c feat/y main", "stale-base"));
 }
 
 /// `-n` means `--no-verify` on `git commit` and `--dry-run` on `git push`.
@@ -198,6 +215,7 @@ fn every_finding_carries_a_remedy() {
     for command in [
         "git push origin main | tail -5",
         "git stash pop",
+        "git checkout -b feat/y",
         "gh pr merge 1 --auto",
         "git commit --no-verify -m x",
         "git add -A",

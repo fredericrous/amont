@@ -267,3 +267,137 @@ fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
         }
     }
 }
+
+/// A clone whose origin has moved on. Two commits on the bare origin, the
+/// clone taken after the first, so `HEAD` is exactly one behind.
+fn a_stale_clone() -> (PathBuf, PathBuf) {
+    let root = home().join("stale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+    let origin = root.join("origin.git");
+    let work = root.join("work");
+    let clone = root.join("clone");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(
+        &root,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "--initial-branch=main",
+            "origin.git",
+        ],
+    );
+    git(&root, &["clone", "-q", origin.to_str().unwrap(), "work"]);
+    git(&work, &["config", "user.email", "t@t.test"]);
+    git(&work, &["config", "user.name", "t"]);
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    git(&root, &["clone", "-q", origin.to_str().unwrap(), "clone"]);
+    git(
+        &work,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "feat: the thing that already exists",
+        ],
+    );
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    (clone, work)
+}
+
+fn session_start(cwd: &std::path::Path) -> String {
+    format!(
+        r#"{{"hook_event_name":"SessionStart","source":"startup","session_id":"sess1234","cwd":{}}}"#,
+        serde_json::Value::String(cwd.to_string_lossy().into_owned())
+    )
+}
+
+/// The whole point: a session opening in a checkout the remote has moved past
+/// is told so, with the count and the newest commit it is missing — and the
+/// remote ref was refreshed to find out, without touching the working tree.
+#[test]
+fn a_session_opening_in_a_stale_checkout_is_told_how_far_behind_it_is() {
+    let (clone, _) = a_stale_clone();
+    let r = send(&session_start(&clone));
+    assert_eq!(r.code, 0);
+    let doc = r.json().expect("a decision document");
+    let out = &doc["hookSpecificOutput"];
+    assert_eq!(out["hookEventName"], "SessionStart", "{doc}");
+    let text = out["additionalContext"].as_str().unwrap_or_default();
+    assert!(text.contains("1 commit behind origin/main"), "{text}");
+    assert!(text.contains("the thing that already exists"), "{text}");
+    assert!(text.starts_with("amont-agent/stale-base:"), "{text}");
+    // Informed, not moved: HEAD is where it was.
+    let head = Command::new("git")
+        .args(["-C", clone.to_str().unwrap(), "log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "first");
+}
+
+/// Up to date is silence — zero bytes, like every other no-opinion.
+#[test]
+fn a_session_opening_in_a_current_checkout_says_nothing() {
+    let (_, work) = a_stale_clone();
+    let r = send(&session_start(&work));
+    assert_eq!(r.stdout, "");
+    assert_eq!(r.code, 0);
+}
+
+/// Not a repository, or a `cwd` that is gone: nothing to measure, nothing said.
+#[test]
+fn a_session_opening_outside_a_repository_says_nothing() {
+    for cwd in [std::env::temp_dir(), PathBuf::from("/nonexistent/for/sure")] {
+        let r = send(&session_start(&cwd));
+        assert_eq!(r.stdout, "", "expected silence for {}", cwd.display());
+        assert_eq!(r.code, 0);
+    }
+}
+
+/// The branch-creation rule, end to end: a branch about to be started from a
+/// stale HEAD is advised — and one started from `origin/main` is not.
+#[test]
+fn a_branch_started_from_a_stale_head_is_advised() {
+    let (clone, _) = a_stale_clone();
+    let payload = |command: &str| {
+        format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{},
+                 "session_id":"sess1234","tool_use_id":"t1","permission_mode":"default",
+                 "tool_input":{{"command":{}}}}}"#,
+            serde_json::Value::String(clone.to_string_lossy().into_owned()),
+            serde_json::Value::String(command.to_string())
+        )
+    };
+    let r = send(&payload("git worktree add ../clone-wt-x -b feat/x"));
+    let doc = r.json().expect("a decision document");
+    let text = doc["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.starts_with("amont-agent/stale-base:"), "{doc}");
+    assert!(
+        doc["hookSpecificOutput"]["permissionDecision"].is_null(),
+        "advice refuses nothing: {doc}"
+    );
+
+    let r = send(&payload(
+        "git worktree add ../clone-wt-x -b feat/x origin/main",
+    ));
+    assert_eq!(r.stdout, "", "the remedy must not trip the rule");
+}

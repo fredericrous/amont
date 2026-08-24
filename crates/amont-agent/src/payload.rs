@@ -37,12 +37,18 @@ pub struct Bash {
     pub permission_mode: String,
 }
 
+pub struct Session {
+    pub cwd: PathBuf,
+    pub session: String,
+}
+
 pub enum Event {
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),
-    /// A session opening. Carries nothing: it exists only so the guard can
-    /// leave proof that it ran.
-    SessionStart,
+    /// A session opening. The guard leaves proof that it ran, and — this being
+    /// the one moment a fetch is worth its cost — says where the checkout
+    /// stands against the remote.
+    SessionStart(Session),
     NotOurs,
 }
 
@@ -69,7 +75,10 @@ pub fn parse(raw: &str) -> Event {
     };
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
-        Some("SessionStart") => Event::SessionStart,
+        Some("SessionStart") => Event::SessionStart(Session {
+            cwd,
+            session: str_at("session_id"),
+        }),
         Some("PreToolUse") => {
             // Exact, not a prefix. An MCP server may expose a tool whose name
             // merely starts with `Bash`, and that tool is not this one.
