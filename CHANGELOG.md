@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.18.0 — 2026-08-25
 
 - **A stale `AGENTS.md` is named before it is believed.** The generated
   block is what an agent reads at the start of a session and follows for the
