@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.18.2 — 2026-08-25
 
 - **`graduate` on an installed binary can see its evidence.** The reviewed
   corpus was looked up at the path of the machine that BUILT the binary — a
