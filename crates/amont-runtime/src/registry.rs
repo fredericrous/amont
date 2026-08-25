@@ -95,6 +95,18 @@ const MID_OPERATION: &[GitState] = &[
 
 pub const CHECKS: &[Builtin] = &[
     // ---- pre-commit ----
+    // The generated guidance block, checked against the binary that would
+    // generate it now. Not during a rebase: stepping through old commits
+    // would warn on every one of them about a file the step did not touch.
+    Builtin {
+        name: "pre-commit-agents-md",
+        stage: Stage::PreCommit,
+        scope: Scope::ALWAYS.not_during(MID_OPERATION),
+        severity: Severity::Warn,
+        fix: Fix::Rewrite,
+        reach: Reach::Convention,
+        run: |_ctx| hooks::agents_md_drift::run(),
+    },
     Builtin {
         name: "pre-commit-argo-lint",
         stage: Stage::PreCommit,
@@ -1124,6 +1136,7 @@ mod tests {
     /// explicitly directs agents to trust that JSON, so an agent would set
     /// `amont.fix true` and wait for a repair that could never arrive.
     const HAS_FIXING_CODE: &[(&str, bool)] = &[
+        ("pre-commit-agents-md", true),
         ("pre-commit-argo-lint", false),
         ("pre-commit-ban-terms", false),
         ("pre-commit-branch-pattern", false),
@@ -1217,7 +1230,7 @@ mod tests {
 
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 33);
+        assert_eq!(CHECKS.len(), 34);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-three
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-four
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -121,11 +121,12 @@ mode, `everywhere`, keeps the distinction inert.
 
 ## `pre-commit`
 
-All twenty-one run **concurrently**, and a panic in one is isolated so the
-other twenty still report.
+All twenty-two run **concurrently**, and a panic in one is isolated so the
+other twenty-one still report.
 
 | id | fires when | what it does |
 |---|---|---|
+| `pre-commit-agents-md` | `AGENTS.md`/`CLAUDE.md` carry the amont markers | The generated guidance block is behind the amont that would generate it now — an agent reading it follows last release's instructions. Warns with the `amont agents-md` fix; with `amont.fix true` regenerates and re-stages. Silent without the markers (opt-in), and during merge/rebase/cherry-pick. **Never blocks.** **fixes** |
 | `pre-commit-argo-lint` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Argo CD app lint. **soft** |
 | `pre-commit-ban-terms` | `.js` `.jsx` `.ts` `.tsx` `.vue` `.rs` `.py` | Refuses focused/debug leftovers in staged sources — `describe.only`, `fit(`, `debugger` in JS/TS, `dbg!(` in Rust, `breakpoint()` and `pdb.set_trace()` in Python. Scoped to what this commit touches, and re-checked against staged content with each language's comments and string literals blanked (a term named in prose is discussion, not code — and an f-string interpolation or template substitution is code, not prose). |
 | `pre-commit-branch-pattern` | always | Says at the **first commit** what [`pre-push-branch-pattern`](#pre-push) will refuse at push time, with the `git branch -m` fix — while renaming costs nothing. Quiet on a detached head, in a remoteless repository, and on any branch a remote already has. **Never blocks.** |

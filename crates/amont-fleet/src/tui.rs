@@ -1527,7 +1527,7 @@ mod tests {
             out.contains("the whole pre-commit trigger"),
             "must name what it covers: {out}"
         );
-        assert!(out.contains("21 checks"), "and how many: {out}");
+        assert!(out.contains("22 checks"), "and how many: {out}");
     }
 
     /// The shape a mistake takes now: a value that names nothing at all.
@@ -2022,7 +2022,7 @@ mod tests {
     fn the_hook_view_gives_the_trigger_its_own_column() {
         let mut app = App::new(scan_with_repos(vec![repo("a", true)]));
         app.mode = Mode::HookView;
-        // Tall enough for every row: the pre-push rows come after twenty-one
+        // Tall enough for every row: the pre-push rows come after twenty-two
         // pre-commit ones, and the assertion below needs one of them on
         // screen.
         let out = render(&app, 110, 60);

@@ -24,6 +24,7 @@ mod corpus;
 mod decision;
 mod doctor;
 mod graduate;
+mod guidance;
 mod hook;
 mod journal;
 mod payload;
