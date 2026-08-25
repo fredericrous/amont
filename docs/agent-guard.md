@@ -123,6 +123,13 @@ git config --global amont.agent.fetch false                 # never touch the ne
 git config checkout.defaultRemote forgejo                   # measure against another remote
 ```
 
+The same moment is when an agent reads `AGENTS.md` and believes it. If the
+generated block there is behind the amont that would write it now — a hook
+list, budgets or conventions from last release — the notice says so and names
+`amont agents-md`; `pre-commit-agents-md` says it again at the commit, and
+regenerates it under `amont.fix true`. `git config amont.agent.agentsMdNotice
+false` silences the session half.
+
 `checkout.defaultRemote` is git's own key for "which remote is the remote",
 and a repository mid-migration — `origin` a mirror going stale, a second
 remote carrying the truth — sets it once for both git and the guard. With two

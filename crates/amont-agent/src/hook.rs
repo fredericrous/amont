@@ -81,13 +81,28 @@ fn on_session_start(session: &Session) -> Decision {
     if !session.cwd.is_dir() {
         return Decision::Silent;
     }
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(line) = stale_checkout_notice(session) {
+        lines.push(line);
+    }
+    if let Some(line) = crate::guidance::notice(&session.cwd) {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        Decision::Silent
+    } else {
+        Decision::Context(lines.join("\n\n"))
+    }
+}
+
+/// The stale-checkout half of the session notice. `None` is silence —
+/// up to date, not a repository, or the rule is only observing.
+fn stale_checkout_notice(session: &Session) -> Option<String> {
     let rule = &rules::stale_base::RULE;
     let stance = crate::stance::resolve(rule);
-    let Some(drift) = crate::stale::measure(&session.cwd, "HEAD") else {
-        return Decision::Silent;
-    };
+    let drift = crate::stale::measure(&session.cwd, "HEAD")?;
     if drift.behind == 0 {
-        return Decision::Silent;
+        return None;
     }
     let outcome = match stance {
         Stance::Observe => "watched",
@@ -103,8 +118,8 @@ fn on_session_start(session: &Session) -> Decision {
         excerpt: &format!("session start: {} behind {}", drift.behind, drift.base),
     });
     match stance {
-        Stance::Observe => Decision::Silent,
-        Stance::Advise | Stance::Deny => Decision::Context(format!(
+        Stance::Observe => None,
+        Stance::Advise | Stance::Deny => Some(format!(
             "amont-agent/{}: {}",
             rule.id,
             crate::stale::notice(&drift)

@@ -99,8 +99,18 @@ impl Decision {
 /// command full of escapes. And the cap has to fall on a character boundary,
 /// because slicing UTF-8 by byte panics — on a command containing an emoji,
 /// which is not hypothetical in a commit message.
+///
+/// Line by line: `sanitize` escapes every control byte, and a newline is
+/// one — so two findings joined with a blank line reached the model as one
+/// paragraph with a literal `\x0a\x0a` in the middle. The newline is the
+/// one control character this text is allowed to carry; everything else
+/// still gets escaped.
 fn clamp(text: &str) -> String {
-    let safe = ui::sanitize(text);
+    let safe = text
+        .split('\n')
+        .map(ui::sanitize)
+        .collect::<Vec<_>>()
+        .join("\n");
     if safe.chars().count() <= LIMIT {
         return safe;
     }
@@ -139,6 +149,13 @@ mod tests {
         let out = clamp(&nasty);
         assert!(out.chars().count() <= LIMIT);
         assert!(!out.contains('\u{1b}'), "no raw escape reaches the output");
+    }
+
+    /// Two findings are two paragraphs, not one with `\x0a\x0a` in it.
+    #[test]
+    fn newlines_between_findings_survive_the_emitter() {
+        let out = clamp("first\n\nsecond\u{1b}[0m");
+        assert_eq!(out, "first\n\nsecond\\x1b[0m");
     }
 
     #[test]

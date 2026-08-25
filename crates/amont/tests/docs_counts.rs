@@ -43,6 +43,7 @@ fn spelled(n: usize) -> &'static str {
         31 => "thirty-one",
         32 => "thirty-two",
         33 => "thirty-three",
+        34 => "thirty-four",
         _ => panic!("teach spelled() the word for {n} while updating the prose"),
     }
 }

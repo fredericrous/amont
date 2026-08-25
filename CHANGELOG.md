@@ -6,6 +6,26 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+- **A stale `AGENTS.md` is named before it is believed.** The generated
+  block is what an agent reads at the start of a session and follows for the
+  rest of it, and a release that changes the block — 1.17.0 changed what it
+  says about timeouts — left every repository's copy quietly wrong until
+  `amont-fleet` happened to run. Now `amont-agent` says at session start that
+  the block is behind, and the thirty-fourth check, `pre-commit-agents-md`,
+  says it again at the commit — warn-only, and under `amont.fix true` it
+  regenerates and re-stages the file instead. Both are silent for a
+  repository that never opted in, and the commit check stays out of merges,
+  rebases and cherry-picks.
+
+- **Two findings reach the model as two paragraphs.** `amont-agent`'s
+  emitter escaped every control byte, newline included, so a command that
+  tripped two rules — or a session notice with two things to say — arrived
+  as one paragraph with a literal `\x0a\x0a` in the middle. The newline is
+  now the one control character the text may carry; everything else is still
+  escaped.
+
 ## v1.17.0 — 2026-08-25
 
 - **A check is judged stuck by its silence, not by a wall clock.** One
