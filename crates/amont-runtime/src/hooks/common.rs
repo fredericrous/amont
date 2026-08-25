@@ -559,13 +559,12 @@ pub(crate) fn wait_within(
         }
         let now = std::time::Instant::now();
         let quiet = activity.map(|a| a.quiet_for());
-        let why = if ceiling.is_some_and(|d| now >= d) {
-            Some(Why::Ceiling(wall_secs))
-        } else if let (Some(limit), Some(q)) = (silence, quiet) {
-            (q >= limit).then_some(Why::Silence(idle_secs))
-        } else {
-            None
-        };
+        let why = judge(
+            now.duration_since(started),
+            quiet,
+            ceiling.map(|_| wall_secs),
+            silence.map(|_| idle_secs),
+        );
         if let Some(why) = why {
             let _ = child.kill();
             let _ = child.wait();
@@ -577,6 +576,33 @@ pub(crate) fn wait_within(
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+/// Which clock, if any, has fired — the decision, with no process or
+/// clock of its own so it can be tested to the second.
+///
+/// `ran` is how long the command has been running; `quiet` how long since
+/// it last wrote, `None` when nobody is watching its output. `ceiling` and
+/// `silence` are the two budgets in seconds, `None` when that clock is off.
+/// The ceiling wins when both have fired: it is the larger claim, and the
+/// message for it carries the silence figure anyway.
+pub fn judge(
+    ran: std::time::Duration,
+    quiet: Option<std::time::Duration>,
+    ceiling: Option<u64>,
+    silence: Option<u64>,
+) -> Option<Why> {
+    if let Some(wall) = ceiling {
+        if ran >= std::time::Duration::from_secs(wall) {
+            return Some(Why::Ceiling(wall));
+        }
+    }
+    if let (Some(idle), Some(q)) = (silence, quiet) {
+        if q >= std::time::Duration::from_secs(idle) {
+            return Some(Why::Silence(idle));
+        }
+    }
+    None
 }
 
 /// Say a command was killed, by which clock, and what that tells you.
@@ -788,6 +814,40 @@ pub fn hl(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The two clocks, decided to the second. A chatty command outlives any
+    /// silence budget however long it runs; a silent one dies at the budget
+    /// however short; a command nobody watches answers to the ceiling only.
+    #[test]
+    fn the_clocks_judge_silence_and_ceiling_separately() {
+        use super::{judge, Why};
+        use std::time::Duration as D;
+        let s = D::from_secs;
+        // Chatty and long: past a five-second silence budget, still fine.
+        assert_eq!(judge(s(900), Some(s(0)), Some(3600), Some(5)), None);
+        assert_eq!(judge(s(900), Some(s(4)), Some(3600), Some(5)), None);
+        // Silent for the budget: killed, and the silence is blamed.
+        assert_eq!(
+            judge(s(30), Some(s(5)), Some(3600), Some(5)),
+            Some(Why::Silence(5))
+        );
+        // Unobserved output: the silence clock cannot run at all.
+        assert_eq!(judge(s(900), None, Some(3600), Some(5)), None);
+        // The ceiling fires on elapsed time whatever the output is doing.
+        assert_eq!(
+            judge(s(3600), Some(s(0)), Some(3600), Some(120)),
+            Some(Why::Ceiling(3600))
+        );
+        // Both fired at once: the ceiling is the answer.
+        assert_eq!(
+            judge(s(3600), Some(s(600)), Some(3600), Some(120)),
+            Some(Why::Ceiling(3600))
+        );
+        // Both off: nothing ever fires.
+        assert_eq!(judge(s(86_400), Some(s(86_400)), None, None), None);
+        // Only silence on: no ceiling, however long it runs.
+        assert_eq!(judge(s(86_400), Some(s(1)), None, Some(120)), None);
+    }
 
     /// The deadline kills what outlives it and reports what finished.
     #[cfg(unix)]

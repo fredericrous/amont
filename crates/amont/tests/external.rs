@@ -677,23 +677,25 @@ fn a_silent_check_is_killed_by_the_idle_budget() {
 fn a_chatty_check_outlives_the_idle_budget() {
     let r = Repo::new();
     let body =
-        "#!/bin/sh\ni=0\nwhile [ $i -lt 60 ]; do i=$((i+1)); echo tick $i; sleep 0.2; done\n";
+        "#!/bin/sh\ni=0\nwhile [ $i -lt 75 ]; do i=$((i+1)); echo tick $i; sleep 0.2; done\n";
     r.stage("chatty.sh", body);
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(r.path("chatty.sh"), std::fs::Permissions::from_mode(0o755))
         .expect("chmod");
     r.git(&["add", "chatty.sh"]);
     manifest(&r, "pre-commit  chatty  *  block  ./chatty.sh\n");
-    // Twelve seconds of ticks every 0.2s against a five-second budget. The
-    // 25x margin is for a machine running the whole suite at once, where a
-    // `sleep 0.2` has been seen to take six times that — never for the tool
-    // itself, which is the thing being measured.
-    r.git(&["config", "amont.idleTimeout", "5"]);
+    // Fifteen seconds of ticks every 0.2s against a ten-second budget. The
+    // 50x margin is for a machine running the whole suite at once, where a
+    // `sleep 0.2` has been seen to take 25 times that — never for the tool
+    // itself, which is the thing being measured. The decision itself is
+    // pinned to the second by `common::tests::the_clocks_judge_silence_and_
+    // ceiling_separately`; this test only proves the wiring end to end.
+    r.git(&["config", "amont.idleTimeout", "10"]);
 
     let run = r.hook("pre-commit", &[]);
     assert!(
         run.passed(),
-        "twelve seconds of steady output must not trip a five-second silence budget:\n{}",
+        "fifteen seconds of steady output must not trip a ten-second silence budget:\n{}",
         run.output()
     );
     assert!(!run.says("killed"), "{}", run.output());
