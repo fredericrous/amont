@@ -571,6 +571,17 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
         );
     }
     if !verdict.allowed && !f.force {
+        // The file to append to is the checkout's. An installed copy has no
+        // checkout, and naming the path of the machine that built it would
+        // send the reader to a directory that exists nowhere near them.
+        let where_ = if corpus::checkout_present() {
+            corpus::path_for(rule.id).display().to_string()
+        } else {
+            format!(
+                "crates/amont-agent/tests/corpus/{}.cases   # in a checkout of amont",
+                rule.id
+            )
+        };
         eprintln!(
             "\nrefusing to move {} to {}: not enough evidence.\n\
              Review its matches first:\n  \
@@ -579,7 +590,7 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             rule.id,
             to.as_str(),
             rule.id,
-            corpus::path_for(rule.id).display()
+            where_
         );
         return ExitCode::from(2);
     }
