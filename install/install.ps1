@@ -122,6 +122,9 @@ try {
 
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     $src = Join-Path $tmp $name
+    # Whether this is an upgrade decides what to say at the end: the
+    # first-install steps are wrong advice the second time.
+    $upgrading = Test-Path (Join-Path $BinDir 'amont.exe')
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
     foreach ($exe in @('amont.exe', 'amont-fleet.exe', 'amont-agent.exe')) {
@@ -153,11 +156,24 @@ if ($userPath -notlike "*$BinDir*") {
     Write-Host ''
 }
 
-Write-Host '  Nothing is enabled yet, on purpose. To turn the hooks on:'
-Write-Host ''
-Write-Host '    cd <your-repo>; amont install     # this repository only'
-Write-Host '    amont list                        # what would run here'
-Write-Host '    amont uninstall                   # and back out again'
-Write-Host ''
-Write-Host '  Across many repositories at once:  amont-fleet install --root $HOME\source'
-Write-Host ''
+if ($upgrading) {
+    Write-Host '  Upgraded. Hooks already run this binary — nothing per repository'
+    Write-Host '  needs redoing for the checks themselves. What does not update on its'
+    Write-Host "  own: a repository's hook shims when a release changes them, and the"
+    Write-Host '  generated block in AGENTS.md/CLAUDE.md. One command sees both:'
+    Write-Host ''
+    Write-Host '    amont-fleet fix --root $HOME\source                       # dry run'
+    Write-Host '    amont-fleet fix --root $HOME\source --apply --agents-md'
+    Write-Host ''
+    Write-Host '  or, in one repository:  amont install; amont agents-md'
+    Write-Host ''
+} else {
+    Write-Host '  Nothing is enabled yet, on purpose. To turn the hooks on:'
+    Write-Host ''
+    Write-Host '    cd <your-repo>; amont install     # this repository only'
+    Write-Host '    amont list                        # what would run here'
+    Write-Host '    amont uninstall                   # and back out again'
+    Write-Host ''
+    Write-Host '  Across many repositories at once:  amont-fleet install --root $HOME\source'
+    Write-Host ''
+}

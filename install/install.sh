@@ -142,6 +142,10 @@ main() {
     fi
 
     tar xzf "$tmp/${name}.tar.gz" -C "$tmp"
+    # Whether this is an upgrade decides what to say at the end: the
+    # first-install steps are wrong advice the second time.
+    upgrading=0
+    [ -x "$BIN_DIR/amont" ] && upgrading=1
     mkdir -p "$BIN_DIR"
     for b in amont amont-fleet amont-agent; do
         if [ -f "$tmp/$name/$b" ]; then
@@ -161,6 +165,16 @@ main() {
         *) warn "$BIN_DIR is not on your PATH — add it, or the shims will still find the binary but you will not" ;;
     esac
 
+    if [ "$upgrading" -eq 1 ]; then
+        printf '  Upgraded. Hooks already run this binary — nothing per repository\n'
+        printf '  needs redoing for the checks themselves. What does not update on its\n'
+        printf '  own: a repository'"'"'s hook shims when a release changes them, and the\n'
+        printf '  generated block in AGENTS.md/CLAUDE.md. One command sees both:\n\n'
+        printf '    amont-fleet fix --root ~/Developer                       # dry run\n'
+        printf '    amont-fleet fix --root ~/Developer --apply --agents-md\n\n'
+        printf '  or, in one repository:  amont install && amont agents-md\n\n'
+        return
+    fi
     printf '  Nothing is enabled yet, on purpose. To turn the hooks on:\n\n'
     printf '    cd <your-repo> && amont install     # this repository only\n'
     printf '    amont list                          # what would run here\n'
