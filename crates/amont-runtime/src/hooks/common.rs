@@ -306,16 +306,65 @@ pub fn strip_git_env(cmd: &mut Command) {
     }
 }
 
-/// The wall-clock budget for one check's spawned command, in seconds.
+/// The wall-clock CEILING for one check's spawned command, in seconds.
 ///
-/// `amont.timeout`, default 600 — ten minutes, the figure the generated
-/// agent guidance already tells tooling to allow a whole commit or push; a
-/// single check that outlives it is not slow, it is stuck. `0` disables.
-/// Read once per process: twenty concurrent checks must not each spawn a
-/// `git config` to learn the same number.
+/// `amont.timeout`, default 3600. This used to be 600 and to be the only
+/// clock, which made it answer two different questions with one number: "is
+/// this tool stuck?" and "is this suite slow?". A stuck tool is silent, and
+/// [`idle_timeout`] catches it in minutes; what is left for the ceiling is
+/// the tool that keeps printing and never finishes, which is rare enough to
+/// afford an hour. `0` disables. Read once per process: twenty concurrent
+/// checks must not each spawn a `git config` to learn the same number.
 pub fn check_timeout() -> u64 {
     static TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *TIMEOUT.get_or_init(|| crate::config::integer_or("amont.timeout", 600, 0..=86_400) as u64)
+    *TIMEOUT.get_or_init(|| crate::config::integer_or("amont.timeout", 3600, 0..=86_400) as u64)
+}
+
+/// The SILENCE budget: how long a spawned command may go without writing a
+/// byte before it is judged stuck, in seconds.
+///
+/// `amont.idleTimeout`, default 120. A hang is silent; a slow test suite
+/// talks — `cargo test` prints a line per test. Killing on silence catches
+/// the captive portal, the deadlocked lock file and the tool waiting on a
+/// prompt nobody will answer FASTER than a ten-minute wall clock did, while
+/// letting a chatty twenty-five-minute suite finish. Only applies where the
+/// output is observed (the captured runners); a command inheriting the
+/// terminal directly answers to the ceiling alone. `0` disables.
+pub fn idle_timeout() -> u64 {
+    static IDLE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *IDLE.get_or_init(|| crate::config::integer_or("amont.idleTimeout", 120, 0..=86_400) as u64)
+}
+
+/// `secs` as people read it: `12s`, `8m12s`, `1h02m`.
+pub fn human_secs(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m{:02}s", s / 60, s % 60),
+        s => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// When a spawned command last wrote a byte, shared between the reader
+/// threads that see the bytes and the wait loop that judges the silence.
+pub struct Activity {
+    last: std::sync::Mutex<std::time::Instant>,
+}
+
+impl Activity {
+    pub fn new() -> std::sync::Arc<Activity> {
+        std::sync::Arc::new(Activity {
+            last: std::sync::Mutex::new(std::time::Instant::now()),
+        })
+    }
+    pub fn touch(&self) {
+        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = std::time::Instant::now();
+    }
+    pub fn quiet_for(&self) -> std::time::Duration {
+        self.last
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .elapsed()
+    }
 }
 
 /// The deadline for a network PROBE — an `ls-remote` asked before the real
@@ -332,11 +381,32 @@ pub fn network_probe_budget() -> u64 {
     }
 }
 
+/// Which clock killed a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// The wall-clock ceiling, `amont.timeout`, in seconds.
+    Ceiling(u64),
+    /// The silence budget, `amont.idleTimeout`, in seconds.
+    Silence(u64),
+}
+
+/// A command killed by a clock — what happened, said with enough to tell
+/// "slow" from "stuck", which is the whole reason there are two clocks.
+#[derive(Debug, Clone, Copy)]
+pub struct Killed {
+    pub why: Why,
+    /// How long it had been running.
+    pub ran_secs: u64,
+    /// How long since its last output; `None` when the output was not ours
+    /// to observe (inherited stdio).
+    pub quiet_secs: Option<u64>,
+}
+
 /// What became of a command run under the deadline.
 pub enum Ran {
     Status(std::process::ExitStatus),
-    /// Killed at the deadline; carries the budget it exceeded, in seconds.
-    TimedOut(u64),
+    /// Killed by a clock; see [`Killed`].
+    TimedOut(Killed),
 }
 
 /// `cmd.status()`, bounded by [`check_timeout`].
@@ -355,13 +425,68 @@ pub fn status_within(cmd: &mut Command) -> std::io::Result<Ran> {
     status_within_secs(cmd, check_timeout())
 }
 
-/// [`status_within`] with an explicit budget — the testable seam.
+/// [`status_within`] with an explicit ceiling — the testable seam. The
+/// output is inherited, so nobody sees the bytes and the silence budget
+/// cannot apply; the ceiling is the only clock.
 pub fn status_within_secs(cmd: &mut Command, budget_secs: u64) -> std::io::Result<Ran> {
     if budget_secs == 0 {
         return cmd.status().map(Ran::Status);
     }
     let mut child = cmd.spawn()?;
-    wait_within(&mut child, budget_secs)
+    wait_within(&mut child, budget_secs, 0, None)
+}
+
+/// Spawn `cmd` with both streams piped, hand every chunk to `on_output` as
+/// it arrives, and wait under BOTH clocks — the reader threads are what
+/// make the silence budget observable. The shared runner behind the
+/// streamed, captured and discarded variants.
+fn run_observed(
+    cmd: &mut Command,
+    on_output: impl Fn(&[u8]) + Send + Sync + 'static,
+) -> std::io::Result<Ran> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let activity = Activity::new();
+    let on_output = std::sync::Arc::new(on_output);
+    let mut child = cmd.spawn()?;
+    // The silence is the CHILD's, so its clock starts when the child does:
+    // a spawn that itself took a second on a loaded machine is not a
+    // second the tool spent saying nothing.
+    activity.touch();
+    let mut readers = Vec::new();
+    for pipe in [
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let activity = std::sync::Arc::clone(&activity);
+        let on_output = std::sync::Arc::clone(&on_output);
+        readers.push(std::thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut chunk = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut pipe, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        activity.touch();
+                        on_output(&chunk[..n]);
+                    }
+                }
+            }
+        }));
+    }
+    let ran = wait_within(&mut child, check_timeout(), idle_timeout(), Some(&activity));
+    for r in readers {
+        let _ = r.join();
+    }
+    ran
 }
 
 /// [`status_within`], with the child's stdout and stderr CAPTURED into the
@@ -379,7 +504,6 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
     let Some((stage, idx)) = crate::live::current_sink() else {
         return status_within(cmd);
     };
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     if crate::live::watching() {
         // The block lands on a real terminal but the tool sees a pipe and
         // would strip its colors; the big three opt-in knobs put them back.
@@ -387,39 +511,7 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
             .env("CLICOLOR_FORCE", "1")
             .env("CARGO_TERM_COLOR", "always");
     }
-    let budget = check_timeout();
-    let mut child = cmd.spawn()?;
-    let mut readers = Vec::new();
-    for pipe in [
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let stage = std::sync::Arc::clone(&stage);
-        readers.push(std::thread::spawn(move || {
-            let mut pipe = pipe;
-            let mut chunk = [0u8; 4096];
-            loop {
-                match std::io::Read::read(&mut pipe, &mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => stage.append_raw(idx, &chunk[..n]),
-                }
-            }
-        }));
-    }
-    let ran = wait_within(&mut child, budget)?;
-    for r in readers {
-        let _ = r.join();
-    }
-    Ok(ran)
+    run_observed(cmd, move |bytes| stage.append_raw(idx, bytes))
 }
 
 /// Run to completion under the `amont.timeout` deadline with stdout and
@@ -428,81 +520,98 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
 /// code alone. Arrival-ordered merge of both streams, like
 /// [`status_streamed`]'s blocks. `None` when the child cannot be spawned.
 pub fn capture_within(cmd: &mut Command) -> Option<(Ran, String)> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let budget = check_timeout();
-    let mut child = cmd.spawn().ok()?;
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let mut readers = Vec::new();
-    for pipe in [
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let text = std::sync::Arc::clone(&text);
-        readers.push(std::thread::spawn(move || {
-            let mut pipe = pipe;
-            let mut chunk = [0u8; 4096];
-            loop {
-                match std::io::Read::read(&mut pipe, &mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let piece = String::from_utf8_lossy(&chunk[..n]).into_owned();
-                        text.lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push_str(&piece);
-                    }
-                }
-            }
-        }));
-    }
-    let ran = wait_within(&mut child, budget).ok()?;
-    for r in readers {
-        let _ = r.join();
-    }
+    let sink = std::sync::Arc::clone(&text);
+    let ran = run_observed(cmd, move |bytes| {
+        sink.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push_str(&String::from_utf8_lossy(bytes));
+    })
+    .ok()?;
     let text = std::sync::Arc::try_unwrap(text)
         .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
         .unwrap_or_default();
     Some((ran, text))
 }
 
-/// The deadline loop over an already-spawned child — shared by the
-/// inherited and captured runners.
+/// The two-clock wait over an already-spawned child — shared by every
+/// runner. `wall_secs` is the ceiling, `idle_secs` the silence budget; each
+/// `0` means that clock is off, and the silence budget is also off when
+/// there is no [`Activity`] to consult (inherited stdio).
 pub(crate) fn wait_within(
     child: &mut std::process::Child,
-    budget_secs: u64,
+    wall_secs: u64,
+    idle_secs: u64,
+    activity: Option<&Activity>,
 ) -> std::io::Result<Ran> {
-    if budget_secs == 0 {
+    let started = std::time::Instant::now();
+    let ceiling = (wall_secs > 0).then(|| started + std::time::Duration::from_secs(wall_secs));
+    let silence = match activity {
+        Some(_) if idle_secs > 0 => Some(std::time::Duration::from_secs(idle_secs)),
+        _ => None,
+    };
+    if ceiling.is_none() && silence.is_none() {
         return child.wait().map(Ran::Status);
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Ran::Status(status));
         }
-        if std::time::Instant::now() >= deadline {
+        let now = std::time::Instant::now();
+        let quiet = activity.map(|a| a.quiet_for());
+        let why = if ceiling.is_some_and(|d| now >= d) {
+            Some(Why::Ceiling(wall_secs))
+        } else if let (Some(limit), Some(q)) = (silence, quiet) {
+            (q >= limit).then_some(Why::Silence(idle_secs))
+        } else {
+            None
+        };
+        if let Some(why) = why {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(Ran::TimedOut(budget_secs));
+            return Ok(Ran::TimedOut(Killed {
+                why,
+                ran_secs: now.duration_since(started).as_secs(),
+                quiet_secs: quiet.map(|q| q.as_secs()),
+            }));
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
-/// Say a command was killed at the deadline, and how to change the deadline.
-pub fn say_timed_out(what: &str, budget_secs: u64) {
-    fail(&format!(
-        "{} timed out after {budget_secs}s — killed. {} raises the budget",
-        hl(what),
-        hl("git config amont.timeout <secs>")
-    ));
+/// Say a command was killed, by which clock, and what that tells you.
+///
+/// The two clocks exist to answer two different questions, so the message
+/// answers the one that was asked: silence means stuck — look at the tool;
+/// the ceiling with recent output means slow — raise the ceiling.
+pub fn say_timed_out(what: &str, k: Killed) {
+    match k.why {
+        Why::Silence(budget) => fail(&format!(
+            "{} printed nothing for {} and was killed after {} — a tool this quiet is \
+             usually stuck, not slow. {} raises the silence budget (0 disables)",
+            hl(what),
+            human_secs(budget),
+            human_secs(k.ran_secs),
+            hl("git config amont.idleTimeout <secs>")
+        )),
+        Why::Ceiling(budget) => {
+            let verdict = match k.quiet_secs {
+                Some(q) if q < 30 => format!(
+                    " It was still printing ({} since its last line): slow, not stuck.",
+                    human_secs(q)
+                ),
+                Some(q) => format!(" Its last output was {} ago.", human_secs(q)),
+                None => String::new(),
+            };
+            fail(&format!(
+                "{} timed out: ran for {} and was killed at the ceiling. {} raises it \
+                 (0 disables).{verdict}",
+                hl(what),
+                human_secs(budget),
+                hl("git config amont.timeout <secs>")
+            ))
+        }
+    }
 }
 
 /// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
@@ -545,13 +654,13 @@ pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
     cmd.args(rest)
         .args(extra)
         .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
     strip_git_env(&mut cmd);
     // Deliberately NOT the streamed runner: this helper's contract is that
-    // the output is discarded, and capture would resurrect it into the block.
-    match status_within(&mut cmd) {
+    // the output is discarded, and capture would resurrect it into the
+    // block. Observed and dropped instead of `/dev/null`, so the silence
+    // clock still sees whether the tool is alive.
+    match run_observed(&mut cmd, |_| {}) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(program, b);
@@ -688,7 +797,11 @@ mod tests {
         let mut slow = Command::new(program("sleep"));
         slow.arg("300").stdin(Stdio::null());
         match status_within_secs(&mut slow, 1) {
-            Ok(Ran::TimedOut(1)) => {}
+            Ok(Ran::TimedOut(Killed {
+                why: Why::Ceiling(1),
+                quiet_secs: None,
+                ..
+            })) => {}
             other => panic!("expected TimedOut(1), got {:?}", other.map(|_| "ran")),
         }
         assert!(

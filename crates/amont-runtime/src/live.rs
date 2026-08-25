@@ -61,6 +61,11 @@ struct Slot {
     /// Restamped by [`Stage::enter`], so a serial stage (pre-push) times
     /// each check from its own start, not the stage's.
     started: Instant,
+    /// The last byte or line that landed in `buf` — what the region's
+    /// `quiet` figure and the heartbeat's `last output` read.
+    last_output: Instant,
+    /// Elapsed seconds at which the non-tty heartbeat next speaks.
+    next_beat: u64,
     buf: Vec<u8>,
     /// Entered and not yet finished — the region shows exactly these.
     running: bool,
@@ -103,6 +108,8 @@ impl Stage {
                                 .unwrap_or(n),
                         ),
                         started: now,
+                        last_output: now,
+                        next_beat: HEARTBEAT_SECS,
                         buf: Vec::new(),
                         running: false,
                         done: false,
@@ -120,6 +127,16 @@ impl Stage {
             let _ = std::thread::Builder::new()
                 .name("amont-live".into())
                 .spawn(move || tick(weak));
+        } else if enabled() {
+            // Nobody is watching a terminal — an agent, CI, a pipe — and a
+            // captured check shows nothing until it finishes. The heartbeat
+            // is the one line a minute that says it is alive, which is the
+            // difference between "wait" and "kill it" for whoever is on the
+            // other end of the pipe.
+            let weak = Arc::downgrade(&stage);
+            let _ = std::thread::Builder::new()
+                .name("amont-heartbeat".into())
+                .spawn(move || heartbeat(weak));
         }
         stage
     }
@@ -133,6 +150,8 @@ impl Stage {
             if let Some(slot) = slots.get_mut(idx) {
                 slot.running = true;
                 slot.started = Instant::now();
+                slot.last_output = slot.started;
+                slot.next_beat = HEARTBEAT_SECS;
             }
         }
         SINK.with(|s| *s.borrow_mut() = Some((Arc::clone(self), idx)));
@@ -145,6 +164,7 @@ impl Stage {
         if let Some(slot) = slots.get_mut(idx) {
             if !slot.done {
                 slot.buf.extend_from_slice(bytes);
+                slot.last_output = Instant::now();
             }
         }
     }
@@ -155,6 +175,7 @@ impl Stage {
             if !slot.done {
                 slot.buf.extend_from_slice(line.as_bytes());
                 slot.buf.push(b'\n');
+                slot.last_output = Instant::now();
             }
         }
     }
@@ -201,16 +222,20 @@ impl Stage {
         if !self.live {
             return;
         }
-        let entries: Vec<(String, f64)> = {
+        let entries: Vec<Row> = {
             let slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
             let now = Instant::now();
             slots
                 .iter()
                 .filter(|s| s.running && !s.done)
-                .map(|s| (s.name.clone(), now.duration_since(s.started).as_secs_f64()))
+                .map(|s| Row {
+                    name: s.name.clone(),
+                    elapsed: now.duration_since(s.started).as_secs_f64(),
+                    quiet: now.duration_since(s.last_output).as_secs_f64(),
+                })
                 .collect()
         };
-        let text = region(&entries, term_width());
+        let text = region(&entries, term_width(), budgets());
         let mut paint = String::new();
         if *drawn > 0 {
             paint.push_str(&format!("\x1b[{}A\x1b[J", *drawn));
@@ -260,23 +285,91 @@ fn tick(weak: Weak<Stage>) {
     }
 }
 
+/// One running check, as the region and the heartbeat see it.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub name: String,
+    /// Seconds since the check entered.
+    pub elapsed: f64,
+    /// Seconds since it last wrote anything.
+    pub quiet: f64,
+}
+
+/// The two clocks, as the region annotates them: `(idle, ceiling)` in
+/// seconds, `0` for off.
+#[derive(Debug, Clone, Copy)]
+pub struct Budgets {
+    pub idle: u64,
+    pub ceiling: u64,
+}
+
+fn budgets() -> Budgets {
+    Budgets {
+        idle: crate::hooks::common::idle_timeout(),
+        ceiling: crate::hooks::common::check_timeout(),
+    }
+}
+
+/// How long a check must be quiet before the region says so. A test suite
+/// pauses this long between crates without anything being wrong; past it,
+/// the reader wants to know the silence is being counted.
+const QUIET_NOTE_SECS: f64 = 30.0;
+
+/// The non-tty heartbeat's period: one line a minute per running check.
+const HEARTBEAT_SECS: u64 = 60;
+
+/// Elapsed time in a fixed six-column figure: `  3.2s` under a minute,
+/// `8m12s` and `1h02m` above, so the column stays aligned as the suite
+/// crosses the minute.
+fn elapsed_column(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{secs:>5.1}s")
+    } else {
+        format!("{:>6}", crate::hooks::common::human_secs(secs as u64))
+    }
+}
+
 /// The region's text: one `⠹ name  12.3s` line per running check, capped at
 /// [`MAX_LINES`] plus a `… and N more` overflow line. Pure — the ticker is
 /// a thin shell around this, and the tests drive it directly.
-fn region(entries: &[(String, f64)], width: usize) -> String {
+///
+/// Two annotations, each only when it carries news: `· quiet 45s/2m` once
+/// a check has been silent past [`QUIET_NOTE_SECS`] (with the silence
+/// budget it is counting toward, when there is one), and `· 48m/60m` once
+/// elapsed passes 80% of the ceiling — the cliff, shown before the fall.
+fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
     if entries.is_empty() {
         return String::new();
     }
     let pad = entries
         .iter()
         .take(MAX_LINES)
-        .map(|(name, _)| name.chars().count())
+        .map(|r| r.name.chars().count())
         .max()
         .unwrap_or(0);
     let mut out = String::new();
-    for (name, secs) in entries.iter().take(MAX_LINES) {
-        let frame = FRAMES[((secs * 10.0) as usize) % FRAMES.len()];
-        let line = format!("{frame} {name:<pad$} {secs:>5.1}s");
+    for row in entries.iter().take(MAX_LINES) {
+        let frame = FRAMES[((row.elapsed * 10.0) as usize) % FRAMES.len()];
+        let name = &row.name;
+        let mut line = format!("{frame} {name:<pad$} {}", elapsed_column(row.elapsed));
+        if row.quiet >= QUIET_NOTE_SECS {
+            let quiet = crate::hooks::common::human_secs(row.quiet as u64);
+            if budgets.idle > 0 {
+                line.push_str(&format!(
+                    " · quiet {quiet}/{}",
+                    crate::hooks::common::human_secs(budgets.idle)
+                ));
+            } else {
+                line.push_str(&format!(" · quiet {quiet}"));
+            }
+        }
+        if budgets.ceiling > 0 && row.elapsed >= 0.8 * budgets.ceiling as f64 {
+            line.push_str(&format!(
+                " · {}/{}",
+                crate::hooks::common::human_secs(row.elapsed as u64),
+                crate::hooks::common::human_secs(budgets.ceiling)
+            ));
+        }
         if line.chars().count() > width {
             out.extend(line.chars().take(width));
         } else {
@@ -288,6 +381,83 @@ fn region(entries: &[(String, f64)], width: usize) -> String {
         out.push_str(&format!("… and {} more\n", entries.len() - MAX_LINES));
     }
     out
+}
+
+/// The heartbeat: once a minute, for each check still running, one plain
+/// line on stderr — elapsed, and how long since it last said anything.
+/// Not a region: nothing is erased or repainted, because nobody is looking
+/// at a cursor; whoever reads this reads a log.
+///
+/// The first beat for a check also names the two budgets, once, so the
+/// reader can tell how far it is from being killed without opening the
+/// docs. Written under the same `out` lock as the blocks, so a beat never
+/// lands inside one.
+fn heartbeat(weak: Weak<Stage>) {
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let Some(stage) = weak.upgrade() else { return };
+        if stage.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let due: Vec<(Row, bool)> = {
+            let mut slots = stage.slots.lock().unwrap_or_else(|p| p.into_inner());
+            let now = Instant::now();
+            let mut due = Vec::new();
+            for s in slots.iter_mut().filter(|s| s.running && !s.done) {
+                let elapsed = now.duration_since(s.started).as_secs();
+                if elapsed >= s.next_beat {
+                    let first = s.next_beat == HEARTBEAT_SECS;
+                    s.next_beat += HEARTBEAT_SECS;
+                    due.push((
+                        Row {
+                            name: s.name.clone(),
+                            elapsed: elapsed as f64,
+                            quiet: now.duration_since(s.last_output).as_secs_f64(),
+                        },
+                        first,
+                    ));
+                }
+            }
+            due
+        };
+        if due.is_empty() {
+            continue;
+        }
+        let text: String = due
+            .iter()
+            .map(|(row, first)| beat_line(row, *first, budgets()))
+            .collect();
+        let _guard = stage.out.lock().unwrap_or_else(|p| p.into_inner());
+        let mut err = std::io::stderr().lock();
+        let _ = err.write_all(text.as_bytes());
+        let _ = err.flush();
+    }
+}
+
+/// One heartbeat line. Pure, for the tests.
+fn beat_line(row: &Row, first: bool, budgets: Budgets) -> String {
+    use crate::hooks::common::human_secs;
+    let mut line = format!(
+        "  … {} still running: {}, last output {} ago",
+        row.name,
+        human_secs(row.elapsed as u64),
+        human_secs(row.quiet as u64)
+    );
+    if first {
+        let idle = match budgets.idle {
+            0 => "off".to_string(),
+            s => human_secs(s),
+        };
+        let ceiling = match budgets.ceiling {
+            0 => "off".to_string(),
+            s => human_secs(s),
+        };
+        line.push_str(&format!(
+            " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
+        ));
+    }
+    line.push('\n');
+    line
 }
 
 /// `$COLUMNS` when it is exported and sane, else a conservative 100 — the
@@ -467,30 +637,48 @@ mod tests {
         assert_eq!(slots[2].name, "bare");
     }
 
+    fn row(name: &str, elapsed: f64) -> Row {
+        Row {
+            name: name.into(),
+            elapsed,
+            quiet: 0.0,
+        }
+    }
+
+    const B: Budgets = Budgets {
+        idle: 120,
+        ceiling: 3600,
+    };
+
     /// The spinner frame comes from the clock: different elapsed, different
     /// frame; same elapsed, same frame.
     #[test]
     fn frames_advance_with_time() {
-        let a = region(&[("clippy".into(), 0.0)], 80);
-        let b = region(&[("clippy".into(), 0.1)], 80);
-        let c = region(&[("clippy".into(), 1.0)], 80);
+        let a = region(&[row("clippy", 0.0)], 80, B);
+        let b = region(&[row("clippy", 0.1)], 80, B);
+        let c = region(&[row("clippy", 1.0)], 80, B);
         assert_ne!(a.chars().next(), b.chars().next());
         assert_eq!(a.chars().next(), c.chars().next(), "10 frames per second");
     }
 
-    /// Names pad to a column so the elapsed figures align.
+    /// Names pad to a column so the elapsed figures align — across the
+    /// minute mark too, where the figure changes shape.
     #[test]
     fn region_lines_align() {
-        let text = region(&[("a".into(), 0.0), ("longer-name".into(), 0.0)], 80);
+        let text = region(&[row("a", 0.0), row("longer-name", 0.0)], 80, B);
         let widths: Vec<usize> = text.lines().map(|l| l.chars().count()).collect();
         assert_eq!(widths[0], widths[1], "{text:?}");
+        let text = region(&[row("a", 3.2), row("b", 492.0)], 80, B);
+        let widths: Vec<usize> = text.lines().map(|l| l.chars().count()).collect();
+        assert_eq!(widths[0], widths[1], "{text:?}");
+        assert!(text.contains("8m12s"), "{text:?}");
     }
 
     /// Thirteen running checks paint as twelve lines and one overflow.
     #[test]
     fn region_caps_and_counts_the_rest() {
-        let entries: Vec<(String, f64)> = (0..13).map(|i| (format!("check-{i}"), 0.0)).collect();
-        let text = region(&entries, 80);
+        let entries: Vec<Row> = (0..13).map(|i| row(&format!("check-{i}"), 0.0)).collect();
+        let text = region(&entries, 80, B);
         assert_eq!(text.lines().count(), MAX_LINES + 1);
         assert!(text.ends_with("… and 1 more\n"), "{text:?}");
     }
@@ -499,13 +687,74 @@ mod tests {
     /// line would break the erase arithmetic.
     #[test]
     fn region_respects_width() {
-        let text = region(&[("a-name-much-longer-than-the-terminal".into(), 0.0)], 20);
+        let text = region(&[row("a-name-much-longer-than-the-terminal", 0.0)], 20, B);
         assert!(text.lines().all(|l| l.chars().count() <= 20), "{text:?}");
     }
 
     /// No running checks, no region — not even a blank line.
     #[test]
     fn an_empty_region_is_empty() {
-        assert_eq!(region(&[], 80), "");
+        assert_eq!(region(&[], 80, B), "");
+    }
+
+    /// Silence is annotated only once it is news, and names the budget it
+    /// counts toward — a check that just paused between crates says
+    /// nothing extra.
+    #[test]
+    fn a_quiet_check_shows_its_silence_against_the_budget() {
+        let mut r = row("cargo-test", 300.0);
+        r.quiet = 5.0;
+        assert!(!region(&[r.clone()], 80, B).contains("quiet"));
+        r.quiet = 45.0;
+        let text = region(&[r.clone()], 80, B);
+        assert!(text.contains("quiet 45s/2m00s"), "{text:?}");
+        let off = Budgets { idle: 0, ..B };
+        let text = region(&[r], 80, off);
+        assert!(
+            text.contains("quiet 45s") && !text.contains('/'),
+            "{text:?}"
+        );
+    }
+
+    /// The ceiling appears once a check is 80% of the way to it — the cliff,
+    /// shown before the fall — and never for a disabled ceiling.
+    #[test]
+    fn the_ceiling_shows_only_when_it_is_near() {
+        assert!(!region(&[row("cargo-test", 1000.0)], 80, B).contains("/1h00m"));
+        let text = region(&[row("cargo-test", 3000.0)], 80, B);
+        assert!(text.contains("50m00s/1h00m"), "{text:?}");
+        let off = Budgets { ceiling: 0, ..B };
+        assert!(!region(&[row("cargo-test", 3000.0)], 80, off).contains("/"));
+    }
+
+    /// The heartbeat says how long, how quiet, and — the first time — the
+    /// budgets, so a reader at the far end of a pipe can tell "wait" from
+    /// "kill it" without the docs.
+    #[test]
+    fn a_heartbeat_names_the_budgets_once() {
+        let mut r = row("cargo-test", 60.0);
+        r.quiet = 2.0;
+        let first = beat_line(&r, true, B);
+        assert!(
+            first.contains("cargo-test still running: 1m00s"),
+            "{first:?}"
+        );
+        assert!(first.contains("last output 2s ago"), "{first:?}");
+        assert!(
+            first.contains("2m00s of silence or 1h00m in total"),
+            "{first:?}"
+        );
+        assert!(first.contains("amont.idleTimeout"), "{first:?}");
+        let later = beat_line(&r, false, B);
+        assert!(!later.contains("amont.idleTimeout"), "{later:?}");
+        let off = beat_line(
+            &r,
+            true,
+            Budgets {
+                idle: 0,
+                ceiling: 0,
+            },
+        );
+        assert!(off.contains("off of silence or off in total"), "{off:?}");
     }
 }

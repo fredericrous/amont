@@ -8,6 +8,25 @@ missing here.
 
 ## Unreleased
 
+- **A check is judged stuck by its silence, not by a wall clock.** One
+  ten-minute `amont.timeout` had to answer two questions — "is this tool
+  hung?" and "is this suite slow?" — and could only be right about one of
+  them: a laptop under load ran the push gate's `cargo test` past it, twice
+  in one evening, and the kill message arrived after the wait. Now a command
+  that writes nothing for `amont.idleTimeout` (default 120s) is killed as
+  stuck — faster than before for a real hang — and the wall clock becomes a
+  ceiling, `amont.timeout`, that can afford its new default of an hour. The
+  kill message says which clock fired and what that means: silent → look at
+  the tool; still printing → raise the ceiling.
+
+  The wait is no longer blind, either. On a terminal the live region shows
+  `· quiet 45s/2m` once a check has been silent for half a minute and
+  `· 50m/1h` once it nears the ceiling. Piped — an agent, CI — one plain line
+  a minute per running check says it is alive, when it last printed, and,
+  the first time, both budgets. The generated AGENTS.md now states this
+  repository's actual budgets and tells an agent whose tooling caps a
+  foreground command to run it in the background rather than pick a number.
+
 - **A commit landing on `main` is told, at commit time, that its push will
   be refused.** `pre-push-branch-protect` fires at the first moment a push to
   `main` exists — right for `git push feature:main`, late for the other way
