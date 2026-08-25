@@ -10,7 +10,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amont"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "amont-runtime",
  "serde_json",
@@ -18,7 +18,7 @@ dependencies = [
 
 [[package]]
 name = "amont-agent"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "amont-runtime",
  "serde",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "amont-fleet"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "amont-runtime",
  "crossterm",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "amont-runtime"
-version = "1.17.0"
+version = "1.18.0"
 
 [[package]]
 name = "bitflags"
