@@ -277,11 +277,11 @@ mod tests {
     }
 
     #[test]
-    fn the_table_covers_thirty_two_checks() {
-        assert_eq!(all_checks().len(), 32);
+    fn the_table_covers_thirty_three_checks() {
+        assert_eq!(all_checks().len(), 33);
         let mut names: Vec<&str> = all_checks();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 32, "duplicate check name");
+        assert_eq!(names.len(), 33, "duplicate check name");
     }
 }

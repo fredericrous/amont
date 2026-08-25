@@ -11,7 +11,7 @@ what you give up.
 | | amont | pre-commit | lefthook | husky |
 |---|---|---|---|---|
 | Runtime it needs | none — one binary | Python (hooks bring their own environments) | none — one binary | Node.js — already present in the projects it targets |
-| Useful before you write any config | **32 built-in checks**, scoped to what the repo uses | starts empty | starts empty | starts empty |
+| Useful before you write any config | **33 built-in checks**, scoped to what the repo uses | starts empty | starts empty | starts empty |
 | On the commit path | **zero external crates**, CI-enforced | Python + a managed environment per hook | Go binary | Node + `node_modules` |
 | A cloned repo's committed config runs code… | **only after you review it and `amont trust`** | after `pre-commit install`, unreviewed | after `lefthook install` — often automatic via a package `postinstall` | after `npm install` — the `prepare` script activates it |
 | Your unstaged work during a run | held aside without `git stash`, restored even if a check panics | `git stash` around the run | untouched — checks see the worktree, not the staged set | your problem — hooks are your scripts |

@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-two
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-three
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -121,14 +121,15 @@ mode, `everywhere`, keeps the distinction inert.
 
 ## `pre-commit`
 
-All twenty run **concurrently**, and a panic in one is isolated so the other
-nineteen still report.
+All twenty-one run **concurrently**, and a panic in one is isolated so the
+other twenty still report.
 
 | id | fires when | what it does |
 |---|---|---|
 | `pre-commit-argo-lint` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Argo CD app lint. **soft** |
 | `pre-commit-ban-terms` | `.js` `.jsx` `.ts` `.tsx` `.vue` `.rs` `.py` | Refuses focused/debug leftovers in staged sources — `describe.only`, `fit(`, `debugger` in JS/TS, `dbg!(` in Rust, `breakpoint()` and `pdb.set_trace()` in Python. Scoped to what this commit touches, and re-checked against staged content with each language's comments and string literals blanked (a term named in prose is discussion, not code — and an f-string interpolation or template substitution is code, not prose). |
 | `pre-commit-branch-pattern` | always | Says at the **first commit** what [`pre-push-branch-pattern`](#pre-push) will refuse at push time, with the `git branch -m` fix — while renaming costs nothing. Quiet on a detached head, in a remoteless repository, and on any branch a remote already has. **Never blocks.** |
+| `pre-commit-branch-protect` | always | Says at **commit time** that a commit landing on `main`/`master` will be refused by [`pre-push-branch-protect`](#pre-push), with the `git switch -c` fix — while moving it costs one command and nothing is stacked on it. Quiet on a detached head and in a remoteless repository. **Never blocks.** |
 | `pre-commit-cargo-fmt` | `.rs` + `Cargo.toml` | `cargo fmt`. **fixes** |
 | `pre-commit-clippy` | `.rs` + `Cargo.toml` | `cargo clippy` |
 | `pre-commit-go-vet` | `.go` + `go.mod` | `go vet ./...`, per touched module. |

@@ -1527,7 +1527,7 @@ mod tests {
             out.contains("the whole pre-commit trigger"),
             "must name what it covers: {out}"
         );
-        assert!(out.contains("20 checks"), "and how many: {out}");
+        assert!(out.contains("21 checks"), "and how many: {out}");
     }
 
     /// The shape a mistake takes now: a value that names nothing at all.
@@ -2004,9 +2004,9 @@ mod tests {
         };
         assert!(row("clippy").contains("pre-commit"), "{}", row("clippy"));
         assert!(
-            row("branch-protect").contains("pre-push"),
+            row("pull-rebase").contains("pre-push"),
             "a pre-push check must not be labelled pre-commit: {}",
-            row("branch-protect")
+            row("pull-rebase")
         );
         assert!(
             !row("clippy").contains("pre-commit-clippy"),
@@ -2022,7 +2022,10 @@ mod tests {
     fn the_hook_view_gives_the_trigger_its_own_column() {
         let mut app = App::new(scan_with_repos(vec![repo("a", true)]));
         app.mode = Mode::HookView;
-        let out = render(&app, 110, 30);
+        // Tall enough for every row: the pre-push rows come after twenty-one
+        // pre-commit ones, and the assertion below needs one of them on
+        // screen.
+        let out = render(&app, 110, 60);
         assert!(out.contains("TRIGGER"), "{out}");
         assert!(out.contains("clippy"), "{out}");
         assert!(
@@ -2040,9 +2043,9 @@ mod tests {
         };
         assert!(row("clippy").contains("pre-commit"), "{}", row("clippy"));
         assert!(
-            row("branch-protect").contains("pre-push"),
+            row("pull-rebase").contains("pre-push"),
             "{}",
-            row("branch-protect")
+            row("pull-rebase")
         );
     }
 
