@@ -14,8 +14,9 @@
 //! is deliberate — a hook that cannot be bypassed is a hook people delete.
 
 use crate::check::Outcome;
+use crate::git;
 use crate::pushrefs::PushRef;
-use crate::ui::{error_sign, highlight};
+use crate::ui::{error_sign, highlight, warning_sign};
 
 /// Matched against the REMOTE ref — what you are writing to, not what you are
 /// pushing from. `git push origin feature:main` is a push to main however the
@@ -32,6 +33,46 @@ fn protected_name(remote_ref: &str) -> Option<&'static str> {
 /// destructive one. The all-zero local oid is how git spells it.
 fn is_delete(r: &PushRef) -> bool {
     r.local_oid.chars().all(|c| c == '0')
+}
+
+/// The same refusal, said at COMMIT time — `pre-commit-branch-protect`.
+///
+/// `run` above fires at the first moment a push to `main` exists, which is
+/// the right moment for a `git push feature:main`. It is the wrong moment
+/// for the other way this happens: the checkout was left on `main`, the
+/// commits landed there, and the push is refused after the work is done. At
+/// that point moving the commits is still one `git switch -c`, but it is
+/// one an agent — or a person in a hurry — answers with `--no-verify`
+/// instead, and the guard has taught the bypass.
+///
+/// A warning, never a block: `git commit` on `main` is legitimate in a
+/// repository nobody pushes to by pull request, and a commit-time block is
+/// exactly what makes people delete hooks. Quiet on a detached head, which
+/// names no branch, and in a remoteless repository, where there is no push
+/// for the contract to gate. `hook.skip branch-protect` silences both
+/// voices, as with `branch-pattern`.
+pub fn early() -> Outcome {
+    let Some(branch) = git::current_branch() else {
+        return Outcome::Passed;
+    };
+    if !PROTECTED.contains(&branch) {
+        crate::hooks::common::ok("Not committing on a protected branch");
+        return Outcome::Passed;
+    }
+    if !git::has_remote() {
+        return Outcome::Passed;
+    }
+    crate::say!(
+        "{} Committing on {} — pushing it will be refused by {}.
+    Move the work to a branch now, while it is one command: {} <prefix>/…
+    (the commit comes along; {} stays where it was)",
+        warning_sign(),
+        highlight(branch),
+        highlight("pre-push-branch-protect"),
+        highlight("git switch -c"),
+        highlight(branch)
+    );
+    Outcome::Warned
 }
 
 pub fn run(refs: &[PushRef]) -> Outcome {

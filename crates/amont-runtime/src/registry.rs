@@ -130,6 +130,19 @@ pub const CHECKS: &[Builtin] = &[
         reach: Reach::Convention,
         run: |_ctx| hooks::branch_pattern::early(),
     },
+    // Same device for the other push-time refusal: a commit landing on
+    // `main` will be refused at push, and the commit is the moment moving
+    // it costs one command. Same short name as the pre-push check, so
+    // `hook.skip branch-protect` silences the rule, not one voice.
+    Builtin {
+        name: "pre-commit-branch-protect",
+        stage: Stage::PreCommit,
+        scope: Scope::ALWAYS,
+        severity: Severity::Warn,
+        fix: Fix::None,
+        reach: Reach::Convention,
+        run: |_ctx| hooks::branch_protect::early(),
+    },
     Builtin {
         name: "pre-commit-cargo-fmt",
         stage: Stage::PreCommit,
@@ -1114,6 +1127,7 @@ mod tests {
         ("pre-commit-argo-lint", false),
         ("pre-commit-ban-terms", false),
         ("pre-commit-branch-pattern", false),
+        ("pre-commit-branch-protect", false),
         ("pre-commit-cargo-fmt", true),
         ("pre-commit-clippy", false),
         ("pre-commit-go-vet", false),
@@ -1203,7 +1217,7 @@ mod tests {
 
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 32);
+        assert_eq!(CHECKS.len(), 33);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

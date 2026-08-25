@@ -1379,11 +1379,11 @@ mod tests {
         // And a pre-push built-in is protected on pre-push, not on pre-commit,
         // for the same reason.
         assert_eq!(
-            why(&one("pre-push branch-protect * block x\n")),
-            ParseError::NameTaken("branch-protect".into())
+            why(&one("pre-push pull-rebase * block x\n")),
+            ParseError::NameTaken("pull-rebase".into())
         );
         assert!(matches!(
-            one("pre-commit branch-protect * block x\n"),
+            one("pre-commit pull-rebase * block x\n"),
             Line::Usable(_)
         ));
     }

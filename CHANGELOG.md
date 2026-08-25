@@ -8,6 +8,16 @@ missing here.
 
 ## Unreleased
 
+- **A commit landing on `main` is told, at commit time, that its push will
+  be refused.** `pre-push-branch-protect` fires at the first moment a push to
+  `main` exists — right for `git push feature:main`, late for the other way
+  it happens: a checkout left on `main`, commits stacked there, the refusal
+  after the work is done, and `--no-verify` as the answer. The thirty-third
+  check, `pre-commit-branch-protect`, is the same contract said at the
+  commit, when the fix is one `git switch -c` and the commit comes along. A
+  warning, never a block; quiet on a detached head and in a remoteless
+  repository; `hook.skip branch-protect` silences both voices.
+
 - **A session that opens in a stale checkout is told so.** Nothing fails when
   you build on code the remote has moved past; the feature just turns out to
   exist already, a day later. The `SessionStart` entry `amont-agent` already

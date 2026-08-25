@@ -33,20 +33,17 @@ use crate::vocabulary;
 ///     remote oid; the remote-tracking ref is the local mirror of that same
 ///     fact, and costs no network to consult.
 pub fn early() -> Outcome {
-    let Some(branch) = git::stdout(&["symbolic-ref", "--quiet", "--short", "HEAD"]) else {
+    let Some(branch) = git::current_branch() else {
         return Outcome::Passed;
     };
-    if conforms(&branch) {
+    if conforms(branch) {
         crate::say!(
             "{} Branch name conforms with authorized pattern",
             valid_sign()
         );
         return Outcome::Passed;
     }
-    if git::stdout(&["remote"])
-        .map(|remotes| remotes.is_empty())
-        .unwrap_or(true)
-    {
+    if !git::has_remote() {
         return Outcome::Passed;
     }
     // `*` in a for-each-ref pattern does not cross `/`, so this matches the
@@ -68,7 +65,7 @@ pub fn early() -> Outcome {
     Rename it now, while nothing is stacked on the name: {} <prefix>/…
     Prefixes: {prefixes}",
         warning_sign(),
-        highlight(&branch),
+        highlight(branch),
         highlight(&vocabulary::branch_contract()),
         highlight("git branch -m")
     );

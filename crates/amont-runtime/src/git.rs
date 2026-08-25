@@ -378,3 +378,25 @@ mod tests {
         assert_ne!(got[0], "\"\\303\\251.json\"", "must not be the quoted form");
     }
 }
+
+/// The branch `HEAD` names, or `None` on a detached head — asked of git ONCE
+/// per process and lent to every check that wants it.
+///
+/// Two always-on pre-commit checks (`branch-pattern`, `branch-protect`) open
+/// with this same question. Asked twice it is two spawns on every commit,
+/// which is exactly the o(checks) growth `tests/spawn_budget.rs` exists to
+/// refuse; asked once it is the price of one check, however many share it.
+pub fn current_branch() -> Option<&'static str> {
+    static BRANCH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BRANCH
+        .get_or_init(|| stdout(&["symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .as_deref()
+}
+
+/// Whether any remote is configured. Same device, same reason: a contract
+/// about pushing has nothing to gate in a repository nothing is pushed from,
+/// and more than one check asks before speaking.
+pub fn has_remote() -> bool {
+    static REMOTE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REMOTE.get_or_init(|| stdout(&["remote"]).is_some_and(|r| !r.is_empty()))
+}
