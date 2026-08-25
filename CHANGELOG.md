@@ -6,6 +6,16 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+- **`graduate` on an installed binary can see its evidence.** The reviewed
+  corpus was looked up at the path of the machine that BUILT the binary — a
+  CI runner, for every release — so every installed copy reported "0
+  reviewed cases" and refused every promotion, while the evidence sat in the
+  repository. Each rule's corpus is now compiled into the binary at the
+  version it was reviewed for; a checkout's file still wins when present, so
+  a line just appended counts. The refusal names a path that exists.
+
 ## v1.18.1 — 2026-08-25
 
 - **A rule's question is asked in the directory the command moves to.**

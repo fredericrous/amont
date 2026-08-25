@@ -74,12 +74,69 @@ pub struct Case {
     pub line: usize,
 }
 
-/// Where a rule's reviewed cases live.
+/// Where a rule's reviewed cases live IN A CHECKOUT — the file `explain
+/// --format cases` appends to and `corpus check` reads in the test suite.
+///
+/// `CARGO_MANIFEST_DIR` is the path of the machine that BUILT the binary.
+/// For a release that is a CI runner, and the path does not exist anywhere
+/// the binary later runs — so `graduate` saw "0 reviewed cases" for every
+/// rule from every installed copy, and refused every promotion for lack of
+/// evidence that was sitting in the repository all along. [`read`] falls
+/// back to the copy compiled in; this path is for writing.
 pub fn path_for(rule: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("corpus")
         .join(format!("{rule}.cases"))
+}
+
+/// Every rule's reviewed cases, compiled into the binary at the version
+/// they were reviewed for. A release carries its own evidence, so
+/// `graduate` on an installed copy judges against the same corpus the test
+/// suite did — not against a path on somebody else's machine.
+///
+/// One entry per rule, by hand: `include_str!` refuses to compile when a
+/// file is missing, and `every_rule_has_an_embedded_corpus` refuses when an
+/// entry is.
+const EMBEDDED: &[(&str, &str)] = &[
+    (
+        "pipe-to-tail",
+        include_str!("../tests/corpus/pipe-to-tail.cases"),
+    ),
+    (
+        "bare-stash-pop",
+        include_str!("../tests/corpus/bare-stash-pop.cases"),
+    ),
+    (
+        "gh-pr-merge-auto",
+        include_str!("../tests/corpus/gh-pr-merge-auto.cases"),
+    ),
+    ("no-verify", include_str!("../tests/corpus/no-verify.cases")),
+    (
+        "git-add-broad",
+        include_str!("../tests/corpus/git-add-broad.cases"),
+    ),
+    (
+        "stale-base",
+        include_str!("../tests/corpus/stale-base.cases"),
+    ),
+];
+
+/// The compiled-in corpus for a rule, if the table has one.
+pub fn embedded(rule: &str) -> Option<&'static str> {
+    EMBEDDED
+        .iter()
+        .find(|(id, _)| *id == rule)
+        .map(|(_, text)| *text)
+}
+
+/// Is the checkout this binary was built from present here — so that
+/// `explain --format cases` can name a file worth appending to?
+pub fn checkout_present() -> bool {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("corpus")
+        .is_dir()
 }
 
 pub fn escape(command: &str) -> String {
@@ -147,8 +204,15 @@ pub fn parse(text: &str) -> Vec<Case> {
     out
 }
 
+/// The reviewed cases for a rule: the checkout's file when this binary is
+/// running from one (so a line just appended counts), else the copy
+/// compiled in.
 pub fn read(rule: &str) -> Vec<Case> {
-    read_at(&path_for(rule))
+    let path = path_for(rule);
+    if path.exists() {
+        return read_at(&path);
+    }
+    embedded(rule).map(parse).unwrap_or_default()
 }
 
 pub fn read_at(path: &Path) -> Vec<Case> {
@@ -232,6 +296,32 @@ pub fn score_cases(rule: &crate::rules::Rule, cases: &[Case]) -> Score {
 
 #[cfg(test)]
 mod tests {
+
+    /// A rule without a compiled-in corpus would show "0 reviewed cases"
+    /// from every installed copy — the exact failure this table exists to
+    /// end — while passing the test suite, which reads the files.
+    #[test]
+    fn every_rule_has_an_embedded_corpus() {
+        for rule in crate::rules::RULES {
+            let text = super::embedded(rule.id)
+                .unwrap_or_else(|| panic!("rule `{}` has no entry in EMBEDDED", rule.id));
+            assert!(
+                text.starts_with(super::HEADER),
+                "embedded corpus for `{}` lacks the header",
+                rule.id
+            );
+        }
+    }
+
+    /// The compiled-in copy is the file: same cases, same verdicts.
+    #[test]
+    fn the_embedded_corpus_is_the_file() {
+        for rule in crate::rules::RULES {
+            let from_file = super::read_at(&super::path_for(rule.id));
+            let from_binary = super::parse(super::embedded(rule.id).unwrap());
+            assert_eq!(from_file.len(), from_binary.len(), "{}", rule.id);
+        }
+    }
     use super::*;
 
     /// A multi-line command must survive the round trip, because 35% of real
