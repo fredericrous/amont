@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.17.0 — 2026-08-25
 
 - **A check is judged stuck by its silence, not by a wall clock.** One
   ten-minute `amont.timeout` had to answer two questions — "is this tool
