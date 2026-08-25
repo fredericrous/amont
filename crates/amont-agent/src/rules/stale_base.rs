@@ -202,15 +202,22 @@ fn local(start: &str) -> Option<Creation> {
 
 /// The command only has the shape; whether the start point is actually behind
 /// is a fact about the repository, measured here.
-fn confirm(ctx: &Context, _f: &Finding) -> Confirmed {
+fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
     let Some((_, creation)) = detect(ctx.parsed) else {
         return Confirmed::No("the command no longer matches");
     };
+    // Where the git command runs — after any `cd` earlier in the command —
+    // is the repository the question is about.
+    let cwd = ctx.cwd_at(f.span.start);
+    let cwd = cwd.as_path();
+    if !cwd.is_dir() {
+        return Confirmed::No("the directory the command moves to does not exist");
+    }
     let from = creation.start.unwrap_or_else(|| "HEAD".to_string());
     // `feat/x` and `myremote/x` look the same to `examine`. Ask git which.
     if from.contains('/')
         && amont_runtime::git::succeeds_in(
-            ctx.cwd,
+            cwd,
             &[
                 "rev-parse",
                 "-q",
@@ -221,7 +228,7 @@ fn confirm(ctx: &Context, _f: &Finding) -> Confirmed {
     {
         return Confirmed::No("the start point is a remote-tracking ref");
     }
-    match crate::stale::measure(ctx.cwd, &from) {
+    match crate::stale::measure(cwd, &from) {
         Some(d) if d.behind > 0 => Confirmed::Yes,
         Some(_) => Confirmed::No("the start point is not behind origin"),
         None => Confirmed::No("nothing to compare against"),

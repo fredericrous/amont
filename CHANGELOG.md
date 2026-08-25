@@ -6,7 +6,17 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.18.0 — 2026-08-25
+## Unreleased
+
+- **A rule's question is asked in the directory the command moves to.**
+  A third of real commands begin `cd /somewhere && …`, and `stale-base` and
+  `bare-stash-pop` answered their "is this checkout behind / shared" question
+  in the SESSION's directory instead — so a branch created in an up-to-date
+  clone was advised as stale because the terminal happened to sit in a
+  checkout that was. The last `cd` before the git command now decides where
+  the question is asked; a `cd` nobody can resolve without running the shell
+  (`cd $(mktemp -d)`, `cd -`) falls back to the session, never a guess.
+
 
 - **A stale `AGENTS.md` is named before it is believed.** The generated
   block is what an agent reads at the start of a session and follows for the
