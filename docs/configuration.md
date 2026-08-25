@@ -222,22 +222,45 @@ never runs a rebase you did not type; a behind branch stops the push with the
 command to run. A hook that rewrites your branch is a bigger claim than most
 teams want a "check" to make — this is the key that unmakes it.
 
-## `amont.timeout` — the budget one check's command may run for
+## `amont.idleTimeout` — how long a check may be silent
 
 ```sh
-git config amont.timeout 60      # seconds; default 600, 0 disables
+git config amont.idleTimeout 300  # seconds; default 120, 0 disables
 ```
 
-Every command a check spawns — a linter, a formatter, a declared
-`amont.conf` line, the push gate's test suite — is killed at this deadline
-and the check **fails**, loudly, naming this key. Without it, one hung tool
-blocked the commit forever while your unstaged changes sat parked out of the
-tree — and the learned response to that is `--no-verify`, permanently. The
-default is ten minutes, the same budget the generated agent guidance already
-tells tooling to allow a whole commit or push.
+A hung tool is silent — a captive portal, a deadlocked lock file, a prompt
+nobody will answer. A slow tool talks: `cargo test` prints a line per test.
+So the clock that decides "stuck" counts **silence**: a command that writes
+nothing for this long is killed and the check **fails**, saying so and naming
+this key. Two minutes catches a real hang faster than the old ten-minute wall
+clock did, and lets a chatty twenty-five-minute suite finish.
+
+Only commands whose output amont observes answer to this clock — every
+check runs its tools that way by default. With `amont.progress false` the
+tool inherits your terminal, nobody sees the bytes, and only the ceiling
+below applies.
+
+## `amont.timeout` — the ceiling one check's command may run for
+
+```sh
+git config amont.timeout 900     # seconds; default 3600, 0 disables
+```
+
+The backstop behind `idleTimeout`: a tool that keeps printing and never
+finishes is killed here, and the message says whether it was still printing
+(slow — raise this) or had gone quiet (stuck — look at the tool). The default
+was ten minutes when this was the only clock and had to catch hangs; with
+silence doing that job, the ceiling can afford an hour.
 
 The kill reaches the command itself; a grandchild it detached may survive,
 orphaned, but the commit is no longer hostage to it.
+
+While a stage runs, a terminal shows a live line per check with its elapsed
+time, a `· quiet 45s/2m` note once a check has been silent for half a minute,
+and `· 50m/1h` once it is within 80% of the ceiling — the cliff, shown before
+the fall. Piped (an agent, CI), the same information arrives as one plain
+line a minute per running check: elapsed, time since its last output, and,
+the first time, both budgets.
 
 The same clock bounds the push path's own network verbs: `pull-rebase`'s
 sync runs under the full budget, and the reachability *probes*

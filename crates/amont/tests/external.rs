@@ -634,6 +634,71 @@ fn a_check_that_outlives_the_budget_is_killed_and_fails() {
     );
 }
 
+/// The other clock. A tool that goes quiet is stuck; the silence budget
+/// kills it, the check fails, and the message names the silence — not the
+/// wall clock, which is off here and must not be blamed.
+#[cfg(unix)]
+#[test]
+fn a_silent_check_is_killed_by_the_idle_budget() {
+    let r = Repo::new();
+    let body = "#!/bin/sh\nexec sleep 300\n";
+    r.stage("quiet.sh", body);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("quiet.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "quiet.sh"]);
+    manifest(&r, "pre-commit  quiet  *  block  ./quiet.sh\n");
+    r.git(&["config", "amont.timeout", "0"]);
+    r.git(&["config", "amont.idleTimeout", "1"]);
+
+    let started = std::time::Instant::now();
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the silence budget never fired"
+    );
+    assert!(!run.passed(), "a killed check must fail:\n{}", run.output());
+    assert!(
+        run.says("printed nothing") && run.says("amont.idleTimeout"),
+        "must blame the silence and name its key:\n{}",
+        run.output()
+    );
+    assert!(
+        !run.says("amont.timeout <secs>"),
+        "the ceiling was off and must not be blamed:\n{}",
+        run.output()
+    );
+}
+
+/// The point of the second clock: a tool that keeps talking is slow, not
+/// stuck, and outlives a silence budget shorter than its total run.
+#[cfg(unix)]
+#[test]
+fn a_chatty_check_outlives_the_idle_budget() {
+    let r = Repo::new();
+    let body =
+        "#!/bin/sh\ni=0\nwhile [ $i -lt 60 ]; do i=$((i+1)); echo tick $i; sleep 0.2; done\n";
+    r.stage("chatty.sh", body);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.path("chatty.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "chatty.sh"]);
+    manifest(&r, "pre-commit  chatty  *  block  ./chatty.sh\n");
+    // Twelve seconds of ticks every 0.2s against a five-second budget. The
+    // 25x margin is for a machine running the whole suite at once, where a
+    // `sleep 0.2` has been seen to take six times that — never for the tool
+    // itself, which is the thing being measured.
+    r.git(&["config", "amont.idleTimeout", "5"]);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        run.passed(),
+        "twelve seconds of steady output must not trip a five-second silence budget:\n{}",
+        run.output()
+    );
+    assert!(!run.says("killed"), "{}", run.output());
+}
+
 /// `tool <program> <version-substring>` — the pin that turns cross-machine
 /// version skew from "the hook is flaky here" into a printed fact.
 #[test]

@@ -24,6 +24,12 @@ pub const END: &str = "<!-- amont:end -->";
 /// become a second, driftable copy of the rule. What the block says and what
 /// the hook rejects are the same constant.
 pub fn generate_block() -> String {
+    let clocks = |secs: u64| match secs {
+        0 => "no limit".to_string(),
+        s => crate::hooks::common::human_secs(s),
+    };
+    let idle = clocks(crate::hooks::common::idle_timeout());
+    let ceiling = clocks(crate::hooks::common::check_timeout());
     let prefixes = crate::vocabulary::BRANCH_PREFIXES
         .iter()
         .map(|p| p.name)
@@ -53,14 +59,20 @@ start.\n\
 \n\
 `git commit` and `git push` both run their checks first, and neither is\n\
 instant: pre-commit can invoke formatters, linters or clippy (a workspace\n\
-build), and pre-push can run the test suite. Give both commands a timeout\n\
-of at least 10 minutes instead of your tooling's default. A push killed\n\
-mid-suite pushed nothing; a commit killed mid-check committed nothing, and\n\
-your unstaged work stays parked until the next run says how to recover it.\n\
-Neither is the checks failing — it is the timeout. Run both bare and check\n\
-the effect (`git log --oneline -1`, `git ls-remote origin <branch>`):\n\
-trimming their output with `| tail` reports the pipe's exit status, so a\n\
-killed or rejected run reads as success.\n\
+build), and pre-push can run the test suite. Give both commands the\n\
+longest timeout your tooling allows, never its default: here a check is\n\
+killed only after {idle} of silence or {ceiling} in total\n\
+(`amont.idleTimeout` / `amont.timeout`), and a test suite may legitimately\n\
+run for most of that. If your tooling caps a foreground command below it,\n\
+run the command in the background and read its result when it exits —\n\
+while it runs, a line a minute on stderr says which check is alive and\n\
+when it last printed. A push killed mid-suite pushed nothing; a commit\n\
+killed mid-check committed nothing, and your unstaged work stays parked\n\
+until the next run says how to recover it. Neither is the checks failing —\n\
+it is the timeout. Run both bare and check the effect (`git log --oneline\n\
+-1`, `git ls-remote origin <branch>`): trimming their output with `| tail`\n\
+reports the pipe's exit status, so a killed or rejected run reads as\n\
+success.\n\
 \n\
 Never bypass with `--no-verify`. To change enforcement, downgrade it\n\
 intentionally instead:\n\
@@ -93,7 +105,7 @@ pub fn generate_pointer() -> String {
 \n\
 This repository enforces pre-commit / pre-push checks that can REJECT a\n\
 commit or a push. What runs, the branch-name rule, and why `git commit`\n\
-and `git push` both need a timeout of at least 10 minutes are in\n\
+and `git push` both need a long timeout — or a background run — are in\n\
 [AGENTS.md](AGENTS.md) — read it before committing. Both files are\n\
 generated: run `amont agents-md` after changing either.\n\
 \n\
