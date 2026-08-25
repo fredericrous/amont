@@ -165,6 +165,62 @@ pub struct Context<'a> {
     pub parsed: &'a Parsed,
 }
 
+impl Context<'_> {
+    /// The directory the clause at byte offset `at` actually runs in.
+    ///
+    /// The payload's `cwd` is the SESSION's directory. A third of real
+    /// commands begin `cd /somewhere && …`, and every git question a
+    /// `confirm` asks — is this checkout behind, is `refs/stash` shared — is
+    /// about the directory the git command runs in, not the one the shell
+    /// started in. Asking the wrong repository produced a confident wrong
+    /// answer: a branch created in an up-to-date clone was advised as stale
+    /// because the session sat in a checkout that was.
+    ///
+    /// The last `cd` clause before `at` wins, resolved against the session
+    /// cwd (`~` against `$HOME`). A `cd` whose target came from a
+    /// substitution is unknowable and ends the search: better the session
+    /// cwd than a guess. A bare `cd` is `$HOME`; `cd -` is unknowable.
+    pub fn cwd_at(&self, at: usize) -> std::path::PathBuf {
+        let mut dir = self.cwd.to_path_buf();
+        for cmd in self.parsed.clauses() {
+            if cmd.at >= at {
+                break;
+            }
+            if cmd.program() != Some("cd") {
+                continue;
+            }
+            // The raw word after `cd`, not `operands()`: that helper drops a
+            // leading `-` as a flag and a blanked substitution as nothing,
+            // and both are exactly the cases that must read as unknowable.
+            let target = cmd.words.iter().skip_while(|w| w.text != "cd").nth(1);
+            let Some(target) = target else {
+                if let Some(home) = std::env::var_os("HOME") {
+                    dir = std::path::PathBuf::from(home);
+                }
+                continue;
+            };
+            if target.expanded || target.text.trim().is_empty() || target.text == "-" {
+                return self.cwd.to_path_buf();
+            }
+            let t = target.text.as_str();
+            dir = if let Some(rest) = t.strip_prefix("~/") {
+                match std::env::var_os("HOME") {
+                    Some(home) => std::path::PathBuf::from(home).join(rest),
+                    None => return self.cwd.to_path_buf(),
+                }
+            } else if t == "~" {
+                match std::env::var_os("HOME") {
+                    Some(home) => std::path::PathBuf::from(home),
+                    None => return self.cwd.to_path_buf(),
+                }
+            } else {
+                dir.join(t)
+            };
+        }
+        dir
+    }
+}
+
 pub const RULES: &[Rule] = &[
     pipe_to_tail::RULE,
     bare_stash_pop::RULE,
@@ -196,4 +252,86 @@ pub fn examine_all(parsed: &Parsed) -> Vec<(&'static Rule, Finding)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::lex;
+
+    fn at_of(parsed: &Parsed, needle: &str) -> usize {
+        parsed
+            .clauses()
+            .iter()
+            .find(|c| c.words.iter().any(|w| w.text == needle))
+            .map(|c| c.at)
+            .expect("clause")
+    }
+
+    #[test]
+    fn a_leading_cd_moves_the_question() {
+        let parsed = lex("cd /tmp/elsewhere && git worktree add ../x -b feat/y");
+        let ctx = Context {
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+        };
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "worktree")),
+            std::path::PathBuf::from("/tmp/elsewhere")
+        );
+    }
+
+    #[test]
+    fn a_relative_cd_resolves_against_the_session_and_the_last_wins() {
+        let parsed = lex("cd sub; cd deeper && git stash pop");
+        let ctx = Context {
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+        };
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "stash")),
+            std::path::PathBuf::from("/session/sub/deeper")
+        );
+    }
+
+    #[test]
+    fn a_cd_after_the_clause_does_not_count() {
+        let parsed = lex("git stash pop && cd /tmp/after");
+        let ctx = Context {
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+        };
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "stash")),
+            std::path::PathBuf::from("/session")
+        );
+    }
+
+    /// A target nobody can know without running the shell is not guessed.
+    #[test]
+    fn an_unknowable_cd_falls_back_to_the_session() {
+        for command in ["cd $(mktemp -d) && git stash pop", "cd - && git stash pop"] {
+            let parsed = lex(command);
+            let ctx = Context {
+                cwd: std::path::Path::new("/session"),
+                parsed: &parsed,
+            };
+            assert_eq!(
+                ctx.cwd_at(at_of(&parsed, "stash")),
+                std::path::PathBuf::from("/session"),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn tilde_is_home() {
+        let parsed = lex("cd ~/work/repo && git stash pop");
+        let ctx = Context {
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+        };
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+        assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));
+    }
 }

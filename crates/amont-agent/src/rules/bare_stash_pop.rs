@@ -77,10 +77,16 @@ fn names_a_stash(t: &str) -> bool {
 /// The risk is *shared* refs/stash, which is a fact about this checkout rather
 /// than about the command. One `git worktree list` answers it, and only on the
 /// rare occasion the rule fires.
-fn confirm(ctx: &Context, _f: &Finding) -> Confirmed {
+fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
+    // The repository a `cd` earlier in the command moved to, not the
+    // session's — `cd ../other-worktree && git stash pop` is the shape.
+    let cwd = ctx.cwd_at(f.span.start);
+    if !cwd.is_dir() {
+        return Confirmed::No("the directory the command moves to does not exist");
+    }
     let out = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])
-        .current_dir(ctx.cwd)
+        .current_dir(&cwd)
         .output();
     match out {
         Ok(o) if o.status.success() => {
