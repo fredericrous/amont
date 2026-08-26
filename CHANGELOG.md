@@ -33,6 +33,74 @@ missing here.
   refusal that was not coming. It now speaks only when the branch actually
   exists on a remote.
 
+## v1.21.0
+
+### Added
+
+- **A built-in push gate can be moved to commit time with one declaration.**
+  Gate-pairing has always been documented, and until now it only worked for
+  checks declared in `amont.conf` at *both* stages — the pairing looked
+  exclusively at declared externals, and built-ins are never among them. So
+  `pre-push-cargo-test`, `pre-push-pytest`, `pre-push-go-test` and
+  `pre-push-run-tests-js` were structurally excluded from a feature this
+  project ships and writes about. Adopting it for a Rust repository meant
+  declaring `cargo test` at both stages *and* adding `hook.skip
+  pre-push-cargo-test`, or running the suite twice.
+
+  Now the commit-time half is the whole of it:
+
+  ```text
+  # stage       name        scope   severity  command
+  pre-commit    cargo-test  *.rs    block     cargo test
+  ```
+
+  `pre-push-cargo-test` defers to the per-commit stamps that earns, saying
+  `✓ cargo-test gated at commit instead`. The name must be the built-in's
+  short one — `cargo-test`, not `pre-push-cargo-test`.
+
+  Unchanged: a `--no-verify` commit carries no stamp and brings the gate
+  back, out loud. Every failure in the stamp path still means "run the
+  check", which is the only safe direction and the reason this was a small
+  change rather than a risky one.
+
+- **A push gate that runs long says what it is sitting on.** `git push`
+  opens its connection to the remote, reads the remote refs — which is where
+  `pre-push`'s own stdin comes from — and only then calls the hook. The
+  connection is already open and goes idle for exactly as long as the gate
+  runs, and a remote may close it first. git then reports `Connection reset
+  by peer`, which reads as a network fault and says nothing about the wait
+  that caused it.
+
+  On the first heartbeat of a push gate — a check that has already run a full
+  minute — amont now names that, once, and never at commit time where no
+  connection is waiting.
+
+  It deliberately does **not** recommend `ServerAliveInterval`. That setting
+  was already in force on the machine where this was diagnosed and the remote
+  reset the connection anyway; whatever it measures, it is not packets. The
+  note says keepalive does not help and points at gate-pairing above, which
+  does.
+
+### Fixed
+
+- **Per-file relevance in gate-pairing no longer asks the opt-in question.**
+  It used `Scope::matches`, which also checks a scope's opt-in files — and
+  asking "is there a `Cargo.toml`" of a single `.rs` path can only answer no.
+  Harmless while pairing was declared-only, since `amont.conf` scopes carry
+  no opt-in, and fatal the moment built-ins could pair: every changed file
+  was judged irrelevant, so every push in every Rust repository would have
+  reported "not paired" and silently run the suite anyway. Opt-in is a fact
+  about the repository, settled when the dispatcher decided the check runs
+  here at all.
+
+### Note
+
+Attestation is unchanged and now documented in a test: a gate with an opt-in
+file is not vouched for by a push that did not touch that file, so a
+`.rs`-only push does not attest `cargo-test` whether the gate ran or was
+paired away. That predates this release and errs the safe way — CI re-runs a
+suite rather than skipping one nobody proved on that tree.
+
 ## v1.20.1
 
 ### Fixed
