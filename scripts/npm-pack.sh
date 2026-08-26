@@ -115,8 +115,19 @@ rm -rf "$OUT/.unpack"
 # --- the package people depend on ----------------------------------------
 
 mkdir -p "$OUT/amont/bin"
-cp "$HERE/npm/amont/bin/amont.js" "$OUT/amont/bin/amont.js"
-chmod 0755 "$OUT/amont/bin/amont.js"
+# BOTH wrappers. `amont.js` is the bin entry and `native.js` is what it
+# requires; shipping one without the other produces a package that installs
+# cleanly and dies on first use with MODULE_NOT_FOUND.
+#
+# That is not hypothetical — it is what every published version from the
+# introduction of native.js through 1.20.0 actually did. `files` in
+# package.json.in named `bin/native.js` the whole time, but `files` cannot
+# ship what was never staged here, so the manifest promised a file the packer
+# had not copied and npm said nothing.
+for f in amont.js native.js; do
+    cp "$HERE/npm/amont/bin/$f" "$OUT/amont/bin/$f"
+    chmod 0755 "$OUT/amont/bin/$f"
+done
 cp "$HERE/README.md" "$OUT/amont/README.md"
 sed "s/__VERSION__/$VERSION/g" "$HERE/npm/amont/package.json.in" > "$OUT/amont/package.json"
 say "amont"
@@ -139,6 +150,21 @@ for row in "${TARGETS[@]}"; do
 done
 python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/amont/package.json" \
     || die "amont/package.json is not valid JSON"
+
+# Every file `files` names is actually here. The one failure this catches is
+# the one that shipped for four releases: a manifest promising bin/native.js
+# that the layout above never staged, producing a package that installs and
+# then dies on first use.
+python3 - "$OUT/amont" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+manifest = json.load(open(os.path.join(root, "package.json")))
+missing = [f for f in manifest.get("files", [])
+           if not os.path.exists(os.path.join(root, f))]
+if missing:
+    sys.exit("  \u2717 amont/package.json names files that were never staged: "
+             + ", ".join(missing))
+PY
 
 # The dependency versions must match the packages actually laid out beside them.
 python3 - "$OUT" "$VERSION" <<'PY'

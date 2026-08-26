@@ -322,3 +322,47 @@ fn platform_packages_are_scoped_and_the_root_is_not() {
         "the root package must stay bare `amont`"
     );
 }
+
+/// Everything `files` promises, the packer actually stages.
+///
+/// `bin/native.js` was named in `files` from the moment it existed and was
+/// never copied by `npm-pack.sh`, so every published `amont` from then
+/// through 1.20.0 installed cleanly and died on first use:
+///
+///     Error: Cannot find module './native.js'
+///
+/// `files` cannot ship what was never staged, and npm does not warn about a
+/// `files` entry that matches nothing — so nothing anywhere said a word. A
+/// green release, a green test suite, and a package that could not run.
+#[test]
+fn every_file_the_manifest_promises_is_copied_by_the_packer() {
+    let manifest = read("npm/amont/package.json.in");
+    let (_, after) = manifest.split_once("\"files\"").expect("a files array");
+    let promised: Vec<String> = after
+        .lines()
+        .take_while(|l| !l.contains(']'))
+        .filter_map(|l| {
+            let l = l.trim().trim_end_matches(',');
+            l.strip_prefix('"')?.strip_suffix('"').map(str::to_string)
+        })
+        .collect();
+    assert!(
+        promised.iter().any(|f| f == "bin/native.js"),
+        "expected bin/native.js among {promised:?}"
+    );
+
+    let packer = read("scripts/npm-pack.sh");
+    for f in &promised {
+        // README.md is copied from the repo root under its own name.
+        if f == "README.md" {
+            assert!(packer.contains("$OUT/amont/README.md"), "README not staged");
+            continue;
+        }
+        let base = f.rsplit('/').next().expect("a file name");
+        assert!(
+            packer.contains(base),
+            "npm-pack.sh never mentions {base}, but package.json.in promises {f} \
+             — `files` cannot ship what was not staged"
+        );
+    }
+}
