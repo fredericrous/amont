@@ -41,7 +41,7 @@ fn is_delete(r: &PushRef) -> bool {
 /// git spells this with an all-zero REMOTE oid, documented in githooks(5)
 /// ("if the remote branch does not yet exist, `<remote-sha1>` will be 40
 /// zeroes") and verified against git itself in
-/// `crates/amont/tests/branch_protect_early.rs`.
+/// `crates/amont/tests/branch_protect_push.rs`.
 ///
 /// Refusing it was wrong in a way that taught the bypass, which is the one
 /// outcome this whole check is written to avoid. The first push of a new
@@ -179,7 +179,7 @@ mod tests {
 
     /// A push that CREATES the ref on the remote: git sends 40 zeros as the
     /// remote oid. Verified against real git in
-    /// `crates/amont/tests/branch_protect_early.rs`.
+    /// `crates/amont/tests/branch_protect_push.rs`.
     fn creating(remote_ref: &str) -> PushRef {
         PushRef {
             local_ref: "refs/heads/main".into(),
