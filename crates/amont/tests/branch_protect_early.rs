@@ -26,9 +26,34 @@ fn run_check(r: &Repo) -> (i32, String) {
     )
 }
 
+/// A remote that already carries this branch — the state in which a push
+/// really would be refused, and therefore the only state the warning may
+/// speak in.
+///
+/// The remote-tracking ref is written directly rather than fetched: the
+/// check reads `refs/remotes/*/<branch>` and never touches the network, so
+/// the URL can be nonsense and the ref can be forged. What matters is that
+/// the two halves of the state are set together — a test that configured a
+/// remote and stopped was asserting a warning about a refusal that would
+/// not have happened.
 fn with_remote(r: &Repo) {
-    // A configured remote is all the check consults; it never touches the
-    // network, so the URL can be nonsense.
+    r.git(&["remote", "add", "origin", "/nowhere/in/particular"]);
+    let out = |args: &[&str]| {
+        String::from_utf8_lossy(&r.git(args).stdout)
+            .trim()
+            .to_string()
+    };
+    let head = out(&["rev-parse", "HEAD"]);
+    let branch = out(&["symbolic-ref", "--short", "HEAD"]);
+    r.git(&[
+        "update-ref",
+        &format!("refs/remotes/origin/{branch}"),
+        &head,
+    ]);
+}
+
+/// A remote is configured, but this branch has never been pushed to it.
+fn with_remote_never_pushed(r: &Repo) {
     r.git(&["remote", "add", "origin", "/nowhere/in/particular"]);
 }
 
@@ -105,4 +130,24 @@ fn a_detached_head_is_quiet() {
     let (code, out) = run_check(&r);
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("refused"), "{out}");
+}
+
+/// The first commit of a new repository, before anything has been pushed.
+///
+/// `pre-push-branch-protect` allows the push that CREATES `main` on the
+/// remote — there is no history there to protect and no PR to open against
+/// — so a commit-time warning that the push "will be refused" is simply
+/// false here, and would send somebody to `git switch -c` to escape a
+/// refusal that is not coming.
+#[test]
+fn a_branch_never_pushed_anywhere_is_quiet() {
+    let r = Repo::new();
+    on_main(&r);
+    with_remote_never_pushed(&r);
+    let (code, out) = run_check(&r);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("will be refused"),
+        "nothing is refused until the branch exists on the remote: {out}"
+    );
 }

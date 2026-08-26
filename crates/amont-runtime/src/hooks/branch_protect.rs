@@ -32,7 +32,49 @@ fn protected_name(remote_ref: &str) -> Option<&'static str> {
 /// A delete (`git push :main`) is still a write to the branch, and the most
 /// destructive one. The all-zero local oid is how git spells it.
 fn is_delete(r: &PushRef) -> bool {
-    r.local_oid.chars().all(|c| c == '0')
+    all_zero(&r.local_oid)
+}
+
+/// The push that CREATES the branch on the remote — there is nothing there
+/// yet to protect.
+///
+/// git spells this with an all-zero REMOTE oid, documented in githooks(5)
+/// ("if the remote branch does not yet exist, `<remote-sha1>` will be 40
+/// zeroes") and verified against git itself in
+/// `crates/amont/tests/branch_protect_early.rs`.
+///
+/// Refusing it was wrong in a way that taught the bypass, which is the one
+/// outcome this whole check is written to avoid. The first push of a new
+/// repository is always a push to `main`, and the advice the refusal gives —
+/// "Open a Pull Request" — cannot be followed: there is no base branch to
+/// open one against. The only way past is `--no-verify`, which switches off
+/// every other pre-push gate too, and having been taught it once people
+/// reach for it again.
+///
+/// This does NOT weaken the check. Protecting `main` means protecting the
+/// history somebody else might be relying on; a branch the remote has never
+/// heard of has no history, no reviewers and no PR to bypass.
+fn is_creation(r: &PushRef) -> bool {
+    all_zero(&r.remote_oid)
+}
+
+/// git's spelling of "no object": 40 zeros. Length is not checked because
+/// the caller is comparing git's own output, and an empty string — which no
+/// git produces here — would be a false "yes" this guards against.
+fn all_zero(oid: &str) -> bool {
+    !oid.is_empty() && oid.chars().all(|c| c == '0')
+}
+
+/// Does `branch` exist on any remote we have fetched?
+///
+/// Reads `refs/remotes/*/<branch>` — local, no network, one process. A
+/// repository with a remote it has never fetched from has no such ref, and
+/// that is the right answer: nothing has been pushed, so nothing is
+/// protected yet.
+fn on_a_remote(branch: &str) -> bool {
+    let pattern = format!("refs/remotes/*/{branch}");
+    git::stdout(&["for-each-ref", "--format=%(refname)", &pattern])
+        .is_some_and(|out| !out.trim().is_empty())
 }
 
 /// The same refusal, said at COMMIT time — `pre-commit-branch-protect`.
@@ -51,6 +93,12 @@ fn is_delete(r: &PushRef) -> bool {
 /// names no branch, and in a remoteless repository, where there is no push
 /// for the contract to gate. `hook.skip branch-protect` silences both
 /// voices, as with `branch-pattern`.
+///
+/// Also quiet when the branch does not exist on any remote yet, for the same
+/// reason [`is_creation`] exists: this warning's whole content is "pushing
+/// it will be refused", and in a repository whose first commit has not been
+/// pushed anywhere that is simply false. Saying it anyway would send someone
+/// to `git switch -c` to escape a refusal that is not coming.
 pub fn early() -> Outcome {
     let Some(branch) = git::current_branch() else {
         return Outcome::Passed;
@@ -59,7 +107,7 @@ pub fn early() -> Outcome {
         crate::hooks::common::ok("Not committing on a protected branch");
         return Outcome::Passed;
     }
-    if !git::has_remote() {
+    if !git::has_remote() || !on_a_remote(branch) {
         return Outcome::Passed;
     }
     crate::say!(
@@ -78,6 +126,13 @@ pub fn early() -> Outcome {
 pub fn run(refs: &[PushRef]) -> Outcome {
     let mut blocked = Vec::new();
     for r in refs {
+        // A creation is checked BEFORE the name: `main` that the remote has
+        // never heard of is not the `main` this protects. Ordering matters
+        // only for readability here, but the comment is the point — a later
+        // reader must not "simplify" this into the name check alone.
+        if is_creation(r) {
+            continue;
+        }
         if let Some(name) = protected_name(&r.remote_ref) {
             blocked.push((name, is_delete(r)));
         }
@@ -105,12 +160,32 @@ pub fn run(refs: &[PushRef]) -> Outcome {
 mod tests {
     use super::*;
 
+    const ZEROS: &str = "0000000000000000000000000000000000000000";
+
+    /// An UPDATE to a ref that already exists on the remote.
+    ///
+    /// The `remote_oid` here is what this fixture used to hard-code as `"b"`
+    /// for every case, which is why no test ever exercised a ref the remote
+    /// did not have — and why `run` shipped refusing the first push of every
+    /// new repository. Use [`creating`] for that case; it is a real one.
     fn r(local_oid: &str, remote_ref: &str) -> PushRef {
         PushRef {
             local_ref: "refs/heads/whatever".into(),
             local_oid: local_oid.into(),
             remote_ref: remote_ref.into(),
             remote_oid: "b".into(),
+        }
+    }
+
+    /// A push that CREATES the ref on the remote: git sends 40 zeros as the
+    /// remote oid. Verified against real git in
+    /// `crates/amont/tests/branch_protect_early.rs`.
+    fn creating(remote_ref: &str) -> PushRef {
+        PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: "a".into(),
+            remote_ref: remote_ref.into(),
+            remote_oid: ZEROS.into(),
         }
     }
 
@@ -165,5 +240,56 @@ mod tests {
             run(&[r("a", "refs/heads/feat/x"), r("a", "refs/heads/main")]),
             Outcome::Failed
         );
+    }
+
+    /// The first push of a new repository is always a push to `main`, and
+    /// there is nothing on the remote to protect.
+    ///
+    /// The refusal used to fire here, and its advice — "Open a Pull Request"
+    /// — could not be followed: there is no base branch to open one
+    /// against. The only way past was `--no-verify`, which switches off
+    /// every other pre-push gate too. A guard that can only be satisfied by
+    /// the blanket bypass has taught the bypass.
+    #[test]
+    fn creating_main_on_the_remote_is_allowed() {
+        assert_eq!(run(&[creating("refs/heads/main")]), Outcome::Passed);
+        assert_eq!(run(&[creating("refs/heads/master")]), Outcome::Passed);
+    }
+
+    /// And the protection is unchanged the moment the branch exists: the
+    /// SECOND push is a normal update, and normal updates are refused.
+    #[test]
+    fn the_next_push_to_that_same_branch_is_refused() {
+        assert_eq!(run(&[r("a", "refs/heads/main")]), Outcome::Failed);
+    }
+
+    /// Creating one branch does not smuggle an update to another through in
+    /// the same push.
+    #[test]
+    fn a_creation_beside_a_real_update_still_fails() {
+        assert_eq!(
+            run(&[creating("refs/heads/feat/x"), r("a", "refs/heads/main")]),
+            Outcome::Failed
+        );
+    }
+
+    /// Deleting a branch that the remote does not have is not a deletion of
+    /// anything. Both oids zero is a push git would not send, and the answer
+    /// either way must not be "blocked".
+    #[test]
+    fn a_delete_of_a_nonexistent_remote_branch_is_not_blocked() {
+        let mut p = creating("refs/heads/main");
+        p.local_oid = ZEROS.into();
+        assert_eq!(run(&[p]), Outcome::Passed);
+    }
+
+    /// An empty oid is not "all zeros". Nothing git emits looks like this,
+    /// and the guard must not read a parse failure as "nothing to protect".
+    #[test]
+    fn an_empty_remote_oid_is_not_a_creation() {
+        let mut p = r("a", "refs/heads/main");
+        p.remote_oid = String::new();
+        assert!(!is_creation(&p));
+        assert_eq!(run(&[p]), Outcome::Failed);
     }
 }
