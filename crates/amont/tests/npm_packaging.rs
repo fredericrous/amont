@@ -78,8 +78,9 @@ fn declared_packages() -> Vec<String> {
 
 /// Package names the JS wrapper knows how to resolve.
 fn wrapper_packages() -> Vec<String> {
-    // The map moved to `native.js` when a second wrapper (`amont-agent`) needed
-    // the same resolution logic. One copy of it, so one place to read it from.
+    // The map lives in `native.js` rather than in the bin wrapper: it moved
+    // there when a second wrapper needed the same resolution logic, and it
+    // stays there because one copy is one place to read it from.
     let text = read("npm/amont/bin/native.js");
     let (_, after) = text.split_once("const PACKAGES").expect("PACKAGES map");
     after

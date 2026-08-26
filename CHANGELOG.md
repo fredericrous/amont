@@ -6,6 +6,42 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.19.0
+
+### Removed
+
+- **`amont-agent` has moved to its own project:**
+  <https://github.com/fredericrous/amont-agent>. It is no longer bundled with
+  amont — not in the release tarball, not in the `amont` npm package, and not
+  in `install.sh`/`install.ps1`.
+
+  **Your installed copy keeps working and is not removed by this upgrade.** To
+  keep getting updates, install it from its own project:
+
+  ```sh
+  brew install fredericrous/tap/amont-agent
+  # or
+  curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
+  ```
+
+  Then `rm ~/.local/bin/amont-agent` is safe once the new one is on `PATH`, and
+  `amont-agent doctor` will confirm which binary Claude Code is running.
+
+  Nothing about the guard's behaviour changed in the move: same config keys
+  (`amont.agent.*`, `$AMONT_AGENT_OFF`), same journal path, same decisions. Its
+  first release from the new home is `v2.0.0` — the major bump marks that it
+  must now be installed separately, and keeps the two version streams
+  independent so `amont 1.19` and `amont-agent 2.0` never look like they must
+  match.
+
+  Why: it targets a different audience, needs none of this project's
+  constraints — it is not on the commit path and takes dependencies happily —
+  and nothing here ever depended on it. Bundling meant a stranger could only
+  find it by first adopting a git-hook manager.
+
+- `docs/agent-guard.md` moves with it, and is replaced by
+  [a book of its own](https://github.com/fredericrous/amont-agent/tree/main/docs).
+
 ## v1.18.2 — 2026-08-25
 
 - **`graduate` on an installed binary can see its evidence.** The reviewed

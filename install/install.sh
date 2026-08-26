@@ -147,7 +147,7 @@ main() {
     upgrading=0
     [ -x "$BIN_DIR/amont" ] && upgrading=1
     mkdir -p "$BIN_DIR"
-    for b in amont amont-fleet amont-agent; do
+    for b in amont amont-fleet; do
         if [ -f "$tmp/$name/$b" ]; then
             # Write to a temporary name and rename over the destination:
             # replacing a RUNNING binary in place fails on some platforms, and

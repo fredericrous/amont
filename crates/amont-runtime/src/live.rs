@@ -463,9 +463,9 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets) -> String {
 /// `$COLUMNS` when it is exported and sane, else a conservative 100 — the
 /// region's lines are short and an ioctl is not worth its portability.
 ///
-/// Public because `amont-agent` prints sampled commands and needs the same
-/// answer. A second copy of this would be a second place for the fallback and
-/// the sanity floor to drift.
+/// `pub` is now wider than it needs to be — the out-of-crate caller that
+/// justified it, `amont-agent`, is its own project and carries its own copy.
+/// Left public rather than narrowed in the same change that removed it.
 pub fn term_width() -> usize {
     std::env::var("COLUMNS")
         .ok()
