@@ -131,35 +131,40 @@ pub(crate) enum PairVerdict {
     Unstamped(usize),
 }
 
-/// Judge a pre-push declared external against its commit-time pair, with
-/// exactly the npm gate's rules: the pair must be BLOCKING (a warn check
-/// vouches for nothing), its scope must have seen every file this push
-/// changes that the push-side check would fire on, and every relevant
-/// commit must carry its stamp. Any git refusal reads as "no stamp", which
-/// runs the check — the only safe direction.
+/// Judge a pre-push gate against its commit-time pair, with exactly the npm
+/// gate's rules: the pair must be BLOCKING (a warn check vouches for
+/// nothing), its scope must have seen every file this push changes that the
+/// push-side check would fire on, and every relevant commit must carry its
+/// stamp. Any git refusal reads as "no stamp", which runs the check — the
+/// only safe direction.
+///
+/// Takes the push side as `(name, scope)` rather than an `&External`,
+/// because those two are all it ever used and a BUILT-IN has both. That is
+/// the whole reason built-ins can be paired now: the logic never needed a
+/// declaration, only a name to match and a scope to judge against.
+///
+/// `name` is the SHORT name — `cargo-test`, not `pre-push-cargo-test`. It is
+/// compared against [`GateDecl::script`], which is what the author wrote in
+/// `amont.conf`. Passing an id here matches nothing and silently pairs
+/// nothing; see `Check::pairing_name`.
 pub(crate) fn pair_verdict(
-    ext: &crate::manifest::External,
+    name: &str,
+    push_scope: &crate::check::Scope,
     manifest: &crate::manifest::Manifest,
     push: &crate::pushrefs::PushRefs,
 ) -> PairVerdict {
-    let crate::manifest::Kind::Runnable {
-        scope: push_scope, ..
-    } = &ext.kind
-    else {
-        return PairVerdict::NotPaired;
-    };
     // Cheap name test before any config read or git spawn: most pre-push
-    // declarations have no commit-time namesake.
+    // gates have no commit-time namesake.
     if !manifest
         .externals
         .iter()
-        .any(|e| e.stage == crate::check::Stage::PreCommit && e.short_name == ext.short_name)
+        .any(|e| e.stage == crate::check::Stage::PreCommit && e.short_name == name)
     {
         return PairVerdict::NotPaired;
     }
     let Some(pair) = blocking_commit_decls(&manifest.externals)
         .into_iter()
-        .find(|d| d.script == ext.short_name)
+        .find(|d| d.script == name)
     else {
         return PairVerdict::NotPaired;
     };
@@ -170,9 +175,25 @@ pub(crate) fn pair_verdict(
     let mut judged_any = false;
     for r in push.get() {
         let changed = crate::pushrefs::changed_files_for(r, &zero);
+        // `covers`, NOT `matches`, and the difference is the whole reason
+        // built-ins can be paired at all.
+        //
+        // `matches` also asks the OPT-IN question — "is there a Cargo.toml
+        // here" — and asking it of a single path can only ever answer no.
+        // `pre-push-cargo-test` opts in on `Cargo.toml`, so every changed
+        // `.rs` file would be judged irrelevant, `judged_any` would stay
+        // false, and the verdict would be `NotPaired` for every push in
+        // every Rust repository. Silently: a gate that never pairs looks
+        // exactly like a gate with no pair declared.
+        //
+        // Opt-in is a fact about the REPOSITORY, settled once by the
+        // dispatcher when it decided this check runs here at all. What this
+        // loop needs is the per-file question, which is `covers`. For a
+        // declared external the two are identical — `amont.conf` scopes
+        // carry no opt-in — so this changes nothing for the declared path.
         let relevant: Vec<String> = changed
             .iter()
-            .filter(|f| push_scope.matches(std::slice::from_ref(f)))
+            .filter(|f| push_scope.is_unscoped() || push_scope.covers(f))
             .cloned()
             .collect();
         if relevant.is_empty() {

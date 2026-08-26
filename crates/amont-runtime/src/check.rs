@@ -325,6 +325,23 @@ pub trait Check: Sync {
     fn name(&self) -> &str;
     fn stage(&self) -> Stage;
     fn scope(&self) -> Scope;
+    /// The name a commit-time declaration must use to pair with this gate.
+    ///
+    /// Deliberately the SHORT name, and deliberately not the id: pairing is
+    /// cross-stage by definition — `test` declared at `pre-commit` pairs
+    /// with `test` at `pre-push` — so the id, which encodes the stage, is
+    /// the one key that cannot work. `pre-push-cargo-test` would be compared
+    /// against a `GateDecl.script` of `cargo-test` and never match, and the
+    /// failure would be silence rather than an error: the gate simply never
+    /// pairs and nobody is told why.
+    ///
+    /// This is the single place where comparing short names is correct,
+    /// which is why it is a named method rather than a `short_name()` call
+    /// at the comparison site — that function's own documentation says never
+    /// to compare against it, and it is right everywhere else.
+    fn pairing_name(&self) -> &str {
+        crate::short_name(self.name())
+    }
     fn severity(&self) -> Severity;
     /// Whether this check can repair what it finds. `None` for almost all.
     fn fix(&self) -> Fix {

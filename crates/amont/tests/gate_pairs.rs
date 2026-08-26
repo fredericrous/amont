@@ -232,3 +232,92 @@ fn a_policy_downgraded_pair_cannot_vouch() {
     );
     assert_eq!(runs(&r), 2, "the push side ran again");
 }
+
+/// A repo whose BUILT-IN `pre-push-cargo-test` has a commit-time namesake —
+/// and nothing else declared.
+///
+/// This is the whole ergonomic the built-in fallback buys: one line, no
+/// second declaration, no `hook.skip`, no repeating `cargo test` in config
+/// that amont already knows how to run.
+///
+/// The fixture has to look like a Rust repo, and that is not decoration: the
+/// built-in's scope is `Scope::new(rust_tools::EXTS, &["Cargo.toml"])`, so
+/// without a real `Cargo.toml` and a `.rs` file the check is never in the
+/// push list at all — and a test asserting "it was skipped" would pass
+/// having proved nothing, because there was nothing to skip.
+///
+/// The commit-side command is a stub. What is under test is the pairing, not
+/// cargo.
+fn builtin_paired_repo() -> (Repo, String) {
+    let r = Repo::new();
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    // ONLY the commit-time half. The push side is amont's own built-in.
+    r.stage(
+        "amont.conf",
+        "pre-commit  cargo-test  *.rs  block  node gate.js\n",
+    );
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+    (r, base)
+}
+
+/// The built-in push gate defers to a commit-time declaration of its short
+/// name — the case that was structurally impossible before, because the
+/// pairing only ever looked at `manifest.externals` and built-ins are never
+/// in there.
+#[test]
+fn a_builtin_push_gate_is_gated_by_its_commit_time_namesake() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_paired_repo();
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    let out = r.git(&["commit", "-q", "-m", "feat: through the gate"]);
+    assert!(out.status.success(), "verified commit failed");
+    assert_eq!(runs(&r), 1, "the commit-time side ran once");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    // Two substrings, not one: `highlight` wraps the name in SGR codes, so
+    // the name and the sentence are never contiguous in real output. The
+    // existing declared-pair tests only assert the sentence — asserting the
+    // NAME too is the point here, since a built-in pairing under the wrong
+    // name is exactly the silent failure this feature risks.
+    assert!(
+        out.contains("cargo-test") && out.contains("gated at commit instead"),
+        "the built-in must defer to its namesake, by name: {out}"
+    );
+}
+
+/// And it is fail-closed: a `--no-verify` commit carries no stamp, so the
+/// built-in comes back rather than trusting a declaration nobody honoured.
+///
+/// This is the assertion that matters. If it ever goes quiet, the pair is
+/// deferring to a check that never ran, which is worse than having no pair.
+#[test]
+fn an_unstamped_commit_brings_the_builtin_back() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_paired_repo();
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
+    assert_eq!(runs(&r), 0, "nothing ran at commit");
+
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    // Not asserting the exit code: with no stamp the built-in really does
+    // run `cargo test` here, and what that says about a fixture crate is not
+    // this test's business. The contract under test is that it came back and
+    // said why.
+    assert!(
+        out.contains("carr") && out.contains("no record of it"),
+        "an unstamped commit must bring the built-in back, out loud: {out}"
+    );
+}
