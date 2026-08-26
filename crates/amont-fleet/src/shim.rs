@@ -227,23 +227,34 @@ mod tests {
     /// points at a file that does not exist.
     #[test]
     fn a_bake_inside_node_modules_is_the_package_managers_business() {
-        let npm = "/repo/node_modules/amont-darwin-arm64/bin/amont";
+        let npm = "/repo/node_modules/@amont-hooks/darwin-arm64/bin/amont";
         assert_eq!(
             bake_state(&[ok(npm)], "/home/me/.local/bin/amont"),
             BakeState::SelfManaged {
                 path: npm.to_string()
             }
         );
+        // The pre-1.20 unscoped layout, still on machines that installed
+        // then. `is_package_managed` looks for a `node_modules` component and
+        // never at the package name, which is what makes the scope move a
+        // non-event here — but a test that only knew the new shape would stop
+        // proving that.
+        let legacy = "/repo/node_modules/amont-darwin-arm64/bin/amont";
+        assert!(matches!(
+            bake_state(&[ok(legacy)], "/home/me/.local/bin/amont"),
+            BakeState::SelfManaged { .. }
+        ));
         // pnpm's real layout, which is where this actually bites: the store
-        // path carries the version, so it changes on every bump.
-        let pnpm = "/repo/node_modules/.pnpm/amont-darwin-x64@1.5.0/node_modules/amont-darwin-x64/bin/amont";
+        // path carries the version, so it changes on every bump. Scoped
+        // packages add a directory level to it as well.
+        let pnpm = "/repo/node_modules/.pnpm/@amont-hooks+darwin-x64@1.20.0/node_modules/@amont-hooks/darwin-x64/bin/amont";
         assert!(matches!(
             bake_state(&[ok(pnpm)], "/home/me/.local/bin/amont"),
             BakeState::SelfManaged { .. }
         ));
         // Windows separators reach this from a shim baked by `amont init`
         // there; splitting only on `/` would call it stale.
-        let win = r"C:\repo\node_modules\amont-win32-x64\bin\amont.exe";
+        let win = r"C:\repo\node_modules\@amont-hooks\win32-x64\bin\amont.exe";
         assert!(matches!(
             bake_state(&[ok(win)], "/home/me/.local/bin/amont"),
             BakeState::SelfManaged { .. }

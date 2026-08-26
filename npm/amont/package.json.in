@@ -32,11 +32,11 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "amont-darwin-arm64": "__VERSION__",
-    "amont-darwin-x64": "__VERSION__",
-    "amont-linux-arm64-gnu": "__VERSION__",
-    "amont-linux-x64-gnu": "__VERSION__",
-    "amont-linux-x64-musl": "__VERSION__",
-    "amont-win32-x64": "__VERSION__"
+    "@amont-hooks/darwin-arm64": "__VERSION__",
+    "@amont-hooks/darwin-x64": "__VERSION__",
+    "@amont-hooks/linux-arm64-gnu": "__VERSION__",
+    "@amont-hooks/linux-x64-gnu": "__VERSION__",
+    "@amont-hooks/linux-x64-musl": "__VERSION__",
+    "@amont-hooks/win32-x64": "__VERSION__"
   }
 }

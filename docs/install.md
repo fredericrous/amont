@@ -132,8 +132,12 @@ That is [§2](#2-turn-hooks-on) done for them, by the package manager, once —
 which is the whole point of the shape.
 
 Six prebuilt platform packages are declared as `optionalDependencies`
-(`amont-darwin-arm64`, `amont-linux-x64-gnu`, …), each carrying `os`, `cpu` and
-`libc`, so npm and pnpm install exactly one and skip the other five. **There is
+(`@amont-hooks/darwin-arm64`, `@amont-hooks/linux-x64-gnu`, …), each carrying
+`os`, `cpu` and `libc`, so npm and pnpm install exactly one and skip the other
+five. They live under a scope so that adding a target later cannot be refused
+by npm's spam heuristic, which rejects unscoped names on their shape alone —
+it turned down an unscoped `amont-agent-win32-x64` while accepting
+`amont-agent-linux-x64-musl` beside it. **There is
 no `postinstall`**, deliberately: `npm ci --ignore-scripts` is a normal
 hardening choice, and a package that quietly installs nothing under it would
 fail much later, as `amont: not found` from a git hook.

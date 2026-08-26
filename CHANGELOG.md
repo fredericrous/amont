@@ -33,6 +33,51 @@ missing here.
   refusal that was not coming. It now speaks only when the branch actually
   exists on a remote.
 
+## v1.20.0
+
+### Changed
+
+- **The six platform packages moved under the `@amont-hooks` npm scope.**
+  `amont-darwin-arm64` and friends are now
+  `@amont-hooks/darwin-arm64`, `@amont-hooks/linux-x64-gnu`, and so on.
+
+  **`npm i -D amont` is unchanged** — the package people depend on keeps its
+  bare name. Only the six build artifacts it resolves moved, and npm resolves
+  them by `os`/`cpu`/`libc` exactly as before.
+
+  The reason is a failure in the sibling project. `amont-agent`'s release
+  tried to publish an unscoped `amont-agent-win32-x64` and npm refused it:
+  *"Package name triggered spam detection"* — on the name alone, while
+  `amont-agent-linux-x64-musl` beside it went through. Which unscoped name
+  trips that heuristic is not something you can predict or appeal quickly, so
+  every new target was a coin flip: adding aarch64-musl or aarch64-windows
+  would roll it again. Names under a scope you own are not subject to it.
+
+  It also stops six build artifacts squatting six unscoped top-level names,
+  and makes plain that they are not packages to install directly. This is the
+  same move esbuild made (`esbuild-linux-64` → `@esbuild/linux-x64`), and the
+  shape rollup, swc and biome all ship.
+
+- **The npm publish loop names its packages explicitly** instead of globbing
+  `dist/npm/amont-*`. That glob now matches *nothing*, since scoped packages
+  lay out under `dist/npm/@amont-hooks/` — it would have published zero
+  platform packages and then published `amont` against six dependencies that
+  do not exist, which npm's immutability makes a version bump to recover
+  from. `tests/npm_packaging.rs` asserts the loop and `npm-pack.sh`'s table
+  name the same six.
+
+- The platform manifest now declares `publishConfig.access: public`. Scoped
+  packages default to **restricted**; the workflow already passed
+  `--access public`, and saying it in the manifest too means a hand-run
+  `npm publish` from `dist/` cannot quietly publish six private packages the
+  root then cannot resolve.
+
+### Note for anyone who pinned a platform package directly
+
+You should not have, and there was never a reason to — but if you did, the
+old unscoped names stop receiving updates at 1.19.0 and are deprecated with a
+pointer to the new ones.
+
 ## v1.19.0
 
 ### Removed

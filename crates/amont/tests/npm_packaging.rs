@@ -49,7 +49,7 @@ fn packed_pairs() -> Vec<(String, String)> {
     read("scripts/npm-pack.sh")
         .lines()
         .map(str::trim)
-        .filter(|l| l.starts_with('"') && l.contains("|amont-"))
+        .filter(|l| l.starts_with('"') && l.contains("|@amont-hooks/"))
         .filter_map(|l| {
             let row = l.trim_start_matches('"').trim_end_matches('"');
             let mut it = row.split('|');
@@ -87,7 +87,7 @@ fn wrapper_packages() -> Vec<String> {
         .lines()
         .take_while(|l| !l.starts_with("};"))
         .flat_map(|l| {
-            l.match_indices("\"amont-")
+            l.match_indices("\"@amont-hooks/")
                 .filter_map(|(i, _)| {
                     let rest = &l[i + 1..];
                     rest.split_once('"').map(|(name, _)| name.to_string())
@@ -172,13 +172,13 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     // those fail with ENOEXEC, and on Linux `execvp` retries ENOEXEC through
     // /bin/sh — the garbage RUNS, exits 127, and that is an answer, not a
     // spawn failure.
-    let gnu = modules.join("amont-linux-x64-gnu/bin/amont");
+    let gnu = modules.join("@amont-hooks/linux-x64-gnu/bin/amont");
     std::fs::create_dir_all(gnu.parent().unwrap()).unwrap();
     std::fs::write(&gnu, "#!/nonexistent/ld-linux-x86-64.so.2\n").unwrap();
     std::fs::set_permissions(&gnu, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // Candidate two: runs, and answers with a distinctive exit code.
-    let musl = modules.join("amont-linux-x64-musl/bin/amont");
+    let musl = modules.join("@amont-hooks/linux-x64-musl/bin/amont");
     std::fs::create_dir_all(musl.parent().unwrap()).unwrap();
     std::fs::write(&musl, "#!/bin/sh\nexit 7\n").unwrap();
     std::fs::set_permissions(&musl, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -217,7 +217,7 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("no runnable native binary") && err.contains("amont-linux-x64-gnu"),
+        err.contains("no runnable native binary") && err.contains("@amont-hooks/linux-x64-gnu"),
         "the failure must name what was tried:\n{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -258,5 +258,67 @@ fn init_bakes_the_native_binary_not_the_node_wrapper() {
         !init_body.contains("on_path_already"),
         "init consults PATH — under npm that resolves to the JS wrapper, and \
          every commit would spawn node"
+    );
+}
+
+/// Package-name SUFFIXES named in `release.yaml`'s npm publish loop.
+fn published_suffixes() -> Vec<String> {
+    let text = read(".github/workflows/release.yaml");
+    let (_, after) = text
+        .split_once("for t in ")
+        .expect("the explicit publish list in the npm publish step");
+    let line = after.lines().next().expect("the loop line");
+    line.split_once("; do")
+        .map(|(names, _)| names)
+        .unwrap_or(line)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The publish loop names every packed package, explicitly.
+///
+/// A glob cannot do this job any more and never really could. Scoped
+/// packages lay out under `dist/npm/@amont-hooks/…`, so `dist/npm/amont-*`
+/// matches NOTHING — the loop would publish zero platform packages and then
+/// publish `amont` against six dependencies that do not exist. npm versions
+/// are immutable, so that is a version bump to recover from.
+#[test]
+fn the_publish_loop_names_every_packed_package_explicitly() {
+    let packed = sorted(packed_pairs().into_iter().map(|(_, p)| p).collect());
+    let expected: Vec<String> = packed
+        .iter()
+        .map(|p| {
+            p.strip_prefix("@amont-hooks/")
+                .unwrap_or_else(|| panic!("{p} is not under the @amont-hooks scope"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        sorted(expected),
+        sorted(published_suffixes()),
+        "release.yaml's publish loop and npm-pack.sh's table name different \
+         platforms — one publishes a package that does not exist, or skips \
+         one that does"
+    );
+}
+
+/// Every platform package is scoped, and the root package is not.
+///
+/// The scope is why the six can be renamed or added to without meeting npm's
+/// spam heuristic, which rejected an unscoped `amont-agent-win32-x64` on name
+/// alone. The root stays bare `amont` so `npm i -D amont` is unchanged.
+#[test]
+fn platform_packages_are_scoped_and_the_root_is_not() {
+    for p in packed_pairs().into_iter().map(|(_, p)| p) {
+        assert!(
+            p.starts_with("@amont-hooks/"),
+            "{p} is not scoped — unscoped names are the ones npm rejects"
+        );
+    }
+    let text = read("npm/amont/package.json.in");
+    assert!(
+        text.contains("\"name\": \"amont\""),
+        "the root package must stay bare `amont`"
     );
 }
