@@ -947,7 +947,7 @@ mod tests {
             (r.baked.clone(), p)
         };
 
-        let npm_bake = "/w/node_modules/amont-darwin-arm64/bin/amont";
+        let npm_bake = "/w/node_modules/@amont-hooks/darwin-arm64/bin/amont";
         let (state, p) = plan_for("npm", npm_bake);
         assert!(
             matches!(state, crate::shim::BakeState::SelfManaged { .. }),

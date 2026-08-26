@@ -10,6 +10,10 @@
   "license": "MIT",
   "author": "Frederic Rousseau",
   "preferUnplugged": true,
+  "_comment_access": "Scoped packages default to RESTRICTED. The workflow passes --access public, and this says the same thing in the manifest so a hand-run `npm publish` from dist/ cannot quietly publish six private packages the root then cannot resolve.",
+  "publishConfig": {
+    "access": "public"
+  },
   "os": [
     "__OS__"
   ],

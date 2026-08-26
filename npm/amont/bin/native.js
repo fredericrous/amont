@@ -21,11 +21,11 @@ const { existsSync } = require("node:fs");
 // `libc` is why linux-x64 appears twice: a musl host cannot run the glibc build,
 // and npm will install only the package whose `libc` matches.
 const PACKAGES = {
-  "darwin arm64": "amont-darwin-arm64",
-  "darwin x64": "amont-darwin-x64",
-  "linux arm64": "amont-linux-arm64-gnu",
-  "linux x64": ["amont-linux-x64-gnu", "amont-linux-x64-musl"],
-  "win32 x64": "amont-win32-x64",
+  "darwin arm64": "@amont-hooks/darwin-arm64",
+  "darwin x64": "@amont-hooks/darwin-x64",
+  "linux arm64": "@amont-hooks/linux-arm64-gnu",
+  "linux x64": ["@amont-hooks/linux-x64-gnu", "@amont-hooks/linux-x64-musl"],
+  "win32 x64": "@amont-hooks/win32-x64",
 };
 
 function candidates() {

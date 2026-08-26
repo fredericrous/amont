@@ -378,7 +378,7 @@ jobs:
       - name: The tarball actually carries the binary
         run: |
           set -euo pipefail
-          cd dist/npm/amont-linux-x64-gnu
+          cd dist/npm/@amont-hooks/linux-x64-gnu
           # Listed to a file, THEN grepped — never `tar … | grep -q`. `grep -q`
           # exits at the first match and closes the pipe, tar takes EPIPE, and
           # under `pipefail` that is a failed step reported as
@@ -450,7 +450,22 @@ jobs:
             fi
           }
 
-          for dir in dist/npm/amont-*; do publish "$dir"; done
+          # AN EXPLICIT LIST, NOT A GLOB.
+          #
+          # The platform packages are scoped now, so they lay out under
+          # `dist/npm/@amont-hooks/…` and `dist/npm/amont-*` matches nothing
+          # at all — the loop would silently publish ZERO platform packages
+          # and then publish `amont` against six dependencies that do not
+          # exist. npm versions are immutable, so that is a version bump to
+          # recover from, not a re-run.
+          #
+          # Even flat, a glob was the wrong shape: it has to match every
+          # platform package and never the root, and nothing enforces that
+          # but care. `npm-pack.sh`'s TARGETS table is the source of truth,
+          # and `npm_packaging.rs` asserts this list agrees with it.
+          for t in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu linux-x64-musl win32-x64; do
+            publish "dist/npm/@amont-hooks/$t"
+          done
           publish dist/npm/amont
 
           echo "### Published to npm" >> "$GITHUB_STEP_SUMMARY"

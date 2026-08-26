@@ -28,12 +28,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # to nothing is worse than one npm skips — it installs, then fails at the first
 # commit. `install.sh` refuses the same pair for the same reason.
 TARGETS=(
-    "aarch64-apple-darwin|amont-darwin-arm64|darwin|arm64|"
-    "x86_64-apple-darwin|amont-darwin-x64|darwin|x64|"
-    "aarch64-unknown-linux-gnu|amont-linux-arm64-gnu|linux|arm64|glibc"
-    "x86_64-unknown-linux-gnu|amont-linux-x64-gnu|linux|x64|glibc"
-    "x86_64-unknown-linux-musl|amont-linux-x64-musl|linux|x64|musl"
-    "x86_64-pc-windows-msvc|amont-win32-x64|win32|x64|"
+    "aarch64-apple-darwin|@amont-hooks/darwin-arm64|darwin|arm64|"
+    "x86_64-apple-darwin|@amont-hooks/darwin-x64|darwin|x64|"
+    "aarch64-unknown-linux-gnu|@amont-hooks/linux-arm64-gnu|linux|arm64|glibc"
+    "x86_64-unknown-linux-gnu|@amont-hooks/linux-x64-gnu|linux|x64|glibc"
+    "x86_64-unknown-linux-musl|@amont-hooks/linux-x64-musl|linux|x64|musl"
+    "x86_64-pc-windows-msvc|@amont-hooks/win32-x64|win32|x64|"
 )
 
 say() { printf '  %s\n' "$1"; }
