@@ -296,6 +296,26 @@ pre-commit    test   *.rs    block     cargo test
 pre-push      test   *.rs    block     cargo test
 ```
 
+**A BUILT-IN gate needs only the commit-time half.** amont already owns the
+push side of `cargo-test`, `pytest`, `go-test` and `run-tests-js`, so declare
+the commit-time twin under the built-in's own short name and stop:
+
+```text
+# stage       name        scope   severity  command
+pre-commit    cargo-test  *.rs    block     cargo test
+```
+
+`pre-push-cargo-test` then defers to its stamps — no second declaration, no
+`hook.skip`, and no repeating a command amont already knows how to run. The
+name must be the SHORT one (`cargo-test`, not `pre-push-cargo-test`): it is
+matched against what you wrote here, and a full id matches nothing.
+
+This is worth reaching for when a suite is slow enough to be a problem on the
+push path — git opens its connection to the remote *before* calling
+`pre-push` and holds it idle until the gate finishes, and a remote may close
+it first. Moving the gate to commit time is the only thing that shortens that
+window; ssh keepalive does not.
+
 A push whose commits all carry the `test` stamp skips the pre-push line with
 the same `✓ test gated at commit instead` message; a `--no-verify` commit
 brings it back with the same warning; and the dodge lands in the bypass

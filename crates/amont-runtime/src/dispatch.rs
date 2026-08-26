@@ -666,18 +666,38 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // always had, for vocabularies npm never heard of (`cargo test`,
         // `pytest`, anything). Messages mirror the npm gate's exactly;
         // docs/checks.md quotes them.
-        if let Some(ext) = ctx
+        // The push side of a pair is `(name, scope)`, from whichever of the
+        // two kinds of check this is. A declared pre-push external supplies
+        // its own; anything else is a BUILT-IN, and `pairing_name` plus the
+        // registry's scope say the same two things about it.
+        //
+        // The external is tried FIRST and its inputs are unchanged, so the
+        // declared path behaves exactly as before — that is what the
+        // untouched declared-pair tests prove.
+        let declared = ctx
             .manifest
             .externals
             .iter()
-            .find(|e| e.stage == Stage::PrePush && e.id == check.name())
-        {
-            match crate::hooks::run_tests::pair_verdict(ext, ctx.manifest, ctx.push) {
+            .find(|e| e.stage == Stage::PrePush && e.id == check.name());
+        let builtin_scope = check.scope();
+        let pairing: Option<(&str, &crate::check::Scope)> = match declared {
+            Some(ext) => match &ext.kind {
+                crate::manifest::Kind::Runnable { scope, .. } => {
+                    Some((ext.short_name.as_str(), scope))
+                }
+                // A declared pre-push entry that runs nothing has no scope to
+                // judge with, and is not a built-in either. Nothing to pair.
+                _ => None,
+            },
+            None => Some((check.pairing_name(), &builtin_scope)),
+        };
+        if let Some((name, push_scope)) = pairing {
+            match crate::hooks::run_tests::pair_verdict(name, push_scope, ctx.manifest, ctx.push) {
                 crate::hooks::run_tests::PairVerdict::Gated => {
                     crate::say!(
                         "{} {} gated at commit instead — not repeating it here",
                         valid_sign(),
-                        highlight(&ext.short_name),
+                        highlight(name),
                     );
                     passed.push(check.name().to_string());
                     continue;
@@ -687,7 +707,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                         "{} {} is declared at commit time, but {n} pushed \
                          commit{} carr{} no record of it — running it here",
                         warning_sign(),
-                        ext.short_name,
+                        name,
                         if n == 1 { "" } else { "s" },
                         if n == 1 { "ies" } else { "y" },
                     );
@@ -789,6 +809,24 @@ mod tests {
             stage: Stage::PreCommit,
             scope: Scope::ALWAYS,
             severity,
+            run: |_| Outcome::Passed,
+            fix: crate::check::Fix::None,
+            reach: crate::check::Reach::Convention,
+        }
+    }
+
+    /// A pre-push gate with an OPT-IN file, as the real Rust and Python
+    /// gates have: `.rs` files, but only where a `Cargo.toml` exists.
+    const fn opt_in(
+        name: &'static str,
+        exts: &'static [&'static str],
+        names: &'static [&'static str],
+    ) -> Builtin {
+        Builtin {
+            name,
+            stage: Stage::PrePush,
+            scope: Scope::new(exts, names),
+            severity: Severity::Block,
             run: |_| Outcome::Passed,
             fix: crate::check::Fix::None,
             reach: crate::check::Reach::Convention,
@@ -1065,5 +1103,54 @@ mod tests {
             .filter(|n| !skips.iter().any(|s| crate::skip_suppresses(n, s)))
             .collect();
         assert_eq!(kept, vec!["pre-commit-prettier"]);
+    }
+
+    /// PINNED, NOT ENDORSED: a gate with an opt-in file is not vouched for by
+    /// a push that did not change that file.
+    ///
+    /// `pre-push-cargo-test` opts in on `Cargo.toml`, and `attestable`
+    /// filters on `scope().matches(changed)` where `changed` is what the PUSH
+    /// touched. So an ordinary `.rs`-only push, in a repository that
+    /// obviously has a `Cargo.toml` sitting right there, does not attest the
+    /// Rust gate — even though the gate ran, or was paired and skipped.
+    ///
+    /// This predates gate-pairing for built-ins and is unchanged by it. It
+    /// errs the safe way: CI re-runs a suite rather than skipping one nobody
+    /// proved on that tree. It is pinned here so the next person meets a
+    /// decision instead of a puzzle, because the obvious reading — "the gate
+    /// passed, so why is it not in the attestation" — has no answer anywhere
+    /// else in the code.
+    ///
+    /// Changing it means changing what CI is told it may skip, which wants
+    /// its own argument and its own change. If you are here to make that
+    /// argument: the fix is probably a relevance predicate that treats
+    /// opt-in files as facts about the REPOSITORY rather than as things the
+    /// push must have touched — the same distinction `pair_verdict`'s
+    /// per-file filter already had to make.
+    #[test]
+    fn an_opt_in_gate_is_not_vouched_for_by_a_push_that_did_not_touch_its_marker() {
+        let rust = opt_in("pre-push-cargo-test", &[".rs"], &["Cargo.toml"]);
+        let checks: Vec<&dyn Check> = vec![&rust];
+        let passed = vec!["pre-push-cargo-test".to_string()];
+
+        // A normal Rust change: source only. Cargo.toml exists in the repo,
+        // but this push did not touch it.
+        let changed = vec!["crates/amont/src/main.rs".to_string()];
+        assert!(
+            attestable(&checks, &passed, &changed).is_empty(),
+            "documented behaviour: an opt-in gate needs its marker among the \
+             CHANGED files to be attested"
+        );
+
+        // And it is attested when the push does touch the marker, which is
+        // what makes the above a scope question and not a bug in `passed`.
+        let changed = vec![
+            "crates/amont/src/main.rs".to_string(),
+            "Cargo.toml".to_string(),
+        ];
+        assert_eq!(
+            attestable(&checks, &passed, &changed),
+            vec!["pre-push-cargo-test".to_string()]
+        );
     }
 }
