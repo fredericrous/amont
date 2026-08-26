@@ -21,12 +21,10 @@
   "author": "Frederic Rousseau",
   "type": "commonjs",
   "bin": {
-    "amont": "bin/amont.js",
-    "amont-agent": "bin/amont-agent.js"
+    "amont": "bin/amont.js"
   },
   "files": [
     "bin/amont.js",
-    "bin/amont-agent.js",
     "bin/native.js",
     "README.md"
   ],

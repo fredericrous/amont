@@ -73,7 +73,7 @@ for row in "${TARGETS[@]}"; do
     fi
 
     mkdir -p "$OUT/$pkg/bin"
-    for b in amont amont-fleet amont-agent; do
+    for b in amont amont-fleet; do
         src="$scratch/$name/$b$suffix"
         [ -f "$src" ] || die "$name archive holds no $b$suffix"
         cp "$src" "$OUT/$pkg/bin/$b$suffix"
@@ -131,7 +131,7 @@ for row in "${TARGETS[@]}"; do
     IFS='|' read -r _ pkg os _ _ <<< "$row"
     suffix=
     [ "$os" = "win32" ] && suffix=.exe
-    for b in amont amont-fleet amont-agent; do
+    for b in amont amont-fleet; do
         [ -x "$OUT/$pkg/bin/$b$suffix" ] || die "$pkg/bin/$b$suffix missing or not executable"
     done
     python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/$pkg/package.json" \

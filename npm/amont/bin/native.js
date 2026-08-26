@@ -65,7 +65,7 @@ function become(name) {
     if (!binary) continue;
     // `spawnSync` with inherited stdio rather than `execFileSync`: this forwards
     // the child's exit CODE. It also keeps the child's stdin, which `amont run`
-    // reads — and which `amont-agent hook` reads its whole payload from.
+    // reads.
     const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
     if (result.error) {
       failures.push(`      ${binary}: ${result.error.message}`);

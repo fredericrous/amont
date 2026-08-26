@@ -134,11 +134,13 @@ jobs:
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
-      # All three binaries: `amont` is the hook runtime and the only one anybody
-      # strictly needs; `amont-fleet` is the opt-in dashboard and `amont-agent`
-      # the opt-in Claude Code guard, and shipping them here is what stops them
-      # being build-from-source-only features.
-      - run: cargo build --release --target ${{ matrix.target }} --bin amont --bin amont-fleet --bin amont-agent
+      # Both binaries: `amont` is the hook runtime and the only one anybody
+      # strictly needs; `amont-fleet` is the opt-in dashboard, and shipping it
+      # here is what stops it being a build-from-source-only feature.
+      #
+      # `amont-agent` used to be a third. It is its own project now —
+      # github.com/fredericrous/amont-agent — with its own release.
+      - run: cargo build --release --target ${{ matrix.target }} --bin amont --bin amont-fleet
 
       - name: Archive
         id: archive
@@ -156,13 +158,11 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/amont.exe" "$staging/"
             cp "target/${{ matrix.target }}/release/amont-fleet.exe" "$staging/"
-            cp "target/${{ matrix.target }}/release/amont-agent.exe" "$staging/"
             (cd dist && 7z a "$name.zip" "$name" > /dev/null)
             echo "asset=dist/$name.zip" >> "$GITHUB_OUTPUT"
           else
             cp "target/${{ matrix.target }}/release/amont" "$staging/"
             cp "target/${{ matrix.target }}/release/amont-fleet" "$staging/"
-            cp "target/${{ matrix.target }}/release/amont-agent" "$staging/"
             (cd dist && tar czf "$name.tar.gz" "$name")
             echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
@@ -184,8 +184,8 @@ jobs:
           "$bin" list --json > /dev/null || true
           # Every shipped binary, not just the first one: a packaged asset that
           # cannot execute is the defect `cargo test` structurally cannot see,
-          # and it used to be checked for exactly one of the three.
-          for extra in amont-fleet amont-agent; do
+          # and it used to be checked for exactly one of them.
+          for extra in amont-fleet; do
             side="dist/amont-${version}-${{ matrix.target }}/$extra"
             if [ "${{ runner.os }}" = "Windows" ]; then side="$side.exe"; fi
             [ -x "$side" ] || { echo "::error::$extra is missing or not executable"; exit 1; }
@@ -508,7 +508,7 @@ jobs:
           # Idempotency comes from cargo's own answer instead. Re-running a
           # release must not fail on a crate that is already up, and "already
           # uploaded" is exactly that answer — anything else is a real failure.
-          for crate in amont-runtime amont amont-fleet amont-agent; do
+          for crate in amont-runtime amont amont-fleet; do
             echo "→ publishing $crate $VERSION"
             if out=$(cargo publish -p "$crate" 2>&1); then
               printf '%s\n' "$out"

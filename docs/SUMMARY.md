@@ -14,7 +14,6 @@
 - [Opting out](opting-out.md)
 - [The trust model](trust.md)
 - [Custom checks](custom-checks.md)
-- [The agent guard](agent-guard.md)
 
 # Project
 
