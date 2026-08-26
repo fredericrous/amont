@@ -81,6 +81,11 @@ pub struct Stage {
     out: Mutex<usize>,
     /// Painting at all? [`enabled`] && [`watching`], decided once at begin.
     live: bool,
+    /// Is this the PUSH stage? Read by the heartbeat, which has something to
+    /// say about a long gate there and nothing to say about one at commit
+    /// time — see [`beat_line`]. Derived from the names, which already
+    /// carry the trigger.
+    on_push: bool,
     stop: AtomicBool,
 }
 
@@ -118,6 +123,10 @@ impl Stage {
             ),
             out: Mutex::new(0),
             live: enabled() && watching(),
+            // The names arrive fully qualified and the loop above has
+            // already had to strip the trigger to display them, so the
+            // stage can answer this without dispatch passing anything in.
+            on_push: names.iter().any(|n| n.starts_with("pre-push-")),
             stop: AtomicBool::new(false),
         });
         if stage.live {
@@ -425,7 +434,7 @@ fn heartbeat(weak: Weak<Stage>) {
         }
         let text: String = due
             .iter()
-            .map(|(row, first)| beat_line(row, *first, budgets()))
+            .map(|(row, first)| beat_line(row, *first, budgets(), stage.on_push))
             .collect();
         let _guard = stage.out.lock().unwrap_or_else(|p| p.into_inner());
         let mut err = std::io::stderr().lock();
@@ -435,7 +444,28 @@ fn heartbeat(weak: Weak<Stage>) {
 }
 
 /// One heartbeat line. Pure, for the tests.
-fn beat_line(row: &Row, first: bool, budgets: Budgets) -> String {
+///
+/// On the FIRST beat of a PUSH gate it also names something no other part of
+/// the system is placed to explain. `git push` opens its connection to the
+/// remote, reads the remote refs — which is where the `pre-push` hook's own
+/// stdin comes from — and only then calls the hook. The connection is
+/// therefore already open and goes idle for exactly as long as the gate
+/// runs, and a remote may close it before the gate finishes. git then
+/// reports `Connection reset by peer`, which reads as a network fault and
+/// says nothing about the seven minutes that caused it.
+///
+/// The note does NOT recommend ssh keepalive, and that omission is
+/// deliberate: `ServerAliveInterval 60` was already in force on the machine
+/// where this was diagnosed, and GitHub reset the connection anyway.
+/// Whatever the remote is measuring, it is not packets. Recommending it
+/// would be a confident instruction to change a setting that is probably
+/// already on and cannot help, so the note says so and points at the thing
+/// that does work.
+///
+/// Only on a first beat, so it is said once; only on a push, so a commit
+/// gate never hears it. A first beat is a check that has already run a full
+/// minute, which is the population at risk — no threshold to invent.
+fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String {
     use crate::hooks::common::human_secs;
     let mut line = format!(
         "  … {} still running: {}, last output {} ago",
@@ -455,6 +485,21 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets) -> String {
         line.push_str(&format!(
             " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
         ));
+        if on_push {
+            // `concat!`, not a `\`-continued literal: a continuation keeps
+            // the next line's indentation, which turns the message into runs
+            // of spaces. Each line is its own literal and the newlines are
+            // written down, so what is here is what a reader sees.
+            line.push_str(concat!(
+                "\n    git opened its connection to the remote before calling this",
+                "\n    gate, and it stays idle until the gate finishes. A remote may",
+                "\n    close it first — GitHub does — and the push then fails with",
+                "\n    \"Connection reset by peer\", naming the network rather than the",
+                "\n    wait. ssh keepalive does not prevent this.",
+                "\n    Declaring this check at pre-commit moves it off the push path —",
+                "\n    see \"Moving a gate entry earlier\" in the docs.",
+            ));
+        }
     }
     line.push('\n');
     line
@@ -734,7 +779,7 @@ mod tests {
     fn a_heartbeat_names_the_budgets_once() {
         let mut r = row("cargo-test", 60.0);
         r.quiet = 2.0;
-        let first = beat_line(&r, true, B);
+        let first = beat_line(&r, true, B, false);
         assert!(
             first.contains("cargo-test still running: 1m00s"),
             "{first:?}"
@@ -745,7 +790,7 @@ mod tests {
             "{first:?}"
         );
         assert!(first.contains("amont.idleTimeout"), "{first:?}");
-        let later = beat_line(&r, false, B);
+        let later = beat_line(&r, false, B, false);
         assert!(!later.contains("amont.idleTimeout"), "{later:?}");
         let off = beat_line(
             &r,
@@ -754,7 +799,71 @@ mod tests {
                 idle: 0,
                 ceiling: 0,
             },
+            false,
         );
         assert!(off.contains("off of silence or off in total"), "{off:?}");
+    }
+
+    /// The message, with newlines and indentation flattened.
+    ///
+    /// The note is wrapped for a terminal, so a literal substring can fall
+    /// across a line break — asserting on `"may close it first"` failed for
+    /// no better reason than that `may` ended a line. These tests are about
+    /// what the message SAYS; re-wrapping it should not break them.
+    fn flat(line: &str) -> String {
+        line.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// A long PUSH gate is told what it is sitting on; a commit gate is not.
+    ///
+    /// The three negatives matter as much as the positive. Said on every
+    /// beat it would be nagging; said at commit time it would be false —
+    /// there is no connection open — and a future refactor that wires
+    /// `on_push` to a constant would show up here and nowhere else.
+    #[test]
+    fn a_long_push_gate_is_told_what_it_is_sitting_on() {
+        let r = row("cargo-test", 60.0);
+
+        let pushing = flat(&beat_line(&r, true, B, true));
+        assert!(
+            pushing.contains("A remote may close it first"),
+            "{pushing:?}"
+        );
+        assert!(pushing.contains("Connection reset by peer"), "{pushing:?}");
+        assert!(
+            pushing.contains("Moving a gate entry earlier"),
+            "{pushing:?}"
+        );
+
+        // Once, not every minute.
+        let later = flat(&beat_line(&r, false, B, true));
+        assert!(!later.contains("close it first"), "{later:?}");
+
+        // Never at commit time: nothing is waiting on a socket there.
+        let committing = flat(&beat_line(&r, true, B, false));
+        assert!(!committing.contains("close it first"), "{committing:?}");
+    }
+
+    /// The advice that does NOT appear, and must not come back.
+    ///
+    /// `ServerAliveInterval 60` is the obvious suggestion and it is wrong:
+    /// it was already in force on the machine where this failure was
+    /// diagnosed, and the remote reset the connection regardless. Telling
+    /// every amont user to set it would be confident, actionable and
+    /// useless. This test exists so that a future reader who has the same
+    /// obvious idea meets an argument instead of a blank.
+    #[test]
+    fn the_push_note_does_not_recommend_ssh_keepalive() {
+        let r = row("cargo-test", 60.0);
+        let pushing = flat(&beat_line(&r, true, B, true));
+        assert!(
+            !pushing.contains("ServerAlive"),
+            "keepalive was already on when this failed; recommending it \
+             would be useless advice: {pushing:?}"
+        );
+        assert!(
+            pushing.contains("ssh keepalive does not prevent this"),
+            "say so, rather than leaving the reader to try it: {pushing:?}"
+        );
     }
 }
