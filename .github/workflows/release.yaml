@@ -389,6 +389,22 @@ jobs:
           grep -qx 'package/bin/amont' /tmp/contents
           echo "the linux-x64-gnu tarball carries bin/amont"
 
+          # And the ROOT package, which is the one people install. Checking a
+          # platform package alone is what let a broken root ship for four
+          # releases: `amont.js` requires `./native.js`, the packer staged
+          # only the first, and the result installed cleanly and died on
+          # first use with MODULE_NOT_FOUND.
+          cd "$GITHUB_WORKSPACE/dist/npm/amont"
+          npm pack --silent > /tmp/packed-root
+          tar tzf "$(cat /tmp/packed-root)" > /tmp/root-contents
+          for f in package/bin/amont.js package/bin/native.js; do
+            grep -qx "$f" /tmp/root-contents || {
+              echo "::error::the amont tarball is missing $f"
+              echo "::error::it carries:"; sed 's/^/::error::  /' /tmp/root-contents
+              exit 1; }
+          done
+          echo "the amont tarball carries both wrappers"
+
       - name: Publish platform packages, then amont
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

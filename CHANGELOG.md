@@ -33,6 +33,38 @@ missing here.
   refusal that was not coming. It now speaks only when the branch actually
   exists on a remote.
 
+## v1.20.1
+
+### Fixed
+
+- **The npm package could never run.** `amont@1.20.0` — and every version
+  back to whenever `bin/native.js` was split out — shipped `bin/amont.js`
+  without the `bin/native.js` it requires, so `npm i -D amont` installed
+  cleanly and then died on first use:
+
+  ```
+  Error: Cannot find module './native.js'
+  ```
+
+  `package.json`'s `files` named `bin/native.js` the whole time. But `files`
+  narrows what ships from a staged directory — it cannot conjure a file that
+  was never put there, and `scripts/npm-pack.sh` copied only `amont.js`. npm
+  does not warn about a `files` entry matching nothing, so a green release
+  produced a package that could not start, four times over.
+
+  Nothing else was affected: Homebrew, cargo, the shell installer and the
+  release binaries never went through that wrapper. The npm route is the one
+  that was broken, and it was broken completely rather than subtly.
+
+### Added
+
+- **Two guards, because the release was green every time this shipped.**
+  `npm-pack.sh` now asserts that every file `package.json`'s `files` names is
+  actually staged, and the release workflow packs the ROOT package and greps
+  its tarball for both wrappers. It already did that for a platform package —
+  checking only those is precisely what let the root ship broken.
+  `tests/npm_packaging.rs` cross-checks the same thing statically.
+
 ## v1.20.0
 
 ### Changed
