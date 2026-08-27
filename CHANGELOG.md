@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.22.0
 
 ### Added
 
@@ -24,32 +24,15 @@ missing here.
   `cargo test` step skip. With no `allowed_signers` it exits 0 with `covered`
   empty and every gated step runs, which is the only failure mode it has.
 
-### Fixed
-
-- **`pre-push-branch-protect` no longer refuses the push that creates a
-  branch.** git sends 40 zeros as the remote oid when the branch does not
-  exist on the remote yet; the check never read that field, so it treated
-  the first push of a new repository — always a push to `main` — exactly
-  like a direct push over shared history.
-
-  That was the worst possible failure for this check in particular. The
-  advice it prints, "Open a Pull Request", cannot be followed when there is
-  no base branch to open one against, so the only way past was
-  `git push --no-verify` — which switches off every other pre-push gate too,
-  and having been taught once, gets reached for again. A guard that can only
-  be satisfied by the blanket bypass has taught the bypass.
-
-  Protection is unchanged from the second push onward, and a creation
-  alongside a real update in the same push still fails.
-
-- **`pre-commit-branch-protect` is quiet on a branch that has never been
-  pushed.** Its whole content is "pushing it will be refused", which after
-  the above is false in a repository whose first commit has not been pushed
-  anywhere — and it would have sent somebody to `git switch -c` to escape a
-  refusal that was not coming. It now speaks only when the branch actually
-  exists on a remote.
-
-## Unreleased
+- **Every release now proves `brew install` works.** `publish-tap` verified
+  that the formula parses and that its checksums match the release, and
+  neither is the question a user asks. amont's own formula kept a
+  `bin.install` line for a binary that had left the archive three releases
+  earlier, so `brew install` failed outright the whole time while every
+  release went green. A macOS job now installs from the tap with no
+  checkout — seeing only what a stranger sees — asserts the version, and
+  runs `brew test`, which is the only place the installed artifact is
+  exercised at all.
 
 ### Fixed
 
@@ -224,6 +207,35 @@ suite rather than skipping one nobody proved on that tree.
 You should not have, and there was never a reason to — but if you did, the
 old unscoped names stop receiving updates at 1.19.0 and are deprecated with a
 pointer to the new ones.
+
+### Fixed (recorded late)
+
+These shipped in 1.20.0. Their entries sat under "Unreleased" through two
+releases, so neither this release's notes nor 1.21.0's mentioned a change
+both contained — the changelog said less than the tag did.
+
+- **`pre-push-branch-protect` no longer refuses the push that creates a
+  branch.** git sends 40 zeros as the remote oid when the branch does not
+  exist on the remote yet; the check never read that field, so it treated
+  the first push of a new repository — always a push to `main` — exactly
+  like a direct push over shared history.
+
+  That was the worst possible failure for this check in particular. The
+  advice it prints, "Open a Pull Request", cannot be followed when there is
+  no base branch to open one against, so the only way past was
+  `git push --no-verify` — which switches off every other pre-push gate too,
+  and having been taught once, gets reached for again. A guard that can only
+  be satisfied by the blanket bypass has taught the bypass.
+
+  Protection is unchanged from the second push onward, and a creation
+  alongside a real update in the same push still fails.
+
+- **`pre-commit-branch-protect` is quiet on a branch that has never been
+  pushed.** Its whole content is "pushing it will be refused", which after
+  the above is false in a repository whose first commit has not been pushed
+  anywhere — and it would have sent somebody to `git switch -c` to escape a
+  refusal that was not coming. It now speaks only when the branch actually
+  exists on a remote.
 
 ## v1.19.0
 
