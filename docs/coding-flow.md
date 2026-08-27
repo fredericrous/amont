@@ -91,3 +91,77 @@ Those two questions differ on purpose. `--all-files` on a dirty tree reports on
 content that is not committed and may never be — which is exactly what you want
 when adopting a check into an existing repository, where `git add .` is not an
 acceptable way to measure the mess.
+
+## Before you type `git commit` at all
+
+Everything above happens once the work is finished, staged, and described. That
+is the latest possible moment to learn that line 7 has a `debugger;` in it.
+
+`amont check` asks about **files** instead of about a commit:
+
+```sh
+amont check src/app.js                          # a path
+amont check src/*.ts --format json              # several, structured
+amont check --stdin-filename src/app.js < buf   # a buffer you have not saved
+```
+
+```text
+src/app.js:7:3: error: 'debugger' is a banned term here [ban-terms]
+src/app.js:41: error: an AWS access key id — unstage it; once pushed it is not
+history, it is an incident [secrets]
+```
+
+It is a **read**: no index, no staging, no stash, no writes. Exit 1 if anything
+blocking was found, 0 otherwise — a warning is not a failure.
+
+Only the content checks answer here — `ban-terms`, `secrets`, `merge-conflict`,
+`large-files`. `branch-pattern` and `pull-rebase` are not about a file, and
+`clippy`, `ruff` and `eslint` already talk to your editor better than anything
+proxied through amont could.
+
+### Wiring it to an editor
+
+`file:line:col: severity: message` is the format every editor's error parser
+already reads, so there is no amont plugin to install — anywhere.
+
+**Neovim**, with [`nvim-lint`](https://github.com/mfussenegger/nvim-lint):
+
+```lua
+require("lint").linters.amont = {
+  cmd = "amont",
+  stdin = true,
+  args = { "check", "--stdin-filename", function() return vim.fn.expand("%:p") end },
+  ignore_exitcode = true,          -- exit 1 means "found something", not "broke"
+  -- `col` is optional: a whole-file finding (large-files) has no column, and
+  -- `secrets` reports a line without one.
+  parser = require("lint.parser").from_pattern(
+    "([^:]+):(%d+):?(%d*): (%w+): (.+)",
+    { "file", "lnum", "col", "severity", "message" },
+    { error = vim.diagnostic.severity.ERROR, warning = vim.diagnostic.severity.WARN }
+  ),
+}
+require("lint").linters_by_ft = { javascript = { "amont" }, rust = { "amont" } }
+```
+
+**VS Code**, as a task with a problem matcher:
+
+```jsonc
+{
+  "label": "amont check",
+  "type": "shell",
+  "command": "amont check ${file}",
+  "problemMatcher": {
+    "owner": "amont",
+    "fileLocation": ["relative", "${workspaceFolder}"],
+    "pattern": {
+      "regexp": "^(.+?):(\\d+):?(\\d*): (error|warning): (.+)$",
+      "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+    }
+  }
+}
+```
+
+**Anything else** —
+[`efm-langserver`](https://github.com/mattn/efm-langserver) and Emacs
+`flycheck` both take the same pattern. `--format json` (`amont-check-v1`) is
+there if you would rather not parse a line.

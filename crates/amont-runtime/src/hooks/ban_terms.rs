@@ -15,7 +15,8 @@
 //! first; Rust (`dbg!`) and Python (`breakpoint()`, `pdb.set_trace()`) get the
 //! same treatment — a debug leftover is a debug leftover in any language.
 
-use crate::check::Outcome;
+use crate::check::{Outcome, Severity};
+use crate::finding::Finding;
 use crate::git;
 use crate::ui::{error_sign, highlight, valid_sign};
 
@@ -35,7 +36,11 @@ struct Term {
     prefilter: &'static str,
     exts: &'static [&'static str],
     blank: fn(&str) -> String,
-    matches: fn(&str) -> bool,
+    /// Where the term occurs, as a byte offset into the BLANKED text — which
+    /// has the same length and line count as the original, so the offset is
+    /// valid in both. `None` is "not present"; the old `bool` was exactly this
+    /// with the position thrown away.
+    locate: fn(&str) -> Option<usize>,
 }
 
 fn is_ident(c: char) -> bool {
@@ -54,22 +59,22 @@ fn preceded_ok(src: &str, at: usize) -> bool {
 }
 
 /// `<word>\s*\(` — the call form.
-fn call_of(src: &str, word: &str) -> bool {
+fn call_of(src: &str, word: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(i) = src[from..].find(word) {
         let at = from + i;
         let after = at + word.len();
         if preceded_ok(src, at) && src[after..].trim_start().starts_with('(') {
-            return true;
+            return Some(at);
         }
         from = at + word.len();
     }
-    false
+    None
 }
 
 /// `(?<![\w.$])debugger(?![\w$])` — the bare statement, so `debuggerish` and
 /// `x.debugger` both pass.
-fn bare_debugger(src: &str) -> bool {
+fn bare_debugger(src: &str) -> Option<usize> {
     let word = "debugger";
     let mut from = 0;
     while let Some(i) = src[from..].find(word) {
@@ -81,11 +86,11 @@ fn bare_debugger(src: &str) -> bool {
             .map(|c| !is_ident(c))
             .unwrap_or(true);
         if preceded_ok(src, at) && next_ok {
-            return true;
+            return Some(at);
         }
         from = at + word.len();
     }
-    false
+    None
 }
 
 /// `(?<![\w$])(describe|context|it)\.(skip|only)(?![\w$])`
@@ -94,7 +99,7 @@ fn bare_debugger(src: &str) -> bool {
 /// legitimate conditional API and must pass, while `describe.skip` must not.
 /// Note the LEADING guard here excludes only identifier chars, not `.` — that
 /// matches the JS, so `foo.describe.skip` is still caught.
-fn focused_suite(src: &str) -> bool {
+fn focused_suite(src: &str) -> Option<usize> {
     for head in ["describe", "context", "it"] {
         for tail in ["skip", "only"] {
             let needle = format!("{head}.{tail}");
@@ -113,19 +118,19 @@ fn focused_suite(src: &str) -> bool {
                     .map(|c| !is_ident(c))
                     .unwrap_or(true);
                 if before_ok && after_ok {
-                    return true;
+                    return Some(at);
                 }
                 from = at + needle.len();
             }
         }
     }
-    false
+    None
 }
 
 /// `dbg!(…)` — the macro invocation, any delimiter. `xdbg!` and a function
 /// named `dbg` both pass; `std::dbg!(` is still the macro (`:` is not an
 /// identifier character, so the leading guard lets it through).
-fn rust_dbg(src: &str) -> bool {
+fn rust_dbg(src: &str) -> Option<usize> {
     let word = "dbg";
     let mut from = 0;
     while let Some(i) = src[from..].find(word) {
@@ -141,11 +146,11 @@ fn rust_dbg(src: &str) -> bool {
             && rest.starts_with('!')
             && matches!(rest[1..].trim_start().chars().next(), Some('(' | '[' | '{'))
         {
-            return true;
+            return Some(at);
         }
         from = after;
     }
-    false
+    None
 }
 
 /// `pdb.set_trace(` / `ipdb.set_trace(` — the import-and-call form. The
@@ -153,7 +158,7 @@ fn rust_dbg(src: &str) -> bool {
 /// is still caught while `xpdb.set_trace(` matches neither needle (the `i`
 /// rejects the first, the `x` the second). Bare `set_trace(` is deliberately
 /// not matched: without its module it is just a method name.
-fn pdb_set_trace(src: &str) -> bool {
+fn pdb_set_trace(src: &str) -> Option<usize> {
     for needle in ["pdb.set_trace", "ipdb.set_trace"] {
         let mut from = 0;
         while let Some(i) = src[from..].find(needle) {
@@ -165,12 +170,12 @@ fn pdb_set_trace(src: &str) -> bool {
                 .map(|c| !is_ident(c))
                 .unwrap_or(true);
             if before_ok && src[after..].trim_start().starts_with('(') {
-                return true;
+                return Some(at);
             }
             from = at + needle.len();
         }
     }
-    false
+    None
 }
 
 const TERMS: [Term; 7] = [
@@ -179,49 +184,49 @@ const TERMS: [Term; 7] = [
         prefilter: r"\s*fit\(",
         exts: JS_LIKE,
         blank: blank_non_code,
-        matches: |s| call_of(s, "fit"),
+        locate: |s| call_of(s, "fit"),
     },
     Term {
         label: "fdescribe",
         prefilter: r"\s*fdescribe\(",
         exts: JS_LIKE,
         blank: blank_non_code,
-        matches: |s| call_of(s, "fdescribe"),
+        locate: |s| call_of(s, "fdescribe"),
     },
     Term {
         label: "debugger",
         prefilter: "debugger;?",
         exts: JS_LIKE,
         blank: blank_non_code,
-        matches: bare_debugger,
+        locate: bare_debugger,
     },
     Term {
         label: "skipOnly",
         prefilter: r"(describe|context|it)\.(skip|only)",
         exts: JS_LIKE,
         blank: blank_non_code,
-        matches: focused_suite,
+        locate: focused_suite,
     },
     Term {
         label: "dbg!",
         prefilter: "dbg!",
         exts: RUST,
         blank: blank_rust,
-        matches: rust_dbg,
+        locate: rust_dbg,
     },
     Term {
         label: "breakpoint",
         prefilter: "breakpoint",
         exts: PYTHON,
         blank: blank_python,
-        matches: |s| call_of(s, "breakpoint"),
+        locate: |s| call_of(s, "breakpoint"),
     },
     Term {
         label: "set_trace",
         prefilter: "set_trace",
         exts: PYTHON,
         blank: blank_python,
-        matches: pdb_set_trace,
+        locate: pdb_set_trace,
     },
 ];
 
@@ -799,24 +804,55 @@ fn is_searchable(file: &str, exts: &[&str]) -> bool {
     exts.iter().any(|e| f.ends_with(e))
 }
 
-pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
-    // This file necessarily NAMES every term it bans, so it must never flag
-    // itself. Compare on the file STEM against the hook name we were invoked
-    // as: the hook is checked from two layouts — installed at .git/hooks/<name>
-    // and as source at templates/hooks/<name> — and a path-relative comparison
-    // never matched from the second, which once made this very file
-    // uncommittable.
-    //
-    // NOT argv[0]: that is now the `amont` binary, so deriving the name from
-    // it excluded nothing and the hook flagged its own source. Caught by the
-    // existing suite.
-    let stem_matches_self = |file: &str| {
-        let base = file.rsplit('/').next().unwrap_or(file);
-        let stem = base.split_once('.').map(|(s, _)| s).unwrap_or(base);
-        stem == hook_name
-    };
+/// The check's own short name, and the `check` field of every finding it makes.
+pub const NAME: &str = "ban-terms";
 
-    let mut found_any = false;
+/// Every banned term in one file's content, with positions. PURE — no git, no
+/// index, no filesystem — which is what lets `amont check` run it against a
+/// path, or against an editor buffer that was never saved.
+///
+/// `hook_name` is the self-exclusion: this file necessarily NAMES every term it
+/// bans, and so do the hook shims, so a file whose stem matches is skipped.
+/// Comparing stems rather than paths is deliberate — the hook is checked from
+/// two layouts (`.git/hooks/<name>` and `templates/hooks/<name>`) and a
+/// path-relative comparison never matched from the second, which once made this
+/// very file uncommittable.
+pub fn scan(file: &str, content: &str, hook_name: &str) -> Vec<Finding> {
+    let base = file.rsplit('/').next().unwrap_or(file);
+    let stem = base.split_once('.').map(|(s, _)| s).unwrap_or(base);
+    if stem == hook_name {
+        return Vec::new();
+    }
+    let mut findings = Vec::new();
+    for term in &TERMS {
+        if !is_searchable(file, term.exts) {
+            continue;
+        }
+        // The offset is into the BLANKED text, whose length and line count
+        // match the original — that equivalence is maintained by `blank_*`
+        // precisely so a position found here is valid there.
+        if let Some(at) = (term.locate)(&(term.blank)(content)) {
+            findings.push(
+                Finding::new(
+                    NAME,
+                    file,
+                    Severity::Block,
+                    format!("'{}' is a banned term here", term.label),
+                )
+                .at_offset(content, at),
+            );
+        }
+    }
+    findings
+}
+
+pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
+    // The `-G` prefilters narrow WHICH files to read; `scan` is what decides.
+    // Two stages because the prefilter is a cheap regex git runs over the diff,
+    // and the real matchers have to see the content with comments and strings
+    // blanked out. Collecting candidates first also means one `git show` per
+    // file rather than one per term-and-file.
+    let mut candidates: Vec<String> = Vec::new();
     for term in &TERMS {
         let arg = format!("-G{}", term.prefilter);
         let Some(out) =
@@ -824,37 +860,34 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
         else {
             continue;
         };
-        let matches: Vec<&str> = out
-            .iter()
-            .map(String::as_str)
-            .filter(|f| is_searchable(f, term.exts))
-            .filter(|f| !stem_matches_self(f))
-            .filter(|file| {
-                match git::stdout(&["show", &format!(":{file}")]) {
-                    // Unreadable (binary, or vanished between the two git
-                    // calls): keep the prefilter's verdict rather than
-                    // silently clearing it.
-                    None => true,
-                    Some(content) => (term.matches)(&(term.blank)(&content)),
-                }
-            })
-            .collect();
-
-        if !matches.is_empty() {
-            if !found_any {
-                crate::say!("  {} Unwanted terms found", error_sign().trim());
-            }
-            found_any = true;
-            crate::say!(
-                "    The following files contains '{}' in them:",
-                highlight(term.label)
-            );
-            for m in matches {
-                crate::say!("    - {}", highlight(m));
+        for f in out {
+            if is_searchable(&f, term.exts) && !candidates.contains(&f) {
+                candidates.push(f);
             }
         }
     }
-    if found_any {
+
+    let mut findings = Vec::new();
+    for file in &candidates {
+        match git::stdout(&["show", &format!(":{file}")]) {
+            // Unreadable (binary, or vanished between the two git calls): keep
+            // the prefilter's verdict rather than silently clearing it. It has
+            // no position, which is exactly what a Finding without a line says.
+            None => findings.push(Finding::new(
+                NAME,
+                file,
+                Severity::Block,
+                "could not read the staged content to confirm a banned term",
+            )),
+            Some(content) => findings.extend(scan(file, &content, hook_name)),
+        }
+    }
+
+    if !findings.is_empty() {
+        crate::say!("  {} Unwanted terms found", error_sign().trim());
+        for f in &findings {
+            crate::say!("    {} — {}", highlight(&f.location()), f.message);
+        }
         return Outcome::Failed;
     }
     crate::say!("  {} No unwanted terms were found", valid_sign().trim());
@@ -867,25 +900,25 @@ mod tests {
 
     #[test]
     fn catches_the_banned_forms() {
-        assert!(call_of("fit('x', () => {})", "fit"));
-        assert!(call_of("  fit (", "fit"));
-        assert!(call_of("fdescribe('x')", "fdescribe"));
-        assert!(bare_debugger("  debugger;"));
-        assert!(bare_debugger("debugger"));
-        assert!(focused_suite("describe.skip('x')"));
-        assert!(focused_suite("it.only('x')"));
-        assert!(focused_suite("context.skip('x')"));
+        assert!(call_of("fit('x', () => {})", "fit").is_some());
+        assert!(call_of("  fit (", "fit").is_some());
+        assert!(call_of("fdescribe('x')", "fdescribe").is_some());
+        assert!(bare_debugger("  debugger;").is_some());
+        assert!(bare_debugger("debugger").is_some());
+        assert!(focused_suite("describe.skip('x')").is_some());
+        assert!(focused_suite("it.only('x')").is_some());
+        assert!(focused_suite("context.skip('x')").is_some());
     }
 
     /// The false positives that forced the two-stage design.
     #[test]
     fn leaves_lookalikes_alone() {
-        assert!(!call_of("profit(", "fit")); // preceded by a word char
-        assert!(!call_of("layout.fit(", "fit")); // preceded by a dot
-        assert!(!bare_debugger("debuggerish")); // trailing guard
-        assert!(!bare_debugger("x.debugger")); // preceded by a dot
-        assert!(!focused_suite("describe.skipIf(cond)")); // vitest's real API
-        assert!(!focused_suite("it.onlyWhen(x)"));
+        assert!(call_of("profit(", "fit").is_none()); // preceded by a word char
+        assert!(call_of("layout.fit(", "fit").is_none()); // preceded by a dot
+        assert!(bare_debugger("debuggerish").is_none()); // trailing guard
+        assert!(bare_debugger("x.debugger").is_none()); // preceded by a dot
+        assert!(focused_suite("describe.skipIf(cond)").is_none()); // vitest's real API
+        assert!(focused_suite("it.onlyWhen(x)").is_none());
     }
 
     #[test]
@@ -894,11 +927,14 @@ mod tests {
         let out = blank_non_code(src);
         assert_eq!(out.len(), src.len(), "length must be preserved");
         assert_eq!(out.lines().count(), src.lines().count());
-        assert!(!bare_debugger(&out), "a term in a comment is discussion");
+        assert!(
+            bare_debugger(&out).is_none(),
+            "a term in a comment is discussion"
+        );
 
-        assert!(!bare_debugger(&blank_non_code("const s = 'debugger';")));
-        assert!(!bare_debugger(&blank_non_code("const s = `debugger`;")));
-        assert!(!call_of(&blank_non_code("/* fit( */"), "fit"));
+        assert!(bare_debugger(&blank_non_code("const s = 'debugger';")).is_none());
+        assert!(bare_debugger(&blank_non_code("const s = `debugger`;")).is_none());
+        assert!(call_of(&blank_non_code("/* fit( */"), "fit").is_none());
     }
 
     #[test]
@@ -906,10 +942,10 @@ mod tests {
         // If \" closed the run, the trailing code would be scanned as code.
         let out = blank_non_code(r#"const s = "a\"b"; debugger;"#);
         assert!(
-            bare_debugger(&out),
+            bare_debugger(&out).is_some(),
             "real code after the string must survive"
         );
-        assert!(!call_of(&blank_non_code(r#"const s = "a\"fit(";"#), "fit"));
+        assert!(call_of(&blank_non_code(r#"const s = "a\"fit(";"#), "fit").is_none());
     }
 
     /// The bug the tokenizer exists for, with the input that ACTUALLY triggers
@@ -929,14 +965,12 @@ mod tests {
             r"const re = /\//; debugger;",
         ] {
             assert!(
-                bare_debugger(&blank_non_code(src)),
+                bare_debugger(&blank_non_code(src)).is_some(),
                 "code after the regex must still be scanned: {src}"
             );
         }
         // and the same shape with nothing to find must stay quiet
-        assert!(!bare_debugger(&blank_non_code(
-            r"const re = /a\//; const ok = 1;"
-        )));
+        assert!(bare_debugger(&blank_non_code(r"const re = /a\//; const ok = 1;")).is_none());
     }
 
     /// The dangerous direction: a regex mistaken for division would have its
@@ -951,9 +985,9 @@ mod tests {
             r"const r = /[/]debugger/;", // `/` inside a class does not end it
         ] {
             let b = blank_non_code(src);
-            assert!(!bare_debugger(&b), "false alarm: {src}");
-            assert!(!focused_suite(&b), "false alarm: {src}");
-            assert!(!call_of(&b, "fdescribe"), "false alarm: {src}");
+            assert!(bare_debugger(&b).is_none(), "false alarm: {src}");
+            assert!(focused_suite(&b).is_none(), "false alarm: {src}");
+            assert!(call_of(&b, "fdescribe").is_none(), "false alarm: {src}");
         }
     }
 
@@ -961,16 +995,16 @@ mod tests {
     #[test]
     fn division_is_not_treated_as_a_regex() {
         let src = "const x = a / b; debugger;";
-        assert!(bare_debugger(&blank_non_code(src)));
+        assert!(bare_debugger(&blank_non_code(src)).is_some());
         let src2 = "const x = (a + b) / c; debugger;";
-        assert!(bare_debugger(&blank_non_code(src2)));
+        assert!(bare_debugger(&blank_non_code(src2)).is_some());
     }
 
     #[test]
     fn an_unterminated_regex_does_not_blank_the_rest_of_the_file() {
         let src = "const r = /oops
 debugger;";
-        assert!(bare_debugger(&blank_non_code(src)));
+        assert!(bare_debugger(&blank_non_code(src)).is_some());
     }
 
     #[test]
@@ -1014,19 +1048,19 @@ mod rust_terms {
 
     #[test]
     fn catches_the_macro_call() {
-        assert!(rust_dbg("dbg!(x)"));
-        assert!(rust_dbg("let y = dbg! (x);"));
-        assert!(rust_dbg("std::dbg!(x)"));
-        assert!(rust_dbg("dbg![x]"));
-        assert!(rust_dbg("dbg!{x}"));
+        assert!(rust_dbg("dbg!(x)").is_some());
+        assert!(rust_dbg("let y = dbg! (x);").is_some());
+        assert!(rust_dbg("std::dbg!(x)").is_some());
+        assert!(rust_dbg("dbg![x]").is_some());
+        assert!(rust_dbg("dbg!{x}").is_some());
     }
 
     #[test]
     fn leaves_lookalikes_alone() {
-        assert!(!rust_dbg("xdbg!(1)")); // preceded by a word char
-        assert!(!rust_dbg("dbg(1)")); // a function, not the macro
-        assert!(!rust_dbg("debug!(x)")); // a different macro
-        assert!(!rust_dbg("dbg")); // the bare word
+        assert!(rust_dbg("xdbg!(1)").is_none()); // preceded by a word char
+        assert!(rust_dbg("dbg(1)").is_none()); // a function, not the macro
+        assert!(rust_dbg("debug!(x)").is_none()); // a different macro
+        assert!(rust_dbg("dbg").is_none()); // the bare word
     }
 
     #[test]
@@ -1040,7 +1074,7 @@ mod rust_terms {
             "let s = r#\"dbg!(\"x\")\"#;",
             "let s = br\"dbg!(x)\";",
         ] {
-            assert!(!rust_dbg(&blank_rust(src)), "false alarm: {src}");
+            assert!(rust_dbg(&blank_rust(src)).is_none(), "false alarm: {src}");
         }
     }
 
@@ -1048,35 +1082,35 @@ mod rust_terms {
     /// tail of the comment is scanned as code — a false alarm.
     #[test]
     fn block_comments_nest() {
-        assert!(!rust_dbg(&blank_rust("/* /* x */ dbg!(1) */")));
-        assert!(rust_dbg(&blank_rust("/* /* x */ */ dbg!(1)")));
+        assert!(rust_dbg(&blank_rust("/* /* x */ dbg!(1) */")).is_none());
+        assert!(rust_dbg(&blank_rust("/* /* x */ */ dbg!(1)")).is_some());
     }
 
     /// A raw string's terminator is `"` plus the opening's `#` count — a mere
     /// `"` inside `r#"…"#` must not close it, and the real terminator must.
     #[test]
     fn raw_string_hashes_are_honoured() {
-        assert!(!rust_dbg(&blank_rust("let s = r#\"a\"b\"#;")));
-        assert!(rust_dbg(&blank_rust("let s = r#\"a\"b\"#; dbg!(1);")));
-        assert!(!rust_dbg(&blank_rust("let s = r##\"a\"# dbg!(1) \"##;")));
+        assert!(rust_dbg(&blank_rust("let s = r#\"a\"b\"#;")).is_none());
+        assert!(rust_dbg(&blank_rust("let s = r#\"a\"b\"#; dbg!(1);")).is_some());
+        assert!(rust_dbg(&blank_rust("let s = r##\"a\"# dbg!(1) \"##;")).is_none());
     }
 
     /// The quote-shaped char literals. Read as lifetimes they would open a
     /// phantom string and blank the rest of the file — a missed warning.
     #[test]
     fn a_char_literal_holding_a_quote_does_not_open_a_string() {
-        assert!(rust_dbg(&blank_rust("let c = '\"'; dbg!(1);")));
-        assert!(rust_dbg(&blank_rust("let c = '\\''; dbg!(1);")));
-        assert!(rust_dbg(&blank_rust("let c = '\\\\'; dbg!(1);")));
-        assert!(rust_dbg(&blank_rust("let c = '\\u{7f}'; dbg!(1);")));
+        assert!(rust_dbg(&blank_rust("let c = '\"'; dbg!(1);")).is_some());
+        assert!(rust_dbg(&blank_rust("let c = '\\''; dbg!(1);")).is_some());
+        assert!(rust_dbg(&blank_rust("let c = '\\\\'; dbg!(1);")).is_some());
+        assert!(rust_dbg(&blank_rust("let c = '\\u{7f}'; dbg!(1);")).is_some());
     }
 
     /// The other direction: a lifetime is code, not an open char literal, so
     /// what follows it must still be scanned.
     #[test]
     fn a_lifetime_does_not_swallow_the_line() {
-        assert!(rust_dbg(&blank_rust("fn f<'a>(x: &'a str) { dbg!(x); }")));
-        assert!(rust_dbg(&blank_rust("let x: &'static str = s; dbg!(x);")));
+        assert!(rust_dbg(&blank_rust("fn f<'a>(x: &'a str) { dbg!(x); }")).is_some());
+        assert!(rust_dbg(&blank_rust("let x: &'static str = s; dbg!(x);")).is_some());
     }
 
     #[test]
@@ -1092,7 +1126,7 @@ mod rust_terms {
     /// uncommittable.
     #[test]
     fn the_hooks_own_source_survives_its_own_scan() {
-        assert!(!rust_dbg(&blank_rust(include_str!("ban_terms.rs"))));
+        assert!(rust_dbg(&blank_rust(include_str!("ban_terms.rs"))).is_none());
     }
 }
 
@@ -1102,20 +1136,20 @@ mod python_terms {
 
     #[test]
     fn catches_the_debug_calls() {
-        assert!(call_of("breakpoint()", "breakpoint"));
-        assert!(call_of("    breakpoint ()", "breakpoint"));
-        assert!(pdb_set_trace("pdb.set_trace()"));
-        assert!(pdb_set_trace("ipdb.set_trace()"));
-        assert!(pdb_set_trace("x.pdb.set_trace()"));
+        assert!(call_of("breakpoint()", "breakpoint").is_some());
+        assert!(call_of("    breakpoint ()", "breakpoint").is_some());
+        assert!(pdb_set_trace("pdb.set_trace()").is_some());
+        assert!(pdb_set_trace("ipdb.set_trace()").is_some());
+        assert!(pdb_set_trace("x.pdb.set_trace()").is_some());
     }
 
     #[test]
     fn leaves_lookalikes_alone() {
-        assert!(!call_of("self.breakpoint()", "breakpoint")); // somebody's API
-        assert!(!call_of("my_breakpoint()", "breakpoint"));
-        assert!(!pdb_set_trace("xpdb.set_trace()")); // neither pdb nor ipdb
-        assert!(!pdb_set_trace("set_trace()")); // bare, no module
-        assert!(!pdb_set_trace("pdb.set_trace")); // not the call form
+        assert!(call_of("self.breakpoint()", "breakpoint").is_none()); // somebody's API
+        assert!(call_of("my_breakpoint()", "breakpoint").is_none());
+        assert!(pdb_set_trace("xpdb.set_trace()").is_none()); // neither pdb nor ipdb
+        assert!(pdb_set_trace("set_trace()").is_none()); // bare, no module
+        assert!(pdb_set_trace("pdb.set_trace").is_none()); // not the call form
     }
 
     #[test]
@@ -1130,8 +1164,8 @@ mod python_terms {
             "s = f\"{{breakpoint()}}\"\n", // escaped braces are text
         ] {
             let b = blank_python(src);
-            assert!(!call_of(&b, "breakpoint"), "false alarm: {src}");
-            assert!(!pdb_set_trace(&b), "false alarm: {src}");
+            assert!(call_of(&b, "breakpoint").is_none(), "false alarm: {src}");
+            assert!(pdb_set_trace(&b).is_none(), "false alarm: {src}");
         }
     }
 
@@ -1139,19 +1173,18 @@ mod python_terms {
     /// call, the direction this hook must never fail in. And they nest.
     #[test]
     fn an_interpolation_is_code() {
-        assert!(call_of(
-            &blank_python("s = f\"{breakpoint()}\"\n"),
-            "breakpoint"
-        ));
+        assert!(call_of(&blank_python("s = f\"{breakpoint()}\"\n"), "breakpoint").is_some());
         assert!(call_of(
             &blank_python("s = f\"{f'{breakpoint()}'}\"\n"),
             "breakpoint"
-        ));
+        )
+        .is_some());
         // a `}` closing a nested format spec must not end the interpolation
         assert!(call_of(
             &blank_python("s = f\"{x:{w}} {breakpoint()}\"\n"),
             "breakpoint"
-        ));
+        )
+        .is_some());
     }
 
     /// In Python a raw string still cannot end on a lone backslash: the `\"`
@@ -1159,7 +1192,7 @@ mod python_terms {
     #[test]
     fn a_raw_string_backslash_does_not_close_early() {
         let b = blank_python("s = r\"\\\"; breakpoint()\"\n");
-        assert!(!call_of(&b, "breakpoint"));
+        assert!(call_of(&b, "breakpoint").is_none());
     }
 
     /// An unterminated single-line string bails at the newline rather than
@@ -1167,15 +1200,15 @@ mod python_terms {
     #[test]
     fn an_unterminated_string_does_not_blank_the_next_line() {
         let b = blank_python("s = 'oops\nbreakpoint()\n");
-        assert!(call_of(&b, "breakpoint"));
+        assert!(call_of(&b, "breakpoint").is_some());
     }
 
     #[test]
     fn triple_quotes_span_lines_and_close_only_on_three() {
         let b = blank_python("s = \"\"\"\ntext \" and \"\" inside\nbreakpoint()\n\"\"\"\nx = 1\n");
-        assert!(!call_of(&b, "breakpoint"));
+        assert!(call_of(&b, "breakpoint").is_none());
         let b2 = blank_python("s = \"\"\"doc\"\"\"\nbreakpoint()\n");
-        assert!(call_of(&b2, "breakpoint"));
+        assert!(call_of(&b2, "breakpoint").is_some());
     }
 
     #[test]
@@ -1197,7 +1230,7 @@ mod template_substitutions {
     #[test]
     fn a_substitution_is_code() {
         let b = blank_non_code("const s = `${fit(1)}`;");
-        assert!(call_of(&b, "fit"), "blanked to {b:?}");
+        assert!(call_of(&b, "fit").is_some(), "blanked to {b:?}");
     }
 
     /// A stack, not a flag: substitutions nest. Before the fix this case
@@ -1206,7 +1239,7 @@ mod template_substitutions {
     #[test]
     fn substitutions_nest() {
         let b = blank_non_code("const s = `${`${fit(1)}`}`;");
-        assert!(call_of(&b, "fit"), "blanked to {b:?}");
+        assert!(call_of(&b, "fit").is_some(), "blanked to {b:?}");
         assert!(
             b.contains("${`${fit(1)}`}"),
             "nesting must be tracked, not merely survived: {b:?}"
@@ -1218,11 +1251,11 @@ mod template_substitutions {
     fn braces_inside_a_substitution_do_not_close_it() {
         let b = blank_non_code("const s = `${ {a: 1}.a }` + 'fit(';");
         assert!(
-            !call_of(&b, "fit"),
+            call_of(&b, "fit").is_none(),
             "the string literal must stay blanked: {b:?}"
         );
         let b2 = blank_non_code("const s = `${ {a: 1}.a } ${fit(2)}`;");
-        assert!(call_of(&b2, "fit"), "blanked to {b2:?}");
+        assert!(call_of(&b2, "fit").is_some(), "blanked to {b2:?}");
 
         // The discriminating case for DEPTH COUNTING. Treating the first `}` as
         // the end of the substitution puts the rest of it back into template
@@ -1230,7 +1263,7 @@ mod template_substitutions {
         // Popping unconditionally passes every other case here.
         let b3 = blank_non_code("const s = `${ {a: 1} && fit(2) }`;");
         assert!(
-            call_of(&b3, "fit"),
+            call_of(&b3, "fit").is_some(),
             "a `}}` closing a nested object must not end the substitution: {b3:?}"
         );
     }
@@ -1238,9 +1271,9 @@ mod template_substitutions {
     /// Template TEXT is still string content, and an escaped `\${` is text too.
     #[test]
     fn template_text_is_still_blanked() {
-        assert!(!call_of(&blank_non_code("const s = `fit(`;"), "fit"));
+        assert!(call_of(&blank_non_code("const s = `fit(`;"), "fit").is_none());
         assert!(
-            !call_of(&blank_non_code(r#"const s = `\${fit(1)}`;"#), "fit"),
+            call_of(&blank_non_code(r#"const s = `\${fit(1)}`;"#), "fit").is_none(),
             "an escaped dollar does not open a substitution"
         );
     }
@@ -1249,18 +1282,9 @@ mod template_substitutions {
     /// ordinary code path, so they must still be blanked there.
     #[test]
     fn nested_constructs_inside_a_substitution() {
-        assert!(!call_of(
-            &blank_non_code("const s = `${/* fit(1) */ x}`;"),
-            "fit"
-        ));
-        assert!(!call_of(
-            &blank_non_code(r#"const s = `${"fit("}`;"#),
-            "fit"
-        ));
-        assert!(!call_of(
-            &blank_non_code(r"const s = `${/fit\(/.test(y)}`;"),
-            "fit"
-        ));
+        assert!(call_of(&blank_non_code("const s = `${/* fit(1) */ x}`;"), "fit").is_none());
+        assert!(call_of(&blank_non_code(r#"const s = `${"fit("}`;"#), "fit").is_none());
+        assert!(call_of(&blank_non_code(r"const s = `${/fit\(/.test(y)}`;"), "fit").is_none());
     }
 
     /// An unbalanced `}` in ordinary code must not be mistaken for the end of a
@@ -1268,6 +1292,6 @@ mod template_substitutions {
     #[test]
     fn a_stray_brace_in_code_is_harmless() {
         let b = blank_non_code("function f() { return 1; }\nfit(() => {});");
-        assert!(call_of(&b, "fit"), "blanked to {b:?}");
+        assert!(call_of(&b, "fit").is_some(), "blanked to {b:?}");
     }
 }

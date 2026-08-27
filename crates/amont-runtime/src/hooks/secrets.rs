@@ -29,7 +29,8 @@
 //! never contains a contiguous matchable pattern — the check must survive
 //! scanning its own repository (see `the_scanner_does_not_flag_its_own_source`).
 
-use crate::check::Outcome;
+use crate::check::{Outcome, Severity};
+use crate::finding::Finding;
 use crate::pushrefs::PushRef;
 
 use super::common;
@@ -197,6 +198,40 @@ fn scan(text: &str) -> Vec<(usize, Kind)> {
         .collect()
 }
 
+/// The check's own short name, and the `check` field of every finding it makes.
+pub const NAME: &str = "secrets";
+
+/// Findings for one file's text. PURE — no git, no filesystem.
+///
+/// The message names the KIND and nothing else. A report that echoed the
+/// matched text would be the leak this check exists to prevent, and would
+/// copy it into terminal scrollback, CI logs and editor diagnostics on the
+/// way. `Finding::message` is printed verbatim by everything downstream, so
+/// this is the boundary where that rule has to hold.
+pub fn findings(file: &str, text: &str) -> Vec<Finding> {
+    scan(text)
+        .into_iter()
+        .map(|(line, kind)| {
+            Finding::new(
+                NAME,
+                crate::ui::sanitize(file),
+                Severity::Block,
+                format!(
+                    "{} — unstage it; once pushed it is not history, it is an incident",
+                    kind.name()
+                ),
+            )
+            .at_line(line)
+        })
+        .collect()
+}
+
+/// Is this worth reading as text at all? git's own binary heuristic, plus the
+/// per-file ceiling. Shared so `amont check` skips exactly what the hook skips.
+pub fn is_scannable(bytes: &[u8]) -> bool {
+    !looks_binary(bytes) && bytes.len() <= MAX_BYTES
+}
+
 /// pre-commit: the staged content. Under the staged-only hold the working
 /// tree IS the commit's content, so reading the files is reading the stage.
 pub fn staged() -> Outcome {
@@ -208,17 +243,16 @@ pub fn staged() -> Outcome {
         let Ok(bytes) = std::fs::read(&path) else {
             continue; // deleted or unreadable: nothing staged to leak
         };
-        if looks_binary(&bytes) || bytes.len() > MAX_BYTES {
+        if !is_scannable(&bytes) {
             continue;
         }
         let text = String::from_utf8_lossy(&bytes);
-        for (line, kind) in scan(&text) {
+        for finding in findings(f, &text) {
             found = true;
             common::fail(&format!(
-                "secrets: {} at {}:{line} — unstage it; once pushed it is \
-                 not history, it is an incident",
-                kind.name(),
-                crate::ui::sanitize(f),
+                "secrets: {} — {}",
+                finding.location(),
+                finding.message
             ));
         }
     }
