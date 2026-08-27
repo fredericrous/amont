@@ -31,6 +31,14 @@ platform merge tooling). Losing them in CI loses nothing the tools below
 don't already guard: a `debugger;` that slips past the local hook still
 has to survive the test suite and review.
 
+One thing this repository points CI at does run there, and it is deliberately
+**not amont**: [`attest`](https://github.com/fredericrous/attest), a
+single-purpose verifier that reads a signed note and reports which checks it
+covers. It runs no checks and has no opinions to keep in sync — it verifies a
+*document about work that already happened*, which is the opposite of the
+second-opinion problem above. It lives in its own repository precisely so this
+rule can stay written as it is; amont is still not installed on any runner.
+
 ## The templates
 
 Copy the file for your stack into `.github/workflows/` (GitHub) or
@@ -117,8 +125,10 @@ amont 1.9.0
 ```
 
 This does **not** repeal "amont does not run in CI". CI still never
-executes amont — the templates' `attest` step verifies the note with stock
-`git` and `ssh-keygen`, then skips a test step only when *all three* hold:
+executes amont — the templates' `attest` step is
+[`fredericrous/attest`](https://github.com/fredericrous/attest), which needs
+nothing but `git` and `ssh-keygen`, and skips a test step only when *all four*
+hold:
 
 1. the signature verifies against `.forgejo/allowed_signers` (or your
    platform's path), a file **committed in the repository**, whose entry is
@@ -164,32 +174,44 @@ line that is committed and reviewed like any other:
 
 ```yaml
 - id: attest
-  run: echo "covered=$(amont attest covered --platform any)" >>"$GITHUB_OUTPUT"
+  uses: fredericrous/attest@v1
+  with:
+    platform: any
 ```
 
 That is a claim about the suite, so make it where the suite is defined
 rather than on the signing side: the machine holding the key should not
 get to decide that its results travel.
 
-The templates spell the verification out in portable sh, so a runner needs
-nothing beyond git and ssh-keygen. Where the amont binary is already on the
-runner (a self-hosted runner image, say), the whole step collapses to one
-line that does the same dance — fetch the ref, find the note on `HEAD` or
-`HEAD^2`, compare trees, verify — in the one tested place instead of a
-30-line block copied into every repository:
+### Reading the result
+
+The action publishes two outputs. Use `gates`:
 
 ```yaml
-- id: attest
-  run: echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
+- run: cargo test --workspace
+  if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-cargo-test') }}
 ```
 
-`attest covered` prints the covered gate names or nothing, and exits 0
-either way — fail-open is the contract, not an option the workflow author
-might forget. `--signers` and `--principal` default to the committed
-`allowed_signers` file (`.forgejo/` first, `.github/` second) and the first
-principal it names. This is the one job amont does in CI, and it does not
-repeal the rule above: verifying a document about checks that already ran
-is not running a check.
+`gates` is a JSON array, and `contains` over an array matches **elements**.
+The other output, `covered`, is the same names as a string, where `contains`
+matches **substrings** — so a gate named `pre-push-cargo-test-slow` satisfies a
+check for `pre-push-cargo-test` and skips the real suite. `covered` is kept
+only for workflows written against the older inline templates; new ones should
+not use it.
+
+Everything is fail-open, and the action says why it found nothing rather than
+leaving you guessing:
+
+```text
+attest: attested on aarch64-macos, this leg is x86_64-linux
+attest: no attestation found for tree 9f2a1c…
+```
+
+If you would rather not depend on an action, the same verifier is a single
+shell script — [`verify.sh`](https://github.com/fredericrous/attest/blob/main/verify.sh)
+— and `amont attest covered` still does the same job locally for CI that is
+neither GitHub nor Forgejo. Both answer to the format in
+[`SPEC.md`](https://github.com/fredericrous/attest/blob/main/SPEC.md).
 
 What signs is the machine that ran the tests, so the trust statement is
 exactly "whoever holds `amont.attestKey` vouches for this tree" — the same

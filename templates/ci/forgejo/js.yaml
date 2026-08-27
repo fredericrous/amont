@@ -19,64 +19,34 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
       # amont.attest: when every pre-push block gate passed locally, amont
-      # left a SIGNED note (refs/notes/amont-attest) on the pushed commit.
-      # Verified here with stock git + ssh-keygen — amont itself still does
-      # not run in CI. A test step is skipped only when (a) the signature
-      # verifies against the allowed_signers file committed in this repo,
-      # (b) the attested tree is EXACTLY the tree checked out here, and
-      # (c) the step's gate is named in the attestation. Any failure leaves
-      # `covered` empty and every gated step simply runs — the only thing an
-      # attestation can ever save is a redundant run. Requires
-      # .forgejo/allowed_signers with a line like:
+      # left a SIGNED note (refs/notes/amont-attest) on the tree it tested.
+      # This step verifies that note and reports which gates it covers, so the
+      # steps below can skip work already done — on THIS exact tree, on THIS
+      # platform, by a key you committed as .forgejo/allowed_signers:
+      #
       #   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
-      # With the amont binary on the runner, this whole step is one line
-      # doing the same dance in the one tested place:
-      #   echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
-      # It defaults to THIS machine's platform, so a matrix leg skips only
-      # work that really ran on its own platform; `--platform any` is the
-      # deliberate statement that a suite is platform-independent.
+      #
+      # Fail-open by construction: any failure reports nothing covered and
+      # every gated step simply runs. The most an attestation can ever save is
+      # a redundant run. The action explains its reasoning in the log, which
+      # matters because a non-skip is otherwise silent.
+      #
+      # amont still does not run in CI. This is a separate, single-purpose
+      # verifier: https://github.com/fredericrous/attest — which is also where
+      # verify.sh lives if you would rather inline the shell than depend on an
+      # action.
       - id: attest
-        run: |
-          command -v ssh-keygen >/dev/null || exit 0
-          git fetch origin '+refs/notes/amont-attest:refs/notes/amont-attest' 2>/dev/null || exit 0
-          # HEAD on a push; on a PR's merge commit, the note lives on HEAD^2
-          # (the branch tip) — the tree check below still compares against
-          # what is actually checked out, so a stale merge never skips.
-          # By TREE, which is what the signature covers — so it survives a
-          # squash-merge, an amend and a rebase. HEAD and HEAD^2 stay as a
-          # fallback for notes written by an amont that only keyed by commit.
-          for c in "$(git rev-parse 'HEAD^{tree}')" HEAD HEAD^2; do
-            note=$(git notes --ref amont-attest show "$c" 2>/dev/null) && break
-          done
-          [ -n "$note" ] || exit 0
-          payload=$(printf '%s\n' "$note" | sed -n '/^$/q;p')
-          sig=$(printf '%s\n' "$note" | sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p')
-          [ -n "$sig" ] || exit 0
-          [ "$(printf '%s\n' "$payload" | sed -n 1p)" = amont-attest-v2 ] || exit 0
-          # A pass is a pass ON SOMETHING: only an attestation minted on
-          # THIS platform may retire this leg's work. Drop these three
-          # lines only if the suite genuinely does not depend on where it
-          # ran (the binary spells that `--platform any`).
-          case "$(uname -m)" in arm64|aarch64) arch=aarch64 ;; *) arch=$(uname -m) ;; esac
-          case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) os=windows ;; esac
-          [ "$(printf '%s\n' "$payload" | awk '$1=="platform"{print $2}')" = "$arch-$os" ] || exit 0
-          tree=$(printf '%s\n' "$payload" | awk '$1=="tree"{print $2}')
-          [ -n "$tree" ] && [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ] || exit 0
-          printf '%s\n' "$sig" >/tmp/amont-attest.sig
-          printf '%s\n' "$payload" | ssh-keygen -Y verify \
-              -f .forgejo/allowed_signers -I you@example.com \
-              -n amont-attest -s /tmp/amont-attest.sig >/dev/null 2>&1 || exit 0
-          echo "covered=$(printf '%s\n' "$payload" | awk '$1=="gates"{sub(/^gates */,""); print}')" >>"$GITHUB_OUTPUT"
+        uses: https://github.com/fredericrous/attest@v1
       - run: npm ci
       - run: npx --no-install eslint --max-warnings 0 . # pre-commit-lint-js — delete if no eslint config
       # pre-push-run-tests-js runs whichever gate scripts the package defines,
       # cheapest first; --if-present mirrors "only what the repo declares".
       - run: npm run typecheck --if-present
-        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
+        if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-run-tests-js') }}
       - run: npm run test:unit --if-present
-        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
+        if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-run-tests-js') }}
       - run: npm run test --if-present
-        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-run-tests-js') }}
+        if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-run-tests-js') }}
 
   # pre-push-audit-js's split: advisory on branches, blocking on a v* release.
   audit:
