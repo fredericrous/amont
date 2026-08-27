@@ -282,7 +282,12 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
         Err(verdict) => return verdict,
     };
 
-    let (verdict, outcomes) = run_stage_traced(&checks, ctx, &Overrides::read());
+    let severities = Overrides::read();
+    let (verdict, outcomes) = run_stage_traced(&checks, ctx, &severities);
+
+    // The shadow-mode ledger. Silent, best-effort, and never consulted by any
+    // verdict — see `crate::downgrade`.
+    crate::downgrade::note(&downgraded_events(&checks, &outcomes, &severities));
 
     // What post-commit will bind to the commit: the gate-declared checks
     // that RAN clean, recorded while the index still is the commit's tree.
@@ -314,6 +319,53 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
 
     drop(held);
     verdict
+}
+
+/// The checks that FAILED without blocking, each with why — the shadow-mode
+/// signal [`crate::downgrade`] keeps.
+///
+/// Derived at the hook entry points and deliberately NOT inside
+/// [`run_stage_traced`], which is where `classify` already computes the same
+/// set. `run_all` reaches that function too, so recording there would let
+/// every `amont run` rehearsal inflate a ledger a lead is going to read as a
+/// count of real commits — and `run --all-files` over a dirty tree would add
+/// dozens of events for content nobody is committing.
+///
+/// A check that DECLARES `warn` is counted but is not evidence about a
+/// rollout: it was never going to block, so calling it "would have blocked"
+/// would inflate the one number the whole feature exists to produce. Only an
+/// override of a blocking check earns that.
+fn downgraded_events(
+    checks: &[&dyn Check],
+    outcomes: &[Outcome],
+    severities: &Overrides,
+) -> Vec<(String, crate::downgrade::Origin)> {
+    checks
+        .iter()
+        .zip(outcomes)
+        .filter(|(_, o)| matches!(o, Outcome::Failed))
+        .filter(|(c, _)| matches!(severities.of(**c), Severity::Warn))
+        .map(|(c, _)| (c.name().to_string(), downgrade_origin(*c, severities)))
+        .collect()
+}
+
+/// Why this check did not block. Shared, because `pre_push` fail-fasts and
+/// never builds an outcomes vector to hand to [`downgraded_events`].
+fn downgrade_origin(check: &dyn Check, severities: &Overrides) -> crate::downgrade::Origin {
+    use crate::downgrade::Origin;
+    use crate::registry::Source;
+    if matches!(check.severity(), Severity::Warn) {
+        return Origin::Declared;
+    }
+    match severities.applied_with_source(check.name()) {
+        Some((_, _, Source::Config)) => Origin::Config,
+        Some((_, _, Source::Policy)) => Origin::Policy,
+        // Declared `block`, resolved `warn`, and nothing claims to have
+        // overridden it: a contradiction. Count it, but not as evidence — the
+        // conservative direction for a number whose only failure mode is
+        // being too alarming.
+        None => Origin::Declared,
+    }
 }
 
 /// The pre-commit body, over the checks it is GIVEN.
@@ -654,6 +706,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // commit-time-gated pair counts, because its stamps say the check ran on
     // every pushed tree.
     let mut passed: Vec<String> = Vec::new();
+    // Accumulated rather than written per check: one append at the end costs a
+    // single file open, and the loop below can leave early.
+    let mut downgraded: Vec<(String, crate::downgrade::Origin)> = Vec::new();
     for (idx, check) in pre_push_checks.iter().enumerate() {
         let _sink = stage.as_ref().map(|s| s.enter(idx));
         let _flush = stage
@@ -738,14 +793,25 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             // declaration, so nothing here can repair anything.
             Outcome::Fixed => {}
             Outcome::Failed => match severities.of(*check) {
-                Severity::Warn => println!(
-                    "{} {} reported a problem (severity warn)",
-                    warning_sign(),
-                    highlight(check.name())
-                ),
+                Severity::Warn => {
+                    downgraded.push((
+                        check.name().to_string(),
+                        downgrade_origin(*check, &severities),
+                    ));
+                    println!(
+                        "{} {} reported a problem (severity warn)",
+                        warning_sign(),
+                        highlight(check.name())
+                    );
+                }
                 // Fail-fast applies ONLY to Block: the later steps are
                 // expensive and their preconditions are gone.
                 Severity::Block => {
+                    // Record what already warned before leaving. Those checks
+                    // ran and reported; a later check blocking does not unmake
+                    // them, and dropping them here would make the ledger quietly
+                    // under-count every push that ended badly.
+                    crate::downgrade::note(&downgraded);
                     println!("\n🚨  Error raised by hook {}", highlight(check.name()));
                     return Verdict::Block;
                 }
@@ -766,6 +832,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let vouched = attestable(&pre_push_checks, &passed, &changed);
         crate::attest::attest_push(&remote, ctx.push.get(), &vouched);
     }
+    crate::downgrade::note(&downgraded);
     Verdict::Proceed
 }
 

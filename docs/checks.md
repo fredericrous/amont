@@ -56,7 +56,7 @@ a field does not change it, which is why the top level is an object rather
 than a bare array.
 
 **Envelope**: `format`, `stage_filter`, `pushed`, `checks`, `commit_style`,
-`branch_style`, `bypasses`, `conventions_apply`.
+`branch_style`, `bypasses`, `downgrades`, `conventions_apply`.
 
 **Each entry of `checks`**:
 
@@ -377,6 +377,49 @@ gate people have started routing around — a slow check, a flaky one — and
 until it was counted, the hooks detected that signal on every commit and
 threw it away. `amont uninstall` deletes the file;
 `git config amont.recordBypasses false` stops the counting.
+
+### Trying it before you impose it
+
+The question a team lead asks before adopting anything that can block a commit
+is *will this annoy my team into switching it off?* One line answers it:
+
+```sh
+git config amont.severity.pre-commit warn
+```
+
+Every blocking check still runs and still reports; nothing stops a commit. Work
+normally for a fortnight, then read what happened:
+
+```text
+problems that did not block
+  pre-commit-usual-name    61   last 2h ago
+  pre-commit-ban-terms      4   last 1d ago
+  pre-commit-secrets        1   last 3d ago
+  66 events over 41 commits, since 12d ago
+  66 of them would have blocked — set amont.severity.<check> to keep one
+  advisory when you go back to block
+```
+
+That is a configuration worksheet: turn off the one or two checks your team
+disagrees with **before** the rollout, rather than discovering them one angry
+message at a time. **Events and commits are different facts** — forty commits
+each tripping a check once is a check nobody agrees with, while one commit
+tripping it forty times is one person losing an afternoon — so both are shown.
+A check that ships as `warn` is marked `(advisory)` and excluded from the
+would-have-blocked count: it was never going to block, and counting it would
+inflate the only number being read.
+
+The events land in `$(git rev-parse --git-common-dir)/amont-downgrades`, on
+the same terms as the bypass ledger above: a plain local file, never a ref,
+never pushed, never sent anywhere. It follows that this **cannot aggregate
+across a team** — each developer's ledger is their own machine's, and a lead
+runs the trial on their own checkout or asks people to paste. `amont uninstall`
+deletes the file; `git config amont.recordDowngrades false` stops the counting.
+
+A rehearsal (`amont run`, `amont run --all-files`) deliberately records
+nothing: it is not a commit, and letting it count would make the number mean
+something other than what it says. Neither does a check that actually blocked —
+there is nothing to report about a problem that did its job.
 
 ### What a push actually tests
 

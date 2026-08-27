@@ -633,6 +633,7 @@ mod tests {
             skips: Vec::new(),
             severities: Vec::new(),
             bypasses: crate::bypasses::Bypasses::default(),
+            downgrades: crate::downgrades::Downgrades::default(),
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
