@@ -137,6 +137,29 @@ pub fn bind_to_head() -> Vec<String> {
         return Vec::new();
     }
     let note = format!("{FORMAT} {}", scripts.join(" "));
+    // The stamp goes on the TREE as well as the commit, and the tree is the
+    // one that survives the way work actually reaches `main`.
+    //
+    // A squash-merge is performed by the forge: it produces a commit nobody
+    // here ever saw, carrying no note, so a later `git push` of a tag on
+    // that commit re-ran every gate the branch had already proved. Measured
+    // on this repository: a branch push took 13 seconds and the tag push
+    // that followed took the full suite and died on a reset connection.
+    //
+    // The tree is identical across that merge whenever the base has not
+    // moved — five of five merges in one afternoon here — and identical
+    // trees are identical CONTENT, which is the only thing a test suite
+    // reads. That is the same argument `attest` makes for signing the tree
+    // rather than the commit, and this module's marker has been tree-bound
+    // since it was written; this only carries the binding through to the
+    // note.
+    //
+    // Both, not either: the commit note is what a `git log --notes` reader
+    // sees, and dropping it would make the stamps invisible in the place
+    // people look for them.
+    let _ = crate::git::succeeds(&[
+        "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, &head_tree,
+    ]);
     if !crate::git::succeeds(&[
         "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, "HEAD",
     ]) {
@@ -179,11 +202,45 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
         .lines()
         .filter_map(|l| l.split_whitespace().nth(1))
         .collect();
-    for commit in commits {
-        if !noted.contains(commit.as_str()) {
-            continue;
+    // Commit -> tree, in ONE spawn rather than one per commit: this is the
+    // push path, and a `rev-parse` each would be a process per pushed
+    // commit to answer a question `git log` answers in a batch.
+    let mut trees: HashMap<String, String> = HashMap::new();
+    {
+        let mut args: Vec<&str> = vec!["log", "--no-walk", "--format=%H %T"];
+        args.extend(commits.iter().map(String::as_str));
+        if let Some(out) = crate::git::stdout(&args) {
+            for line in out.lines() {
+                let mut it = line.split_whitespace();
+                if let (Some(c), Some(t)) = (it.next(), it.next()) {
+                    trees.insert(c.to_string(), t.to_string());
+                }
+            }
         }
-        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", commit]) else {
+        // No mapping is not an error: every commit simply falls back to the
+        // commit-keyed lookup below, which is what happened before trees
+        // were stamped at all.
+    }
+
+    for commit in commits {
+        // The commit's own note first, then its TREE's. A squash-merge
+        // produces a commit this machine never saw — no note — while the
+        // content, and therefore the tree, is the one the gates ran on.
+        // Falling through to the tree is what lets a tag push on a merged
+        // commit skip work the branch already proved.
+        //
+        // The direction of failure is unchanged: no note on either, an
+        // unparseable one, or a git that would not answer all mean "no
+        // stamp", and no stamp runs the gate.
+        let key: &str = if noted.contains(commit.as_str()) {
+            commit
+        } else {
+            match trees.get(commit).filter(|t| noted.contains(t.as_str())) {
+                Some(tree) => tree,
+                None => continue,
+            }
+        };
+        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key]) else {
             continue;
         };
         let Some(first) = body.lines().next() else {
@@ -435,6 +492,89 @@ mod tests {
             assert!(!stamps_for(std::slice::from_ref(&head)).is_empty());
             forget();
             assert!(stamps_for(&[head]).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A squash-merge produces a commit this machine never saw, and the
+    /// stamp has to survive it.
+    ///
+    /// This is the case that motivated tree-stamping. A branch is verified
+    /// locally and stamped; the forge squashes it onto `main` as a NEW
+    /// commit with no note; pushing a tag on that commit re-ran every gate
+    /// the branch had already proved. Measured on this repository: 13
+    /// seconds for the branch push, then the full suite for the tag push,
+    /// which died on a reset connection.
+    ///
+    /// The tree is what the gates actually read, and it is identical across
+    /// that merge whenever the base has not moved — five of five merges in
+    /// one afternoon here.
+    #[test]
+    fn a_stamp_survives_a_commit_being_rewritten_with_the_same_tree() {
+        let dir = repo("squashed");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            record(&["test"]);
+            git(&dir, &["commit", "-qm", "feat: on a branch"]);
+            assert_eq!(bind_to_head(), vec!["test".to_string()]);
+            let branch_tip = git(&dir, &["rev-parse", "HEAD"]);
+
+            // Stand in for the forge's squash: a DIFFERENT commit object
+            // with the SAME tree. `--amend` with a new message is the
+            // cheapest way to get exactly that shape.
+            git(
+                &dir,
+                &[
+                    "commit",
+                    "-q",
+                    "--amend",
+                    "-m",
+                    "feat: squashed by the forge",
+                ],
+            );
+            let merged = git(&dir, &["rev-parse", "HEAD"]);
+            assert_ne!(merged, branch_tip, "the fixture must produce a new commit");
+            assert_eq!(
+                git(&dir, &["rev-parse", "HEAD^{tree}"]),
+                git(&dir, &["rev-parse", &format!("{branch_tip}^{{tree}}")]),
+                "…carrying the same tree, which is the whole premise"
+            );
+
+            let stamps = stamps_for(std::slice::from_ref(&merged));
+            assert_eq!(
+                stamps.get(&merged).map(Vec::as_slice),
+                Some(&["test".to_string()][..]),
+                "the stamp must follow the content, not the commit hash"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And it must not follow anything else. A commit whose tree was never
+    /// stamped gets nothing, however many other stamps exist — otherwise
+    /// this widening would vouch for content nobody checked.
+    #[test]
+    fn a_different_tree_gets_no_stamp_from_the_fallback() {
+        let dir = repo("othertree");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            record(&["test"]);
+            git(&dir, &["commit", "-qm", "chore: stamped"]);
+            assert_eq!(bind_to_head(), vec!["test".to_string()]);
+
+            // Different CONTENT, so a different tree, and no marker: this
+            // commit was never judged.
+            std::fs::write(dir.join("b.ts"), "y").unwrap();
+            git(&dir, &["add", "b.ts"]);
+            git(&dir, &["commit", "-qm", "chore: unjudged"]);
+            let unstamped = git(&dir, &["rev-parse", "HEAD"]);
+
+            assert!(
+                stamps_for(std::slice::from_ref(&unstamped)).is_empty(),
+                "a tree nobody stamped must not inherit one"
+            );
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
