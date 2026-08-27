@@ -783,11 +783,33 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
 /// secrets) match everything and are vouched for, which is accurate: they
 /// really did run. An empty `changed` vouches for nothing scoped, which is
 /// the safe direction — CI runs the suite.
+///
+/// [`Scope::touches`], NOT `Scope::matches`. `matches` also asks whether the
+/// repository has opted in — whether a `Cargo.toml` exists — and asking that
+/// of a push DIFF can only answer no unless the push happened to touch the
+/// marker. So `pre-push-cargo-test` was vouched for by a push that edited
+/// `Cargo.toml` and never by one that edited only `.rs` files, which is the
+/// ordinary case and the one worth skipping CI for. The feature attested
+/// almost nothing, silently, and looked like it worked.
+///
+/// WHAT THIS IS STILL A PROXY FOR, stated plainly because the trust path
+/// deserves it: the honest question is "did this gate actually run", and no
+/// gate reports that. `rust_tools::test` returns `Passed` whether it ran a
+/// suite or found no crate root and fell out of its loop — the very thing
+/// the first paragraph describes. Scope is the closest available stand-in.
+/// It is now a good one: a gate is vouched for only if the push changed a
+/// file its extensions cover.
+///
+/// The gap that remains is narrow and one-directional: a `.rs` file outside
+/// every crate would be covered here while `cargo test` had nothing to say
+/// about it. Closing it properly means an outcome that distinguishes "ran
+/// and passed" from "found nothing to do", which is a change to every gate
+/// and to `Outcome` itself — worth doing, not worth smuggling into this.
 fn attestable(checks: &[&dyn Check], passed: &[String], changed: &[String]) -> Vec<String> {
     checks
         .iter()
         .filter(|c| passed.iter().any(|p| p == c.name()))
-        .filter(|c| c.scope().matches(changed))
+        .filter(|c| c.scope().touches(changed))
         .map(|c| c.name().to_string())
         .collect()
 }
@@ -1105,45 +1127,30 @@ mod tests {
         assert_eq!(kept, vec!["pre-commit-prettier"]);
     }
 
-    /// PINNED, NOT ENDORSED: a gate with an opt-in file is not vouched for by
-    /// a push that did not change that file.
+    /// The ordinary Rust push: source changed, `Cargo.toml` untouched.
     ///
-    /// `pre-push-cargo-test` opts in on `Cargo.toml`, and `attestable`
-    /// filters on `scope().matches(changed)` where `changed` is what the PUSH
-    /// touched. So an ordinary `.rs`-only push, in a repository that
-    /// obviously has a `Cargo.toml` sitting right there, does not attest the
-    /// Rust gate — even though the gate ran, or was paired and skipped.
-    ///
-    /// This predates gate-pairing for built-ins and is unchanged by it. It
-    /// errs the safe way: CI re-runs a suite rather than skipping one nobody
-    /// proved on that tree. It is pinned here so the next person meets a
-    /// decision instead of a puzzle, because the obvious reading — "the gate
-    /// passed, so why is it not in the attestation" — has no answer anywhere
-    /// else in the code.
-    ///
-    /// Changing it means changing what CI is told it may skip, which wants
-    /// its own argument and its own change. If you are here to make that
-    /// argument: the fix is probably a relevance predicate that treats
-    /// opt-in files as facts about the REPOSITORY rather than as things the
-    /// push must have touched — the same distinction `pair_verdict`'s
-    /// per-file filter already had to make.
+    /// This test used to assert the OPPOSITE, and said so — it pinned
+    /// `attestable` filtering on `Scope::matches`, which also asks whether
+    /// the repository has opted in. Asking that of a push diff meant a
+    /// `.rs`-only push, in a repository with a `Cargo.toml` sitting right
+    /// there, attested nothing. Since that is what nearly every Rust push
+    /// looks like, the feature was attesting almost nothing at all — quietly,
+    /// while appearing to work.
     #[test]
-    fn an_opt_in_gate_is_not_vouched_for_by_a_push_that_did_not_touch_its_marker() {
+    fn an_ordinary_source_push_is_vouched_for() {
         let rust = opt_in("pre-push-cargo-test", &[".rs"], &["Cargo.toml"]);
         let checks: Vec<&dyn Check> = vec![&rust];
         let passed = vec!["pre-push-cargo-test".to_string()];
 
-        // A normal Rust change: source only. Cargo.toml exists in the repo,
-        // but this push did not touch it.
         let changed = vec!["crates/amont/src/main.rs".to_string()];
-        assert!(
-            attestable(&checks, &passed, &changed).is_empty(),
-            "documented behaviour: an opt-in gate needs its marker among the \
-             CHANGED files to be attested"
+        assert_eq!(
+            attestable(&checks, &passed, &changed),
+            vec!["pre-push-cargo-test".to_string()],
+            "a push that changed Rust must vouch for the Rust gate"
         );
 
-        // And it is attested when the push does touch the marker, which is
-        // what makes the above a scope question and not a bug in `passed`.
+        // And still when the marker IS in the diff — the opt-in file is not
+        // required, but it is not disqualifying either.
         let changed = vec![
             "crates/amont/src/main.rs".to_string(),
             "Cargo.toml".to_string(),
@@ -1152,5 +1159,32 @@ mod tests {
             attestable(&checks, &passed, &changed),
             vec!["pre-push-cargo-test".to_string()]
         );
+    }
+
+    /// The over-claim the filter exists to stop, with an opt-in gate: a
+    /// JS-only push must not vouch for the Rust suite, whatever files the
+    /// repository contains.
+    ///
+    /// This is the half of the contract the fix above must not have broken,
+    /// and it is the reason `touches` asks about EXTENSIONS rather than
+    /// dropping the scope test altogether.
+    #[test]
+    fn an_opt_in_gate_is_not_vouched_for_by_a_push_in_another_language() {
+        let rust = opt_in("pre-push-cargo-test", &[".rs"], &["Cargo.toml"]);
+        let checks: Vec<&dyn Check> = vec![&rust];
+        let passed = vec!["pre-push-cargo-test".to_string()];
+
+        for changed in [
+            vec!["app/routes/home.ts".to_string()],
+            // Even the marker alone: editing Cargo.toml changes no Rust
+            // source, so the suite has nothing new to have verified.
+            vec!["Cargo.toml".to_string()],
+            vec![],
+        ] {
+            assert!(
+                attestable(&checks, &passed, &changed).is_empty(),
+                "must not vouch for the Rust gate on {changed:?}"
+            );
+        }
     }
 }

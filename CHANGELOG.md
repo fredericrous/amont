@@ -33,6 +33,37 @@ missing here.
   refusal that was not coming. It now speaks only when the branch actually
   exists on a remote.
 
+## Unreleased
+
+### Fixed
+
+- **An attestation now vouches for the gate worth skipping CI for.**
+  `attestable` filtered on `Scope::matches`, which also asks whether the
+  repository has *opted in* — whether a `Cargo.toml` exists. Asking that of a
+  push DIFF can only answer no unless the push happened to touch the marker,
+  so `pre-push-cargo-test` was vouched for by a push that edited `Cargo.toml`
+  and never by one that edited only `.rs` files. Which is to say: never, on
+  the ordinary Rust push, and precisely the gate a CI run most wants to skip.
+
+  Measured on the same push, before and after:
+
+  ```text
+  1.21.0   attested … pull-rebase audit-rust
+  fixed    attested … pull-rebase audit-rust pre-push-cargo-test
+  ```
+
+  Opt-in is a fact about the repository, settled when the dispatcher decided
+  the check runs here at all. `Scope::touches` asks only about the change,
+  which is what a caller holding a diff means. A push in another language
+  still vouches for nothing — that guard is what `touches` keeps, and it is
+  why this is not simply dropping the scope test.
+
+  It remains a proxy, and the module says so: no gate reports whether it
+  actually ran, so scope is the closest available stand-in. It is now a good
+  one. Closing the last of the gap means an outcome that distinguishes "ran
+  and passed" from "found nothing to do", which is a change to every gate and
+  to `Outcome` itself.
+
 ## v1.21.0
 
 ### Added
