@@ -238,6 +238,25 @@ pub fn attest_push(remote: &str, refs: &[PushRef], gates: &[String]) {
             Some(sig) => format!("{}\n{sig}", payload(&tree, gates)),
             None => continue,
         };
+        // The note goes on the TREE as well as the commit, and the tree is
+        // the key that matches what the signature already covers.
+        //
+        // Keying only by commit is why the verifier had to HUNT — `HEAD`,
+        // then `HEAD^2` for a pull request's merge commit — and the hunt has
+        // a floor it cannot reach past: a squash-merge onto a main that has
+        // moved produces a commit with neither the note nor a parent that
+        // has it, while an attestation for that exact tree may be sitting in
+        // the ref. Signed for the content, findable only by the container.
+        //
+        // Keyed by tree, the lookup is one step and survives squash-merge,
+        // amend and rebase — every rewrite that preserves content. Which is
+        // the whole claim the payload makes: `tree <sha>`, signed.
+        //
+        // Both, not either: the commit note is what `git log --notes` shows
+        // and what an older verifier looks for, so dropping it would break
+        // consumers mid-upgrade for no gain.
+        let _ =
+            crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &body, &tree]);
         if crate::git::succeeds(&[
             "notes",
             "--ref",
@@ -296,11 +315,19 @@ pub fn covered(
     // second parent is the pushed tip that carries the note — and the tree
     // comparison below still measures against what is ACTUALLY checked out,
     // so a merge whose tree drifted from the tested tip never skips.
-    for candidate in ["HEAD", "HEAD^2"] {
-        let Some(commit) = crate::git::stdout(&["rev-parse", "--verify", candidate]) else {
+    // The TREE first, which is what the signature covers and therefore the
+    // only key that cannot go stale: it finds the attestation after a
+    // squash-merge, an amend or a rebase, none of which the commit-shaped
+    // candidates below survive when main has moved underneath.
+    //
+    // `HEAD` and `HEAD^2` stay after it, for notes written by an amont that
+    // only ever keyed by commit. They cost one `rev-parse` each and only
+    // when the tree lookup found nothing.
+    for candidate in [head_tree.as_str(), "HEAD", "HEAD^2"] {
+        let Some(object) = crate::git::stdout(&["rev-parse", "--verify", candidate]) else {
             continue;
         };
-        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &commit]) else {
+        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &object]) else {
             continue;
         };
         let Some((payload, sig)) = split_note(&body) else {
@@ -749,14 +776,24 @@ mod tests {
         in_repo(&clone, || {
             assert_eq!(covered(&signers, "t@t.test", None), None, "drifted tree");
         });
-        // Forgery: replace the remote's note with an unsigned one. covered's
-        // own fetch pulls it in, and it must read as "no attestation".
-        git(
-            &work,
-            &[
-                "notes", "--ref", NOTES_REF, "add", "-f", "-m", "garbage", &head,
-            ],
-        );
+        // Forgery: replace the remote's notes with unsigned ones. covered's
+        // own fetch pulls them in, and they must read as "no attestation".
+        //
+        // BOTH keys, because an attestation is now findable by the tree as
+        // well as by the commit. Forging one and leaving the other is not a
+        // forgery — it is a genuine signed note the attacker failed to
+        // reach, and covered is right to honour it. The test said "a foreign
+        // note is not a stamp" and has to forge every place a note lives to
+        // mean that.
+        let head_tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        for object in [&head, &head_tree] {
+            git(
+                &work,
+                &[
+                    "notes", "--ref", NOTES_REF, "add", "-f", "-m", "garbage", object,
+                ],
+            );
+        }
         git(
             &work,
             &[
@@ -824,5 +861,92 @@ mod tests {
         in_repo(&work, forget);
         assert!(git(&work, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
         let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The attestation survives the commit being rewritten around the same
+    /// content — which is how work reaches `main`.
+    ///
+    /// The verifier used to look on `HEAD` and then `HEAD^2`, and that hunt
+    /// has a floor it cannot reach past: a squash-merge onto a main that has
+    /// moved produces a commit carrying neither the note nor a parent that
+    /// has one, while an attestation for that exact tree sits in the ref.
+    /// Signed for the content, findable only by the container.
+    ///
+    /// The tree key is the same claim the payload already makes — `tree
+    /// <sha>` — so this is not a widening: `covered` still refuses unless
+    /// the payload's tree equals the checked-out tree AND the signature
+    /// verifies. Both are asserted below by the sibling test; this one
+    /// asserts only that a legitimate attestation is still FOUND.
+    #[test]
+    fn an_attestation_survives_a_rewrite_that_keeps_the_tree() {
+        let d = dir("rewritten");
+        let (key, signers) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        let work = repo("rewritten-work");
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "feat: on a branch"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        let branch_tip = git(&work, &["rev-parse", "HEAD"]);
+        let push_ref = PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: branch_tip.clone(),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        };
+        in_repo(&work, || {
+            attest_push("origin", &[push_ref], &["pre-push-pytest".into()]);
+        });
+
+        // Stand in for the forge's squash: a DIFFERENT commit object with the
+        // SAME tree, and — crucially — NOT a parent of anything the verifier
+        // would reach, so `HEAD^2` cannot save it.
+        git(
+            &work,
+            &[
+                "commit",
+                "-q",
+                "--amend",
+                "-m",
+                "feat: squashed by the forge",
+            ],
+        );
+        let rewritten = git(&work, &["rev-parse", "HEAD"]);
+        assert_ne!(rewritten, branch_tip, "the fixture must rewrite the commit");
+        assert_eq!(
+            git(&work, &["rev-parse", "HEAD^{tree}"]),
+            git(&work, &["rev-parse", &format!("{branch_tip}^{{tree}}")]),
+            "…while preserving the tree, which is the premise"
+        );
+        git(&work, &["push", "-q", "-f", "origin", "HEAD:main"]);
+
+        let clone = d.join("ci-checkout");
+        git(
+            &d,
+            &[
+                "clone",
+                "-q",
+                "--template=",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        in_repo(&clone, || {
+            assert_eq!(
+                covered(&signers, "t@t.test", None).as_deref(),
+                Some("pre-push-pytest"),
+                "the attestation must be found by the tree it signed"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

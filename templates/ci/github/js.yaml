@@ -37,7 +37,10 @@ jobs:
         run: |
           command -v ssh-keygen >/dev/null || exit 0
           git fetch origin '+refs/notes/amont-attest:refs/notes/amont-attest' 2>/dev/null || exit 0
-          for c in HEAD HEAD^2; do
+          # By TREE, which is what the signature covers — so it survives a
+          # squash-merge, an amend and a rebase. HEAD and HEAD^2 stay as a
+          # fallback for notes written by an amont that only keyed by commit.
+          for c in "$(git rev-parse 'HEAD^{tree}')" HEAD HEAD^2; do
             note=$(git notes --ref amont-attest show "$c" 2>/dev/null) && break
           done
           [ -n "$note" ] || exit 0

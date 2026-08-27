@@ -10,6 +10,26 @@ missing here.
 
 ### Fixed
 
+- **An attestation is now findable by the tree it signs.** The note was keyed
+  by COMMIT while the payload — and the signature — covered the tree, so the
+  verifier had to hunt: `HEAD`, then `HEAD^2` for a pull request's merge
+  commit. That hunt has a floor it cannot reach past. A squash-merge onto a
+  `main` that has moved produces a commit carrying neither the note nor a
+  parent that has one, while a valid attestation for that exact tree sits in
+  the ref: signed for the content, findable only by the container.
+
+  The note now goes on the tree as well, and `covered` looks there first.
+  Demonstrated on a rewritten commit — the commit-keyed hunt finds nothing,
+  the tree lookup returns the full gate list. The eight CI templates do the
+  same, keeping `HEAD` and `HEAD^2` behind it for notes written by an older
+  amont.
+
+  Nothing is loosened, and the same two refusals still decide: the payload's
+  tree must equal the checked-out tree, and the signature must verify against
+  `allowed_signers`. A note attached to the wrong tree fails the first; a
+  forged one fails the second.
+
+
 - **A gate stamp now follows the content, so a squash-merge does not throw it
   away.** The stamp was written to the COMMIT, and the commit that reaches
   `main` is made by the forge — a squash-merge produces an object this

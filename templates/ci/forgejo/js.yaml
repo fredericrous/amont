@@ -42,7 +42,10 @@ jobs:
           # HEAD on a push; on a PR's merge commit, the note lives on HEAD^2
           # (the branch tip) — the tree check below still compares against
           # what is actually checked out, so a stale merge never skips.
-          for c in HEAD HEAD^2; do
+          # By TREE, which is what the signature covers — so it survives a
+          # squash-merge, an amend and a rebase. HEAD and HEAD^2 stay as a
+          # fallback for notes written by an amont that only keyed by commit.
+          for c in "$(git rev-parse 'HEAD^{tree}')" HEAD HEAD^2; do
             note=$(git notes --ref amont-attest show "$c" 2>/dev/null) && break
           done
           [ -n "$note" ] || exit 0
