@@ -8,6 +8,22 @@ missing here.
 
 ## Unreleased
 
+### Added
+
+- **The GitHub CI templates carry the `attest` step.** All four forgejo
+  templates have had it since attest shipped; none of the GitHub ones did, so
+  most people could not adopt the feature even if they wanted to. The step is
+  the same one, verbatim, with `.forgejo/allowed_signers` reading
+  `.github/allowed_signers` — and the js template carries the long
+  explanation the other three point at, as its forgejo twin does.
+
+  Verified by running the step's actual shell against a real signed note:
+  it fetched the notes ref, checked the version line, the platform and the
+  tree, verified the signature with stock `ssh-keygen`, and emitted
+  `covered=… pre-push-cargo-test` — which is what makes the template's
+  `cargo test` step skip. With no `allowed_signers` it exits 0 with `covered`
+  empty and every gated step runs, which is the only failure mode it has.
+
 ### Fixed
 
 - **`pre-push-branch-protect` no longer refuses the push that creates a
