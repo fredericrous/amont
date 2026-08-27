@@ -6,7 +6,14 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.23.0
+
+The two fixes below compound, and neither works without the other. A stamp
+that survives a squash-merge lets the tag push skip the local gate; an
+attestation findable by tree lets CI skip the same work for that merged tree.
+Both were written for the same failure: work is verified on a branch, the
+forge rewrites the commit, and every proof was keyed to the object that
+rewriting destroys.
 
 ### Fixed
 
