@@ -6,6 +6,56 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.24.0
+
+Two additions, both about letting a result travel: a finding now says *where*
+so an editor can jump to it, and CI now verifies a push's attestation with a
+single-purpose action instead of a copy of shell it could not test.
+
+### Added
+
+- **`amont check <paths…>` — what is wrong with these FILES.** The content
+  checks only (ban-terms, secrets, merge-conflict, large-files), with no index,
+  no staging and no commit involved, reported as
+  `file:line:col: severity: message [check]` — the shape every editor's error
+  parser and every modern terminal already understand. `--stdin-filename
+  <path>` checks one unsaved buffer on stdin; `--format json` emits the same
+  findings as a machine-readable list. Exits 1 if anything blocking was found.
+
+  This is deliberately not a flag on `run`: `run` rehearses a commit — it is
+  index-aware, it parks unstaged work, and `restore` exists to undo that. A
+  question about content, which may never have been saved, should not inherit
+  a stash.
+
+- **Findings carry a position.** The line was always known — `ban-terms`
+  blanks comments while preserving offsets precisely so they stay valid, and
+  the secrets scanner has returned line numbers from the start — but the
+  hook's five-variant outcome had nowhere to put it, so the report could only
+  name the file. A new `Finding` type is that place. Positions are a
+  reporting concern and never a decision input: a check passes or fails
+  exactly as before; where a match cannot be pinned to one offset (a
+  whole-file judgement like `large-files`) the report degrades to naming the
+  file, as it did for everything until now.
+
+### Changed
+
+- **The eight CI templates verify attestations with
+  [`fredericrous/attest`](https://github.com/fredericrous/attest)** instead of
+  the ~30 lines of inline shell each of them carried. amont still does not run
+  in CI; the action needs nothing but `git` and `ssh-keygen`, lives in its own
+  repository with a conformance suite both implementations answer to, and
+  explains itself in the job log when it does *not* skip — a non-skip used to
+  be silent. Read its `gates` output with
+  `contains(fromJSON(steps.attest.outputs.gates), 'pre-push-go-test')`: an
+  element match, where the older `covered` string matched substrings.
+
+  The producer half — signing at `pre-push` — stays here, unchanged. amont's
+  copy of the consumer (`amont attest covered`) keeps working and is now
+  frozen to bug fixes; new verifier work happens upstream. The new docs
+  [coding-flow](docs/coding-flow.md) and
+  [index fidelity and run modes](docs/index-fidelity-and-run-modes.md) walk
+  one commit through every hook, and explain what a fixing check may touch.
+
 ## v1.23.0
 
 The two fixes below compound, and neither works without the other. A stamp
