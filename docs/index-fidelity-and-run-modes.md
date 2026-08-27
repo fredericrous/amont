@@ -14,6 +14,7 @@ had.
 | 2 | `stage_fixed` | **shipped** as `Fix::Rewrite` + `Outcome::Fixed` | `check.rs`, `hooks/common.rs::restage` |
 | 3 | `not_during` git-state conditions | **shipped** | `check.rs::GitState`, `registry.rs::MID_OPERATION` |
 | 4 | `amont run [--all-files]` | **shipped** | `main.rs`, `dispatch::run_named` |
+| 4b | `amont check <paths…>` | **shipped** | `content.rs`, `finding.rs` |
 | 5 | shebang detection | **not built** | — |
 
 §5 is the only one still a proposal. Everything below the numbered sections —
@@ -625,6 +626,80 @@ amont run <check>         # one check, either way
 
 `--all-files` skips the §1 stash: there is no staged/unstaged distinction to
 protect when the answer is "all of it".
+
+---
+
+## 4b. `amont check <paths…>` — the read that is not a rehearsal
+
+> **Shipped.** `crates/amont/tests/check_verb.rs`,
+> `amont-runtime/src/content.rs`, `amont-runtime/src/finding.rs`.
+
+`run` answers *"is this commit ready?"* — a question about the **index**. It is
+entitled to everything in §1 and §2: the staged-only hold, the stash, the
+re-staging of fixes, and `restore` as the way back.
+
+An editor asks a different question — *"what is wrong with this buffer?"* — and
+the buffer is not staged, may not match HEAD, and via `--stdin-filename` may
+never have been written to disk at all. Serving that from `run` would drag
+index fidelity into what is a read-only lookup, and an editor asking about a
+buffer would inherit a stash. So it is a separate verb with a separate
+contract:
+
+```
+amont check src/app.js                          # a path
+amont check src/*.ts --format json              # several, structured
+amont check --stdin-filename src/app.js < buf   # a buffer never saved
+```
+
+**It is a read.** No index, no staging, no stash, no writes —
+`checking_never_touches_the_index_or_the_worktree` asserts the repository is
+byte-identical afterwards, index included.
+
+### Findings, and why positions had nowhere to live
+
+`Outcome` has five variants and no payload — correct for git, which needs
+proceed-or-block, and the reason a report could only name the file:
+
+```text
+✗ Unwanted terms found
+  The following files contains 'debugger' in them:
+  - app.js
+```
+
+The line was always known. `ban_terms` blanks comments and strings *preserving
+length and line count* precisely so offsets stay valid, and `secrets::scan` has
+always returned line numbers — there was simply nowhere to put them. `Finding`
+is that place, and the hooks improved on the way past:
+
+```text
+✗ Unwanted terms found
+  app.js:7:3 — 'debugger' is a banned term here
+```
+
+`file:line:col: severity: message [check]` is the output format because every
+editor's error parser already reads it and every modern terminal makes it
+clickable — which is what lets `efm-langserver`, `nvim-lint`, a VS Code
+`problemMatcher` or `flycheck` consume amont with **no editor-side code in this
+repository**. `--format json` (`amont-check-v1`) is there for anything that
+would rather not parse a line.
+
+### What is deliberately not in it
+
+Only the checks that are about a file's **content**: `ban-terms`, `secrets`,
+`merge-conflict`, `large-files`. `branch-pattern`, `branch-protect` and
+`pull-rebase` are not about files; `package-lock` is about a relationship
+between two; and `clippy`, `ruff` and `eslint` already have editor
+integrations of their own that are better than anything proxied through here.
+
+What remains is exactly the set `docs/ci.md` says CI deliberately does not
+reproduce — the checks only amont has are the ones only amont can surface
+early, which is the whole argument for the verb.
+
+Positions are a **reporting** concern and never a decision input: a check
+decides pass or fail exactly as it did before, and a finding says where. Where
+a position cannot be pinned down — `large-files` is about the file, not a place
+in it — `line` is `None` and every renderer degrades to naming the file, which
+is what it did for everything until now.
 
 ---
 

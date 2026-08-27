@@ -72,6 +72,15 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  to this machine's, so a matrix leg only skips work that
                  really ran on ITS platform]
 
+  check          what is wrong with these FILES — no index, no staging, no
+                 commit. The content checks only (ban-terms, secrets,
+                 merge-conflict, large-files), reported as
+                 `file:line:col: severity: message [check]`, which every
+                 editor's error parser and every modern terminal already
+                 understand. Reads a path list, or one unsaved buffer on
+                 stdin. Exits 1 if anything blocking was found.
+                 [<path>…] [--stdin-filename <path>] [--format text|json]
+
   --help         this text        --version   the binary's version
 
 Hook mode (what the shims call): amont --hooks-dir <dir> <hook-name> [args…]
@@ -93,6 +102,7 @@ enum Sub {
     AgentsMd,
     Enroll,
     Attest,
+    Check,
 }
 
 impl Sub {
@@ -121,6 +131,7 @@ impl Sub {
             Sub::AgentsMd => 8,
             Sub::Enroll => 9,
             Sub::Attest => 10,
+            Sub::Check => 11,
         }
     }
 }
@@ -130,7 +141,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 11] = [
+const SUBCOMMANDS: [(&str, Sub); 12] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -142,6 +153,7 @@ const SUBCOMMANDS: [(&str, Sub); 11] = [
     ("agents-md", Sub::AgentsMd),
     ("enroll", Sub::Enroll),
     ("attest", Sub::Attest),
+    ("check", Sub::Check),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -310,6 +322,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
         Sub::Attest => (&[], &["--signers", "--principal", "--platform"]),
+        Sub::Check => (&[], &["--stdin-filename", "--format"]),
     }
 }
 
@@ -434,6 +447,97 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // nothing. Exits 0 either way: fail-open is the contract, not an
         // option a workflow author might forget to pass. The only non-zero
         // exit is usage (a subaction this verb does not have).
+        // `amont check <paths…>` — what is wrong with these FILES.
+        //
+        // Deliberately NOT a flag on `run`. `run` rehearses a commit: it is
+        // index-aware, it holds unstaged work aside, and `restore` exists to
+        // undo that. This answers a question about content, which may not be
+        // staged and — via `--stdin-filename` — may never have been saved.
+        // Sharing a verb would drag all of that machinery into a read-only
+        // lookup, and an editor asking about a buffer would inherit a stash.
+        Sub::Check => {
+            let format = match flag_value(args, "--format") {
+                Ok(f) => f,
+                Err(msg) => {
+                    eprintln!("amont: {msg}");
+                    return 2;
+                }
+            };
+            let json = match format.as_deref() {
+                None | Some("text") => false,
+                Some("json") => true,
+                Some(other) => {
+                    eprintln!("amont: unknown --format {other:?} (text or json)");
+                    return 2;
+                }
+            };
+            let stdin_name = match flag_value(args, "--stdin-filename") {
+                Ok(n) => n,
+                Err(msg) => {
+                    eprintln!("amont: {msg}");
+                    return 2;
+                }
+            };
+            // Positional words only: the flags and their values are the
+            // allowlist's business and were validated above.
+            let mut paths: Vec<String> = Vec::new();
+            let mut skip = false;
+            for a in args {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                let Some(a) = a.to_str() else { continue };
+                if a == "--format" || a == "--stdin-filename" {
+                    skip = true;
+                    continue;
+                }
+                if !a.starts_with("--") {
+                    paths.push(a.to_string());
+                }
+            }
+
+            let mut findings = Vec::new();
+            if let Some(name) = &stdin_name {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                if std::io::stdin().read_to_end(&mut buf).is_err() {
+                    eprintln!("amont: could not read stdin");
+                    return 2;
+                }
+                findings.extend(amont_runtime::content::scan(name, &buf));
+            } else if paths.is_empty() {
+                eprintln!("amont: check needs a path, or --stdin-filename <path>");
+                eprint!("{USAGE}");
+                return 2;
+            }
+            for p in &paths {
+                match std::fs::read(p) {
+                    Ok(bytes) => findings.extend(amont_runtime::content::scan(p, &bytes)),
+                    // Named but unreadable is the caller's mistake, not a
+                    // finding about the file — say so on stderr and keep
+                    // going, so one bad path does not hide the other results.
+                    Err(e) => eprintln!("amont: {p}: {e}"),
+                }
+            }
+
+            if json {
+                println!("{}", amont_runtime::finding::to_json(&findings));
+            } else {
+                for f in &findings {
+                    println!("{}", f.render());
+                }
+            }
+            // 1 for a blocking finding, the convention every linter follows.
+            // A warning is not a failure: `large-files` warns about a
+            // deliberate asset, and an editor asking what is here must not
+            // get a non-zero exit for an answer it did not treat as fatal.
+            i32::from(
+                findings
+                    .iter()
+                    .any(|f| f.severity == amont_runtime::check::Severity::Block),
+            )
+        }
         Sub::Attest => {
             if args.first().map(|a| a != "covered").unwrap_or(true) {
                 eprintln!("amont: attest takes the subaction `covered`");

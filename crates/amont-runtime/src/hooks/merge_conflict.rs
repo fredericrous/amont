@@ -2,7 +2,8 @@
 //! markers.
 
 use super::common::{fail, hl, ok};
-use crate::check::Outcome;
+use crate::check::{Outcome, Severity};
+use crate::finding::Finding;
 
 /// The markers, BUILT rather than written.
 ///
@@ -29,8 +30,42 @@ fn is_own_test(file: &str, hook_name: &str) -> bool {
     file.starts_with(&format!("tests/{hook_name}.test."))
 }
 
-pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
+/// The check's own short name, and the `check` field of every finding it makes.
+pub const NAME: &str = "merge-conflict";
+
+/// Conflict markers in one file's content, with the line each sits on. PURE —
+/// no git, no index — so `amont check` can run it over a path or a buffer.
+///
+/// A file qualifies only when ALL THREE markers are present, which is what
+/// distinguishes an unresolved conflict from a file that happens to contain a
+/// row of equals signs. The reported position is the first marker line, since
+/// that is where a reader wants the cursor.
+pub fn scan(file: &str, content: &str, hook_name: &str) -> Vec<Finding> {
+    if is_own_test(file, hook_name) {
+        return Vec::new();
+    }
     let m = markers();
+    if !m.iter().all(|mk| content.contains(mk.as_str())) {
+        return Vec::new();
+    }
+    let first = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| m.iter().any(|mk| l.starts_with(mk.as_str())))
+        .map(|(i, _)| i + 1);
+    let mut finding = Finding::new(
+        NAME,
+        file,
+        Severity::Block,
+        "unresolved merge conflict markers",
+    );
+    if let Some(line) = first {
+        finding = finding.at_line(line);
+    }
+    vec![finding]
+}
+
+pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
     // Scoped to what this commit STAGES, not the whole index.
     //
     // `git grep --cached` scanned every tracked file, so a marker anywhere in
@@ -38,27 +73,24 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
     // this change never touched. That is the argument ban-terms already makes
     // for its own two-stage design, applied here.
     //
-    // NOTE: this does NOT remove the need for the self-exclusion below, which
-    // I previously claimed it would. Editing the hook's own test still stages a
-    // file that must contain markers.
-    let staged = super::common::staged_files(&[]);
-    let flagged: Vec<String> = staged
+    // NOTE: this does NOT remove the need for the self-exclusion in `scan`,
+    // which I previously claimed it would. Editing the hook's own test still
+    // stages a file that must contain markers.
+    let findings: Vec<Finding> = super::common::staged_files(&[])
         .into_iter()
-        .filter(|f| !is_own_test(f, hook_name))
-        .filter(|file| {
+        .filter_map(|file| {
             // The STAGED content, not the worktree's: what is being committed
             // is what matters, and they differ during a partial `git add -p`.
-            crate::git::stdout(&["show", &format!(":{file}")])
-                .map(|c| m.iter().all(|mk| c.contains(mk.as_str())))
-                .unwrap_or(false)
+            let content = crate::git::stdout(&["show", &format!(":{file}")])?;
+            Some(scan(&file, &content, hook_name))
         })
+        .flatten()
         .collect();
 
-    if !flagged.is_empty() {
-        fail(&format!(
-            "Merge conflict detected in {}",
-            hl(&flagged.join(", "))
-        ));
+    if !findings.is_empty() {
+        for f in &findings {
+            fail(&format!("Merge conflict detected in {}", hl(&f.location())));
+        }
         return Outcome::Failed;
     }
     ok("No merge conflict detected");
