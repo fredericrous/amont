@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A gate stamp now follows the content, so a squash-merge does not throw it
+  away.** The stamp was written to the COMMIT, and the commit that reaches
+  `main` is made by the forge — a squash-merge produces an object this
+  machine never saw, carrying no note. So a `git push` of a tag on that
+  commit re-ran every gate the branch had already proved. Measured here: the
+  branch push took 13 seconds, and the tag push that followed ran the whole
+  suite and died on a reset connection.
+
+  The stamp is now written to the tree as well. Identical trees are identical
+  content, which is the only thing a test suite reads — the argument `attest`
+  already makes for signing the tree rather than the commit, and this
+  module's marker has been tree-bound since it was written. This carries the
+  binding through to the note. Across five squash-merges in one afternoon in
+  this repository, the tree was identical every time.
+
+  Both notes, not either: the commit note is what `git log --notes` shows,
+  and dropping it would hide the stamps where people look for them.
+
+  Nothing is loosened. A commit whose tree was never stamped still gets
+  nothing, and every other failure — no note, an unparseable one, a git that
+  will not answer — still means "no stamp", which runs the gate.
+
 ## v1.22.0
 
 ### Added
