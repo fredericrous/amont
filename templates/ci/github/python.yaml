@@ -16,46 +16,25 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      # amont.attest: skip a test step only when a signed note proves its gate
-      # already passed locally on EXACTLY this tree. Fail-open: any failure
-      # leaves `covered` empty and the gated steps run. Requires
-      # .github/allowed_signers; full explanation in the js template and
-      # https://fredericrous.github.io/amont/ci.html
-      # With the amont binary on the runner, this whole step is one line
-      # doing the same dance in the one tested place:
-      #   echo "covered=$(amont attest covered)" >>"$GITHUB_OUTPUT"
-      # It defaults to THIS machine's platform, so a matrix leg skips only
-      # work that really ran on its own platform; `--platform any` is the
-      # deliberate statement that a suite is platform-independent.
+      # amont.attest: when every pre-push block gate passed locally, amont
+      # left a SIGNED note (refs/notes/amont-attest) on the tree it tested.
+      # This step verifies that note and reports which gates it covers, so the
+      # steps below can skip work already done — on THIS exact tree, on THIS
+      # platform, by a key you committed as .github/allowed_signers:
+      #
+      #   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
+      #
+      # Fail-open by construction: any failure reports nothing covered and
+      # every gated step simply runs. The most an attestation can ever save is
+      # a redundant run. The action explains its reasoning in the log, which
+      # matters because a non-skip is otherwise silent.
+      #
+      # amont still does not run in CI. This is a separate, single-purpose
+      # verifier: https://github.com/fredericrous/attest — which is also where
+      # verify.sh lives if you would rather inline the shell than depend on an
+      # action.
       - id: attest
-        run: |
-          command -v ssh-keygen >/dev/null || exit 0
-          git fetch origin '+refs/notes/amont-attest:refs/notes/amont-attest' 2>/dev/null || exit 0
-          # By TREE, which is what the signature covers — so it survives a
-          # squash-merge, an amend and a rebase. HEAD and HEAD^2 stay as a
-          # fallback for notes written by an amont that only keyed by commit.
-          for c in "$(git rev-parse 'HEAD^{tree}')" HEAD HEAD^2; do
-            note=$(git notes --ref amont-attest show "$c" 2>/dev/null) && break
-          done
-          [ -n "$note" ] || exit 0
-          payload=$(printf '%s\n' "$note" | sed -n '/^$/q;p')
-          sig=$(printf '%s\n' "$note" | sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p')
-          [ -n "$sig" ] || exit 0
-          [ "$(printf '%s\n' "$payload" | sed -n 1p)" = amont-attest-v2 ] || exit 0
-          # A pass is a pass ON SOMETHING: only an attestation minted on
-          # THIS platform may retire this leg's work. Drop these three
-          # lines only if the suite genuinely does not depend on where it
-          # ran (the binary spells that `--platform any`).
-          case "$(uname -m)" in arm64|aarch64) arch=aarch64 ;; *) arch=$(uname -m) ;; esac
-          case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) os=windows ;; esac
-          [ "$(printf '%s\n' "$payload" | awk '$1=="platform"{print $2}')" = "$arch-$os" ] || exit 0
-          tree=$(printf '%s\n' "$payload" | awk '$1=="tree"{print $2}')
-          [ -n "$tree" ] && [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ] || exit 0
-          printf '%s\n' "$sig" >/tmp/amont-attest.sig
-          printf '%s\n' "$payload" | ssh-keygen -Y verify \
-              -f .github/allowed_signers -I you@example.com \
-              -n amont-attest -s /tmp/amont-attest.sig >/dev/null 2>&1 || exit 0
-          echo "covered=$(printf '%s\n' "$payload" | awk '$1=="gates"{sub(/^gates */,""); print}')" >>"$GITHUB_OUTPUT"
+        uses: fredericrous/attest@v1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -63,7 +42,7 @@ jobs:
       - run: ruff check . # pre-commit-ruff
       - run: pyright --warnings # pre-commit-pyright — delete if unconfigured
       - run: pytest # pre-push-pytest
-        if: ${{ !contains(steps.attest.outputs.covered, 'pre-push-pytest') }}
+        if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-pytest') }}
 
   # pre-push-audit-python's split: advisory on branches, blocking on a v* release.
   audit:

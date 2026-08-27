@@ -28,6 +28,24 @@
 //! `allowed_signers` file committed in the consuming repository. amont itself
 //! still never runs in CI (`docs/ci.md`) — CI verifies a document.
 //!
+//! # Where each half lives now
+//!
+//! The **producer** — [`attest_push`], `sign`, `key_path`, [`enabled`] — is
+//! this crate's, and stays. It needs the gate names only `dispatch` knows,
+//! reads amont's own config, and coordinates the recursive-push guard below.
+//!
+//! The **consumer** — [`verify`], [`covered`], [`split_note`],
+//! [`default_signers`], [`first_principal`] — was extracted to
+//! <https://github.com/fredericrous/attest>, because reading a signed document
+//! is the part every OTHER repository needs and amont is a strange thing to
+//! install just to do it. The CI templates call that action instead of the
+//! ~30 lines of shell they used to carry.
+//!
+//! The copy here is therefore **frozen: bug fixes only**. New work — better
+//! diagnostics, more formats, other forges — happens in that repository, and
+//! its `tests/conformance.sh` is the contract both sides answer to. `amont
+//! attest covered` keeps working for anyone already calling it.
+//!
 //! Signing uses `ssh-keygen -Y sign` as a subprocess, like every other tool
 //! this crate talks to. Hand-rolling ed25519 in a zero-dependency crate would
 //! be the one thing worse than a dependency.
