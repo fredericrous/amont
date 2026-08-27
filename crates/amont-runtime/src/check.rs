@@ -151,6 +151,28 @@ impl Scope {
         }
     }
 
+    /// Does this gate have work to do, given the files a PUSH changed?
+    ///
+    /// Distinct from [`matches`], and the distinction is the bug this was
+    /// written for. `matches` answers "would this check ever fire in a
+    /// repository containing these paths", so it also consults `opt_in` —
+    /// the marker that says a repository is a Rust one at all. Feeding a
+    /// push DIFF to that question conflates two things: whether the
+    /// repository is Rust (settled long before, when the dispatcher decided
+    /// this check runs here) and whether this push changed any Rust.
+    ///
+    /// `pre-push-cargo-test` opts in on `Cargo.toml`. A `.rs`-only push, in
+    /// a repository with a `Cargo.toml` sitting right there, therefore
+    /// answered NO to "is this a Rust repository" — because that one file
+    /// was not in the diff — and was judged to have nothing worth attesting.
+    /// Which is to say: the most ordinary Rust push there is.
+    ///
+    /// Opt-in is a fact about the repository. This asks only about the
+    /// change, which is what a caller holding a diff means.
+    pub fn touches(&self, paths: &[String]) -> bool {
+        self.is_unscoped() || paths.iter().any(|p| self.covers(p))
+    }
+
     /// Did the gate see EVERY one of `paths`? All-match, where [`matches`]
     /// is any-match: the caller asking this is deciding whether a commit-time
     /// run COVERED a push, and under-approximating is the safe direction.
