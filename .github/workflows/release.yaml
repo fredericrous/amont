@@ -627,3 +627,66 @@ jobs:
           git push origin HEAD
           echo "### Published to the homebrew tap" >> "$GITHUB_STEP_SUMMARY"
           echo "\`brew upgrade fredericrous/tap/amont\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  # The only thing anywhere that runs the formula.
+  #
+  # `publish-tap` above proves the file PARSES (`ruby -c`) and that its
+  # checksums match the release. Neither is the question a user asks, which
+  # is "does `brew install` work" — and the gap between those is not
+  # theoretical: this formula carried `bin.install "amont-agent"` for three
+  # releases after that binary left the archive in 1.20.0. `bin.install` on a
+  # file that is not there aborts the whole formula, so every `brew install`
+  # and `brew upgrade` failed outright:
+  #
+  #     Errno::ENOENT: No such file or directory - amont-agent
+  #
+  # Every one of those releases was green. The checksums matched, the syntax
+  # was valid, and `bump-tap.py` rewrites only the version and the four
+  # url/sha pairs, so nothing it touched would ever notice a stale install
+  # line. It was found by a human running `brew upgrade` by hand.
+  #
+  # This job FAILS the run rather than warning. The release is already
+  # published by the time it runs and cannot be unpublished, so the point is
+  # not to prevent it — it is to make a broken install path impossible to
+  # miss. A warning here would reproduce exactly the condition that let this
+  # ship: a green release and a broken `brew install`.
+  verify-brew:
+    name: brew can install what was published
+    needs: [guard, publish-tap]
+    if: github.ref_type == 'tag'
+    # macOS because that is where nearly every brew user of this tool is, and
+    # because the bottle-less formula builds from the darwin release asset —
+    # the same bytes an actual user downloads.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      # No checkout: this must see only what a stranger sees — the tap and
+      # the published release. Anything read out of the repository would be
+      # testing the thing we already know.
+      - name: Install from the tap
+        run: |
+          set -euo pipefail
+          brew tap fredericrous/tap
+          brew install fredericrous/tap/amont
+
+      - name: The installed binaries are the version just published
+        run: |
+          set -euo pipefail
+          amont --version | tee /tmp/v
+          grep -qx "amont $VERSION" /tmp/v
+          amont-fleet --version | grep -q "$VERSION"
+
+      # The formula's own test block, which is the only place the INSTALLED
+      # artifact is exercised — and which referenced the departed binary too,
+      # so it would have failed for the same reason had anyone run it.
+      - name: brew test
+        run: brew test fredericrous/tap/amont
+
+      - name: Say so
+        run: |
+          echo "### brew install verified" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew install fredericrous/tap/amont\` produces v$VERSION" >> "$GITHUB_STEP_SUMMARY"
