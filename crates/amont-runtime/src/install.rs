@@ -1346,6 +1346,9 @@ pub fn forget_bookkeeping_in(repo: &Path) -> Vec<&'static str> {
     if crate::bypass::forget_in(repo) {
         gone.push("bypass ledger");
     }
+    if crate::downgrade::forget_in(repo) {
+        gone.push("downgrade ledger");
+    }
     if crate::skew::forget_in(repo) {
         gone.push("version-skew marker");
     }

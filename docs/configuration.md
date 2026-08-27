@@ -181,6 +181,30 @@ that reading should be a documented off-switch rather than an argument —
 though the count is also the first place a slow or flaky check becomes
 visible as the thing people route around.
 
+## `amont.recordDowngrades` — whether a warning is tallied
+
+```sh
+git config amont.recordDowngrades false   # default true
+```
+
+The companion to the switch above, for the other half of the signal. When a
+check FAILS but the severity that applies says `warn`, the hook silently
+appends one line to `$(git rev-parse --git-common-dir)/amont-downgrades`, and
+`amont list` shows the tally as "problems that did not block".
+
+That file is what makes a **trial** readable: set
+`amont.severity.pre-commit warn`, work for a fortnight, then read which checks
+your team would actually have fought. See
+[Trying it before you impose it](checks.md#trying-it-before-you-impose-it).
+
+Local on the same terms as the bypass ledger — never a ref, never pushed,
+never sent anywhere — and `false` stops the counting from now on, for the same
+reason its sibling has an off-switch.
+
+Nothing is recorded by a rehearsal (`amont run`), and nothing by a check that
+actually blocked: the first is not a commit, and the second has nothing to
+report.
+
 ## `amont.progress` — one check, one block
 
 ```sh

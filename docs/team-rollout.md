@@ -104,6 +104,41 @@ opts into `declared`.
 New hire day one: install, enroll, clone — protected. No per-clone step,
 no per-repo step, nothing to forget.
 
+### Step 0, before any of it: trial it at `warn`
+
+The recipe above imposes thirty-odd opinions your team did not pick, and the
+honest risk is not that a check is wrong — it is that two of them are wrong
+*for you*, people start reaching for `--no-verify`, and the habit generalises
+to the checks that mattered. A guard that teaches its own bypass is worse than
+no guard.
+
+So measure first. On your own machine, in a repository you work in daily:
+
+```sh
+git config amont.severity.pre-commit warn
+```
+
+Everything runs and reports; nothing blocks. A fortnight later, `amont list`
+tells you what a rollout would have felt like:
+
+```text
+problems that did not block
+  pre-commit-usual-name    61   last 2h ago
+  pre-commit-ban-terms      4   last 1d ago
+  66 events over 41 commits, since 12d ago
+```
+
+Then decide *per check*, with evidence, before anyone else is affected —
+`amont.severity.<check> warn` keeps the ones you want advisory. A check firing
+sixty times in a fortnight is a conversation to have with your team, not a
+default to inflict on them.
+
+The ledger is local to the machine that recorded it, so this measures **your**
+habits, not the team's. That is a real limit of the no-telemetry promise, and
+the workable version is to ask two or three colleagues to run the same trial
+and compare — not to look for a fleet-wide number that deliberately does not
+exist.
+
 ## What this does not solve
 
 - **Hooks remain advisory.** `--no-verify` still works, deliberately, and

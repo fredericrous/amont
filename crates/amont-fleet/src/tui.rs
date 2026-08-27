@@ -959,6 +959,47 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
             )));
         }
     }
+    // Deliberately NOT a table column beside WARN. That column counts checks
+    // CONFIGURED to warn — policy — and this counts times a warning actually
+    // fired — events. The comment above the BYPASS cell already draws exactly
+    // that line; a second "downgrades" column next to the first would be the
+    // conflation it warns against, and the wide table is at ten columns
+    // already. The detail pane has room to say which is which.
+    if repo.downgrades.total > 0 {
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from("problems that did not block (checks that ran, found something, warned)")
+                .style(tint(app.color, ACCENT)),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        for cc in &repo.downgrades.by_check {
+            lines.push(Line::from(format!(
+                "  {:<26} {:>3}   last {}{}",
+                cc.check,
+                cc.count,
+                amont_runtime::bypass::age(now, cc.last),
+                if cc.would_block == 0 {
+                    "  (advisory)"
+                } else {
+                    ""
+                },
+            )));
+        }
+        lines.push(Line::from(format!(
+            "  {} over {} commit{}, {} would have blocked",
+            repo.downgrades.total,
+            repo.downgrades.commits,
+            if repo.downgrades.commits == 1 {
+                ""
+            } else {
+                "s"
+            },
+            repo.downgrades.would_block,
+        )));
+    }
     lines.push(Line::from(""));
     let (agents_md_word, agents_md_colour) = match repo.agents_md {
         AgentsMdState::UpToDate => ("up to date".to_string(), Color::Green),
@@ -1159,6 +1200,8 @@ pub fn run(root: std::path::PathBuf, depth: usize, binary: String) -> std::io::R
         dirs_visited: 0,
         bypassed_commits: 0,
         repos_with_bypasses: 0,
+        downgraded_events: 0,
+        repos_with_downgrades: 0,
         repos: Vec::new(),
     });
     app.scanning = true;
@@ -1253,6 +1296,8 @@ mod tests {
             dirs_visited: 412,
             bypassed_commits: 0,
             repos_with_bypasses: 0,
+            downgraded_events: 0,
+            repos_with_downgrades: 0,
             repos: Vec::new(),
         }
     }
@@ -1276,6 +1321,7 @@ mod tests {
             skips: Vec::new(),
             severities: Vec::new(),
             bypasses: crate::bypasses::Bypasses::default(),
+            downgrades: crate::downgrades::Downgrades::default(),
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
@@ -1301,6 +1347,8 @@ mod tests {
             dirs_visited: 100,
             bypassed_commits: 0,
             repos_with_bypasses: 0,
+            downgraded_events: 0,
+            repos_with_downgrades: 0,
             repos: rs,
         }
     }

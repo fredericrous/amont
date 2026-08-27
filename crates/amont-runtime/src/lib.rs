@@ -46,6 +46,7 @@ pub mod commit_style;
 pub mod config;
 pub mod content;
 pub mod dispatch;
+pub mod downgrade;
 pub mod finding;
 pub mod gate_stamp;
 pub mod git;
@@ -479,6 +480,7 @@ pub fn print_json(
     pushed: bool,
     listings: &[CheckListing],
     bypasses: &bypass::Ledger,
+    downgrades: &downgrade::Ledger,
     conventions_apply: bool,
 ) {
     let checks: Vec<String> = listings
@@ -531,6 +533,7 @@ pub fn print_json(
             format!("\"commit_style\":{}", commit_style_json(&style, &rows)),
             format!("\"branch_style\":{}", branch_style_json()),
             format!("\"bypasses\":{}", bypasses_json(bypasses)),
+            format!("\"downgrades\":{}", downgrades_json(downgrades)),
             json::bool_field("conventions_apply", conventions_apply),
         ])
     );
@@ -539,6 +542,29 @@ pub fn print_json(
 /// `{"total": N, "last": <epoch|null>, "by_script": [...]}` — the ledger of
 /// unverified commits, so a parsing reader (the fleet, an agent) sees the
 /// same numbers `amont list` prints.
+fn downgrades_json(l: &downgrade::Ledger) -> String {
+    let by_check: Vec<String> = l
+        .by_check
+        .iter()
+        .map(|c| {
+            json::object(&[
+                json::string_field("check", &c.check),
+                json::int_field("count", c.count as i64),
+                json::int_field("would_block", c.would_block as i64),
+                json::int_field("last", c.last as i64),
+            ])
+        })
+        .collect();
+    json::object(&[
+        json::int_field("total", l.total as i64),
+        json::int_field("would_block", l.would_block as i64),
+        json::int_field("commits", l.commits as i64),
+        json::opt_int_field("first", l.first.map(|v| v as i64)),
+        json::opt_int_field("last", l.last.map(|v| v as i64)),
+        format!("\"by_check\":{}", json::array(&by_check)),
+    ])
+}
+
 fn bypasses_json(l: &bypass::Ledger) -> String {
     let by_script: Vec<String> = l
         .by_script
@@ -625,6 +651,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     policy::install(manifest.policy.clone());
     let listings = gather_checks(opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
+    let downgrades = downgrade::read();
     let conventions_apply = dispatch::conventions_apply(&manifest);
     if opts.json {
         print_json(
@@ -632,6 +659,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
             opts.pushed,
             &listings,
             &bypasses,
+            &downgrades,
             conventions_apply,
         );
     } else {
@@ -642,6 +670,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         let (style, rows) = commit_style::describe();
         print_commit_style(&style, &rows);
         print_bypasses(&bypasses);
+        print_downgrades(&downgrades);
         if !conventions_apply {
             println!(
                 "\n  ! conventions held back — no amont.conf here and amont.conventions \
@@ -650,6 +679,66 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         }
     }
     0
+}
+
+/// The shadow-mode worksheet, only when there is one — a repository that has
+/// never warned about anything keeps its old output byte-for-byte.
+///
+/// This is what a fortnight of `amont.severity.pre-commit warn` is FOR: the
+/// counts are the argument, and the footer carries the one action a reader
+/// takes afterwards. Repeating a config line per row would bury it.
+fn print_downgrades(l: &downgrade::Ledger) {
+    if l.total == 0 {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    println!("\nproblems that did not block");
+    let pad = l
+        .by_check
+        .iter()
+        .map(|c| ui::sanitize(&c.check).chars().count())
+        .max()
+        .unwrap_or(0);
+    for c in &l.by_check {
+        // A check that declares `warn` itself was never going to block, and
+        // saying so inline stops it being read as rollout evidence.
+        let advisory = if c.would_block == 0 {
+            "  (advisory)"
+        } else {
+            ""
+        };
+        println!(
+            "  {:<pad$}  {:>3}   last {}{}",
+            ui::sanitize(&c.check),
+            c.count,
+            bypass::age(now, c.last),
+            advisory
+        );
+    }
+    // Events and commits are different facts: forty commits each tripping a
+    // check once is a check the team disagrees with, while one commit tripping
+    // it forty times is one person losing an afternoon.
+    let since = l
+        .first
+        .map(|f| format!(", since {}", bypass::age(now, f)))
+        .unwrap_or_default();
+    println!(
+        "  {} event{} over {} commit{}{since}",
+        l.total,
+        if l.total == 1 { "" } else { "s" },
+        l.commits,
+        if l.commits == 1 { "" } else { "s" },
+    );
+    if l.would_block > 0 {
+        println!(
+            "  {} of them would have blocked — set amont.severity.<check> to keep one \
+             advisory when you go back to block",
+            l.would_block
+        );
+    }
 }
 
 /// The unverified-commit tally, only when there is one — a clean repository's

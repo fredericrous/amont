@@ -134,6 +134,7 @@ pub struct Repo {
     /// routing around (a slow check, a flaky one), and until it was counted
     /// the hooks detected the signal on every commit and threw it away.
     pub bypasses: crate::bypasses::Bypasses,
+    pub downgrades: crate::downgrades::Downgrades,
     /// Checks this repo declares in `amont.conf`. Invisible to the fleet
     /// view until now: a repo could be running a command on every commit that
     /// no dashboard column mentioned, and a manifest line nobody can parse is a
@@ -211,6 +212,10 @@ pub struct FleetScan {
     /// the denominator's denominator — every number here carries context.
     pub bypassed_commits: usize,
     pub repos_with_bypasses: usize,
+    /// Problems that were found and did not block, summed across the fleet —
+    /// the shadow-mode signal, with its own repo count for the same reason.
+    pub downgraded_events: usize,
+    pub repos_with_downgrades: usize,
     pub repos: Vec<Repo>,
 }
 
@@ -567,6 +572,8 @@ pub fn scan(
             dirs_visited: 0,
             bypassed_commits: 0,
             repos_with_bypasses: 0,
+            downgraded_events: 0,
+            repos_with_downgrades: 0,
             repos: Vec::new(),
         },
     };
@@ -736,6 +743,10 @@ fn found_repo(w: &mut Walk, repo: &Path) -> Repo {
     if inspected.bypasses.total > 0 {
         w.scan.repos_with_bypasses += 1;
     }
+    w.scan.downgraded_events += inspected.downgrades.total;
+    if inspected.downgrades.total > 0 {
+        w.scan.repos_with_downgrades += 1;
+    }
     inspected
 }
 
@@ -809,6 +820,7 @@ fn inspect(
         skips: skips::read(repo),
         severities: severities::read(repo),
         bypasses: common_dir.map(crate::bypasses::read).unwrap_or_default(),
+        downgrades: common_dir.map(crate::downgrades::read).unwrap_or_default(),
         declared: declared_checks(repo),
         trusted: match amont_runtime::trust::state(repo) {
             amont_runtime::trust::State::NoManifest => None,

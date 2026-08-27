@@ -12,6 +12,7 @@
 mod apply;
 mod bypasses;
 mod checks;
+mod downgrades;
 mod fix;
 mod progress;
 mod scan;
@@ -595,6 +596,12 @@ fn report(s: &scan::FleetScan, elapsed: std::time::Duration) {
             s.root.display()
         );
         println!("  • is --depth deep enough?  (currently: {})", s.depth);
+        if s.downgraded_events > 0 {
+            println!(
+                "  {} problems that did not block across {} repositories",
+                s.downgraded_events, s.repos_with_downgrades
+            );
+        }
         if !s.unreadable.is_empty() {
             println!("  • {} path(s) could not be read", s.unreadable.len());
         }
