@@ -53,6 +53,37 @@ are not expressible. Evaluated against the files staged for a commit, or
 against the range being pushed. This gate is real: a `*.sh` check does not
 run on a commit that touches no shell.
 
+A `+` adds the second half — what the **repository** must carry:
+
+```
+pre-commit  rubocop  *.rb+.rubocop.yml  block  rubocop
+```
+
+*"a staged `.rb`, **and** this repository has a `.rubocop.yml`."* Both sides are
+comma-separated and each is an OR — any trigger, any one of the opt-ins —
+while the two halves are an AND. With nothing on the left, `+Gemfile` reads
+"any change, in a repository that carries a Gemfile".
+
+The separator is the one `amont list` already prints between the halves:
+
+```text
+○ rubocop (declared)   inert here — needs .rb + .rubocop.yml
+```
+
+What you read in the listing is what you write in the file.
+
+**Why it exists.** Every builtin has this: `clippy` stays inert without a
+`Cargo.toml`, `yamllint` without a `.yamllint.yaml`. Declarations did not,
+because the manifest *was* the opt-in — you typed the line, so you wanted the
+check. [`amont add`](#shipping-a-check--packs) ended that: a vendored line is
+in your file because you took a whole pack, and without a condition a packaged
+`rubocop` fires on every `.rb` in a repository that never wanted it and just
+errors.
+
+A `+` that names no file (`*.rb+`) is refused rather than read as "no
+condition" — that is the opposite of what it was reaching for. A filename
+containing `+` is not expressible, the same class of limit as directories.
+
 **severity** — `block` fails the stage; `warn` runs the check, prints whatever it
 prints, and lets the commit through. It is your choice, per check.
 
@@ -417,6 +448,22 @@ commit id, never the tag, is what gets written into your manifest.
 That is also why the transport is git and not HTTP. amont links no crates and
 has no TLS stack; git is already a hard dependency, it is content-addressed, and
 it brings SSH, private repositories and self-hosted forges with it for free.
+
+### Making a packaged check well-behaved
+
+A pack's rows land in somebody else's repository, so gate them on that
+repository actually using the tool:
+
+```text
+pre-commit  rubocop     *.rb+.rubocop.yml   block  rubocop
+pre-commit  hadolint    Dockerfile          block  hadolint
+```
+
+The first is inert in a Ruby repository with no rubocop config; the second
+needs no opt-in because a `Dockerfile` in the diff already says everything.
+Without that condition a pack is a promise to run somebody's linter on every
+matching file whether or not they configured it — which is how a useful pack
+becomes an uninstalled one.
 
 ### What a pack may not carry
 
