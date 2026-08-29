@@ -360,6 +360,84 @@ Across the fleet, `amont-fleet` has a `DECL` column — `2` for two declared
 checks, `2!1` when one of them cannot run — and lists them per repository in the
 detail pane.
 
+## Shipping a check — packs
+
+A check you wrote could always be run; until `amont add` it could not be
+**shared**, except by pasting a line into somebody's manifest or upstreaming it
+into amont itself.
+
+A **pack** is any git repository with an `amont.pack` at its root, written in
+exactly the syntax above:
+
+```text
+# rust-strict — for a Rust repository that means it
+pre-commit  hadolint    Dockerfile  block  hadolint
+pre-commit  actionlint  *.yml       warn   actionlint
+```
+
+```console
+$ amont add github:acme/rust-strict@v2
+github:acme/rust-strict @ 8f3c2a1 declares:
+    pre-commit  hadolint    Dockerfile  block  hadolint
+    pre-commit  actionlint  *.yml       warn   actionlint
+
+amont.conf changed — these commands cannot run until you review them:
+    amont trust
+```
+
+`<source>` is `github:owner/repo`, `forgejo:host/owner/repo`, or any git URL —
+including a local path, which is all a test fixture needs. `--dry-run` shows
+without writing.
+
+### What ships is text, not execution
+
+This is the whole design, and it is what separates it from the ecosystem
+model pre-commit built. pre-commit **clones a repository and executes it**,
+building an isolated environment per hook. `amont add` copies rows into *your*
+`amont.conf`, and stops:
+
+- the rows land between `# amont:pack:start` / `# amont:pack:end` markers with
+  the pack's **commit id**, so what you got is recorded next to what you run;
+- the manifest's content changed, so its fingerprint no longer matches and
+  **every** declared check — the pack's and your own — is inert until you
+  [trust](trust.md) it;
+- editing a vendored row by hand revokes consent exactly like editing any other
+  line. A pack's rows are not privileged.
+
+Adding a pack is therefore never the moment anything becomes runnable. It is a
+way to avoid typing.
+
+### Pinning, and what "verify" means here
+
+`@v2` is a tag, and a tag moves. `amont add` resolves it with `git ls-remote`
+**before** fetching, then refuses whatever arrives unless it is that commit —
+so a ref that moves between the two steps is an error, not a surprise. The
+commit id, never the tag, is what gets written into your manifest.
+
+That is also why the transport is git and not HTTP. amont links no crates and
+has no TLS stack; git is already a hard dependency, it is content-addressed, and
+it brings SSH, private repositories and self-hosted forges with it for free.
+
+### What a pack may not carry
+
+Checks, and nothing else. `tool` pins, `severity`, `skip` and `set` lines are
+refused, and the whole pack with them.
+
+Those lines are policy about the repository *installing* the pack — see [What a
+repository cannot do](#what-a-repository-cannot-do). A `skip` could silence your
+secrets scan; a `set` could raise your large-file ceiling. A third party
+proposing commands you will read is one thing; a third party quietly changing
+what your existing checks do is another, and the second is not on offer.
+
+A pack is refused **whole**: one bad row and nothing is written, because a
+half-applied pack is a manifest neither side asked for.
+
+### Updating and removing
+
+`amont add` the same source again and its block is **replaced** — not appended,
+which would declare the same id twice and break the manifest. To remove a pack,
+delete its block; it is plain text, and the markers say where it ends.
+
 ## Why this format and not TOML
 
 TOML would be nicer to write and costs a dependency tree that would then run on

@@ -56,6 +56,7 @@ pub mod install;
 pub mod json;
 pub mod live;
 pub mod manifest;
+pub mod pack;
 pub mod policy;
 pub mod pushed_tree;
 pub mod pushrefs;
