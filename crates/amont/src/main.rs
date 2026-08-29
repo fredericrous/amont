@@ -81,6 +81,15 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
+  add            vendor a pack's declarations into amont.conf — a pack is a
+                 git repository carrying an `amont.pack` of amont.conf rows.
+                 Resolves the revision to a commit id, refuses anything that
+                 is not a check, and records the id beside the lines. Nothing
+                 is trusted by adding it: the manifest changes, so `amont
+                 trust` must read the commands before any of them can run.
+                 <source>[@<rev>]… [--dry-run]
+                   github:owner/repo   forgejo:host/owner/repo   <git-url>
+
   --help         this text        --version   the binary's version
 
 Hook mode (what the shims call): amont --hooks-dir <dir> <hook-name> [args…]
@@ -103,6 +112,7 @@ enum Sub {
     Enroll,
     Attest,
     Check,
+    Add,
 }
 
 impl Sub {
@@ -132,6 +142,7 @@ impl Sub {
             Sub::Enroll => 9,
             Sub::Attest => 10,
             Sub::Check => 11,
+            Sub::Add => 12,
         }
     }
 }
@@ -141,7 +152,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 12] = [
+const SUBCOMMANDS: [(&str, Sub); 13] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -154,6 +165,7 @@ const SUBCOMMANDS: [(&str, Sub); 12] = [
     ("enroll", Sub::Enroll),
     ("attest", Sub::Attest),
     ("check", Sub::Check),
+    ("add", Sub::Add),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -323,6 +335,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Enroll => (&[], &["--conventions"]),
         Sub::Attest => (&[], &["--signers", "--principal", "--platform"]),
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
+        Sub::Add => (&["--dry-run"], &[]),
     }
 }
 
@@ -455,6 +468,111 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // staged and — via `--stdin-filename` — may never have been saved.
         // Sharing a verb would drag all of that machinery into a read-only
         // lookup, and an editor asking about a buffer would inherit a stash.
+        // `amont add <source>` — vendor a pack's rows into amont.conf.
+        //
+        // A SETUP verb. Nothing here is reachable from a hook: no fetch, no
+        // network, and no new code between `git commit` and a verdict.
+        //
+        // It deliberately does NOT trust what it writes. Vendoring text and
+        // consenting to execute it are different acts, and collapsing them
+        // would hand a remote source the one decision the trust gate exists to
+        // keep local.
+        Sub::Add => {
+            use amont_runtime::pack;
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            let specs: Vec<&str> = args
+                .iter()
+                .filter_map(|a| a.to_str())
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            if specs.is_empty() {
+                eprintln!("amont: add needs a source (github:owner/repo, forgejo:host/owner/repo, or a git URL)");
+                eprint!("{USAGE}");
+                return 2;
+            }
+
+            // Resolve and read EVERY source before writing anything. A pack
+            // that fails after an earlier one landed would leave a manifest
+            // nobody asked for — the same "refused whole" rule the row parser
+            // applies within a single pack.
+            let scratch = std::env::temp_dir().join(format!("amont-pack-{}", std::process::id()));
+            let mut fetched: Vec<(String, String, Vec<String>)> = Vec::new();
+            for (i, spec) in specs.iter().enumerate() {
+                let outcome = pack::parse_source(spec).and_then(|source| {
+                    let id = pack::resolve(&source)?;
+                    let text = pack::fetch(&source, &id, &scratch.join(i.to_string()))?;
+                    let rows = pack::rows(&text)?;
+                    Ok((source.label, id, rows))
+                });
+                match outcome {
+                    Ok(got) => fetched.push(got),
+                    Err(msg) => {
+                        let _ = std::fs::remove_dir_all(&scratch);
+                        eprintln!("amont: {msg}");
+                        return 1;
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&scratch);
+
+            // Show every command before asking. This is the last point at
+            // which a reader can stop a line entering their manifest, and the
+            // sanitiser is what keeps a hostile pack from painting the
+            // terminal on the way past.
+            for (label, id, rows) in &fetched {
+                println!("{label} @ {} declares:", &id[..7.min(id.len())]);
+                for r in rows {
+                    println!("    {}", amont_runtime::ui::sanitize(r));
+                }
+            }
+            if dry_run {
+                println!("--dry-run: nothing written");
+                return 0;
+            }
+
+            let root = amont_runtime::hooks::common::repo_root();
+            let path = std::path::Path::new(&root).join(amont_runtime::manifest::MANIFEST);
+            let before = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut after = before.clone();
+            for (label, id, rows) in &fetched {
+                match pack::splice(&after, label, id, rows) {
+                    Ok(next) => after = next,
+                    Err(msg) => {
+                        eprintln!("amont: {msg}");
+                        return 1;
+                    }
+                }
+            }
+            if after == before {
+                println!(
+                    "{} already carries exactly this",
+                    amont_runtime::manifest::MANIFEST
+                );
+                return 0;
+            }
+            // No confirmation prompt here, deliberately. `amont trust` does not
+            // prompt either — running the verb IS the deliberate act, and the
+            // gate that matters comes after: the rows are inert until somebody
+            // reads them. A second yes/no would be friction in front of a
+            // reversible text edit, and `confirm` returns false without a tty,
+            // which would make `add` unusable from a script or a test for no
+            // safety gained. `--dry-run` is there for looking first.
+            if let Err(e) = std::fs::write(&path, &after) {
+                eprintln!("amont: cannot write {}: {e}", path.display());
+                return 1;
+            }
+
+            // The manifest changed, so its fingerprint no longer matches and
+            // every declared check — the new ones and any that were already
+            // there — is inert until somebody reads them. Say so, because a
+            // verb that appears to install checks and silently installs
+            // nothing is worse than one that refuses.
+            println!(
+                "\n{} changed — these commands cannot run until you review them:\n    amont trust",
+                amont_runtime::manifest::MANIFEST
+            );
+            0
+        }
         Sub::Check => {
             let format = match flag_value(args, "--format") {
                 Ok(f) => f,

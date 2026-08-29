@@ -109,6 +109,24 @@ it did nothing worse — and a repository that can move the rendering can hide a
 line from the person consenting to it. A repository must not be able to pick
 how its own consent is rendered any more than it can pick how it is hashed.
 
+## A vendored pack is consented to like anything else
+
+`amont add` ([custom checks](custom-checks.md#shipping-a-check--packs)) copies
+declarations from somebody else's repository into your `amont.conf`. It grants
+no trust, and it gets no exemption:
+
+- the append changes the file's content, so the fingerprint no longer matches
+  and every declared check goes inert — including ones you had already trusted;
+- the pack's rows are shown by `amont trust` alongside your own, in the same
+  listing, with no marking that would invite skimming past them;
+- editing a vendored row by hand revokes consent exactly as editing a
+  hand-written one does.
+
+The commit id recorded in the block says *where the text came from*. It is
+provenance, not authority: it tells you the bytes are the ones that repository
+published, and says nothing about whether the commands are a good idea. Reading
+them is still the gate, and it is still yours.
+
 ## What this does not protect against
 
 Stated plainly, because a security boundary described only by what it stops is
