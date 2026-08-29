@@ -11,14 +11,33 @@ repository"** — for that, ask:
 ```sh
 amont list                       # here, and why not
 amont list --stage pre-push      # one trigger
+amont list --all                 # the inert ones too, one row each
 amont list --json                # the same, machine-readable
 ```
 
 Most checks are **inert** in most repositories, by design. A check fires only
 when the commit touches files it understands *and* the repository carries the
 configuration that opts into that tool. A JavaScript repository never invokes
-cargo; a repository with no `ruff.toml` never needs ruff. `amont list`
-prints the condition each inert check is waiting on.
+cargo; a repository with no `ruff.toml` never needs ruff.
+
+That is why `amont list` leads with what actually runs and gives the rest a
+line:
+
+```text
+  12 active here.  22 inert (Go, JavaScript, Kubernetes, Python) — amont list --all
+```
+
+Even in a repository amont serves well, about half the checks are inert; in one
+built on a stack it does not cover yet, two thirds. Printing all of them
+interleaved meant a Terraform shop read thirty rows naming Rust, Go, Python and
+JavaScript — which says "this tool is for other people" when the truth is the
+opposite: the checks that *were* running are `secrets`, `large-files` and
+`merge-conflict`, the ones that prevent incidents in any repository at all.
+
+`--all` prints the condition each inert check is waiting on, which is still the
+answer to "why is clippy not running here". **Skipped (`⊘`) and unusable (`✗`)
+checks are never collapsed** — somebody silenced the first and broke the second,
+and a count is the wrong shape for either.
 
 ## Reading the table
 

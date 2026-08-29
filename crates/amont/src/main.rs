@@ -46,6 +46,7 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
 
   list           what would run in this repository, and why not
                  [--json] [--stage pre-commit|pre-push] [--pushed]
+                 [--all: the inert checks too, one row each]
   install        turn hooks on here: copy the binary if needed, bake the shims
                  [--force] replaces a hook that is not ours
   init           wire up THIS repository only — the verb a package manager
@@ -324,7 +325,7 @@ fn main() {
 /// GRANT trust.
 fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
     match sub {
-        Sub::List => (&["--json", "--pushed"], &["--stage"]),
+        Sub::List => (&["--json", "--pushed", "--all"], &["--stage"]),
         Sub::Setup => (&["--local", "--global", "--dry-run"], &[]),
         Sub::Install => (&["--force"], &[]),
         Sub::Init | Sub::Restore => (&[], &[]),
@@ -414,6 +415,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 json: args.iter().any(|a| a == "--json"),
                 stage,
                 pushed: args.iter().any(|a| a == "--pushed"),
+                all: args.iter().any(|a| a == "--all"),
             })
         }
         // `amont install` — was a Makefile recipe. It lives here so the

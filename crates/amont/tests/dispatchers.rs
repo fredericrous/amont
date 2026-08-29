@@ -370,10 +370,64 @@ fn list_reports_what_would_run_here() {
         !clippy.contains("pre-commit-"),
         "the heading already said the trigger: {clippy}"
     );
-    // A rust repo: clippy runs, ruff is INERT — and inert is not failure.
+    // A rust repo: clippy runs, and is shown.
     assert!(clippy.contains('●'), "clippy should run here: {clippy}");
+
+    // ruff is INERT, and the default view no longer spends a row on it. Half
+    // this list is inert even in a repository amont serves well, and every one
+    // of those rows names somebody else's language — read top to bottom that
+    // said "this tool is for other people". It collapses to a count instead.
+    assert!(
+        ruff.is_empty(),
+        "an inert check should not have its own row by default: {ruff}"
+    );
+    assert!(
+        text.contains("active here.") && text.contains("inert"),
+        "…but the count has to say they exist: {text}"
+    );
+    assert!(
+        text.contains("--all"),
+        "and name the way to see them: {text}"
+    );
+
+    // `--all` is that way, and it still answers "why is ruff not running".
+    let all = r.run(&["list", "--all"]).output();
+    let ruff = all.lines().find(|l| l.contains("ruff")).unwrap_or("");
     assert!(ruff.contains('○'), "ruff should be inert here: {ruff}");
     assert!(ruff.contains(".py"), "and say what it would need: {ruff}");
+}
+
+/// Collapsing the inert rows must never swallow something the reader has to
+/// act on. `⊘` means somebody silenced a check and `✗` means a declaration is
+/// broken — both are still one row each in the DEFAULT view, because a count
+/// is the wrong shape for either.
+#[test]
+fn collapsing_inert_rows_never_hides_a_skip_or_a_broken_declaration() {
+    let r = Repo::new();
+    r.stage("main.rs", "fn main() {}\n");
+    // A declaration the parser cannot read, and a silenced built-in.
+    r.stage("amont.conf", "pre-commit  no-command-at-all\n");
+    r.git(&["config", "--add", "hook.skip", "pre-commit-secrets"]);
+
+    let text = r.run(&["list"]).output();
+    assert!(
+        text.contains('⊘'),
+        "a skipped check keeps its row by default: {text}"
+    );
+    assert!(
+        text.contains('✗'),
+        "an unusable declaration keeps its row by default: {text}"
+    );
+    // …while the inert ones did collapse, or this test proves nothing.
+    //
+    // Matched on the ROW shape, not on the glyph anywhere: the legend at the
+    // bottom spells out every glyph including this one, so `contains('○')` is
+    // true of any output at all and would make the assertion vacuous.
+    assert!(
+        !text.lines().any(|l| l.starts_with("  ○")),
+        "inert rows should be collapsed here: {text}"
+    );
+    assert!(text.contains("inert"), "and counted: {text}");
 }
 
 /// A skipped check is shown as skipped, not as inert — they mean different
