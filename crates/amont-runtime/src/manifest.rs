@@ -105,7 +105,8 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::BadScope(t) => write!(
                 f,
-                "scope {t:?} must be `*`, `*.<ext>`, or a bare filename (no `/`)"
+                "scope {t:?} must be `*`, `*.<ext>`, or a bare filename (no `/`), \
+                 optionally followed by `+<file>` the repository must carry"
             ),
             ParseError::BadTool => write!(
                 f,
@@ -145,6 +146,11 @@ pub struct Declared {
     pub exts: Vec<String>,
     /// Exact filenames that gate it — the scope column's bare tokens.
     pub names: Vec<String>,
+    /// Files the REPOSITORY must carry for this check to apply at all — the
+    /// scope column's `+` half. Empty means always applicable, which is what
+    /// every declaration meant before `amont add` made a line something you
+    /// could acquire rather than write.
+    pub opt_in: Vec<String>,
     pub program: String,
     pub args: Vec<String>,
 }
@@ -589,21 +595,71 @@ fn leak(exts: Vec<String>) -> &'static [&'static str] {
     Box::leak(refs.into_boxed_slice())
 }
 
-/// `*` means any change; `*.sh` or `*.sh,*.bash` gate on extensions.
+/// `*` means any change; `*.sh` or `*.sh,*.bash` gate on extensions; and
+/// `<triggers>+<opt-ins>` adds the repository condition a builtin has.
 ///
-/// No `opt_in` counterpart, because the manifest IS the opt-in: a repository
-/// that does not want the check deletes the line.
+/// # `+`, and why there is now an opt-in at all
 ///
-/// Returns owned extensions rather than a `Scope`, so validating a manifest
+/// This used to read: *"No `opt_in` counterpart, because the manifest IS the
+/// opt-in: a repository that does not want the check deletes the line."* That
+/// was true while every line was one somebody typed. `amont add` ended it — a
+/// vendored line is in your manifest because you took a whole PACK, not
+/// because you chose that tool, so a packaged `rubocop` fired on every `.rb`
+/// in a repository with no rubocop config and simply errored. That is the
+/// "ninety-five nags" `hooks::yamllint` documents avoiding, which is a
+/// courtesy every builtin has had and no declaration could express.
+///
+/// The separator is `+` because that is what `amont list` already PRINTS
+/// between the two halves — `inert here — needs .rs + Cargo.toml`. What you
+/// read in the listing is what you write in the file. No spaces: the column
+/// grammar splits on whitespace.
+///
+/// Both sides are comma-separated, and each side is an OR — any trigger, and
+/// any one opt-in. Between the sides it is an AND, matching `Scope`'s own
+/// semantics.
+///
+/// Splitting on the FIRST `+` means a filename containing one is not
+/// expressible. That is the same class of limit as directories being
+/// inexpressible, and it is stated in `docs/custom-checks.md` rather than
+/// worked around with quoting this grammar deliberately does not have.
+///
+/// Returns owned strings rather than a `Scope`, so validating a manifest
 /// costs nothing permanent. Only `External::from` turns these into the
 /// `&'static` form `Scope` requires.
-fn parse_scope(token: &str) -> Result<(Vec<String>, Vec<String>), ParseError> {
-    if token == "*" {
-        return Ok((Vec::new(), Vec::new()));
+type ParsedScope = (Vec<String>, Vec<String>, Vec<String>);
+
+fn parse_scope(token: &str) -> Result<ParsedScope, ParseError> {
+    let (triggers, opt_in) = match token.split_once('+') {
+        None => (token, Vec::new()),
+        Some((left, right)) => {
+            // `*.rb+` promises a condition and states none. Refused rather
+            // than read as "no condition", which is the opposite of what the
+            // author was reaching for.
+            let opts: Vec<String> = right
+                .split(',')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            if opts.is_empty() || right.contains('+') {
+                return Err(ParseError::BadScope(token.to_string()));
+            }
+            for o in &opts {
+                if o.contains(['*', '?', '[', '/']) {
+                    return Err(ParseError::BadScope(o.clone()));
+                }
+            }
+            // `+cfg` with nothing on the left is "any change, if this repo has
+            // cfg" — a real shape, and `*` is how the trigger half spells
+            // "anything".
+            (if left.is_empty() { "*" } else { left }, opts)
+        }
+    };
+    if triggers == "*" {
+        return Ok((Vec::new(), Vec::new(), opt_in));
     }
     let mut exts = Vec::new();
     let mut names = Vec::new();
-    for part in token.split(',') {
+    for part in triggers.split(',') {
         if let Some(ext) = part.strip_prefix('*').filter(|ext| ext.starts_with('.')) {
             exts.push(ext.to_string());
             continue;
@@ -619,7 +675,7 @@ fn parse_scope(token: &str) -> Result<(Vec<String>, Vec<String>), ParseError> {
         }
         return Err(ParseError::BadScope(part.to_string()));
     }
-    Ok((exts, names))
+    Ok((exts, names, opt_in))
 }
 
 fn parse_stage(token: &str) -> Option<Stage> {
@@ -835,7 +891,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     {
         return fail(ParseError::Duplicate(declared.to_string()));
     }
-    let (exts, names) = match parse_scope(scope_tok) {
+    let (exts, names, opt_in) = match parse_scope(scope_tok) {
         Ok(e) => e,
         Err(why) => return fail(why),
     };
@@ -878,6 +934,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         severity,
         exts,
         names,
+        opt_in,
         program,
         args: argv.collect(),
     })
@@ -905,13 +962,18 @@ impl From<Line> for External {
         let (name, stage, parsed) = l.into_parts();
         let kind = match parsed {
             Ok(d) => Kind::Runnable {
-                scope: if d.exts.is_empty() && d.names.is_empty() {
+                // `ALWAYS` only when NOTHING narrows it. An opt-in alone is a
+                // narrowing — `+Gemfile` means "any change, in a Ruby
+                // repository" — and collapsing that to `ALWAYS` would run the
+                // check everywhere, which is the exact bug this field exists
+                // to prevent.
+                scope: if d.exts.is_empty() && d.names.is_empty() && d.opt_in.is_empty() {
                     Scope::ALWAYS
                 } else {
                     Scope {
                         files: leak(d.exts),
                         names: leak(d.names),
-                        opt_in: &[],
+                        opt_in: leak(d.opt_in),
                         not_during: &[],
                     }
                 },
@@ -1198,6 +1260,64 @@ mod tests {
             why(&one("pre-commit  x  pkg*  block  ./x\n")),
             ParseError::BadScope("pkg*".into())
         );
+    }
+
+    /// `+` adds the repository condition a builtin has always had.
+    ///
+    /// The separator is the one `amont list` already prints between the two
+    /// halves (`needs .rs + Cargo.toml`), so what a reader sees in the listing
+    /// is what they write in the file.
+    #[test]
+    fn a_scope_can_name_what_the_repository_must_carry() {
+        let line = one("pre-commit  rubocop  *.rb+.rubocop.yml  block  rubocop\n");
+        let d = usable(&line);
+        assert_eq!(d.exts, [".rb"]);
+        assert!(d.names.is_empty());
+        assert_eq!(d.opt_in, [".rubocop.yml"]);
+
+        // Both sides comma-separated: any trigger, and any ONE opt-in.
+        let line = one("pre-commit  x  *.rb,Rakefile+.rubocop.yml,.rubocop_todo.yml  block  ./x\n");
+        let d = usable(&line);
+        assert_eq!(d.exts, [".rb"]);
+        assert_eq!(d.names, ["Rakefile"]);
+        assert_eq!(d.opt_in, [".rubocop.yml", ".rubocop_todo.yml"]);
+
+        // No trigger half: "any change, in a repository that carries this".
+        let line = one("pre-commit  x  +Gemfile  block  ./x\n");
+        let d = usable(&line);
+        assert!(d.exts.is_empty() && d.names.is_empty());
+        assert_eq!(d.opt_in, ["Gemfile"]);
+    }
+
+    /// Every declaration written before `+` existed keeps its meaning: no
+    /// opt-in is the old behaviour, which is "applies wherever it triggers".
+    #[test]
+    fn a_scope_without_a_plus_is_unchanged() {
+        let line = one("pre-commit  x  *.ts,package.json  block  ./x\n");
+        let d = usable(&line);
+        assert!(d.opt_in.is_empty());
+        let line = one("pre-commit  x  *  block  ./x\n");
+        let d = usable(&line);
+        assert!(d.opt_in.is_empty() && d.exts.is_empty() && d.names.is_empty());
+    }
+
+    /// A `+` that promises a condition and names none is refused, rather than
+    /// read as "no condition" — which is the opposite of what was reached for.
+    #[test]
+    fn a_malformed_opt_in_half_is_refused() {
+        for bad in [
+            "*.rb+",            // promised, not given
+            "*.rb+,",           // still nothing
+            "*.rb+a+b",         // a second separator is not a filename
+            "*.rb+sub/dir.yml", // directories are inexpressible, as on the left
+            "*.rb+*.yml",       // this grammar has no globs to mis-guess
+        ] {
+            let line = one(&format!("pre-commit  x  {bad}  block  ./x\n"));
+            assert!(
+                matches!(line, Line::Broken { .. }),
+                "{bad} should be refused, got {line:?}"
+            );
+        }
     }
 
     /// The pin grammar: exactly three tokens, claimed from a first token that
