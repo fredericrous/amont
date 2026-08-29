@@ -63,23 +63,25 @@ pub struct Source {
 /// A local path is how a pack is developed before it is published, and it is
 /// the whole fixture story for the tests.
 ///
-/// `Path::is_absolute` alone cannot answer this, and that is the bug CI caught:
-/// it is PLATFORM-DEPENDENT. On unix `C:\\pack` is just an oddly-named relative
-/// file, so a rule written as "absolute, or it exists" accepted `/tmp/pack`
-/// everywhere and refused every Windows path — `amont add` of a local pack
-/// simply did not work there. The drive-letter and UNC shapes are therefore
-/// recognised explicitly, on every platform, so the verb answers the same way
-/// wherever it runs.
+/// **Every shape is named explicitly, and `Path::is_absolute` is deliberately
+/// not consulted.** It answers differently depending on where it runs, and this
+/// function must not: `C:\pack` is not absolute on unix, and `/tmp/pack` is not
+/// absolute on Windows, so a rule leaning on it rejects whichever shape is
+/// foreign to the host. That cost two round trips through CI — first Windows
+/// could not add a local pack at all, then, once `is_absolute` was added, it
+/// refused the unix spelling instead. The lesson is that "is this a path" is a
+/// question about the STRING, and the host's opinion of it is noise.
 fn looks_like_path(body: &str) -> bool {
     let b = body.as_bytes();
+    // `C:\pack` or `C:/pack`
     let drive = b.len() >= 3
         && b[0].is_ascii_alphabetic()
         && b[1] == b':'
         && (b[2] == b'\\' || b[2] == b'/');
-    drive
-        || body.starts_with("\\\\") // UNC: \\server\share
-        || std::path::Path::new(body).is_absolute()
-        || std::path::Path::new(body).exists()
+    body.starts_with('/')            // unix absolute
+        || drive
+        || body.starts_with(r"\\")   // UNC: \\server\share
+        || std::path::Path::new(body).exists() // a relative path that is really there
 }
 
 /// `github:owner/repo@v2`, `forgejo:host/owner/repo`, a git URL, or a local
@@ -338,9 +340,15 @@ mod tests {
         assert_eq!(s.rev.as_deref(), Some("v1"));
     }
 
-    /// A local path is a valid source on every platform. The first version of
-    /// this tested `starts_with('/')`, which is true of a unix path and false
-    /// of every Windows one — so the feature was silently unix-only.
+    /// A local path is a valid source on every platform, and BOTH spellings are
+    /// accepted wherever this runs.
+    ///
+    /// Two CI round trips are behind this test. First the rule was
+    /// `starts_with('/')` — true of a unix path, false of every Windows one, so
+    /// the feature was silently unix-only. Then it became `Path::is_absolute`,
+    /// which is platform-dependent in the other direction and refused
+    /// `/tmp/pack` on Windows. Asserting both shapes on every host is what
+    /// makes the third version stay fixed.
     #[test]
     fn an_absolute_path_is_a_source_on_any_platform() {
         for p in ["/tmp/pack", r"C:\Users\me\pack", r"\\server\share\pack"] {
