@@ -226,6 +226,8 @@ pub struct ListOptions {
     pub json: bool,
     pub stage: Option<check::Stage>,
     pub pushed: bool,
+    /// Print the inert checks too, one row each, as this always did.
+    pub all: bool,
 }
 
 /// Every check that would be considered for `stage_filter` (or both stages,
@@ -350,9 +352,66 @@ pub fn gather_checks(
 /// `listings` is already stage-grouped (`gather_checks` iterates stage by
 /// stage), so a heading prints exactly once per stage encountered, in the
 /// same order.
-pub fn print_text(listings: &[CheckListing]) {
+/// The ecosystem a scope token belongs to, for the inert summary.
+///
+/// Presentational and deliberately incomplete: a token nobody has mapped
+/// simply does not get named, and its check is still counted. The alternative
+/// — a `family` field on every `Builtin` — is thirty-seven places for a label
+/// to drift out of step with the scope that actually decides anything.
+///
+/// Generic tokens (`.yaml`, `.json`) are absent on purpose. Four checks want
+/// `.yaml` for four different reasons, so naming YAML here would tell a reader
+/// their repository is "missing YAML checks" when what it is missing is
+/// Kubernetes.
+fn ecosystem(token: &str) -> Option<&'static str> {
+    Some(match token {
+        ".rs" | "Cargo.toml" | "Cargo.lock" => "Rust",
+        ".go" | "go.mod" | "go.sum" => "Go",
+        ".py"
+        | ".pyi"
+        | "requirements.txt"
+        | "pyproject.toml"
+        | "ruff.toml"
+        | ".ruff.toml"
+        | "pytest.ini"
+        | "conftest.py"
+        | "pyrightconfig.json"
+        | "pyrightconfig.jsonc" => "Python",
+        ".js" | ".jsx" | ".ts" | ".tsx" | ".vue" | "package.json" | "package-lock.json" => {
+            "JavaScript"
+        }
+        "kustomization.yaml" | "kustomization.yml" => "Kubernetes",
+        t if t.starts_with(".kube-linter") => "Kubernetes",
+        t if t.starts_with(".prettierrc") || t == "prettier.config.js" => "JavaScript",
+        _ => return None,
+    })
+}
+
+/// Every check that would run here, and one line for the ones that would not.
+///
+/// The default used to print all thirty-odd rows interleaved alphabetically.
+/// In a repository amont serves well that is about half inert; in one built on
+/// a stack it does not cover yet it is two thirds — and every one of those rows
+/// names somebody else's language. Read top to bottom it says "this tool is for
+/// other people", which is the opposite of true: the checks that DO run are
+/// `secrets`, `large-files` and `merge-conflict`, the ones that prevent
+/// incidents in any repository at all.
+///
+/// So the inert rows collapse to a count and the ecosystems they belong to.
+/// `--all` brings them back, because "why is clippy not running" is a real
+/// question with a real answer already written.
+///
+/// **Skipped and unusable rows are never collapsed.** `⊘` means somebody
+/// silenced a check and `✗` means a declaration is broken; both are things the
+/// reader has to act on, and both would be lost in a count.
+pub fn print_text(listings: &[CheckListing], all: bool) {
+    let shown: Vec<&CheckListing> = listings
+        .iter()
+        .filter(|l| all || l.status != Status::Inert)
+        .collect();
+
     let mut current: Option<check::Stage> = None;
-    for l in listings {
+    for l in &shown {
         if current != Some(l.stage) {
             println!("{}", ui::highlight(l.stage.as_str()));
             current = Some(l.stage);
@@ -382,7 +441,36 @@ pub fn print_text(listings: &[CheckListing]) {
         };
         println!("  {glyph} {label:<26} {}", ui::sanitize(&l.reason));
     }
+
+    let runs = listings.iter().filter(|l| l.status == Status::Runs).count();
+    let inert: Vec<&CheckListing> = listings
+        .iter()
+        .filter(|l| l.status == Status::Inert)
+        .collect();
+
     println!();
+    if inert.is_empty() {
+        println!("  {runs} active here.");
+    } else if all {
+        println!("  {runs} active here, {} inert.", inert.len());
+    } else {
+        let mut families: Vec<&str> = inert
+            .iter()
+            .flat_map(|l| l.scope_files.iter().chain(l.scope_opt_in.iter()))
+            .filter_map(|t| ecosystem(t))
+            .collect();
+        families.sort_unstable();
+        families.dedup();
+        let named = if families.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", families.join(", "))
+        };
+        println!(
+            "  {runs} active here.  {} inert{named} — amont list --all",
+            inert.len()
+        );
+    }
     println!("  ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable");
 }
 
@@ -664,7 +752,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
             conventions_apply,
         );
     } else {
-        print_text(&listings);
+        print_text(&listings, opts.all);
         // Not filtered by `--stage`: commit style belongs to no stage, and
         // suppressing it for `--stage pre-push` would only hide it from the
         // reader who narrowed their question.
@@ -960,6 +1048,37 @@ mod naming {
                 check.name,
                 check.stage
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod listing {
+    use super::*;
+
+    /// The summary names ecosystems so the inert count reads as "other
+    /// people's stacks" rather than "twenty-two things are broken".
+    #[test]
+    fn scope_tokens_map_to_the_ecosystem_a_reader_would_name() {
+        assert_eq!(ecosystem(".rs"), Some("Rust"));
+        assert_eq!(ecosystem("Cargo.lock"), Some("Rust"));
+        assert_eq!(ecosystem("go.sum"), Some("Go"));
+        assert_eq!(ecosystem("pyproject.toml"), Some("Python"));
+        assert_eq!(ecosystem(".tsx"), Some("JavaScript"));
+        assert_eq!(ecosystem(".prettierrc.json"), Some("JavaScript"));
+        assert_eq!(ecosystem("kustomization.yaml"), Some("Kubernetes"));
+        assert_eq!(ecosystem(".kube-linter.yaml"), Some("Kubernetes"));
+    }
+
+    /// The generic tokens are unmapped ON PURPOSE. Four checks want `.yaml`
+    /// for four unrelated reasons, so naming YAML would tell a reader their
+    /// repository is missing "YAML checks" when what it is missing is
+    /// Kubernetes. An unmapped token is still COUNTED — it just goes unnamed,
+    /// which is the honest failure mode for a presentational map.
+    #[test]
+    fn generic_tokens_are_deliberately_unnamed() {
+        for t in [".yaml", ".yml", ".json", ".md", ".sh", "unknown-thing"] {
+            assert_eq!(ecosystem(t), None, "{t} should not name an ecosystem");
         }
     }
 }
