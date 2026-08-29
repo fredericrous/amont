@@ -22,9 +22,12 @@ fn pack_repo(body: &str) -> Repo {
 }
 
 fn source(pack: &Repo) -> String {
+    // Trailing separator trimmed for BOTH shapes: `path("")` leaves one, and on
+    // Windows it is a backslash — which `trim_end_matches('/')` left in place,
+    // so the fixture handed `amont add` a path ending in a separator.
     pack.path("")
         .to_string_lossy()
-        .trim_end_matches('/')
+        .trim_end_matches(['/', '\\'])
         .to_string()
 }
 
