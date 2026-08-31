@@ -269,7 +269,18 @@ pub fn pytest(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         if !changed.iter().any(|f| EXTS.iter().any(|e| f.ends_with(e))) {
             continue; // this ref pushes no Python
         }
-        let Some(pytest) = super::common::which("pytest") else {
+        // `resolve_python_tool`, like `ruff` and `pyright` — NOT a bare
+        // `which`, which is what this used to do and is the one thing that
+        // makes a Python gate useless.
+        //
+        // A project's tests import the project. A `pytest` found on `PATH`
+        // belongs to whatever interpreter happens to be first there, which in
+        // a `src/` layout cannot see the package at all: the gate reported
+        // `ModuleNotFoundError` — as a test FAILURE, blocking the push — in a
+        // repository whose suite passes 1296 tests under `uv run pytest`. The
+        // resolver tries `uv run --no-sync` first, then `.venv/bin/`, and only
+        // then falls back to `PATH`.
+        let Some((argv, _)) = resolve_python_tool(&root, "pytest") else {
             super::common::warn(
                 "Python changed but pytest is not installed — the gate did NOT run",
             );
@@ -278,7 +289,8 @@ pub fn pytest(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // Where THIS ref's suite runs decides what it is answering about —
         // the pushed commits, not whatever is open in the editor.
         let (where_, _guard) = crate::pushed_tree::where_to_run(&r.local_oid, &root);
-        let mut cmd = std::process::Command::new(&pytest);
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
         cmd.current_dir(&where_).stdin(std::process::Stdio::null());
         super::common::strip_git_env(&mut cmd);
         if !super::common::bounded_success(&mut cmd, "pytest") {
