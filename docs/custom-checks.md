@@ -42,7 +42,7 @@ git config hook.skip pre-commit              # every pre-commit check, declared 
 The **same name on both stages is two checks**, and that is allowed:
 `show-unicorn` on `pre-commit` and on `pre-push` gives you
 `pre-commit-show-unicorn` and `pre-push-show-unicorn`, each separately skippable
-and separately downgradable. See *What a repository cannot do* for the limits.
+and separately downgradable. See _What a repository cannot do_ for the limits.
 
 **scope** — `*` for every change, or a comma-separated list mixing `*.<ext>`
 extensions and bare **filenames**: `*.ts,package.json,.prettierrc`. A bare
@@ -59,7 +59,7 @@ A `+` adds the second half — what the **repository** must carry:
 pre-commit  rubocop  *.rb+.rubocop.yml  block  rubocop
 ```
 
-*"a staged `.rb`, **and** this repository has a `.rubocop.yml`."* Both sides are
+_"a staged `.rb`, **and** this repository has a `.rubocop.yml`."_ Both sides are
 comma-separated and each is an OR — any trigger, any one of the opt-ins —
 while the two halves are an AND. With nothing on the left, `+Gemfile` reads
 "any change, in a repository that carries a Gemfile".
@@ -74,7 +74,7 @@ What you read in the listing is what you write in the file.
 
 **Why it exists.** Every builtin has this: `clippy` stays inert without a
 `Cargo.toml`, `yamllint` without a `.yamllint.yaml`. Declarations did not,
-because the manifest *was* the opt-in — you typed the line, so you wanted the
+because the manifest _was_ the opt-in — you typed the line, so you wanted the
 check. [`amont add`](#shipping-a-check--packs) ended that: a vendored line is
 in your file because you took a whole pack, and without a condition a packaged
 `rubocop` fires on every `.rb` in a repository that never wanted it and just
@@ -221,18 +221,18 @@ review of that line is a review of how long a hook may hang everyone.
 
 **Take a built-in's id.** `pre-push  branch-protect  …` is refused: it would
 either shadow `pre-push-branch-protect` or silently lose to it, and a text file
-should not be able to do either. The same name on the *other* stage is fine —
+should not be able to do either. The same name on the _other_ stage is fine —
 `pre-commit  branch-protect  …` is a different check and shadows nothing.
 
 **Write the stage into the name.** `pre-commit  pre-commit-clippy  …` is refused.
 It would declare a check whose short name is another check's full id, so a single
 `hook.skip pre-commit-clippy` would silence both and no rule could pick between
-them. So is a name that simply *is* a stage. The stage column already says which
+them. So is a name that simply _is_ a stage. The stage column already says which
 one this is.
 
 **Declare the same id twice.** The second is refused: it could not be addressed
 by `hook.skip` or by a severity override, so it would run anonymously. Two lines
-with the same name on *different* stages are two ids, and both run.
+with the same name on _different_ stages are two ids, and both run.
 
 **Grant its own trust, or reach the machine-level knobs.** Policy stops at
 severities, skips, and the allowlisted `set` keys: `amont.fix` (rewriting
@@ -356,10 +356,10 @@ and skipping `lint-js` leaves `lint-json-yaml` alone.
 
 **Prefer the severity downgrade anyway.** The two do different things:
 
-| | runs | reports | blocks |
-|---|---|---|---|
-| `amont.severity.<key> warn` | yes | yes | no |
-| `hook.skip <key>` | no | no (only that it was skipped) | no |
+|                             | runs | reports                       | blocks |
+| --------------------------- | ---- | ----------------------------- | ------ |
+| `amont.severity.<key> warn` | yes  | yes                           | no     |
+| `hook.skip <key>`           | no   | no (only that it was skipped) | no     |
 
 A downgrade keeps the check working and keeps you looking at what it finds; you
 have decided the finding should not stop a commit, not that you no longer want
@@ -401,16 +401,16 @@ A **pack** is any git repository with an `amont.pack` at its root, written in
 exactly the syntax above:
 
 ```text
-# rust-strict — for a Rust repository that means it
-pre-commit  terraform-fmt    *.tf        block  terraform fmt -check
-pre-commit  actionlint  *.yml       warn   actionlint
+# amont-pack-java — Spotless for a JVM repository, Maven or Gradle
+pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
+pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 ```
 
 ```console
-$ amont add github:acme/rust-strict@v2
-github:acme/rust-strict @ 8f3c2a1 declares:
-    pre-commit  terraform-fmt    *.tf        block  terraform fmt -check
-    pre-commit  actionlint  *.yml       warn   actionlint
+$ amont add github:fredericrous/amont-pack-java@v1
+github:fredericrous/amont-pack-java @ 2f5dbd9 declares:
+    pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
+    pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 
 amont.conf changed — these commands cannot run until you review them:
     amont trust
@@ -420,11 +420,15 @@ amont.conf changed — these commands cannot run until you review them:
 including a local path, which is all a test fixture needs. `--dry-run` shows
 without writing.
 
+That pack is real, and it is the worked example for everything below:
+[fredericrous/amont-pack-java](https://github.com/fredericrous/amont-pack-java).
+Its README is the long-form version of this section.
+
 ### What ships is text, not execution
 
 This is the whole design, and it is what separates it from the ecosystem
 model pre-commit built. pre-commit **clones a repository and executes it**,
-building an isolated environment per hook. `amont add` copies rows into *your*
+building an isolated environment per hook. `amont add` copies rows into _your_
 `amont.conf`, and stops:
 
 - the rows land between `# amont:pack:start` / `# amont:pack:end` markers with
@@ -455,12 +459,12 @@ A pack's rows land in somebody else's repository, so gate them on that
 repository actually using the tool:
 
 ```text
-pre-commit  rubocop     *.rb+.rubocop.yml   block  rubocop
-pre-commit  terraform-fmt    *.tf                block  terraform fmt -check
+pre-commit  rubocop        *.rb+.rubocop.yml  block  rubocop
+pre-commit  terraform-fmt  *.tf               block  terraform fmt -check
 ```
 
 The first is inert in a Ruby repository with no rubocop config; the second
-needs no opt-in because a `Dockerfile` in the diff already says everything.
+needs no opt-in because a `.tf` file in the diff already says everything.
 Without that condition a pack is a promise to run somebody's linter on every
 matching file whether or not they configured it — which is how a useful pack
 becomes an uninstalled one.
@@ -470,7 +474,7 @@ becomes an uninstalled one.
 Checks, and nothing else. `tool` pins, `severity`, `skip` and `set` lines are
 refused, and the whole pack with them.
 
-Those lines are policy about the repository *installing* the pack — see [What a
+Those lines are policy about the repository _installing_ the pack — see [What a
 repository cannot do](#what-a-repository-cannot-do). A `skip` could silence your
 secrets scan; a `set` could raise your large-file ceiling. A third party
 proposing commands you will read is one thing; a third party quietly changing
@@ -478,6 +482,41 @@ what your existing checks do is another, and the second is not on offer.
 
 A pack is refused **whole**: one bad row and nothing is written, because a
 half-applied pack is a manifest neither side asked for.
+
+### Publishing one
+
+A pack repository is the `amont.pack` and nothing else — no schema to satisfy,
+no registry to join, no build step. The example above is three files, and two
+of them are the README and the licence:
+
+```text
+amont-pack-java/
+├── amont.pack
+├── README.md
+└── LICENSE
+```
+
+Test it before it goes anywhere. A local path is a source, so the whole loop
+is:
+
+```sh
+amont add ../my-pack --dry-run
+```
+
+Then tag it, and let people pin the tag:
+
+```sh
+git tag v1.0.0 && git push origin v1.0.0
+git tag -f v1 && git push -f origin v1     # moving major alias, optional
+```
+
+A moving alias is safe here in a way it is not for a CI action, because what
+lands in a consumer's manifest is the **commit id** and never the tag: `@v1`
+resolves once, at install time, and then stops moving. The cost of that is
+that a consumer does not get your fixes by pulling — they get them by running
+`amont add` again, which is also a fresh `amont trust`. That is the trade the
+whole design makes, and it is the right way round: nothing you publish later
+can start running on somebody's machine without them reading it first.
 
 ### Updating and removing
 
