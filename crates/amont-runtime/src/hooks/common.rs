@@ -102,6 +102,44 @@ pub fn staged_files(exts: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Every path the index holds — what the repository CARRIES, as opposed to
+/// what the current change touches.
+///
+/// The one honest source for a [`Scope`](crate::check::Scope) opt-in marker.
+/// [`staged_files`] answers a different question, and answering the opt-in one
+/// with it makes a `+marker` row fire only when the marker itself is in the
+/// change — which is never, in ordinary work.
+///
+/// `ls-files` reads the INDEX, not `HEAD`, so a marker being added by this very
+/// commit already counts. A marker sitting untracked on disk does not, which is
+/// the same rule the manifest itself lives by: commit it, or it is not real.
+///
+/// Fails OPEN, unlike `staged_files`, and the asymmetry is deliberate. There,
+/// an empty list means the checks judge nothing and say so. Here, an empty list
+/// would silently switch every gated check OFF — a check that has quietly never
+/// run is the one failure this design is arranged against — so a git failure
+/// reports the check as opted in and lets the command itself be the judge. A
+/// command that then finds no project fails to spawn, which is `Unavailable`:
+/// a warning, never a block.
+/// `None` when git would not answer — which is NOT the same as an empty
+/// repository, and the caller must not flatten the two. An empty `Vec` opts
+/// every gated check OUT; `None` means "unverified", and the gate opts them IN.
+pub fn tracked_files() -> Option<Vec<String>> {
+    static TRACKED: OnceLock<Option<Vec<String>>> = OnceLock::new();
+    TRACKED
+        .get_or_init(|| match git::stdout_paths(&["ls-files"]) {
+            Some(files) => Some(files),
+            None => {
+                warn(
+                    "git would not list the repository's files — opt-in gated checks \
+                     will run rather than be skipped on an unverified answer",
+                );
+                None
+            }
+        })
+        .clone()
+}
+
 /// Repo root, or "." when git cannot say.
 ///
 /// **For CHECK BODIES ONLY.** The fallback is safe there and nowhere else: git
