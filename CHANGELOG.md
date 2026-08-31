@@ -6,6 +6,73 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.25.0
+
+Three checks chosen by measuring a real fleet rather than a market, a way to
+ship a check to somebody else, and a gate that was quietly running the wrong
+interpreter.
+
+### Added
+
+- **Three built-in checks: `shellcheck`, `helm lint`, `hadolint`.** Picked by
+  counting what 61 repositories actually contain: 19 with a `Dockerfile`, 13
+  with Helm charts, 11 with shell — and zero Ruby, PHP, JVM, .NET or Terraform,
+  which is where the usual "amont needs more checks" list points. `helm lint`
+  runs **once per chart directory** the commit touched, resolved by walking up
+  to the nearest `Chart.yaml`, not once per file. `hadolint` matches the
+  basename `Dockerfile` exactly; `Dockerfile.dev` does not, because scope name
+  tokens are exact basenames and a prefix match here would put two answers to
+  "what is a filename" in one tool.
+
+- **`amont add <source>` — a check that can be shipped.** A *pack* is any git
+  repository carrying an `amont.pack` of `amont.conf` rows; `add` vendors them
+  into your manifest between markers, with the pack's **commit id** recorded
+  beside them. What ships is TEXT, not execution: pre-commit's model clones a
+  repository and runs it, which is exactly what [the trust
+  model](https://fredericrous.github.io/amont/trust.html) refuses. The append
+  changes the manifest's content, so every declared check — the pack's and your
+  own — is inert until you `amont trust`. Editing a vendored row by hand
+  revokes consent like editing any other line; a pack's rows are not
+  privileged. `@v2` is resolved to a commit **before** anything is fetched, and
+  whatever arrives is refused unless it hashes to that commit.
+
+- **A scope can name what the REPOSITORY must carry.** `*.rb+.rubocop.yml`
+  means "a staged `.rb`, **and** this repository has a `.rubocop.yml`" — the
+  courtesy every built-in has had (`clippy` stays inert without a
+  `Cargo.toml`) and no declaration could express. The separator is the one
+  `amont list` already prints between the halves. Without it a packaged
+  `rubocop` fires on every `.rb` in a repository that never wanted it.
+
+- **`amont list` leads with the checks that run here.** Even in a repository
+  amont serves well about half the checks are inert; in one built on a stack it
+  does not cover yet, two thirds — and every one of those rows names somebody
+  else's language. They now collapse to a count and the ecosystems they belong
+  to; `--all` brings them back. Skipped (`⊘`) and unusable (`✗`) rows are never
+  collapsed, because a count is the wrong shape for something you must act on.
+
+- **A ledger of problems that did not block.** When a check fails but the
+  severity says `warn`, that is now recorded. Set `amont.severity.pre-commit
+  warn`, work for a fortnight, and `amont list` tells you what a rollout would
+  actually have cost before you impose it on anybody. Local only — never a ref,
+  never pushed. `amont.recordDowngrades false` stops it.
+
+### Fixed
+
+- **`pre-push-pytest` ran whatever `pytest` was first on `PATH`.** It was the
+  only Python check resolving with a bare `which`; `ruff` and `pyright` beside
+  it already went through the resolver that tries `uv run --no-sync`, then
+  `.venv/bin/`, then `PATH`. A project's tests import the project, so a `PATH`
+  pytest cannot see a `src/` layout at all — the gate reported
+  `ModuleNotFoundError` **as a test failure** and blocked pushes in a
+  repository whose suite passes 1296 tests. A gate that cannot tell "your tests
+  broke" from "I ran the wrong interpreter" teaches `--no-verify`.
+
+### Changed
+
+- The clock-sensitive tests moved to their own binary, so they no longer
+  compete with two dozen neighbours for a scheduler slot. Nothing was
+  weakened — same budgets, same assertions.
+
 ## v1.24.0
 
 Two additions, both about letting a result travel: a finding now says *where*
