@@ -6,6 +6,47 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.25.1
+
+One fix, and it is the kind worth reading: a feature shipped in 1.25.0 has not
+been running at all.
+
+### Fixed
+
+- **A declared check's `+` opt-in asked the wrong question, so gated checks
+  never ran.** The scope column's two halves are about two different things —
+  the trigger asks what the CHANGE touches, the `+` opt-in asks what the
+  REPOSITORY carries — and the gate answered both from the staged file list.
+  Asking "does this repository have a `pom.xml`" of a commit can only answer no
+  unless that commit happened to stage `pom.xml`. So `*.java+pom.xml` fired
+  when you edited the build file and never when you edited only `.java`, which
+  is the ordinary case and the entire point of the gate. Builtins were never
+  affected: their scope is metadata for `amont list` and attestation, and each
+  checks its own preconditions itself.
+
+- **Upgrading will start running checks that have been quiet since 1.25.0.**
+  That is the point, but it may be the first time you see what they have to
+  say — every pack that followed the documented rule to gate its rows was a
+  pack that never ran, silently, looking like it worked.
+  `amont run --all-files` shows what they will say before a commit does, and
+  `amont.severity.<check> warn` is the escape hatch if one repository turns out
+  to be a mess.
+
+- **A row with nothing on the left ran everywhere.** An `is_unscoped()` guard
+  skipped the opt-in entirely for those, so the documented `+Gemfile` form
+  ("any change, in a repository that carries a Gemfile") applied in every
+  repository rather than only a bundler one.
+
+### Changed
+
+- The pack documentation's worked example is now
+  [`fredericrous/amont-pack-java`](https://github.com/fredericrous/amont-pack-java),
+  a real repository you can `amont add`, and there is a new section on
+  publishing a pack of your own. The old example had drifted into a pack headed
+  `rust-strict` whose rows were Terraform and actionlint — residue of
+  `hadolint` becoming a builtin, which had made the original example an illegal
+  manifest line.
+
 ## v1.25.0
 
 Three checks chosen by measuring a real fleet rather than a market, a way to
