@@ -456,7 +456,21 @@ impl Check for External {
             Stage::PreCommit => crate::hooks::common::staged_files(&[]),
             Stage::PrePush => crate::pushrefs::changed_files(ctx.push.get()),
         };
-        if !scope.is_unscoped() && !scope.matches(&in_scope) {
+        // Two questions, two path lists. `touches` asks what the CHANGE
+        // contains; `opted_in` asks what the REPOSITORY carries, and answering
+        // the second from `in_scope` made a `+marker` row fire only when the
+        // marker itself was staged — so a pack that followed our own advice to
+        // gate every row was a pack that never ran. `tracked_files` returning
+        // `None` means git would not say, and an unverified answer must not
+        // silently switch a check off: run it, and let the command judge.
+        let opted_in =
+            crate::hooks::common::tracked_files().map_or(true, |tracked| scope.opted_in(&tracked));
+        // No `is_unscoped()` guard: `touches` already answers true for an
+        // unscoped trigger, so the gate reduces to the opt-in — which is what
+        // a row with nothing on the left (`+Gemfile`: "any change, in a
+        // repository that carries a Gemfile") means. Guarding on it here
+        // skipped the opt-in for exactly those rows.
+        if !(scope.touches(&in_scope) && opted_in) {
             return Outcome::Passed;
         }
         // The paths the declaration's scope actually matched — what a builtin

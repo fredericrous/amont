@@ -203,8 +203,24 @@ impl Scope {
     /// question, "would it ever fire", where over-approximating is the safe
     /// direction.
     pub fn matches(&self, paths: &[String]) -> bool {
-        let by_ext = self.is_unscoped() || paths.iter().any(|path| self.covers(path));
-        let opted_in = self.opt_in.is_empty()
+        self.touches(paths) && self.opted_in(paths)
+    }
+
+    /// Does this repository carry the marker that turns the check on?
+    ///
+    /// Split out of [`matches`] because the two halves ask about DIFFERENT
+    /// path lists, and conflating them is a bug this codebase has now made
+    /// twice. `touches` asks about the CHANGE — the staged set, or the push
+    /// diff. This asks about the REPOSITORY, and the only honest source for
+    /// that is the index (`git ls-files`).
+    ///
+    /// Feed a change to this question and it can only answer no unless that
+    /// change happened to touch the marker: a `+pom.xml` row would run when
+    /// you edited `pom.xml` and never when you edited only `.java`, which is
+    /// the ordinary case and the entire point of the gate. See `attestable`
+    /// in `dispatch.rs` for the first occurrence, in the attestation path.
+    pub fn opted_in(&self, paths: &[String]) -> bool {
+        self.opt_in.is_empty()
             || paths.iter().any(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);
                 self.opt_in.iter().any(|c| {
@@ -214,8 +230,7 @@ impl Scope {
                         None => name == *c,
                     }
                 })
-            });
-        by_ext && opted_in
+            })
     }
 }
 
