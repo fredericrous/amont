@@ -469,11 +469,11 @@ fn a_declared_check_reaches_the_scan() {
     let t = Tree::new("declared");
     t.managed_repo("a").manifest(
         "a",
-        "pre-commit  shellcheck  *.sh  block  scripts/lint-shell.sh\n",
+        "pre-commit  lint-shell  *.sh  block  scripts/lint-shell.sh\n",
     );
     let v = json(&["--root", t.path().to_str().unwrap()]);
     let d = &v["repos"][0]["declared"][0];
-    assert_eq!(d["name"], "shellcheck");
+    assert_eq!(d["name"], "lint-shell");
     assert_eq!(d["stage"], "pre-commit");
     // A tagged sum, so the usable fields exist only when the line is usable.
     assert_eq!(d["state"], "usable");
@@ -488,7 +488,7 @@ fn a_declared_check_reaches_the_scan() {
 fn an_unusable_declaration_is_reported_as_such() {
     let t = Tree::new("declared-broken");
     t.managed_repo("a")
-        .manifest("a", "pre-commit  shellcheck  *.sh  LOUD  make lint\n");
+        .manifest("a", "pre-commit  lint-shell  *.sh  LOUD  make lint\n");
     let v = json(&["--root", t.path().to_str().unwrap()]);
     let d = &v["repos"][0]["declared"][0];
     assert_eq!(d["state"], "unusable", "{d}");

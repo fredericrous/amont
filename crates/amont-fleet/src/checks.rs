@@ -279,11 +279,11 @@ mod tests {
     }
 
     #[test]
-    fn the_table_covers_thirty_four_checks() {
-        assert_eq!(all_checks().len(), 34);
+    fn the_table_covers_every_check() {
+        assert_eq!(all_checks().len(), 37);
         let mut names: Vec<&str> = all_checks();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 34, "duplicate check name");
+        assert_eq!(names.len(), 37, "duplicate check name");
     }
 }

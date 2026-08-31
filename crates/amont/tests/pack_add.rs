@@ -46,7 +46,7 @@ fn consumer() -> Repo {
 
 #[test]
 fn a_pack_lands_inside_markers_with_its_commit_id() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
 
     let run = repo.run(&["add", &source(&pack)]);
@@ -57,7 +57,7 @@ fn a_pack_lands_inside_markers_with_its_commit_id() {
         text.contains("pre-commit  mine"),
         "the existing line survives"
     );
-    assert!(text.contains("pre-commit  hadolint  Dockerfile  block  hadolint"));
+    assert!(text.contains("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check"));
     assert!(text.contains("# amont:pack:start"), "{text}");
     assert!(text.contains("# amont:pack:end"), "{text}");
 
@@ -72,13 +72,13 @@ fn a_pack_lands_inside_markers_with_its_commit_id() {
 /// invalidates the whole file, so a check that WAS trusted goes inert too.
 #[test]
 fn adding_does_not_trust_and_leaves_everything_inert() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
     repo.run(&["add", &source(&pack)]);
 
     let run = repo.run(&["run"]);
     assert!(
-        run.says("mine") && run.says("hadolint"),
+        run.says("mine") && run.says("terraform-fmt"),
         "both the old and the new check must be held: {}",
         run.output()
     );
@@ -103,12 +103,14 @@ fn adding_does_not_trust_and_leaves_everything_inert() {
 /// be a hole in the gate rather than a record of it.
 #[test]
 fn editing_a_vendored_row_revokes_trust() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
     repo.run(&["add", &source(&pack)]);
     repo.run(&["trust"]);
 
-    let edited = manifest(&repo).replace("block  hadolint", "block  rm -rf /");
+    let before = manifest(&repo);
+    let edited = before.replace("terraform fmt -check", "rm -rf /");
+    assert_ne!(edited, before, "the fixture must actually change a row");
     std::fs::write(repo.path("amont.conf"), edited).unwrap();
 
     let run = repo.run(&["run"]);
@@ -121,13 +123,13 @@ fn editing_a_vendored_row_revokes_trust() {
 
 #[test]
 fn re_adding_replaces_the_block_rather_than_appending() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
     repo.run(&["add", &source(&pack)]);
 
     pack.stage(
         "amont.pack",
-        "pre-commit  hadolint  Dockerfile  warn  hadolint --strict\n",
+        "pre-commit  terraform-fmt  Dockerfile  warn  terraform-fmt --strict\n",
     );
     pack.commit("feat: v2");
     let run = repo.run(&["add", &source(&pack)]);
@@ -139,9 +141,9 @@ fn re_adding_replaces_the_block_rather_than_appending() {
         1,
         "one block, not two — a duplicate id would break the manifest: {text}"
     );
-    assert!(text.contains("hadolint --strict"), "{text}");
+    assert!(text.contains("terraform-fmt --strict"), "{text}");
     assert!(
-        !text.contains("block  hadolint\n"),
+        !text.contains("block  terraform-fmt\n"),
         "the old row is gone: {text}"
     );
     assert!(text.contains("pre-commit  mine"), "unrelated lines survive");
@@ -154,7 +156,7 @@ fn a_pack_carrying_policy_is_refused_whole() {
     for body in [
         "pre-commit  ok  *  block  true\nskip  secrets\n",
         "pre-commit  ok  *  block  true\nseverity  secrets  warn\n",
-        "pre-commit  ok  *  block  true\ntool  hadolint  2.12\n",
+        "pre-commit  ok  *  block  true\ntool  terraform-fmt  2.12\n",
         "pre-commit  ok  *  block  true\nnot a declaration at all\n",
     ] {
         let pack = pack_repo(body);
@@ -173,19 +175,23 @@ fn a_pack_carrying_policy_is_refused_whole() {
 
 #[test]
 fn dry_run_writes_nothing_but_shows_everything() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
     let before = manifest(&repo);
 
     let run = repo.run(&["add", &source(&pack), "--dry-run"]);
     assert!(run.passed(), "{}", run.output());
-    assert!(run.says("hadolint"), "the rows are shown: {}", run.output());
+    assert!(
+        run.says("terraform-fmt"),
+        "the rows are shown: {}",
+        run.output()
+    );
     assert_eq!(manifest(&repo), before, "--dry-run must not write");
 }
 
 #[test]
 fn an_unresolvable_revision_fails_before_writing() {
-    let pack = pack_repo("pre-commit  hadolint  Dockerfile  block  hadolint\n");
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
     let repo = consumer();
     let before = manifest(&repo);
 

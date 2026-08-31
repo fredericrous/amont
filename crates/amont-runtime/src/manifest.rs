@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! # stage       name        scope   severity  command
-//! pre-commit    shellcheck  *.sh    block     scripts/lint-shell.sh
+//! pre-commit    lint-shell  *.sh    block     scripts/lint-shell.sh
 //! pre-push      smoke       *       warn      make smoke
 //! ```
 //!
@@ -1344,13 +1344,13 @@ mod tests {
     fn parses_the_documented_example() {
         let v = parse_lines(
             "# stage       name        scope   severity  command\n\
-             pre-commit    shellcheck  *.sh    block     scripts/lint-shell.sh\n\
+             pre-commit    lint-shell  *.sh    block     scripts/lint-shell.sh\n\
              pre-push      smoke       *       warn      make smoke\n",
         );
         assert_eq!(v.len(), 2);
 
         let a = usable(&v[0]);
-        assert_eq!(a.name, "shellcheck");
+        assert_eq!(a.name, "lint-shell");
         assert_eq!(a.stage, Stage::PreCommit);
         assert_eq!(a.severity, Severity::Block);
         assert_eq!(a.program, "scripts/lint-shell.sh");
@@ -1380,19 +1380,19 @@ mod tests {
     fn a_malformed_line_becomes_a_visible_gap() {
         let cases: [(&str, ParseError); 4] = [
             (
-                "pre-commit shellcheck *.sh block\n",
+                "pre-commit lint-shell *.sh block\n",
                 ParseError::MissingFields,
             ),
             (
-                "nonsense shellcheck *.sh block x\n",
+                "nonsense lint-shell *.sh block x\n",
                 ParseError::BadStage("nonsense".into()),
             ),
             (
-                "pre-commit shellcheck ?.sh block x\n",
+                "pre-commit lint-shell ?.sh block x\n",
                 ParseError::BadScope("?.sh".into()),
             ),
             (
-                "pre-commit shellcheck *.sh loud x\n",
+                "pre-commit lint-shell *.sh loud x\n",
                 ParseError::BadSeverity("loud".into()),
             ),
         ];
@@ -1405,7 +1405,7 @@ mod tests {
     /// depend on its wording.
     #[test]
     fn a_gap_reports_where_it_is() {
-        let l = one("pre-commit shellcheck *.sh loud x\n");
+        let l = one("pre-commit lint-shell *.sh loud x\n");
         let said = l.broken().expect("broken");
         assert!(said.contains("line 1"), "{said}");
         assert!(said.contains("severity"), "{said}");
@@ -1606,8 +1606,8 @@ mod tests {
     /// lined up at all, must parse identically.
     #[test]
     fn field_alignment_does_not_matter() {
-        let spaced = one("pre-commit      shellcheck    *.sh      block     make lint\n");
-        let tabbed = one("pre-commit\tshellcheck\t*.sh\tblock\tmake lint\n");
+        let spaced = one("pre-commit      lint-shell    *.sh      block     make lint\n");
+        let tabbed = one("pre-commit\tlint-shell\t*.sh\tblock\tmake lint\n");
         assert_eq!(usable(&spaced), usable(&tabbed));
         assert_eq!(usable(&spaced).args, ["lint"]);
     }
@@ -1642,7 +1642,7 @@ mod tests {
     /// one, which is the point of the split.
     #[test]
     fn an_unusable_external_holds_no_command() {
-        let e = External::from(one("pre-commit shellcheck *.sh loud echo hi\n"));
+        let e = External::from(one("pre-commit lint-shell *.sh loud echo hi\n"));
         assert!(matches!(e.kind, Kind::Unusable { .. }));
         // And it can never block, whatever severity anyone configures.
         assert_eq!(e.severity(), Severity::Warn);
@@ -1659,7 +1659,7 @@ mod tests {
     /// opinion about what a manifest says.
     #[test]
     fn the_leaking_and_non_leaking_parsers_agree() {
-        let text = "pre-commit  shellcheck  *.sh,*.bash  block  make lint\n\
+        let text = "pre-commit  lint-shell  *.sh,*.bash  block  make lint\n\
                     pre-push    smoke       *            warn   make smoke\n\
                     pre-commit  broken      ?            block  x\n";
         let lines = parse_lines(text);

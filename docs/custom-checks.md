@@ -5,7 +5,7 @@ repository root, **commit it**, and the hooks run it alongside the built-ins.
 
 ```
 # stage       name        scope         severity  command
-pre-commit    shellcheck  *.sh          block     scripts/lint-shell.sh
+pre-commit    lint-shell  *.sh          block     scripts/lint-shell.sh
 pre-commit    protos      *.proto,*.pb  block     buf lint
 pre-push      smoke       *             warn      make smoke
 ```
@@ -27,15 +27,15 @@ dashboard.
 
 **name** — the short name. Together with the stage it forms the check's **id**,
 `<stage>-<name>`, exactly as a built-in has: a line reading
-`pre-commit  shellcheck  …` declares `pre-commit-shellcheck`.
+`pre-commit  lint-shell  …` declares `pre-commit-lint-shell`.
 
 That id is what `amont list` and the dashboard show, and either the id or the
 short name addresses it in `hook.skip` and in a severity override — the same
 three-way vocabulary the built-ins take:
 
 ```sh
-git config hook.skip pre-commit-shellcheck   # that check
-git config hook.skip shellcheck              # that check, on either stage
+git config hook.skip pre-commit-lint-shell   # that check
+git config hook.skip lint-shell              # that check, on either stage
 git config hook.skip pre-commit              # every pre-commit check, declared ones included
 ```
 
@@ -106,7 +106,7 @@ from (`amont run --all-files` overrides the set in-process):
   the staged list:
 
 ```
-pre-commit  shellcheck  *.sh  block  files shellcheck --severity=warning
+pre-commit  lint-shell  *.sh  block  files scripts/lint-shell.sh --strict
 ```
 
 With `files`, a commit whose matched set is empty does not run the command at
@@ -132,8 +132,8 @@ A command that **cannot be started at all** — a typo'd path, a tool nobody
 installed — is neither. It is reported as a gap:
 
 ```
-⚠ amont.conf: shellcheck could not run scripts/lint-shel.sh — No such file
-⚠ 1 check(s) could not run: shellcheck
+⚠ amont.conf: lint-shell could not run scripts/lint-shel.sh — No such file
+⚠ 1 check(s) could not run: lint-shell
 ```
 
 It does not block, because a command that never ran has not judged anything;
@@ -266,8 +266,8 @@ Until then the checks are **reported, not dropped** — the point is that you ca
 see there is a decision waiting:
 
 ```
-⚠ amont.conf: shellcheck — declared in an untrusted amont.conf …
-⚠ 1 check(s) could not run: shellcheck
+⚠ amont.conf: lint-shell — declared in an untrusted amont.conf …
+⚠ 1 check(s) could not run: lint-shell
 ```
 
 Acceptance is recorded against the file's CONTENT (`git hash-object`, which you
@@ -344,12 +344,12 @@ The built-in `prettier` check does this too, under the same `amont.fix` gate.
 Exactly as for a built-in:
 
 ```sh
-git config hook.skip shellcheck                 # do not run it
-git config amont.severity.shellcheck warn    # run it, do not let it block
+git config hook.skip lint-shell                 # do not run it
+git config amont.severity.lint-shell warn    # run it, do not let it block
 ```
 
 Both surfaces read the same three names, and **nothing matches by substring**:
-the full id (`pre-commit-shellcheck`), the short name (`shellcheck`, on either
+the full id (`pre-commit-lint-shell`), the short name (`lint-shell`, on either
 trigger), and the trigger (`pre-commit`, meaning all of them). Three exact
 comparisons, in `runtime::names_check` — `hook.skip = e` reaches nothing at all,
 and skipping `lint-js` leaves `lint-json-yaml` alone.
@@ -378,7 +378,7 @@ amont list
 pre-commit
   ● pre-commit-merge-conflict
   ○ pre-commit-clippy               inert here — needs .rs + Cargo.toml
-  ● shellcheck (declared)
+  ● lint-shell (declared)
   ✗ oops (declared)                 amont.conf line 3: severity "LOUD" …
 pre-push
   ● pre-push-branch-protect
@@ -402,14 +402,14 @@ exactly the syntax above:
 
 ```text
 # rust-strict — for a Rust repository that means it
-pre-commit  hadolint    Dockerfile  block  hadolint
+pre-commit  terraform-fmt    *.tf        block  terraform fmt -check
 pre-commit  actionlint  *.yml       warn   actionlint
 ```
 
 ```console
 $ amont add github:acme/rust-strict@v2
 github:acme/rust-strict @ 8f3c2a1 declares:
-    pre-commit  hadolint    Dockerfile  block  hadolint
+    pre-commit  terraform-fmt    *.tf        block  terraform fmt -check
     pre-commit  actionlint  *.yml       warn   actionlint
 
 amont.conf changed — these commands cannot run until you review them:
@@ -456,7 +456,7 @@ repository actually using the tool:
 
 ```text
 pre-commit  rubocop     *.rb+.rubocop.yml   block  rubocop
-pre-commit  hadolint    Dockerfile          block  hadolint
+pre-commit  terraform-fmt    *.tf                block  terraform fmt -check
 ```
 
 The first is inert in a Ruby repository with no rubocop config; the second
