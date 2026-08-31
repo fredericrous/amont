@@ -334,6 +334,40 @@ pub const CHECKS: &[Builtin] = &[
         run: |ctx| hooks::usual_name::run(ctx.args),
     },
     Builtin {
+        name: "pre-commit-shellcheck",
+        stage: Stage::PreCommit,
+        // No opt-in: shellcheck's defaults are the reason to run it, unlike
+        // `yamllint`, whose stock rules gate on a repo-local config.
+        scope: Scope::files(hooks::shellcheck::EXTS).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::None,
+        reach: Reach::Convention,
+        run: |ctx| hooks::shellcheck::run(ctx.args),
+    },
+    Builtin {
+        name: "pre-commit-hadolint",
+        stage: Stage::PreCommit,
+        // A `Dockerfile` in the diff already says everything a marker would.
+        // `names`, not `files`: an extension list cannot say "Dockerfile"
+        // without also matching `my-Dockerfile`.
+        scope: Scope::named(hooks::hadolint::NAMES).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::None,
+        reach: Reach::Convention,
+        run: |ctx| hooks::hadolint::run(ctx.args),
+    },
+    Builtin {
+        name: "pre-commit-helm-lint",
+        stage: Stage::PreCommit,
+        // `Chart.yaml` is the marker that says this repository has charts at
+        // all — the same shape `kubeconform` uses for `kustomization.yaml`.
+        scope: Scope::new(hooks::helm::EXTS, hooks::helm::MARKERS).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::None,
+        reach: Reach::Convention,
+        run: |ctx| hooks::helm::run(ctx.args),
+    },
+    Builtin {
         name: "pre-commit-yamllint",
         stage: Stage::PreCommit,
         scope: Scope::new(
@@ -1059,6 +1093,18 @@ mod tests {
             "pre-commit-yamllint",
             Consumes::Exts(crate::hooks::yamllint::EXTS),
         ),
+        (
+            "pre-commit-shellcheck",
+            Consumes::Exts(crate::hooks::shellcheck::EXTS),
+        ),
+        (
+            "pre-commit-hadolint",
+            Consumes::Exts(crate::hooks::hadolint::NAMES),
+        ),
+        (
+            "pre-commit-helm-lint",
+            Consumes::Exts(crate::hooks::helm::EXTS),
+        ),
         ("pre-commit-large-files", Consumes::All),
         ("pre-commit-secrets", Consumes::All),
         ("pre-push-secrets", Consumes::All),
@@ -1156,6 +1202,9 @@ mod tests {
         ("pre-commit-ruff", true),
         ("pre-commit-usual-name", false),
         ("pre-commit-yamllint", false),
+        ("pre-commit-shellcheck", false),
+        ("pre-commit-hadolint", false),
+        ("pre-commit-helm-lint", false),
         ("pre-commit-large-files", false),
         ("pre-commit-secrets", false),
         ("pre-push-secrets", false),
@@ -1230,7 +1279,7 @@ mod tests {
 
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 34);
+        assert_eq!(CHECKS.len(), 37);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

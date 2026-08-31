@@ -124,7 +124,7 @@ fn a_declared_check_runs_and_can_block_the_commit() {
     probe(&r, PROBE, 1);
     manifest(
         &r,
-        &format!("pre-commit  shellcheck  *  block  ./{PROBE}\n"),
+        &format!("pre-commit  lint-shell  *  block  ./{PROBE}\n"),
     );
 
     let run = r.hook("pre-commit", &[]);
@@ -134,7 +134,7 @@ fn a_declared_check_runs_and_can_block_the_commit() {
         run.output()
     );
     assert!(!run.passed(), "a blocking failure must stop the commit");
-    assert!(run.says("shellcheck"), "by name:\n{}", run.output());
+    assert!(run.says("lint-shell"), "by name:\n{}", run.output());
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn a_declared_check_that_passes_lets_the_commit_through() {
     probe(&r, PROBE, 0);
     manifest(
         &r,
-        &format!("pre-commit  shellcheck  *  block  ./{PROBE}\n"),
+        &format!("pre-commit  lint-shell  *  block  ./{PROBE}\n"),
     );
 
     let run = r.hook("pre-commit", &[]);
@@ -172,7 +172,7 @@ fn scope_keeps_a_declared_check_out_of_unrelated_commits() {
     probe(&r, PROBE, 1);
     manifest(
         &r,
-        &format!("pre-commit  shellcheck  *.rs  block  ./{PROBE}\n"),
+        &format!("pre-commit  lint-shell  *.rs  block  ./{PROBE}\n"),
     );
 
     // Nothing staged ends in `.rs` — the probe and the manifest do not.
@@ -197,17 +197,17 @@ fn hook_skip_and_severity_govern_a_declared_check() {
     probe(&r, PROBE, 1);
     manifest(
         &r,
-        &format!("pre-commit  shellcheck  *  block  ./{PROBE}\n"),
+        &format!("pre-commit  lint-shell  *  block  ./{PROBE}\n"),
     );
     assert!(!r.hook("pre-commit", &[]).passed(), "baseline");
 
-    r.git(&["config", "amont.severity.shellcheck", "warn"]);
+    r.git(&["config", "amont.severity.lint-shell", "warn"]);
     let run = r.hook("pre-commit", &[]);
     assert!(run.passed(), "severity override ignored:\n{}", run.output());
     assert!(run.says("probe-"), "downgraded, not disabled");
 
-    r.git(&["config", "--unset", "amont.severity.shellcheck"]);
-    r.git(&["config", "hook.skip", "shellcheck"]);
+    r.git(&["config", "--unset", "amont.severity.lint-shell"]);
+    r.git(&["config", "hook.skip", "lint-shell"]);
     let run = r.hook("pre-commit", &[]);
     assert!(run.passed(), "{}", run.output());
     assert!(
@@ -229,7 +229,7 @@ fn a_missing_command_is_a_gap_not_a_failure() {
     let r = Repo::new();
     manifest(
         &r,
-        "pre-commit  shellcheck  *  block  ./no-such-binary-c8f2\n",
+        "pre-commit  lint-shell  *  block  ./no-such-binary-c8f2\n",
     );
 
     let run = r.hook("pre-commit", &[]);
@@ -250,11 +250,11 @@ fn a_missing_command_is_a_gap_not_a_failure() {
 #[test]
 fn a_malformed_line_is_reported_on_every_commit() {
     let r = Repo::new();
-    manifest(&r, "pre-commit  shellcheck  *  LOUD  ./probe.sh\n");
+    manifest(&r, "pre-commit  lint-shell  *  LOUD  ./probe.sh\n");
 
     let run = r.hook("pre-commit", &[]);
     assert!(run.passed(), "it must not block:\n{}", run.output());
-    assert!(run.says("shellcheck"), "{}", run.output());
+    assert!(run.says("lint-shell"), "{}", run.output());
     assert!(
         run.says("severity"),
         "say what was wrong:\n{}",
@@ -532,11 +532,11 @@ fn the_files_marker_hands_the_command_its_matched_paths() {
     std::fs::set_permissions(r.path("probe.sh"), std::fs::Permissions::from_mode(0o755))
         .expect("chmod");
     r.git(&["add", "probe.sh"]);
-    r.stage("a.sh", "echo a\n");
+    r.stage("a.sh", "#!/bin/sh\necho a\n");
     r.stage("b.rs", "fn main() {}\n");
     manifest(
         &r,
-        "pre-commit  shellcheck  *.sh  block  files ./probe.sh\n",
+        "pre-commit  lint-shell  *.sh  block  files ./probe.sh\n",
     );
 
     let run = r.hook("pre-commit", &[]);
@@ -565,9 +565,9 @@ fn amont_files_carries_the_matched_set_without_the_marker() {
     std::fs::set_permissions(r.path("probe.sh"), std::fs::Permissions::from_mode(0o755))
         .expect("chmod");
     r.git(&["add", "probe.sh"]);
-    r.stage("a.sh", "echo a\n");
+    r.stage("a.sh", "#!/bin/sh\necho a\n");
     r.stage("b.rs", "fn main() {}\n");
-    manifest(&r, "pre-commit  shellcheck  *.sh  block  ./probe.sh\n");
+    manifest(&r, "pre-commit  lint-shell  *.sh  block  ./probe.sh\n");
 
     let run = r.hook("pre-commit", &[]);
     assert!(run.passed(), "{}", run.output());

@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-four
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-seven
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -164,6 +164,9 @@ other twenty-one still report.
 | `pre-commit-pyright` | `.py` `.pyi` + `pyrightconfig.json`/`.jsonc`/`pyproject.toml` | Type check. |
 | `pre-commit-ruff` | `.py` `.pyi` + `ruff.toml`/`.ruff.toml`/`pyproject.toml` | Lint and format. **fixes** |
 | `pre-commit-usual-name` | always | Warns the first time you commit under a given name/email, so a misconfigured `user.name` is noticed at commit one rather than commit twenty. **Never blocks.** |
+| `pre-commit-hadolint` | `Dockerfile` | Dockerfile lint. Matches that basename **exactly** — `Dockerfile.dev` and `Dockerfile.prod` do not, because scope name tokens are exact basenames. |
+| `pre-commit-helm-lint` | `.yaml` `.yml` `.tpl` + `Chart.yaml` | `helm lint`, once per chart directory the commit touched — resolved by walking up to the nearest `Chart.yaml`, not once per file. |
+| `pre-commit-shellcheck` | `.sh` `.bash` | Shell lint. No opt-in file: shellcheck's defaults are the reason to run it, unlike yamllint's. A script with a shebang and no extension is not matched. |
 | `pre-commit-yamllint` | `.yaml` `.yml` + `.yamllint`/`.yamllint.yaml`/`.yml` | Strict YAML lint, where a repo has opted in. |
 
 Both Python checks prefer the repository's **pinned** tool over an ambient

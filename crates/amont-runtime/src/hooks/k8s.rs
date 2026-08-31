@@ -165,9 +165,16 @@ pub fn kube_linter(_args: &[std::ffi::OsString]) -> Outcome {
     Outcome::Passed
 }
 
-/// Walk up from each staged file until a directory holding kustomization.yaml
-/// (or .yml) is found, or the repo root is reached. Deduped, stable order.
-pub fn kustomization_roots(root: &str, staged: &[String]) -> Vec<String> {
+/// Walk up from each staged file until a directory holding one of `markers` is
+/// found, or the repo root is reached. Deduped, stable order.
+///
+/// Generalised from `kustomization_roots` when `helm` needed the identical walk
+/// for `Chart.yaml`. One walk with two callers rather than two walks: the
+/// subtle parts — stopping at the repo root, deduping so ten files under one
+/// directory yield one root, keeping the order stable so a golden render can
+/// pin it — are the same for every marker, and a second copy is a second place
+/// for them to drift.
+pub fn marker_roots(root: &str, staged: &[String], markers: &[&str]) -> Vec<String> {
     let mut roots: Vec<String> = Vec::new();
     for f in staged {
         let mut dir = Path::new(f).parent();
@@ -177,8 +184,7 @@ pub fn kustomization_roots(root: &str, staged: &[String]) -> Vec<String> {
                 break;
             }
             let base = Path::new(root).join(&s);
-            if base.join("kustomization.yaml").is_file() || base.join("kustomization.yml").is_file()
-            {
+            if markers.iter().any(|m| base.join(m).is_file()) {
                 if !roots.contains(&s) {
                     roots.push(s);
                 }
@@ -188,6 +194,12 @@ pub fn kustomization_roots(root: &str, staged: &[String]) -> Vec<String> {
         }
     }
     roots
+}
+
+/// The kustomize marker set. Kept as its own function so `k8s`'s callers and
+/// their tests are untouched by the generalisation above.
+pub fn kustomization_roots(root: &str, staged: &[String]) -> Vec<String> {
+    marker_roots(root, staged, &["kustomization.yaml", "kustomization.yml"])
 }
 
 /// Kinds from a repo-local `.kubeconform-skip` (one per line, `#` comments) —

@@ -245,7 +245,7 @@ fn a_trigger_skip_disables_its_stage_and_says_so() {
     r.git(&["config", "--add", "hook.skip", "pre-commit"]);
     let run = r.hook("pre-commit", &[]);
     assert!(
-        run.says("22 checks skipped"),
+        run.says("25 checks skipped"),
         "a trigger disables its stage: {}",
         run.stdout
     );
@@ -553,7 +553,7 @@ fn list_json_declared_check_shows_its_command() {
     let r = Repo::new();
     r.stage(
         "amont.conf",
-        "pre-commit  shellcheck  *.sh  block  scripts/lint.sh\n",
+        "pre-commit  lint-shell  *.sh  block  scripts/lint.sh\n",
     );
     r.commit("chore: declare a check");
     let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
@@ -564,7 +564,7 @@ fn list_json_declared_check_shows_its_command() {
     assert!(trusted.status.success(), "{trusted:?}");
 
     let v = list_json(&r, &[]);
-    let declared = find_check(&v, "pre-commit-shellcheck");
+    let declared = find_check(&v, "pre-commit-lint-shell");
     assert_eq!(declared["source"], "declared");
     assert_eq!(declared["command"], "scripts/lint.sh");
 }

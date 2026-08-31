@@ -19,6 +19,9 @@ VERSION="${1:?usage: npm-pack.sh <version> <artifact-dir> [out-dir]}"
 ARTIFACTS="${2:?usage: npm-pack.sh <version> <artifact-dir> [out-dir]}"
 OUT="${3:-dist/npm}"
 
+# shellcheck disable=SC1007  # `CDPATH= cd` is an assignment PREFIX scoped to
+# that one command — the standard guard against a user's CDPATH making `cd`
+# resolve elsewhere or print the directory. Not a mistyped assignment.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 # target | npm package | os | cpu | libc
@@ -55,7 +58,6 @@ for row in "${TARGETS[@]}"; do
     # this loop is the whole change needed to add one.
     suffix=
     [ "$os" = "win32" ] && suffix=.exe
-    exe="amont$suffix"
 
     # Unpack into a scratch dir rather than reading the archive twice. A missing
     # archive is fatal: publishing five of six packages would leave `amont`'s

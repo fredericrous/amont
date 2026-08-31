@@ -380,10 +380,10 @@ mod tests {
 
     #[test]
     fn rows_are_taken_verbatim() {
-        let text = "# a comment\n\npre-commit  hadolint  Dockerfile  block  hadolint\n";
+        let text = "# a comment\n\npre-commit  terraform-fmt  Dockerfile  block  terraform-fmt\n";
         assert_eq!(
             rows(text).unwrap(),
-            vec!["pre-commit  hadolint  Dockerfile  block  hadolint"]
+            vec!["pre-commit  terraform-fmt  Dockerfile  block  terraform-fmt"]
         );
     }
 
@@ -401,7 +401,7 @@ mod tests {
             "set  largeFileBlock  4000\n",
             "severity  secrets  warn\n",
             "skip  secrets\n",
-            "tool  hadolint  2.12\n",
+            "tool  terraform-fmt  2.12\n",
         ] {
             let text = format!("pre-commit  ok  *  block  true\n{bad}");
             let err = rows(&text).unwrap_err();

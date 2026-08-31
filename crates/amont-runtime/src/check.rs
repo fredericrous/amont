@@ -87,8 +87,11 @@ pub struct Scope {
     /// Exact FILENAMES that trigger it — `package.json`, `Dockerfile` —
     /// matched against the path's basename, never as a suffix: an extension
     /// list cannot say "package.json" without also matching
-    /// `not-package.json`. Builtins keep this empty; the manifest's scope
-    /// column fills it.
+    /// `not-package.json`.
+    ///
+    /// The manifest's scope column fills this, and so does
+    /// `pre-commit-hadolint`, the first builtin to need it: a Dockerfile has
+    /// no extension to gate on.
     pub names: &'static [&'static str],
     /// Config paths that opt a repository in. Empty means always on.
     pub opt_in: &'static [&'static str],
@@ -114,6 +117,17 @@ impl Scope {
         Scope {
             files,
             names: &[],
+            opt_in: &[],
+            not_during: &[],
+        }
+    }
+
+    /// Gated on exact basenames rather than extensions — what a `Dockerfile`
+    /// needs, having none.
+    pub const fn named(names: &'static [&'static str]) -> Scope {
+        Scope {
+            files: &[],
+            names,
             opt_in: &[],
             not_during: &[],
         }
