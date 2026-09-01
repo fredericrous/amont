@@ -263,6 +263,29 @@ its own tool requirement only where you have opted into that check.
 Everything works on Windows; the one difference is that there is no symlink,
 so `init.templateDir` points straight at the checkout. [Details](docs/install.md).
 
+## The repositories around it
+
+Three companions, each its own repository because it runs somewhere amont
+deliberately does not:
+
+- [**amont-agent**](https://github.com/fredericrous/amont-agent) — a Claude
+  Code `PreToolUse` hook for the mistake no git hook can reach, because it
+  lives in the command string itself: `git push … | tail -5` reports tail's
+  exit status, so a rejected push reads as success. The guard judges the
+  pipeline before it runs. Independent by design — no shared code, and
+  neither needs the other; they meet in one optional place, where its
+  session notice asks `amont agents-md --check` whether the guidance block
+  an agent is about to believe has gone stale.
+- [**attest**](https://github.com/fredericrous/attest) — the CI half of
+  `amont.attest`: when every pre-push block gate passed locally, amont
+  leaves a **signed** note on the tree it tested, and this single-purpose
+  verifier lets CI skip work provably already done. Fail-open by
+  construction, and separate precisely so that amont itself never runs in
+  CI — [the reasoning](docs/ci.md).
+- [**amont-pack-java**](https://github.com/fredericrous/amont-pack-java) —
+  the worked example of [a pack](#shipping-one--packs): how checks amont
+  deliberately does not build in get shipped anyway.
+
 ## Documentation
 
 The full documentation is in [`docs/`](docs/), versioned with the code and
