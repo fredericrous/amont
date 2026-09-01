@@ -237,3 +237,61 @@ fn a_vendored_row_is_just_a_declaration() {
         run.output()
     );
 }
+
+/// A clone is what lands on a USB stick, and a clone advertises `HEAD` and
+/// `refs/remotes/origin/HEAD` together — two names for one commit. `resolve`
+/// counted refs, so the most natural offline gesture, `amont add
+/// /path/to/the/stick`, was refused as "ambiguous" over nothing.
+#[test]
+fn a_stick_clone_resolves_despite_origin_head() {
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
+    let repo = consumer();
+    repo.git(&["clone", "--quiet", &source(&pack), "stick"]);
+    let stick = repo.path("stick").to_string_lossy().to_string();
+
+    let run = repo.run(&["add", &stick]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(manifest(&repo).contains("terraform-fmt"));
+}
+
+/// An annotated tag resolves to the TAG object, and `fetch` compares against
+/// `rev-parse FETCH_HEAD`, which records the same — end to end, so a `-a`/`-s`
+/// release tag pins like a lightweight one.
+#[test]
+fn an_annotated_tag_pins_end_to_end() {
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
+    pack.git(&["tag", "-a", "v1", "-m", "release"]);
+    let repo = consumer();
+
+    let run = repo.run(&["add", &format!("{}@v1", source(&pack))]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(manifest(&repo).contains("terraform-fmt"));
+}
+
+/// Two refs at DIFFERENT commits stay refused — that is the case the error
+/// was written for, and the message now names both so the user can pick.
+#[test]
+fn a_name_on_two_diverged_refs_is_still_ambiguous() {
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
+    pack.git(&["branch", "same"]); // at the first commit
+    pack.stage(
+        "amont.pack",
+        "pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n# moved\n",
+    );
+    pack.commit("feat: move");
+    pack.git(&["tag", "same"]); // at the second
+    let repo = consumer();
+
+    let run = repo.run(&["add", &format!("{}@same", source(&pack))]);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(run.says("ambiguous"), "{}", run.output());
+    assert!(
+        run.says("refs/heads/same") && run.says("refs/tags/same"),
+        "the refusal names the candidates: {}",
+        run.output()
+    );
+    assert!(
+        !manifest(&repo).contains("terraform-fmt"),
+        "nothing written"
+    );
+}

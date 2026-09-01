@@ -141,27 +141,58 @@ pub fn resolve(source: &Source) -> Result<String, String> {
             source.label
         )
     })?;
-    // `ls-remote` prints "<sha>\t<ref>" per match. A rev matching several refs
-    // (a tag and a branch of the same name) is ambiguous, and guessing which
-    // one the user meant is exactly the wrong instinct for a verb that installs
-    // commands.
-    let ids: Vec<&str> = out
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .collect();
+    // `ls-remote` prints "<sha>\t<ref>" per match. A rev naming several
+    // DISTINCT commits (a branch and a tag of the same name, diverged) is
+    // ambiguous, and guessing which one the user meant is exactly the wrong
+    // instinct for a verb that installs commands. But refs, not commits, is
+    // the wrong thing to count: any non-bare clone advertises `HEAD` and
+    // `refs/remotes/origin/HEAD` together, so `amont add /path/to/a/clone`
+    // — the USB-stick shape, and the most natural offline gesture — was
+    // refused over two names for one answer.
+    let refs = named_refs(&out);
+    let mut ids: Vec<&str> = refs.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
     match ids.as_slice() {
         [] => Err(format!(
             "{}: {rev} names nothing on that remote",
             source.label
         )),
         [one] => Ok((*one).to_string()),
-        many => Err(format!(
-            "{}: {rev} is ambiguous — it matches {} refs on that remote; \
-             name a commit id instead",
-            source.label,
-            many.len()
-        )),
+        _ => {
+            let listed = refs
+                .iter()
+                .map(|(id, name)| format!("{name} @ {}", &id[..7.min(id.len())]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "{}: {rev} is ambiguous — it names {} different commits on \
+                 that remote ({listed}); name a commit id instead",
+                source.label,
+                ids.len()
+            ))
+        }
     }
+}
+
+/// `ls-remote` lines as `(id, ref-name)`, with peeled lines dropped.
+///
+/// A ref ending in `^{}` is an annotated tag's peeled COMMIT — derived from
+/// a line already in the listing, never a ref of its own, so it can never be
+/// the only answer. Neither github.com nor the local-path transport emits one
+/// for a pattern query (measured, protocols v2 and v0), but `git-ls-remote(1)`
+/// documents the form and other server implementations exist. It is also the
+/// wrong id to return: `fetch` compares against `rev-parse FETCH_HEAD`, which
+/// records the tag OBJECT, not the commit it peels to (also measured).
+fn named_refs(out: &str) -> Vec<(String, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let id = it.next()?;
+            let name = it.next().unwrap_or("");
+            (!name.ends_with("^{}")).then(|| (id.to_string(), name.to_string()))
+        })
+        .collect()
 }
 
 /// The pack's text at `id`, or an error.
@@ -313,6 +344,20 @@ pub fn splice(manifest: &str, label: &str, id: &str, rows: &[String]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peeled `^{}` line is derived from its base line, never an answer of
+    /// its own — and no observed transport emits one for a pattern query, so
+    /// this is the only place the defensive branch can be exercised.
+    #[test]
+    fn a_peeled_tag_line_is_not_a_second_ref() {
+        let out = "fdfa39b\trefs/tags/v1\n2127b95\trefs/tags/v1^{}\n";
+        let refs = named_refs(out);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(
+            refs[0].0, "fdfa39b",
+            "the TAG object, which is what FETCH_HEAD records"
+        );
+    }
 
     #[test]
     fn shorthands_and_urls_become_git_urls() {
