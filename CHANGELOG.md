@@ -6,6 +6,42 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.26.0
+
+The fleet dashboard can now repair a repository without leaving the screen,
+and its table scrolls the same way in both directions.
+
+### Added
+
+- **`f` in the fleet dashboard syncs the selected repository's hooks.** A row
+  reading `drifted` or `missing` used to send you out to
+  `amont-fleet fix --apply`. Now `f`, from the fleet table or a repository's
+  detail view, builds the same `FixPlan` the CLI preview prints and puts it on
+  screen — what would be removed, what would be written, which shims are
+  already current, and anything worth noting. `y` (or Enter) applies exactly
+  that plan; `Esc` discards it. The apply step re-verifies every refusal at the
+  moment of writing, so a tree that changed underneath the preview is refused
+  rather than acted on. Only the safe defaults apply: repair, no `AGENTS.md`
+  write, nothing deleted that this tool did not create — `--agents-md` and
+  `--remove-unrecognized` stay command-line only. A repository that is not
+  ours is refused in place with a one-line reason, no modal. The row is re-read
+  from disk afterwards, so the table shows what is now true rather than what
+  was intended.
+
+### Fixed
+
+- **Scrolling up in the fleet table now mirrors scrolling down.** Going down,
+  the cursor reached the bottom line and each press revealed one more row.
+  Going up, the cursor stayed pinned to the bottom line while the rows slid
+  under it, instead of climbing to the top of the window first. The table's
+  scroll offset was rebuilt from zero on every frame; it is now carried
+  between frames, so the cursor roams the visible window and the list scrolls
+  only when it passes either edge.
+
+- **A footer notice no longer hides the key sheet for the rest of the
+  session.** The first `s` toggle used to replace the footer's key list with
+  its notice permanently. The next keystroke now dismisses the notice.
+
 ## v1.25.1
 
 One fix, and it is the kind worth reading: a feature shipped in 1.25.0 has not
