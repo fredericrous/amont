@@ -59,7 +59,11 @@ start.\n\
 \n\
 `git commit` and `git push` both run their checks first, and neither is\n\
 instant: pre-commit can invoke formatters, linters or clippy (a workspace\n\
-build), and pre-push can run the test suite. Give both commands the\n\
+build), and pre-push can run the test suite. Run `amont run pre-push`\n\
+BEFORE `git push`: it runs the same push gate with no connection open and\n\
+stamps the tree, so the push itself skips the suite and holds the remote\n\
+for seconds instead of minutes (git connects before pre-push runs, and a\n\
+remote may drop the idle session while a suite runs). Give both commands the\n\
 longest timeout your tooling allows, never its default: here a check is\n\
 killed only after {idle} of silence or {ceiling} in total\n\
 (`amont.idleTimeout` / `amont.timeout`), and a test suite may legitimately\n\

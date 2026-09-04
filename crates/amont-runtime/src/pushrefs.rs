@@ -62,21 +62,30 @@ impl PushRefs {
 /// which need to answer "what would this check see" without an actual push
 /// in flight.
 pub fn synthetic_from_upstream() -> Result<PushRef, String> {
-    // `None` means "no upstream", i.e. a branch that has never been pushed,
-    // and that is not an error — just nothing this can answer yet.
-    let Some(upstream) =
-        crate::git::stdout(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-    else {
-        return Err(
-            "no upstream configured for the current branch — nothing has been \
-             pushed yet, so there is nothing to diff against"
-                .to_string(),
-        );
-    };
+    // No upstream means a branch that has never been pushed. That used to be
+    // the end of it — but the branch that has never been pushed is exactly
+    // the one about to be, and `amont run pre-push` exists to rehearse that
+    // push before git opens a connection for it. So fall back to what the
+    // first push would be judged against: the remote's default branch.
+    let upstream =
+        match crate::git::stdout(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) {
+            Some(u) => u,
+            None => match DEFAULT_BASES.iter().find(|b| {
+                crate::git::succeeds(&["rev-parse", "-q", "--verify", &format!("{b}^{{commit}}")])
+            }) {
+                Some(b) => b.to_string(),
+                None => {
+                    return Err("no upstream configured for the current branch and no \
+                     origin/HEAD, origin/main or origin/master to diff against — \
+                     nothing has been fetched yet"
+                        .to_string())
+                }
+            },
+        };
     let Some(local_oid) = crate::git::stdout(&["rev-parse", "HEAD"]) else {
         return Err("could not resolve HEAD".to_string());
     };
-    let Some(remote_oid) = crate::git::stdout(&["rev-parse", "@{u}"]) else {
+    let Some(remote_oid) = crate::git::stdout(&["rev-parse", &upstream]) else {
         return Err(format!("could not resolve upstream {upstream}"));
     };
     let local_ref =
@@ -88,6 +97,11 @@ pub fn synthetic_from_upstream() -> Result<PushRef, String> {
         remote_oid,
     })
 }
+
+/// What a never-pushed branch is measured against, in order of preference:
+/// the remote's advertised default, then the two names it is almost always
+/// called.
+const DEFAULT_BASES: &[&str] = &["origin/HEAD", "origin/main", "origin/master"];
 
 pub fn parse<R: BufRead>(r: R) -> Vec<PushRef> {
     r.lines()

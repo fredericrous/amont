@@ -227,6 +227,20 @@ default is that a long-running tool's output arrives when the check ends
 rather than as it happens; this key is the way back if you want to watch a
 test suite scroll.
 
+## `amont.pushStamps` — remember what the push gate already proved
+
+```sh
+git config amont.pushStamps false   # default true
+```
+
+A push-time gate that passes stamps the pushed tips in
+`refs/notes/amont-gate`, keyed by tree, and the next push of the same content
+skips it: the retry after a remote dropped the idle connection mid-suite,
+and the `git push` after an `amont run pre-push` rehearsal. Only scoped
+gates (test suites) are stamped or skipped, and only for content the suite
+actually tested — see "Rehearsing the push gate" on the checks page. `false`
+turns off both the writing and the honouring.
+
 ## `amont.autoRebase` — whether pre-push may sync a behind branch for you
 
 ```sh

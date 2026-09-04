@@ -709,6 +709,44 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // Accumulated rather than written per check: one append at the end costs a
     // single file open, and the loop below can leave early.
     let mut downgraded: Vec<(String, crate::downgrade::Origin)> = Vec::new();
+    // PUSH STAMPS. The tips being pushed, and what earlier runs of THIS gate
+    // recorded against their trees — an `amont run pre-push` rehearsal, or a
+    // push whose gate passed and whose transport then died. A scoped gate
+    // (a test suite: its verdict is a function of the tree alone) whose
+    // stamp sits on every tip is not run again; the unscoped ones
+    // (branch-protect, secrets — questions about the push, not the content)
+    // always run. `amont.pushStamps false` turns the reuse off.
+    //
+    // Reading `ctx.push` here may consume stdin, exactly as `attest` does
+    // below; every pre-push check reads it anyway.
+    let tips: Vec<String> = {
+        let mut t: Vec<String> = ctx
+            .push
+            .get()
+            .iter()
+            .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+            .map(|r| r.local_oid.clone())
+            .collect();
+        t.dedup();
+        t
+    };
+    let reuse_stamps = crate::gate_stamp::push_stamps_enabled();
+    let push_stamps = if reuse_stamps && !tips.is_empty() {
+        crate::gate_stamp::stamps_for(&tips)
+    } else {
+        Default::default()
+    };
+    let stamped_on_every_tip = |name: &str| -> bool {
+        !tips.is_empty()
+            && tips.iter().all(|t| {
+                push_stamps
+                    .get(t)
+                    .is_some_and(|s| s.iter().any(|g| g == name))
+            })
+    };
+    // What actually RAN and passed here (as opposed to being vouched for by
+    // a stamp) — the set this run may stamp in turn.
+    let mut ran_and_passed: Vec<String> = Vec::new();
     for (idx, check) in pre_push_checks.iter().enumerate() {
         let _sink = stage.as_ref().map(|s| s.enter(idx));
         let _flush = stage
@@ -729,6 +767,15 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // The external is tried FIRST and its inputs are unchanged, so the
         // declared path behaves exactly as before — that is what the
         // untouched declared-pair tests prove.
+        if !check.scope().is_unscoped() && stamped_on_every_tip(check.name()) {
+            crate::say!(
+                "{} {} passed on this exact tree earlier — not repeating it here",
+                valid_sign(),
+                highlight(check.name()),
+            );
+            passed.push(check.name().to_string());
+            continue;
+        }
         let declared = ctx
             .manifest
             .externals
@@ -778,7 +825,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             manifest: ctx.manifest,
         };
         match check.run(&sub) {
-            Outcome::Passed => passed.push(check.name().to_string()),
+            Outcome::Passed => {
+                passed.push(check.name().to_string());
+                if !check.scope().is_unscoped() {
+                    ran_and_passed.push(check.name().to_string());
+                }
+            }
             // Announced, never fatal: a check that could not run has not
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
@@ -818,7 +870,28 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             },
         }
     }
-    // Every block gate passed — say so to CI, if this repository opted in.
+    // Every block gate passed — stamp the tips with the scoped gates that
+    // RAN here, so the next push of this content (a retry after a dropped
+    // connection, or the real push after an `amont run pre-push` rehearsal)
+    // skips them. Only when what ran is what is being pushed: with
+    // `amont.testPushedTree` the suite ran on the tip itself; otherwise it
+    // ran on the working tree, which vouches for the tip only when the two
+    // are the same content — HEAD, with nothing tracked modified.
+    // The same proxy `attestable` uses, for the same reason: a scoped gate
+    // whose files the push never touched returns `Passed` having run
+    // nothing, and a stamp for THAT would let a later push that does touch
+    // them skip a suite nobody ran.
+    if reuse_stamps && !ran_and_passed.is_empty() {
+        let changed = crate::pushrefs::changed_files(ctx.push.get());
+        let really_ran: Vec<String> = pre_push_checks
+            .iter()
+            .filter(|c| ran_and_passed.iter().any(|p| p == c.name()))
+            .filter(|c| c.scope().touches(&changed))
+            .map(|c| c.name().to_string())
+            .collect();
+        stamp_tips(&tips, &really_ran);
+    }
+    // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
     // `ctx.push` may consume stdin, and a disabled repo should leave stdin
     // exactly as it found it.
@@ -834,6 +907,46 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     }
     crate::downgrade::note(&downgraded);
     Verdict::Proceed
+}
+
+/// Push-stamp every tip whose content is what the gates actually tested.
+///
+/// See the comment at the call site for the two cases. Silent when nothing
+/// qualifies — a dirty working tree is the ordinary state of a machine
+/// mid-work, and a note on every push would teach people to ignore it.
+fn stamp_tips(tips: &[String], gates: &[String]) {
+    let pushed_tree_mode = crate::pushed_tree::enabled();
+    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
+    // Tracked modifications only: untracked files are not in any tree the
+    // suite could have been asked about, and `status --porcelain` with
+    // `--untracked-files=no` is the cheapest honest answer.
+    let worktree_clean = || {
+        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"])
+            .is_some_and(|s| s.trim().is_empty())
+    };
+    let mut stamped: Vec<&str> = Vec::new();
+    for tip in tips {
+        let vouchable =
+            pushed_tree_mode || (head.as_deref() == Some(tip.as_str()) && worktree_clean());
+        if !vouchable {
+            continue;
+        }
+        let spec = format!("{tip}^{{tree}}");
+        let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
+            continue;
+        };
+        if crate::gate_stamp::stamp_push(tip, &tree, gates) {
+            stamped.push(tip);
+        }
+    }
+    if !stamped.is_empty() {
+        crate::say!(
+            "{} stamped {} for this tree — the next push of it skips them ({})",
+            valid_sign(),
+            highlight(&gates.join(" ")),
+            crate::gate_stamp::NOTES_REF,
+        );
+    }
 }
 
 /// Of the checks that passed, the ones an attestation may actually VOUCH for.

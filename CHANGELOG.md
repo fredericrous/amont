@@ -6,6 +6,44 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.27.0
+
+The test suite can run before git opens a connection, and a push that died
+on the wire after its gate passed no longer pays for the gate twice.
+
+### Added
+
+- **Push stamps.** A push-time gate that passes now stamps the pushed tips in
+  `refs/notes/amont-gate` — the same tree-keyed record the commit-time gates
+  earn — and the next push of the same content skips it, saying
+  `✓ pre-push-run-tests-js passed on this exact tree earlier — not repeating
+  it here`. Two things fall out of one record. A retry after a dropped
+  connection is instant: git opens its connection to the remote *before*
+  calling pre-push and holds it idle while the suite runs, and a remote that
+  drops idle sessions killed the push after a four-minute gate had passed —
+  measured on a Forgejo behind a cloud front door, twice in an afternoon.
+  And the suite can run before git connects at all: `amont run pre-push`
+  drives the same dispatcher with no push in flight and stamps `HEAD`, so
+  the `git push` that follows holds the connection for the seconds the
+  transport takes. Only scoped gates (test suites) are stamped or skipped;
+  `branch-protect`, `secrets` and the other unscoped checks always run. A
+  stamp is written only for content the suite actually tested: the tip
+  under `amont.testPushedTree`, otherwise `HEAD` with no tracked file
+  modified. `git config amont.pushStamps false` turns it off. Push-time
+  tokens are full ids and commit-time ones are script names, and a note
+  that already carries the one is merged with, not overwritten by, the
+  other.
+- **`amont run pre-push` on a branch that has never been pushed.** The
+  rehearsal used to refuse without an upstream — which is exactly the
+  branch about to be pushed for the first time. It now measures against
+  `origin/HEAD`, `origin/main` or `origin/master`, in that order, and says
+  which it could not find only when none exist.
+
+### Changed
+
+- The generated agent guidance (`amont agents-md`) now tells an agent to run
+  `amont run pre-push` before `git push`, and why.
+
 ## v1.26.0
 
 The fleet dashboard can now repair a repository without leaving the screen,
