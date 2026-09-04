@@ -35,6 +35,14 @@ pub enum Mode {
     HookView,
     /// Typing into the filter. The row list narrows as you type.
     Filter,
+    /// A repair plan for the selected repository is on screen, waiting for
+    /// `y`. The plan shown is the plan applied — one value, computed once —
+    /// and `apply` re-verifies its refusals at the moment of writing, so the
+    /// preview cannot drift from the act. That is the property the CLI's
+    /// `fix` / `fix --apply` split enforces, obtained here the same way: the
+    /// only keystroke that writes is the one answering a plan that is on
+    /// screen.
+    Sync,
 }
 
 /// A keystroke, named. The previous signature was
@@ -107,6 +115,13 @@ pub struct App {
     pub visited: usize,
     pub elapsed: f64,
     pub quit: bool,
+    /// The binary a repaired shim is baked to point at — the same value the
+    /// scan classified against, so a row that reads `drifted` is repaired to
+    /// exactly the bytes that would read `ok`.
+    pub binary: String,
+    /// The plan `f` built for the selected repository, shown in `Mode::Sync`
+    /// and consumed by `y`. Never present outside that mode.
+    pending: Option<crate::fix::FixPlan>,
     /// The table's scroll offset, carried across frames.
     ///
     /// Rebuilt from `TableState::default()` every draw, the offset restarted
@@ -136,6 +151,8 @@ impl App {
             visited: 0,
             elapsed: 0.0,
             quit: false,
+            binary: String::new(),
+            pending: None,
             table_state: std::cell::RefCell::new(TableState::default()),
         }
     }
@@ -162,11 +179,103 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: Key) {
+        // A notice describes the last action. The next keystroke is a new one,
+        // and the footer has to go back to listing the keys — otherwise the
+        // first write of a session hid the key sheet for the rest of it.
+        self.notice = None;
         match self.mode {
             Mode::Filter => self.filter_key(key),
             Mode::Detail => self.detail_key(key),
+            Mode::Sync => self.sync_key(key),
             _ => self.browse_key(key),
         }
+    }
+
+    /// The plan is on screen; only an answer to it does anything.
+    fn sync_key(&mut self, key: Key) {
+        match key {
+            Key::Char('y') | Key::Enter => self.apply_sync(),
+            Key::Esc => {
+                self.pending = None;
+                self.mode = self.prev_mode;
+            }
+            Key::Char('q') => self.quit = true,
+            _ => {}
+        }
+    }
+
+    /// Build the repair for the selected repository and show it.
+    ///
+    /// Only the safe defaults: `Intent::Repair`, no `AGENTS.md`, no removal of
+    /// files we did not write — the same population and the same writes as a
+    /// plain `amont-fleet fix --apply`, for one repository. The two opt-in
+    /// flags stay CLI-only on purpose; each is a materially bigger action
+    /// than restoring four untracked shims.
+    fn begin_sync(&mut self) {
+        let rows = self.rows();
+        let Some(repo) = rows.get(self.selected).map(|r| (*r).clone()) else {
+            return;
+        };
+        let abs = self.scan.root.join(&repo.path);
+        let plan = crate::fix::plan(
+            &repo,
+            &abs,
+            &self.binary,
+            crate::fix::Intent::Repair,
+            false,
+            false,
+        );
+        if let Some(r) = plan.refuse.first() {
+            let why = r.explain();
+            let first = why.lines().next().unwrap_or("").to_string();
+            self.notice = Some(format!("refused: {first}"));
+            return;
+        }
+        if plan.is_noop() {
+            self.notice = Some("nothing to sync: every shim is current".into());
+            return;
+        }
+        self.pending = Some(plan);
+        self.prev_mode = self.mode;
+        self.mode = Mode::Sync;
+    }
+
+    fn apply_sync(&mut self) {
+        let Some(plan) = self.pending.take() else {
+            return;
+        };
+        self.mode = self.prev_mode;
+        let outcome = crate::apply::apply(&plan);
+        self.notice = Some(match &outcome {
+            crate::apply::Outcome::Applied { removed, written } => {
+                format!("synced {}: -{removed} +{written}", shown_path(&plan.repo))
+            }
+            crate::apply::Outcome::Unchanged => "nothing to sync: every shim is current".into(),
+            // `apply` re-verified and found the world had moved since the plan
+            // was shown. Nothing was touched; say so rather than "synced".
+            crate::apply::Outcome::Refused => {
+                format!(
+                    "refused at apply time: {} changed underneath the plan",
+                    shown_path(&plan.repo)
+                )
+            }
+            crate::apply::Outcome::Failed { error, at } => {
+                format!(
+                    "sync FAILED at {at}: {}",
+                    amont_runtime::ui::sanitize(error)
+                )
+            }
+        });
+        self.rescan_row(&plan.repo);
+    }
+
+    /// Replace one row with what is on disk now.
+    fn rescan_row(&mut self, rel: &std::path::Path) {
+        let Some(i) = self.scan.repos.iter().position(|r| r.path == rel) else {
+            return;
+        };
+        let shares = self.scan.repos[i].shares_hooks_with.clone();
+        self.scan.repos[i] = crate::scan::rescan(&self.scan.root, rel, &self.binary, shares);
     }
 
     fn filter_key(&mut self, key: Key) {
@@ -194,6 +303,7 @@ impl App {
             Key::Char('k') | Key::Up => self.check_selected = self.check_selected.saturating_sub(1),
             Key::Char('s') => self.begin_toggle(),
             Key::Char('u') => self.take_back(),
+            Key::Char('f') => self.begin_sync(),
             _ => self.browse_key(key),
         }
     }
@@ -294,6 +404,7 @@ impl App {
             }
             Key::Char('k') | Key::Up => self.selected = self.selected.saturating_sub(1),
             Key::Enter if len > 0 => self.mode = Mode::Detail,
+            Key::Char('f') if len > 0 => self.begin_sync(),
             Key::Esc => {
                 // Leave the current screen first; only then clear a filter.
                 if self.mode != Mode::Browse {
@@ -496,7 +607,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     .split(area);
 
     header(f, chunks[0], app);
-    if app.mode == Mode::HookView {
+    if app.mode == Mode::Sync {
+        sync_view(f, chunks[1], app);
+    } else if app.mode == Mode::HookView {
         hooks_view(f, chunks[1], app);
     } else if app.mode == Mode::Detail {
         detail(f, chunks[1], app);
@@ -1135,6 +1248,87 @@ fn hooks_view(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// A repository path as the screen shows it: relative to the root, with
+/// anything a terminal would obey stripped.
+fn shown_path(p: &std::path::Path) -> String {
+    amont_runtime::ui::sanitize_path(p)
+}
+
+/// The repair plan, as a diff: what goes, what is written, what is merely
+/// noted. Every line the CLI's `fix` preview would print for this repository,
+/// because it is the same `FixPlan`.
+fn sync_view(f: &mut Frame, area: Rect, app: &App) {
+    let Some(plan) = &app.pending else {
+        return;
+    };
+    let mut lines: Vec<Line> = vec![
+        Line::from(format!("SYNC {}", shown_path(&plan.repo))).style(tint(app.color, ACCENT)),
+        Line::from(format!("hooks: {}", plan.hooks.describe())),
+        Line::from(""),
+    ];
+    for r in &plan.remove {
+        let name = r
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let why = match r.reason {
+            crate::fix::RemovalReason::StaleOurs => "ours, no longer shipped",
+            crate::fix::RemovalReason::ForeignSubHook => "not ours",
+            crate::fix::RemovalReason::VestigialPackageJson => "node-era, no hook is node",
+        };
+        lines.push(Line::from(format!("- {name:<20} {why}")).style(tint(app.color, Color::Red)));
+    }
+    for w in &plan.write {
+        let name = w
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if w.changes {
+            lines.push(
+                Line::from(format!(
+                    "+ {name:<20} → {}",
+                    amont_runtime::ui::sanitize(&w.baked)
+                ))
+                .style(tint(app.color, Color::Green)),
+            );
+        } else {
+            lines.push(Line::from(format!("= {name:<20} unchanged")));
+        }
+    }
+    if !plan.warn.is_empty() {
+        lines.push(Line::from(""));
+        for w in &plan.warn {
+            let text = match w {
+                crate::fix::Warning::UnrecognizedSubHook { path } => format!(
+                    "! {} is not ours and is left alone",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+                crate::fix::Warning::HooksDirOutsideRepo { path } => {
+                    format!("! hooks resolve outside the repo: {}", shown_path(path))
+                }
+                crate::fix::Warning::HooksDirRedirected { path } => {
+                    format!("! hooks redirected to {}", shown_path(path))
+                }
+            };
+            lines.push(Line::from(text).style(tint(app.color, Color::Yellow)));
+        }
+    }
+    lines.push(Line::from(""));
+    let writes = plan.write.iter().filter(|w| w.changes).count();
+    lines.push(Line::from(format!(
+        "{} to remove, {writes} to write. Nothing has been touched yet.",
+        plan.remove.len()
+    )));
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
+}
+
 fn footer(f: &mut Frame, area: Rect, app: &App) {
     let rows = app.rows().len();
     let total = app.scan.repos.len();
@@ -1151,12 +1345,14 @@ fn footer(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Paragraph::new(Line::from(n.clone())), area);
         return;
     }
-    let keys = if app.mode == Mode::HookView {
+    let keys = if app.mode == Mode::Sync {
+        "y apply  esc cancel  q quit"
+    } else if app.mode == Mode::HookView {
         "h fleet  q quit"
     } else if app.mode == Mode::Detail {
-        "j/k check  s skip  u undo  esc back  q quit"
+        "j/k check  s skip  u undo  f sync  esc back  q quit"
     } else {
-        "j/k move  enter detail  / filter  h hooks  esc clear  q quit"
+        "j/k move  enter detail  / filter  h hooks  f sync  esc clear  q quit"
     };
     f.render_widget(Paragraph::new(Line::from(format!("{left}   {keys}"))), area);
 }
@@ -1183,9 +1379,10 @@ pub fn run(root: std::path::PathBuf, depth: usize, binary: String) -> std::io::R
 
     let (tx, rx) = mpsc::channel();
     let scan_root = root.clone();
+    let scan_binary = binary.clone();
     std::thread::spawn(move || {
         let t = tx.clone();
-        let scan = crate::scan::scan(&scan_root, depth, &binary, &mut |p| match p {
+        let scan = crate::scan::scan(&scan_root, depth, &scan_binary, &mut |p| match p {
             // Throttled: a message per directory would spend more time in the
             // channel than in the walk.
             crate::scan::Progress::Visited { count, .. } if count % 200 == 0 => {
@@ -1222,6 +1419,7 @@ pub fn run(root: std::path::PathBuf, depth: usize, binary: String) -> std::io::R
         repos_with_downgrades: 0,
         repos: Vec::new(),
     });
+    app.binary = binary;
     app.scanning = true;
 
     let result = loop {
@@ -2214,6 +2412,177 @@ mod tests {
         let screen = step(&mut app, Key::Up);
         assert_eq!(app.table_offset(), offset - 1, "{screen}");
         assert_eq!(cursor_line(&screen), top);
+    }
+
+    /// A REAL repository on disk — `fix::plan` asks git whether each hook path
+    /// is tracked, and a fake `.git` directory would make that a refusal.
+    /// Its `pre-commit` carries our marker so the scan calls it managed, but
+    /// is not the template under any substitution, so it reads `drifted`.
+    /// The other four dispatchers are missing.
+    struct DriftedRepo {
+        root: PathBuf,
+    }
+
+    impl DriftedRepo {
+        const BINARY: &'static str = "/opt/amont";
+
+        fn new(name: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("fleet-tui-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let repo = root.join("r");
+            std::fs::create_dir_all(&repo).unwrap();
+            let out = std::process::Command::new("git")
+                .args(["init", "-q", "--template=", "."])
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git init: {out:?}");
+            let hooks = repo.join(".git/hooks");
+            std::fs::create_dir_all(&hooks).unwrap();
+            std::fs::write(
+                hooks.join("pre-commit"),
+                "#!/bin/sh\n# git-templates hook shim.\nexec \"$BIN\" pre-commit \"$@\"\n",
+            )
+            .unwrap();
+            DriftedRepo { root }
+        }
+
+        fn hook(&self, name: &str) -> PathBuf {
+            self.root.join("r/.git/hooks").join(name)
+        }
+
+        /// Scan it the way `run` does, then hand the result to an `App` that
+        /// knows the same binary.
+        fn app(&self) -> App {
+            let scan = crate::scan::scan(&self.root, 3, Self::BINARY, &mut |_| {});
+            assert_eq!(scan.repos.len(), 1, "one repository: {scan:?}");
+            let mut app = App::new(scan);
+            app.binary = Self::BINARY.to_string();
+            app
+        }
+    }
+
+    impl Drop for DriftedRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// `f` shows the repair, `y` carries it out, and the row then reads what
+    /// is on disk — `ok` — rather than what was intended.
+    #[test]
+    fn f_previews_the_repair_and_y_applies_it() {
+        let t = DriftedRepo::new("sync");
+        let mut app = t.app();
+        assert_eq!(state_word(&app.scan.repos[0]), "x drifted 1");
+
+        app.on_key(Key::Char('f'));
+        assert_eq!(app.mode, Mode::Sync);
+        let preview = render(&app, 80, 20);
+        assert!(preview.contains("SYNC r"), "{preview}");
+        assert!(
+            preview.contains("+ pre-commit"),
+            "the drifted shim is a write:\n{preview}"
+        );
+        assert!(
+            preview.contains("+ pre-push"),
+            "a missing shim is a write:\n{preview}"
+        );
+        assert!(
+            preview.contains("Nothing has been touched yet"),
+            "{preview}"
+        );
+        assert!(preview.contains("y apply  esc cancel"), "{preview}");
+        assert!(
+            !std::fs::read_to_string(t.hook("pre-commit"))
+                .unwrap()
+                .contains(DriftedRepo::BINARY),
+            "a preview must not write"
+        );
+
+        app.on_key(Key::Char('y'));
+        assert_eq!(app.mode, Mode::Browse, "back where f was pressed");
+        assert!(app.pending.is_none());
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(notice.starts_with("synced r: -0 +5"), "{notice}");
+        assert_eq!(
+            std::fs::read_to_string(t.hook("pre-commit")).unwrap(),
+            crate::shim::render(DriftedRepo::BINARY),
+            "the shim on disk is the template, baked"
+        );
+        assert!(t.hook("pre-push").exists());
+        assert_eq!(
+            state_word(&app.scan.repos[0]),
+            "ok",
+            "the row was re-read from disk"
+        );
+        assert!(app.scan.repos[0]
+            .shims
+            .iter()
+            .all(|s| matches!(s, ShimState::Ok { .. })));
+
+        // Applying twice changes nothing, and says so without entering the
+        // preview.
+        app.on_key(Key::Char('f'));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(
+            app.notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("nothing to sync"),
+            "{:?}",
+            app.notice
+        );
+    }
+
+    #[test]
+    fn esc_cancels_a_sync_without_writing() {
+        let t = DriftedRepo::new("cancel");
+        let before = std::fs::read_to_string(t.hook("pre-commit")).unwrap();
+        let mut app = t.app();
+        app.on_key(Key::Enter);
+        assert_eq!(app.mode, Mode::Detail);
+        app.on_key(Key::Char('f'));
+        assert_eq!(app.mode, Mode::Sync);
+        // Neither a stray letter nor a move does anything here.
+        app.on_key(Key::Char('j'));
+        app.on_key(Key::Char('s'));
+        assert_eq!(app.mode, Mode::Sync);
+        app.on_key(Key::Esc);
+        assert_eq!(app.mode, Mode::Detail, "back to where f was pressed");
+        assert!(app.pending.is_none());
+        assert_eq!(
+            std::fs::read_to_string(t.hook("pre-commit")).unwrap(),
+            before
+        );
+        assert!(!t.hook("pre-push").exists());
+        assert_eq!(state_word(&app.scan.repos[0]), "x drifted 1");
+    }
+
+    /// A repository that is not ours is refused in place: no preview, no
+    /// modal, a one-line reason. Same population rule as `fix --apply`.
+    #[test]
+    fn f_on_an_unmanaged_repo_refuses_in_place() {
+        let t = DriftedRepo::new("foreign");
+        std::fs::write(t.hook("pre-commit"), "#!/bin/sh\necho mine\n").unwrap();
+        let mut app = t.app();
+        assert!(!app.scan.repos[0].managed);
+        app.on_key(Key::Char('f'));
+        assert_eq!(app.mode, Mode::Browse);
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(
+            notice.starts_with("refused: no shim of ours here"),
+            "{notice}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(t.hook("pre-commit")).unwrap(),
+            "#!/bin/sh\necho mine\n"
+        );
+        // The next key dismisses the notice, so the key sheet comes back.
+        app.on_key(Key::Down);
+        assert!(app.notice.is_none());
+        assert!(render(&app, 80, 12).contains("f sync"));
     }
 
     /// Arrows are their own variants rather than aliases for j/k, so they still
