@@ -22,6 +22,16 @@
 //!    stamped: the check really did run on exactly that content.
 //! 3. **pre-push** ([`stamps_for`]) reads the stamps back and suppresses a
 //!    gate script only for pushes whose relevant commits all carry it.
+//! 4. **pre-push, on the way out** ([`stamp_push`]) writes the push-time
+//!    gates that PASSED onto each pushed tip — and `amont run pre-push`,
+//!    which drives the same dispatcher, writes the same stamp for `HEAD`.
+//!    The next push of that tree finds the stamp and skips the gate. That is
+//!    what lets the suite run BEFORE git opens its connection: a rehearsal
+//!    stamps, the push verifies. And a push that passed the gate but died on
+//!    the wire — a remote that dropped the idle session while the suite ran
+//!    — retries in seconds instead of minutes. Push-time tokens are full
+//!    ids (`pre-push-run-tests-js`), commit-time ones are script names
+//!    (`test`); the two share a note and never collide.
 //!
 //! Every failure mode points the same direction: no marker, a mismatched
 //! tree, a missing note, a rewritten hash — all mean "no stamp", and no stamp
@@ -50,6 +60,16 @@ pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 
 /// The marker's filename inside `$GIT_DIR`.
 const MARKER: &str = "amont-gate";
+
+/// The switch for push-time stamps — both writing them and honouring them.
+/// On by default: a stamp is amont's own record of a gate it ran on exactly
+/// this content, the same trust the commit-time stamps have always carried.
+const PUSH_STAMPS: &str = "amont.pushStamps";
+
+/// Does this repository reuse push-time stamps?
+pub fn push_stamps_enabled() -> bool {
+    crate::config::boolean_or(PUSH_STAMPS, true)
+}
 
 /// `$GIT_DIR/amont-gate` — the worktree-PRIVATE gitdir, deliberately: the
 /// commit this marker waits for happens in this worktree. The stamps the
@@ -171,6 +191,50 @@ pub fn bind_to_head() -> Vec<String> {
         return Vec::new();
     }
     scripts.iter().map(|s| s.to_string()).collect()
+}
+
+/// pre-push, after every block gate passed: record that `gates` passed
+/// against `tree`, the content of `commit` — MERGING with whatever the note
+/// already says, because a commit-time stamp (`test`) may already sit there
+/// and `notes add -f` would otherwise erase it.
+///
+/// Best-effort, like every writer here: a stamp that could not be written
+/// costs one redundant gate run on the next push, which is the safe
+/// direction. Returns whether the commit's note was written.
+pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
+    if gates.is_empty() {
+        return false;
+    }
+    let existing = |key: &str| -> Vec<String> {
+        crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key])
+            .and_then(|body| {
+                let first = body.lines().next()?.to_string();
+                let mut tokens = first.split_whitespace();
+                (tokens.next() == Some(FORMAT)).then(|| tokens.map(str::to_string).collect())
+            })
+            .unwrap_or_default()
+    };
+    let mut written = false;
+    for key in [tree, commit] {
+        let mut tokens = existing(key);
+        for g in gates {
+            if !tokens.iter().any(|t| t == g) {
+                tokens.push(g.clone());
+            }
+        }
+        let note = format!("{FORMAT} {}", tokens.join(" "));
+        let ok =
+            crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, key]);
+        if key == commit {
+            written = ok;
+        }
+    }
+    if !written {
+        crate::hooks::common::warn(
+            "git refused to write the push stamp — these gates will run again on the next push",
+        );
+    }
+    written
 }
 
 /// pre-push: which of `commits` carry a stamp, and for which scripts.

@@ -332,11 +332,47 @@ pre-commit    cargo-test  *.rs    block     cargo test
 name must be the SHORT one (`cargo-test`, not `pre-push-cargo-test`): it is
 matched against what you wrote here, and a full id matches nothing.
 
-This is worth reaching for when a suite is slow enough to be a problem on the
-push path — git opens its connection to the remote *before* calling
-`pre-push` and holds it idle until the gate finishes, and a remote may close
-it first. Moving the gate to commit time is the only thing that shortens that
-window; ssh keepalive does not.
+This is worth reaching for when a suite is fast enough to run on every
+commit. When it is not — a four-minute suite is not a per-commit cost anyone
+accepts — leave it at push time and **rehearse the push** instead; see the
+next section. The window that matters is the same either way: git opens its
+connection to the remote *before* calling `pre-push` and holds it idle until
+the gate finishes, and a remote may close it first (ssh keepalive does not
+prevent that).
+
+### Rehearsing the push gate
+
+A push-time gate that passes stamps the tips it vouched for — the same
+`refs/notes/amont-gate` record the commit-time gates use, keyed by tree, so
+it survives a reword or a rebase that keeps the content. The next push of
+that content skips the gate and says so:
+
+```text
+✓ pre-push-run-tests-js passed on this exact tree earlier — not repeating it here
+```
+
+Two things fall out of one record:
+
+- **A retry after a dropped connection is instant.** The gate passed, the
+  remote closed the idle session while it ran, the push died; `git push`
+  again sends the same tips, finds their stamps, and is on the wire in
+  seconds.
+- **The suite can run before git connects at all.** `amont run pre-push`
+  drives the same dispatcher with no push in flight — on a branch that has
+  never been pushed it measures against `origin/HEAD`, `origin/main` or
+  `origin/master` — and stamps `HEAD` when every block gate passes. Then
+  `git push` holds its connection open for the seconds the transport takes,
+  not the minutes the suite does. An agent that runs `amont run pre-push`
+  before every `git push` never meets the idle timeout; `amont-agent`'s
+  `push-preflight` rule says so when a push is about to run without one.
+
+Only scoped gates — test suites, whose verdict is a function of the tree —
+are stamped or skipped; `branch-protect`, `secrets` and the other unscoped
+checks ask questions about the *push* and always run. A stamp is written
+only for content the suite actually tested: with `amont.testPushedTree` that
+is the tip itself; in the default working-tree mode it is the tip only when
+`HEAD` is the tip and no tracked file is modified. `git config
+amont.pushStamps false` turns both the writing and the honouring off.
 
 A push whose commits all carry the `test` stamp skips the pre-push line with
 the same `✓ test gated at commit instead` message; a `--no-verify` commit
