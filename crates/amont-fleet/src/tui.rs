@@ -107,6 +107,17 @@ pub struct App {
     pub visited: usize,
     pub elapsed: f64,
     pub quit: bool,
+    /// The table's scroll offset, carried across frames.
+    ///
+    /// Rebuilt from `TableState::default()` every draw, the offset restarted
+    /// at zero and ratatui recomputed it just far enough to show the selected
+    /// row — so on the way up the cursor sat pinned to the last line while the
+    /// rows slid under it, instead of climbing to the top before the list
+    /// scrolled. Keeping the state lets the cursor roam the visible window and
+    /// scroll only past either edge. `draw` takes `&App` because rendering is
+    /// a pure function of state; the offset is the one piece the widget writes
+    /// back, hence the cell.
+    table_state: std::cell::RefCell<TableState>,
 }
 
 impl App {
@@ -125,7 +136,14 @@ impl App {
             visited: 0,
             elapsed: 0.0,
             quit: false,
+            table_state: std::cell::RefCell::new(TableState::default()),
         }
+    }
+
+    /// First table row on screen, as of the last draw.
+    #[cfg(test)]
+    fn table_offset(&self) -> usize {
+        self.table_state.borrow().offset()
     }
 
     pub fn rows(&self) -> Vec<&Repo> {
@@ -717,7 +735,7 @@ fn table(f: &mut Frame, area: Rect, app: &App) {
         vec![Constraint::Min(12), Constraint::Length(14)]
     };
 
-    let mut state = TableState::default();
+    let mut state = app.table_state.borrow_mut();
     state.select(Some(app.selected.min(rows.len().saturating_sub(1))));
     f.render_stateful_widget(
         Table::new(body, widths)
@@ -725,7 +743,7 @@ fn table(f: &mut Frame, area: Rect, app: &App) {
             .row_highlight_style(selection_style())
             .highlight_symbol(selection_cursor(app.color)),
         area,
-        &mut state,
+        &mut *state,
     );
 }
 
@@ -2140,6 +2158,62 @@ mod tests {
         );
         app.on_key(Key::Char('q'));
         assert!(app.quit);
+    }
+
+    /// Going down, the list scrolled one row per keypress once the cursor
+    /// reached the bottom line. Going up it did not mirror that: the cursor
+    /// stayed on the bottom line and the rows moved under it, because the
+    /// offset was rebuilt from zero every frame. Both directions must scroll
+    /// only when the cursor passes the edge of the visible window.
+    #[test]
+    fn scrolling_up_keeps_the_window_until_the_cursor_reaches_the_top() {
+        let repos = (0..30).map(|i| repo(&format!("r{i:02}"), true)).collect();
+        let mut app = App::new(scan_with_repos(repos));
+        let (w, h) = (40, 12);
+        // A draw between every key, as the event loop does.
+        let step = |app: &mut App, key: Key| {
+            app.on_key(key);
+            render(app, w, h)
+        };
+        let cursor_line = |screen: &str| {
+            screen
+                .lines()
+                .position(|l| l.starts_with("> "))
+                .expect("the cursor is drawn")
+        };
+
+        render(&app, w, h);
+        assert_eq!(app.table_offset(), 0);
+        for _ in 0..20 {
+            step(&mut app, Key::Down);
+        }
+        let offset = app.table_offset();
+        assert!(offset > 0, "twenty rows down must have scrolled");
+        let bottom = cursor_line(&render(&app, w, h));
+
+        // One up: the cursor climbs a line, the window stays.
+        let screen = step(&mut app, Key::Up);
+        assert_eq!(
+            app.table_offset(),
+            offset,
+            "the window must not move:
+{screen}"
+        );
+        assert_eq!(cursor_line(&screen), bottom - 1);
+
+        // Up to the first visible row: still the same window.
+        while app.selected > offset {
+            step(&mut app, Key::Up);
+        }
+        assert_eq!(app.table_offset(), offset);
+        let top = cursor_line(&render(&app, w, h));
+        assert!(top < bottom);
+
+        // One more reveals the previous row: the offset moves by exactly one
+        // and the cursor stays on the top line.
+        let screen = step(&mut app, Key::Up);
+        assert_eq!(app.table_offset(), offset - 1, "{screen}");
+        assert_eq!(cursor_line(&screen), top);
     }
 
     /// Arrows are their own variants rather than aliases for j/k, so they still
