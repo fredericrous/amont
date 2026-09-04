@@ -438,15 +438,27 @@ scroll may be supported but nothing is mouse-only.
 | `h` | fleet | toggle fleet ↔ hook-centric view |
 | `s` | detail | toggle `hook.skip` for the highlighted check |
 | `u` | detail | take that toggle back |
+| `f` | fleet, detail | show the repair for the selected repo — what would be removed and written |
+| `y` / `Enter` | sync preview | carry that repair out |
+| `Esc` | sync preview | discard it, nothing written |
 | `q` | everywhere | quit — including during a scan |
 
 **And the ones that do not, removed from this table rather than left as
-promises**: `:` (a command palette), `f` (fix from inside the TUI), `r`
-(rescan), `?` (a key sheet). Three of the four are still reasonable ideas. `f`
-is the interesting absence — see below.
+promises**: `:` (a command palette), `r` (rescan), `?` (a key sheet). All three
+are still reasonable ideas.
 
-**Destructive actions are diff-first, and the split is enforced by the CLI
-rather than by a confirmation prompt.** There is no `f`. What ships is:
+**Destructive actions are diff-first.** In the TUI, `f` never writes: it builds
+the same `FixPlan` the CLI's `fix` preview prints, for the one selected
+repository, and puts it on screen — removals, writes, the shims that are
+already current, and anything worth noting. `y` applies exactly that value, and
+`apply` re-verifies every refusal at the moment of writing, so a tree that
+changed between the preview and the keypress is refused rather than acted on.
+`f` uses the safe defaults only — `Repair`, no `AGENTS.md`, nothing deleted
+that this tool did not write; the two opt-in flags below stay CLI-only because
+each is a materially bigger action than restoring four untracked shims. A
+repository that is not ours, or whose hooks are somewhere we will not touch, is
+refused in place with a one-line reason, no modal. On the command line the same
+split is enforced by the verb rather than a prompt:
 
 ```sh
 amont-fleet fix                    # DRY RUN — prints the plan, writes nothing
@@ -457,12 +469,13 @@ amont-fleet fix --apply --remove-unrecognized
 ```
 
 `fix` with no `--apply` is the preview, built from the same typed `FixPlan` the
-apply consumes, so the preview cannot drift from the act. That is the property
-the `f`-plus-confirmation design was after, obtained more cheaply: the default
-invocation cannot write at all, so there is no keystroke that could skip the
-preview and no modal state where "yes" means something different from what was
-last on screen. `install` is the one verb that implies `--apply`, because
-requiring both would be ceremony over an unambiguous intent.
+apply consumes, so the preview cannot drift from the act. The TUI's `f` / `y`
+pair is the same property in a different shape: `y` is only bound while a plan
+is on screen, and it applies that plan and no other, so there is no keystroke
+that skips the preview and "yes" can only ever mean what was last shown.
+`install` is the one verb that implies `--apply`, because requiring both would
+be ceremony over an unambiguous intent; it has no TUI equivalent, since
+adopting a repository is not a repair.
 
 Two flags are opt-in **per invocation** and never bundled into a plain
 `--apply`: `--agents-md`, which writes into a tracked file, and

@@ -750,6 +750,38 @@ fn found_repo(w: &mut Walk, repo: &Path) -> Repo {
     inspected
 }
 
+/// Look at one already-scanned repository again.
+///
+/// The dashboard calls this after it has written into a repository, so the row
+/// shows what is now on disk rather than what the write intended. Everything
+/// is re-derived from the filesystem except `shares_hooks_with`, which is a
+/// property of the WALK — which repository claimed the common directory first —
+/// and cannot be recomputed from one repository alone, so the caller carries
+/// the value the scan established.
+///
+/// The fleet-wide counters (`managed_seen`, bypass totals) are not touched:
+/// a repair does not change whether a repository is ours.
+pub fn rescan(
+    root: &Path,
+    repo_rel: &Path,
+    installed_binary: &str,
+    shares_hooks_with: Option<PathBuf>,
+) -> Repo {
+    let repo = root.join(repo_rel);
+    let hooks_dir = hooks_dir_for(&repo);
+    let managed = hooks_dir.inside().is_some_and(is_managed);
+    let common = common_dir_for(&repo);
+    inspect(
+        root,
+        &repo,
+        hooks_dir,
+        managed,
+        shares_hooks_with,
+        common.as_deref(),
+        installed_binary,
+    )
+}
+
 /// Everything we can learn about one repository from its hooks directory.
 ///
 /// When `hooks_dir` is not [`HooksDir::In`] this reads NOTHING from it — not
