@@ -369,10 +369,28 @@ Two things fall out of one record:
 Only scoped gates — test suites, whose verdict is a function of the tree —
 are stamped or skipped; `branch-protect`, `secrets` and the other unscoped
 checks ask questions about the *push* and always run. A stamp is written
-only for content the suite actually tested: with `amont.testPushedTree` that
-is the tip itself; in the default working-tree mode it is the tip only when
-`HEAD` is the tip and no tracked file is modified. `git config
-amont.pushStamps false` turns both the writing and the honouring off.
+only for content the suite actually tested:
+
+- with `amont.testPushedTree`, that is the tip itself — **unless the
+  snapshot could not be made.** A `worktree add` that fails, or an
+  `amont.snapshotPrepare` that exits non-zero, falls back to the working
+  tree and says so; that tip is then stamped by nothing, because the suite
+  that passed never saw its content;
+- in the default working-tree mode it is the tip only when `HEAD` *is* the
+  tip and the tree was clean **when the gate started** — nothing modified
+  and nothing untracked. An untracked file is not in the tree the stamp
+  would vouch for, but it was there while the suite ran, and a new test
+  file or a local `.env` is exactly the sort of thing that changes a
+  suite's answer. Two things deliberately do not count: ignored files
+  (`target/`, `node_modules/`), and anything the gate itself writes — the
+  state is captured before any check runs, so a suite that leaves a log or
+  a coverage directory does not disqualify its own stamp;
+- inside a rehearsal the checkout *is* the commit, because git made it, so
+  whatever `amont.snapshotPrepare` added to make it runnable is not a
+  reason to distrust it.
+
+`git config amont.pushStamps false` turns both the writing and the
+honouring off.
 
 ### Rehearsing in the background
 
@@ -398,6 +416,14 @@ it earns is for exactly that tree. Only the test gates run — `branch-protect`,
 run when it is. A checkout that needs a step before a suite can start (a
 pnpm monorepo has no `node_modules` in a fresh worktree) names it in
 `amont.snapshotPrepare`.
+
+A push that arrives mid-rehearsal waits for it rather than starting the
+suite over — but not forever. `amont.rehearsalWait` (default 300s, `0` for
+no limit) bounds that wait, because it happens *after* git has opened its
+connection to the remote: holding it open for a wedged worker is the same
+failure the rehearsal exists to prevent. When the budget expires the gate
+runs here, and the rehearsal is left alone to finish and stamp the tree for
+next time.
 
 The stamp is the whole hand-off; there is no second record to keep in step.
 What the state file beside the log adds is *whether someone is still working

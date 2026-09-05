@@ -328,9 +328,10 @@ fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
     let (code, out) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("waiting for it rather than starting the suite over"),
-        "{out}"
+        out.contains("is still running — waiting up to"),
+        "the wait is announced, and announced as bounded: {out}"
     );
+    assert!(out.contains("rather than starting the suite over"), "{out}");
     assert!(out.contains("rehearsal passed"), "{out}");
     assert!(out.contains(SKIP), "{out}");
     assert_eq!(runs(&r), 1, "the push repeated nothing");
@@ -451,4 +452,78 @@ fn stop_cancels_the_worker_and_removes_its_snapshot() {
     assert!(status.contains("no rehearsal recorded"), "{status}");
     std::thread::sleep(Duration::from_secs(6));
     assert_eq!(runs(&r), 0, "the killed suite never reached its log line");
+}
+
+/// A push may not wait forever for a rehearsal.
+///
+/// `await_for` runs inside `pre-push` — after git has opened its connection to
+/// the remote and while that connection sits idle, which is the exact window
+/// this whole feature exists to shorten. The wait was bounded only by the
+/// worker's own deadline, `amont.timeout`: an hour by default, and unbounded
+/// where somebody has set it to `0`. So the mechanism built to stop a
+/// four-minute suite killing a push could hold the same connection open for
+/// far longer than the suite would have.
+///
+/// The state file here names a process that really is alive and never
+/// finishes, which is the shape of a wedged worker.
+#[cfg(unix)]
+#[test]
+fn a_push_gives_up_waiting_and_runs_the_gate_itself() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo("");
+    let tip = head(&r);
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+
+    // A live pid that will not finish on its own.
+    let mut stuck = Command::new("sleep")
+        .arg("120")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a stand-in worker");
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        r.dir.join(".git/amont-rehearsal"),
+        format!(
+            "amont-rehearsal-v1\npid={}\ncommit={tip}\ntree={tree}\nstarted={started}\n\
+             snapshot={}\nphase=running\n",
+            stuck.id(),
+            r.dir.join("nowhere").display()
+        ),
+    )
+    .expect("write the state file");
+    r.git(&["config", "amont.rehearsalWait", "2"]);
+
+    let began = Instant::now();
+    let (code, out) = push_out(&r, &base, &tip);
+    let took = began.elapsed();
+    let _ = stuck.kill();
+    let _ = stuck.wait();
+
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        took < Duration::from_secs(60),
+        "the push waited {took:?} on a worker that never finishes"
+    );
+    assert!(
+        out.contains("still running after"),
+        "it must say why it stopped waiting:\n{out}"
+    );
+    assert!(
+        out.contains("waiting up to"),
+        "and say up front that the wait is bounded:\n{out}"
+    );
+    assert_eq!(
+        runs(&r),
+        1,
+        "having given up, it must run the gate itself:\n{out}"
+    );
 }

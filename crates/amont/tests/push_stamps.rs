@@ -252,3 +252,58 @@ fn a_push_stamp_merges_with_a_commit_time_stamp() {
     assert!(out.contains(SKIP), "{out}");
     assert_eq!(runs(&r), 2, "nothing ran the second time");
 }
+
+/// An UNTRACKED file earns no stamp either, and says why.
+///
+/// The cleanliness test used to pass `--untracked-files=no`, reasoning that
+/// untracked files are not in the tree the stamp vouches for. That is the
+/// risk, not the reason: they were there while the suite ran. A new test
+/// file, a fixture, a local `.env` is exactly the sort of thing that changes
+/// a suite's answer, and the stamp would then vouch for a tree that does not
+/// contain it.
+///
+/// Ignored files still cost nobody a stamp — `--porcelain` does not list
+/// them — and the one line is worth its noise because the answer changed
+/// under people who used to get a stamp here.
+#[test]
+fn an_untracked_file_earns_no_stamp_and_says_so() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    r.write("scratch.txt.notes", "a file git has never seen\n");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains(STAMPED),
+        "an untracked file was stamped over: {out}"
+    );
+    assert!(
+        out.contains("untracked files present"),
+        "it must say why there is no stamp: {out}"
+    );
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains(SKIP), "{out}");
+    assert_eq!(runs(&r), 2, "the gate ran both times: {out}");
+}
+
+/// An IGNORED file is not an untracked one. `target/` and `node_modules/`
+/// must not cost anybody a stamp, or the strictness above would make the
+/// whole feature useless in every real repository.
+#[test]
+fn an_ignored_file_still_earns_a_stamp() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    r.write(".git/info/exclude", "build-output/\n");
+    std::fs::create_dir_all(r.dir.join("build-output")).expect("mkdir");
+    r.write("build-output/thing.o", "binary-ish\n");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(STAMPED), "an ignored file cost a stamp: {out}");
+}

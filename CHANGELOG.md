@@ -6,6 +6,64 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.29.0
+
+A stamp is a promise that the gate ran on exactly this content. Two paths
+could write one without that being true, and a third could hold a push open
+for an hour.
+
+### Fixed
+
+- **A pushed-tree snapshot that could not be made no longer stamps its
+  tip.** `amont.testPushedTree` runs the suite against a throwaway checkout
+  of the pushed commit, and falls back to the working tree — saying so —
+  when `git worktree add` fails or `amont.snapshotPrepare` exits non-zero.
+  The stamping step read the *config key* and concluded the suite had run on
+  the tip, so a gate that passed on a dirty working tree vouched for content
+  it had never seen: the next push of that exact tip — a retry after a
+  dropped connection, or a tag on the merged commit — skipped it. What
+  actually happened is now recorded per tip and consulted. `gate_stamp`'s
+  contract is that no path there can let an unchecked commit through; this
+  was one.
+- **An untracked file now blocks a working-tree stamp**, and the push says
+  so rather than going quietly slower. The cleanliness test ignored
+  untracked files, on the grounds that they are not in the tree the stamp
+  vouches for. That is the risk, not the reason: they were there while the
+  suite ran, and a new test file, a fixture or a local `.env` is exactly the
+  sort of thing that changes a suite's answer. Three things deliberately do
+  not count: ignored files (`target/`, `node_modules/`); anything the gate
+  itself writes, since the tree state is now captured *before* any check
+  runs rather than after, so a suite that leaves a log cannot disqualify its
+  own stamp; and a rehearsal snapshot, which is the commit by construction —
+  git made it — so `amont.snapshotPrepare`'s output is not a reason to
+  distrust it.
+- **`amont rehearse --wait` no longer recurses into itself.** A worker
+  answering "another rehearsal already has this tree" re-entered the command
+  from inside itself, one stack frame per lost race with no ceiling. It is a
+  loop now, and gives up after the second pass rather than spinning on a
+  churning state file.
+
+### Added
+
+- **`amont.rehearsalWait`** (default 300s, `0` for no limit): how long a
+  push may wait for a rehearsal of its own tree that is still running.
+  That wait happens *after* git has opened its connection to the remote, so
+  it is the same idle connection the whole feature exists to keep short —
+  and it was bounded only by the worker's own `amont.timeout`, an hour by
+  default and unbounded at `0`. Five minutes is under every idle timeout we
+  have measured; Forgejo's git timeout is six. When it expires the gate runs
+  in the push, and the rehearsal is left alone to finish and stamp the tree
+  for next time. `amont rehearse --wait` still has no budget: nothing is
+  connected there.
+
+### Changed
+
+- `main` settles `AMONT_REHEARSAL` before anything else runs. Reading it
+  removes it from the environment — deliberately, so a spawned suite cannot
+  inherit it — and `remove_var` is not thread-safe, while the first reader
+  could be a check running on one of `dispatch`'s threads. It was correct
+  only by an ordering nothing stated and nothing tested.
+
 ## v1.28.0
 
 The push gate runs itself, in the background, on a snapshot of the commit

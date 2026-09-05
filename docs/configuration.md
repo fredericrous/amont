@@ -262,6 +262,24 @@ only for now: on Windows a detached child would hold its parent's pipes
 until the suite ended, so the hook says so instead and `amont rehearse
 --wait` runs the rehearsal in the foreground.
 
+## `amont.rehearsalWait` — how long a push waits for a running rehearsal
+
+```sh
+git config amont.rehearsalWait 300   # default 300; 0 waits indefinitely
+```
+
+A push that finds a rehearsal of its own tree still running waits for it:
+less remaining work than a fresh run, and no extra CPU. That wait happens
+*after* git has opened its connection to the remote, though, so it is the
+same idle connection the rehearsal exists to keep short — and it used to be
+bounded only by the worker's own `amont.timeout`, an hour by default and
+unbounded at `0`. Five minutes is under every idle timeout we have measured
+(Forgejo's git timeout is six), so a wait that expires still leaves the
+connection alive for the gate that follows it. When it expires, the gate
+runs in the push and the rehearsal is left running — it may still finish and
+stamp the tree for next time. `amont rehearse --wait` has no budget: nothing
+is connected there.
+
 ## `amont.snapshotPrepare` — make a fresh checkout runnable
 
 ```sh
@@ -275,7 +293,9 @@ every snapshot before any suite does — the background rehearsal's and
 `amont.testPushedTree`'s alike. Nothing is needed for a Rust crate (cargo
 resolves from the shared registry; the build is cold, which is the cost the
 `testPushedTree` section describes). A preparation that fails is the
-snapshot's failure: no suite runs there and nothing is stamped.
+snapshot's failure: the gate falls back to the working tree, says so, and
+stamps nothing for that tip — the suite that then passes never saw the
+content the stamp would have vouched for.
 
 ## `amont.autoRebase` — whether pre-push may sync a behind branch for you
 

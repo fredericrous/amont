@@ -59,6 +59,31 @@ use crate::ui::{highlight, valid_sign, warning_sign};
 /// The opt-in: rehearse after every commit.
 const ON_COMMIT: &str = "amont.rehearseOnCommit";
 
+/// How long a PUSH may wait for a running rehearsal before giving up and
+/// running the gate itself. `0` means no limit.
+///
+/// [`await_for`] runs inside `pre-push`, which is to say after git has opened
+/// its connection to the remote and while that connection sits idle — the
+/// exact window this whole feature exists to shorten. Waiting was bounded
+/// only by the worker's own deadline, which is `amont.timeout`: an hour by
+/// default, and unbounded where somebody has set it to `0`. So the mechanism
+/// built to stop a four-minute suite killing a push could hold the same
+/// connection open for far longer than the suite would have.
+///
+/// Five minutes because that is under every idle timeout we have measured —
+/// Forgejo's git timeout is six — so a wait that expires still leaves the
+/// connection alive for the gate that follows it. `amont rehearse --wait`
+/// has no budget: nothing is connected there, and a person who typed it is
+/// asking to be told when the suite ends.
+const WAIT_BUDGET: &str = "amont.rehearsalWait";
+
+pub fn wait_budget() -> Option<Duration> {
+    match crate::config::integer_or(WAIT_BUDGET, 300, 0..=86_400) {
+        0 => None,
+        secs => Some(Duration::from_secs(secs as u64)),
+    }
+}
+
 /// The state file, inside `$GIT_DIR`.
 const STATE: &str = "amont-rehearsal";
 /// The detached worker's stdout and stderr, beside it.
@@ -87,6 +112,14 @@ pub fn on_commit_enabled() -> bool {
 /// fixture repositories, and with the variable inherited that pre-push
 /// believed itself a rehearsal and skipped branch-protect, which is how the
 /// first rehearsal of this very feature failed its own gate.
+///
+/// **`main` primes this before anything else runs, and must keep doing so.**
+/// `remove_var` is not thread-safe — that is why Rust 2024 made it `unsafe`
+/// — and this is reachable from `pushed_tree::where_to_run`, i.e. from
+/// inside a check, and `dispatch` runs checks concurrently. Settling the
+/// `OnceLock` on the main thread means the racy call has already happened by
+/// the time any thread exists. Do not remove that call, and do not let a
+/// caller reach here first.
 pub fn in_snapshot() -> bool {
     static IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *IN.get_or_init(|| {
@@ -558,21 +591,31 @@ pub fn await_for(tips: &[String]) -> Option<Phase> {
             None
         }
         Phase::Running => {
+            let budget = wait_budget();
             crate::say!(
                 "{} a background rehearsal of this tree started {} ago is still running — \
-                 waiting for it rather than starting the suite over{log}",
+                 waiting{} for it rather than starting the suite over{log}",
                 warning_sign(),
                 human_secs(state.age_secs()),
+                match budget {
+                    Some(b) => format!(" up to {}", human_secs(b.as_secs())),
+                    None => String::new(),
+                },
             );
-            follow(&state).map(|(phase, _)| phase)
+            follow(&state, budget).map(|(phase, _)| phase)
         }
     }
 }
 
 /// Poll a running rehearsal to its end. `None` when it vanished — a new
-/// worker took over for a different tree, or the process died.
-fn follow(state: &State) -> Option<(Phase, State)> {
+/// worker took over for a different tree, the process died, or `budget`
+/// expired.
+///
+/// `budget` is `None` for a caller with nothing on the wire; see
+/// [`WAIT_BUDGET`] for why the push path always passes one.
+fn follow(state: &State, budget: Option<Duration>) -> Option<(Phase, State)> {
     let mut last_word = std::time::Instant::now();
+    let deadline = budget.map(|b| std::time::Instant::now() + b);
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let now_state = read()?;
@@ -583,6 +626,18 @@ fn follow(state: &State) -> Option<(Phase, State)> {
             Phase::Running => {
                 if !process_alive(now_state.pid) {
                     warn("the rehearsal died without a verdict");
+                    return None;
+                }
+                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                    // Left RUNNING on purpose: it may still finish and stamp
+                    // the tree for the next push. We simply stop holding an
+                    // open connection open for it.
+                    warn(&format!(
+                        "the rehearsal is still running after {} — running the gate here \
+                         rather than holding the push open (`git config \
+                         amont.rehearsalWait <secs>`, or 0 to wait indefinitely)",
+                        human_secs(now_state.age_secs())
+                    ));
                     return None;
                 }
                 if last_word.elapsed() >= Duration::from_secs(60) {
@@ -646,37 +701,55 @@ pub fn command(args: &[OsString]) -> i32 {
     let head = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
     let running_here = read().filter(|s| s.alive() && Some(s.tree.as_str()) == head.as_deref());
     if flag("--wait") {
-        return match running_here {
-            Some(state) => {
-                println!(
-                    "following the rehearsal of {} (pid {}, started {} ago)",
-                    state.short(),
-                    state.pid,
-                    human_secs(state.age_secs())
-                );
-                match follow(&state) {
-                    Some((Phase::Passed, _)) => 0,
-                    Some(_) => {
-                        show_log_tail();
-                        1
-                    }
-                    None => {
-                        eprintln!("amont: the rehearsal ended without a verdict");
-                        2
+        // A LOOP, not recursion. `worker()` answering `AlreadyRunning` means
+        // somebody else claimed the tree between our own look and its own,
+        // and the answer is to follow theirs — but re-entering `command`
+        // from inside itself made that a stack frame per lost race with no
+        // ceiling on it. Two passes is all the race can honestly need: one
+        // to lose it, one to find the worker that won. A third would mean
+        // the state file is churning, and running the gate ourselves is a
+        // better answer than spinning on it.
+        //
+        // No budget here: nothing is connected, and somebody typed this
+        // command to be told when the suite ends. See `WAIT_BUDGET`.
+        for _ in 0..2 {
+            let running = read().filter(|s| {
+                s.alive()
+                    && Some(s.tree.as_str())
+                        == crate::git::stdout(&["rev-parse", "HEAD^{tree}"]).as_deref()
+            });
+            let Some(state) = running else {
+                // Nothing running: do it here, in the foreground, and say so.
+                match worker() {
+                    Ok(Outcome::Failed) => return 1,
+                    Ok(Outcome::AlreadyRunning(_)) => continue,
+                    Ok(_) => return 0,
+                    Err(e) => {
+                        eprintln!("amont: {e}");
+                        return 2;
                     }
                 }
-            }
-            // Nothing running: do it here, in the foreground, and say so.
-            None => match worker() {
-                Ok(Outcome::Failed) => 1,
-                Ok(Outcome::AlreadyRunning(_)) => command(&[OsString::from("--wait")]),
-                Ok(_) => 0,
-                Err(e) => {
-                    eprintln!("amont: {e}");
+            };
+            println!(
+                "following the rehearsal of {} (pid {}, started {} ago)",
+                state.short(),
+                state.pid,
+                human_secs(state.age_secs())
+            );
+            return match follow(&state, None) {
+                Some((Phase::Passed, _)) => 0,
+                Some(_) => {
+                    show_log_tail();
+                    1
+                }
+                None => {
+                    eprintln!("amont: the rehearsal ended without a verdict");
                     2
                 }
-            },
-        };
+            };
+        }
+        eprintln!("amont: another rehearsal keeps claiming this tree — run the gate yourself");
+        return 2;
     }
     if let Some(state) = running_here {
         println!(

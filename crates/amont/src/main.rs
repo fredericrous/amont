@@ -303,6 +303,17 @@ fn die_on_sigpipe() {}
 
 fn main() {
     die_on_sigpipe();
+    // Settle `AMONT_REHEARSAL` here, on the main thread, before anything can
+    // spawn one. Reading it REMOVES it from the environment — deliberately,
+    // so the test suite a check spawns does not inherit it and believe
+    // itself a rehearsal — and `std::env::remove_var` is not thread-safe:
+    // glibc's `unsetenv` can race any thread reading the environment, which
+    // is every `Command` this process builds. The answer used to be settled
+    // by whichever caller asked first, and `pushed_tree::where_to_run` asks
+    // from inside a check, which `dispatch` runs concurrently. It was safe
+    // only because `dispatch::pre_push` happened to ask on the main thread
+    // first — an ordering nothing stated and nothing tested.
+    let _ = amont_runtime::rehearsal::in_snapshot();
     match parse(std::env::args_os().skip(1).collect()) {
         Invocation::Help => {
             print!("{USAGE}");
