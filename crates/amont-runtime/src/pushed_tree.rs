@@ -161,14 +161,21 @@ impl PushedTree {
 }
 
 /// `<prefix>-<pid>-<hash>`: the pid stays for a human correlating a leftover
-/// directory with a hung process, but the pid ALONE is what made the old name
-/// guessable — `ps` hands it to anyone on the box — which matters because
-/// this path is `remove_dir_all`'d before it is used. A pre-planted symlink
-/// at a predictable name turns that into a race with whatever the symlink
-/// points at. No dependency for real randomness here (this crate ships
-/// dependency-free), so the tail is a hash of the wall clock and the pid
-/// through `RandomState`'s own OS-seeded key — enough that guessing it in
-/// advance is impractical, not a cryptographic promise.
+/// directory with a hung process, but the pid ALONE made the name guessable —
+/// `ps` hands it to anyone on the box — and a pre-planted directory or
+/// symlink at a predictable path in a world-writable `/tmp` is somebody
+/// else's decision about where our checkout goes.
+///
+/// It is no longer the difference between safe and destructive: `create_at`
+/// takes the path with an exclusive `create_dir` and refuses anything already
+/// there, rather than the `remove_dir_all`-first shape this comment used to
+/// describe. Unpredictability is now defence in depth — it means the refusal
+/// is not something an attacker can arrange on demand.
+///
+/// No dependency for real randomness here (this crate ships dependency-free),
+/// so the tail is a hash of the wall clock and the pid through
+/// `RandomState`'s own OS-seeded key — enough that guessing it in advance is
+/// impractical, not a cryptographic promise.
 fn unique_name(prefix: &str) -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash, Hasher};
@@ -200,6 +207,41 @@ impl Drop for PushedTree {
     }
 }
 
+/// Tips whose snapshot was ASKED FOR and could not be made, so their suite
+/// ran against the working tree after all.
+///
+/// Read by `dispatch::stamp_tips`, which otherwise decides a tip is vouchable
+/// from `enabled()` — the CONFIG — and would stamp a tip whose content was
+/// never tested. See [`fell_back`].
+///
+/// A `Mutex` because pre-push checks run concurrently and each loops over its
+/// own refs; a poisoned lock is treated as "it fell back", which costs a
+/// redundant gate run and never a false stamp.
+static FELL_BACK: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn fallbacks() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    FELL_BACK.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn note_fallback(tip: &str) {
+    if let Ok(mut set) = fallbacks().lock() {
+        set.insert(tip.to_string());
+    }
+}
+
+/// Did the snapshot for `tip` fail, leaving its suite on the working tree?
+///
+/// `true` also when the lock is poisoned: a stamp is a claim that the gate
+/// ran on exactly this content, and a claim we cannot check is one we do not
+/// make.
+pub fn fell_back(tip: &str) -> bool {
+    match fallbacks().lock() {
+        Ok(set) => set.contains(tip),
+        Err(_) => true,
+    }
+}
+
 /// Where a pre-push suite should run, and whether that is the honest answer.
 ///
 /// Takes ONE commit, not the whole ref list: a push can carry several refs
@@ -218,7 +260,9 @@ pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) 
         return (PathBuf::from(fallback), None);
     }
     if !enabled() {
-        // Today's behaviour, but no longer silent about it.
+        // Today's behaviour, but no longer silent about it. NOT a fallback:
+        // nobody asked for a snapshot, and `stamp_tips` already knows to
+        // vouch for the working tree only when it IS the tip.
         println!(
             "{} testing the WORKING TREE, not the pushed commits \
              (`git config amont.testPushedTree true` to test what you are pushing)",
@@ -232,8 +276,18 @@ pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) 
             (path, Some(tree))
         }
         None => {
+            // Recorded, not just printed. `stamp_tips` used to read
+            // `enabled()` and conclude "the suite ran on the tip itself",
+            // which is exactly what did NOT happen here: the gate passed on
+            // a possibly-dirty working tree and the tip was stamped anyway,
+            // so the next push of that tree — a retry after a dropped
+            // connection, or a tag on the merged commit — skipped a gate
+            // nobody had run on its content. `gate_stamp`'s own promise is
+            // that no path here can let an unchecked commit through.
+            note_fallback(tip);
             println!(
-                "{} could not check out {tip} to test it; testing the working tree instead",
+                "{} could not check out {tip} to test it; testing the working tree instead \
+                 (nothing will be stamped for it)",
                 warning_sign()
             );
             (PathBuf::from(fallback), None)

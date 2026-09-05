@@ -6,6 +6,80 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.29.0
+
+Gates that quietly stopped gating. A stamp is a promise that the gate ran on
+exactly this content, and one path could write one without that being true;
+a rebase that had finished paused every push gate for the life of the
+checkout; and a push waiting on a background rehearsal could hold its
+connection to the remote open for an hour.
+
+### Fixed
+
+- **A pushed-tree snapshot that could not be made no longer stamps its
+  tip.** `amont.testPushedTree` runs the suite against a throwaway checkout
+  of the pushed commit, and falls back to the working tree — saying so —
+  when `git worktree add` fails or `amont.snapshotPrepare` exits non-zero.
+  The stamping step read the *config key* and concluded the suite had run on
+  the tip, so a gate that passed on a dirty working tree vouched for content
+  it had never seen: the next push of that exact tip — a retry after a
+  dropped connection, or a tag on the merged commit — skipped it. What
+  actually happened is now recorded per tip and consulted. `gate_stamp`'s
+  contract is that no path there can let an unchecked commit through; this
+  was one.
+- **A gate can no longer disqualify its own stamp.** The working-tree
+  cleanliness test ran *after* the gates, so a check that modified a tracked
+  file — a formatter, a suite that updates a snapshot fixture — made the
+  tree dirty and lost the stamp for work it had just done. The state is
+  captured before any check runs now: what a stamp needs to know is what the
+  suite could READ.
+- **A finished rebase is no longer read as a rebase in progress.**
+  `REBASE_HEAD` counted as a marker, and git does not remove it when
+  `rebase --continue` completes — it is a convenience ref naming the commit
+  the rebase last stopped on. Every other marker (`MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`) is cleaned up by the operation that
+  wrote it. The cost was silent and permanent: in any worktree that had ever
+  hit a rebase conflict, `pull-rebase` and all four push test gates paused on
+  every push from then on, announced only by a line that reads as a passing
+  condition ("5 check(s) paused during a rebase"). The two rebase
+  DIRECTORIES are the honest answer and are what git's own prompt scripts
+  read. Found in this repository, by the branch that fixes it.
+- **`amont rehearse --wait` no longer recurses into itself.** A worker
+  answering "another rehearsal already has this tree" re-entered the command
+  from inside itself, one stack frame per lost race with no ceiling. It is a
+  loop now, and gives up after the second pass rather than spinning on a
+  churning state file.
+
+### Added
+
+- **`amont.rehearsalWait`** (default 300s, `0` for no limit): how long a
+  push may wait for a rehearsal of its own tree that is still running.
+  That wait happens *after* git has opened its connection to the remote, so
+  it is the same idle connection the whole feature exists to keep short —
+  and it was bounded only by the worker's own `amont.timeout`, an hour by
+  default and unbounded at `0`. Five minutes is under every idle timeout we
+  have measured; Forgejo's git timeout is six. When it expires the gate runs
+  in the push, and the rehearsal is left alone to finish and stamp the tree
+  for next time. `amont rehearse --wait` still has no budget: nothing is
+  connected there.
+
+### Changed
+
+- **The untracked-file gap in working-tree stamps is now documented rather
+  than closed.** An untracked file was there while the suite ran and is not
+  in the tree the stamp vouches for, which is a real gap — but counting it
+  is worse: gates leave artefacts nothing cleans up, so a repository with
+  declared gates would stop earning stamps permanently after its first
+  commit, putting the suite back inside the push. `amont.testPushedTree true`
+  closes the gap properly, by running the suite in a checkout of the commit.
+  `an_untracked_file_does_not_block_a_stamp` pins the trade so it cannot be
+  flipped by accident.
+- `main` settles `AMONT_REHEARSAL` before anything else runs. Reading it
+  removes it from the environment — deliberately, so a spawned suite cannot
+  inherit it — and `remove_var` is not thread-safe, while the first reader
+  could be a check running on one of `dispatch`'s threads. It was correct
+  only by an ordering nothing stated and nothing tested.
+
 ## v1.28.0
 
 The push gate runs itself, in the background, on a snapshot of the commit

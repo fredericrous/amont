@@ -731,6 +731,22 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         t
     };
     let reuse_stamps = crate::gate_stamp::push_stamps_enabled();
+    // The working tree AS THE SUITE WILL BE HANDED IT, captured before any
+    // gate has run.
+    //
+    // Timing is the point. Asking afterwards means a gate that modifies a
+    // tracked file — a formatter, a suite that updates a snapshot fixture —
+    // disqualifies its OWN stamp. What a stamp needs to know is what the
+    // suite could READ, which is the state it was handed; a change the suite
+    // itself made was never an input to it.
+    //
+    // Tracked modifications only. `stamp_tips` argues that gap, which is a
+    // deliberate one.
+    let tree_at_start = if reuse_stamps {
+        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default()
+    } else {
+        String::new()
+    };
     // A background rehearsal of one of these tips may be mid-suite right
     // now. Waiting for it is strictly less work than starting over, and
     // its stamp — read AFTER the wait, below — is the hand-off.
@@ -892,9 +908,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // RAN here, so the next push of this content (a retry after a dropped
     // connection, or the real push after an `amont run pre-push` rehearsal)
     // skips them. Only when what ran is what is being pushed: with
-    // `amont.testPushedTree` the suite ran on the tip itself; otherwise it
-    // ran on the working tree, which vouches for the tip only when the two
-    // are the same content — HEAD, with nothing tracked modified.
+    // `amont.testPushedTree` the suite ran on the tip itself — unless the
+    // snapshot could not be made, which `stamp_tips` asks about rather than
+    // assuming; otherwise it ran on the working tree, which vouches for the
+    // tip only when the two are the same content — HEAD, with nothing
+    // modified and nothing untracked.
     // The same proxy `attestable` uses, for the same reason: a scoped gate
     // whose files the push never touched returns `Passed` having run
     // nothing, and a stamp for THAT would let a later push that does touch
@@ -907,7 +925,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .filter(|c| c.scope().touches(&changed))
             .map(|c| c.name().to_string())
             .collect();
-        stamp_tips(&tips, &really_ran);
+        stamp_tips(&tips, &really_ran, &tree_at_start);
     }
     // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
@@ -948,20 +966,53 @@ pub fn scoped_push_gates(manifest: &crate::manifest::Manifest, changed: &[String
 /// See the comment at the call site for the two cases. Silent when nothing
 /// qualifies — a dirty working tree is the ordinary state of a machine
 /// mid-work, and a note on every push would teach people to ignore it.
-fn stamp_tips(tips: &[String], gates: &[String]) {
+fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
     let pushed_tree_mode = crate::pushed_tree::enabled();
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
-    // Tracked modifications only: untracked files are not in any tree the
-    // suite could have been asked about, and `status --porcelain` with
-    // `--untracked-files=no` is the cheapest honest answer.
-    let worktree_clean = || {
-        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"])
-            .is_some_and(|s| s.trim().is_empty())
-    };
+    // TRACKED modifications only — a KNOWN gap, kept deliberately, and
+    // spelled out because the comment that used to sit here argued it
+    // backwards ("untracked files are not in any tree the suite could have
+    // been asked about"). That is not the reason. The danger is not that the
+    // tree lacks them, it is that the RUN had them: a new test file, a
+    // fixture, a local `.env`, present while the suite ran and absent from
+    // the tree the stamp vouches for.
+    //
+    // Counting them was tried, and is worse than the gap. Gates leave
+    // artefacts — a log, a coverage directory, whatever a declared
+    // `amont.conf` command writes — and nothing cleans them up, so a
+    // repository using declared gates would stop earning stamps permanently
+    // after its first commit. That does not merely lose an optimisation: it
+    // puts the suite back INSIDE the push, which is the failure the whole
+    // stamping mechanism exists to prevent. amont's own
+    // `a_push_stamp_merges_with_a_commit_time_stamp` fixture is exactly that
+    // shape, and CI is where it surfaced — a `*.log` line in one developer's
+    // global gitignore had hidden it on the machine that wrote the change.
+    //
+    // `amont.testPushedTree true` closes the gap properly for anyone who
+    // wants it closed: it runs the suite in a checkout of the commit, where
+    // no untracked file exists to be read.
+    //
+    // `tree_at_start` — not a fresh `git status`. The gates have run by now
+    // and may have written into the tree; what a stamp needs to know is what
+    // the suite could READ, which is the state it was handed. See the
+    // capture in `pre_push`.
+    let worktree_clean = tree_at_start.trim().is_empty();
+    let in_snapshot = crate::rehearsal::in_snapshot();
     let mut stamped: Vec<&str> = Vec::new();
     for tip in tips {
-        let vouchable =
-            pushed_tree_mode || (head.as_deref() == Some(tip.as_str()) && worktree_clean());
+        // `pushed_tree_mode` is the CONFIG, not what happened. A snapshot
+        // that could not be created falls back to the working tree and says
+        // so, and stamping on the strength of the flag vouched for content
+        // the suite never saw. `pushed_tree::fell_back` is what actually
+        // happened.
+        let snapshot_ran = pushed_tree_mode && !crate::pushed_tree::fell_back(tip);
+        // Inside a rehearsal the working tree IS a checkout git made of this
+        // commit, so it is the tip's content by construction — and whatever
+        // `amont.snapshotPrepare` had to add to make it runnable (a
+        // `node_modules`, a virtualenv) is not a reason to distrust it. That
+        // is the same argument `snapshot_ran` makes for the pushed-tree mode.
+        let is_head = head.as_deref() == Some(tip.as_str());
+        let vouchable = snapshot_ran || (is_head && (in_snapshot || worktree_clean));
         if !vouchable {
             continue;
         }

@@ -51,10 +51,28 @@ pub enum GitState {
 impl GitState {
     /// The marker git writes. `rebase-merge` and `rebase-apply` are
     /// DIRECTORIES; the rest are files, and `Path::exists` covers both.
+    ///
+    /// **`REBASE_HEAD` is deliberately NOT one of them.** Every other marker
+    /// here is removed when the operation ends — `MERGE_HEAD`,
+    /// `CHERRY_PICK_HEAD` and `REVERT_HEAD` go when the commit lands — but
+    /// git leaves `REBASE_HEAD` behind after `rebase --continue` finishes, as
+    /// a convenience ref naming the commit the rebase last stopped on. It
+    /// says a rebase HAPPENED, not that one is happening.
+    ///
+    /// Reading it as state made every check that declares `not_during`
+    /// a rebase — `pull-rebase` and all four test gates — pause FOREVER in
+    /// any worktree that had ever hit a rebase conflict. Silently, apart from
+    /// one line that reads as a passing condition ("5 check(s) paused during
+    /// a rebase") and would be true again in a minute. It never was. Found by
+    /// this repository's own audit branch, one rebase conflict after it was
+    /// created: `git status` clean, no rebase directory, every push gate off.
+    ///
+    /// The two directories are the honest answer, and they are what git's own
+    /// prompt scripts read.
     pub fn markers(self) -> &'static [&'static str] {
         match self {
             GitState::Merge => &["MERGE_HEAD"],
-            GitState::Rebase => &["REBASE_HEAD", "rebase-merge", "rebase-apply"],
+            GitState::Rebase => &["rebase-merge", "rebase-apply"],
             GitState::CherryPick => &["CHERRY_PICK_HEAD"],
             GitState::Revert => &["REVERT_HEAD"],
             GitState::Bisect => &["BISECT_LOG"],

@@ -143,3 +143,71 @@ fn the_working_tree_is_untouched_and_nothing_is_left_behind() {
         "a worktree outlived the push:\n{listed}"
     );
 }
+
+/// The snapshot is what makes `amont.testPushedTree` honest. When it cannot be
+/// made, the suite falls back to the WORKING TREE and says so — and nothing
+/// may be stamped for a tip that was never tested.
+///
+/// `stamp_tips` used to read the config flag and conclude "the suite ran on
+/// the tip itself". Here it did not: the fixture's committed tip fails and its
+/// working tree passes, so the push goes green on content the tip does not
+/// have. Stamping it would let the next push of that exact tip — a retry after
+/// a dropped connection, or a tag on the merged commit — skip a gate nobody
+/// ran on it, which `gate_stamp`'s own contract says cannot happen.
+#[test]
+fn a_snapshot_that_could_not_be_made_stamps_nothing() {
+    let r = Repo::new();
+    let (tip, base) = diverging(&r);
+    r.git(&["config", "amont.testPushedTree", "true"]);
+    // The one hook into snapshot creation a test can pull: `prepare` runs
+    // this inside the fresh worktree, and a failure means no suite may run
+    // there. `PushedTree::create` then returns None and `where_to_run` falls
+    // back — the same path a `worktree add` failure takes.
+    r.git(&["config", "amont.snapshotPrepare", "exit 1"]);
+
+    let (code, out) = pre_push(&r, &tip, &base);
+    assert_eq!(
+        code, 0,
+        "the working tree passes, so the push proceeds:\n{out}"
+    );
+    assert!(
+        out.contains("could not check out") || out.contains("nothing can be tested"),
+        "the fallback must say what it did:\n{out}"
+    );
+
+    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    assert!(
+        !note.status.success(),
+        "a tip whose snapshot failed was stamped anyway: {}",
+        String::from_utf8_lossy(&note.stdout)
+    );
+}
+
+/// The other half, so the test above is not passing for the wrong reason: when
+/// the snapshot IS made, the tip is stamped.
+#[test]
+fn a_snapshot_that_ran_does_stamp_its_tip() {
+    let r = Repo::new();
+    // A tip whose committed suite PASSES — there is nothing to stamp about a
+    // push that was blocked.
+    r.stage(
+        "package.json",
+        "{ \"name\": \"x\", \"scripts\": { \"test\": \"node check.js\" } }\n",
+    );
+    r.stage("check.js", "process.exit(0);\n");
+    r.commit("chore: seed");
+    let base = rev(&r, "HEAD");
+    r.git(&["checkout", "-q", "-b", "feat/x"]);
+    r.stage("check.js", "process.exit(0);\n// touched\n");
+    r.commit("feat: still green");
+    let tip = rev(&r, "HEAD");
+    r.git(&["config", "amont.testPushedTree", "true"]);
+
+    let (code, out) = pre_push(&r, &tip, &base);
+    assert_eq!(code, 0, "{out}");
+    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    assert!(
+        note.status.success(),
+        "a snapshot that ran left no stamp:\n{out}"
+    );
+}

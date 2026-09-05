@@ -252,3 +252,53 @@ fn a_push_stamp_merges_with_a_commit_time_stamp() {
     assert!(out.contains(SKIP), "{out}");
     assert_eq!(runs(&r), 2, "nothing ran the second time");
 }
+
+/// An untracked file does NOT block a stamp, and that is a decision rather
+/// than an oversight.
+///
+/// It is a real gap — the file was there while the suite ran and is not in
+/// the tree the stamp vouches for. Counting it is worse: gates leave
+/// artefacts nothing cleans up (this fixture's own `gate.log` is one), so a
+/// repository with declared gates would stop earning stamps permanently
+/// after its first commit, and the suite would move back inside the push.
+/// `amont.testPushedTree` is the way to close the gap properly.
+///
+/// This test exists so the trade is visible and cannot be flipped by
+/// accident. It was flipped once; CI caught it here.
+#[test]
+fn an_untracked_file_does_not_block_a_stamp() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    r.write("scratch.notes", "a file git has never seen\n");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(STAMPED),
+        "an untracked file cost a stamp: {out}"
+    );
+
+    // …and the stamp is honoured, so the gate does not run twice.
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(SKIP), "{out}");
+    assert_eq!(runs(&r), 1, "the gate ran once: {out}");
+}
+
+/// A MODIFIED tracked file is the line that IS drawn: what ran is not what is
+/// being pushed. (`a_dirty_working_tree_earns_no_stamp` above is the same
+/// rule from the other end; this one pins that the two cases differ.)
+#[test]
+fn a_modified_tracked_file_still_blocks_a_stamp() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    r.write("a.txt", "modified, not committed\n");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains(STAMPED), "a modified tree was stamped: {out}");
+}
