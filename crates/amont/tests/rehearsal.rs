@@ -253,8 +253,10 @@ fn a_newer_commit_cancels_the_running_rehearsal() {
     if missing("node") {
         return;
     }
-    // The gate takes three seconds, so a cancelled run never reaches its log line.
-    let (r, _base) = gated_repo("require('child_process').execSync('sleep 3');");
+    // The gate takes three seconds — slept in JavaScript, since `sleep` is
+    // not a command on Windows — so a cancelled run never reaches its log line.
+    let (r, _base) =
+        gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);");
     let older = head(&r);
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
@@ -307,7 +309,8 @@ fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
     if missing("node") {
         return;
     }
-    let (r, base) = gated_repo("require('child_process').execSync('sleep 3');");
+    let (r, base) =
+        gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);");
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
     wait_state(&r, "the worker to start", |s| s.contains("phase=running"));
@@ -424,7 +427,8 @@ fn stop_cancels_the_worker_and_removes_its_snapshot() {
     if missing("node") {
         return;
     }
-    let (r, _base) = gated_repo("require('child_process').execSync('sleep 5');");
+    let (r, _base) =
+        gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);");
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
     wait_state(&r, "the worker to start", |s| s.contains("phase=running"));
