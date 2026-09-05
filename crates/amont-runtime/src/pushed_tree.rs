@@ -41,6 +41,29 @@ pub fn enabled() -> bool {
     crate::config::boolean_or("amont.testPushedTree", false)
 }
 
+/// A command to run inside a fresh snapshot before any suite does.
+///
+/// A checkout is not a workspace: a pnpm monorepo has no `node_modules` in
+/// a worktree git just created, and a suite started there fails on
+/// `Cannot find module` having tested nothing. What makes it a workspace is
+/// per-repository knowledge — `pnpm install --offline --frozen-lockfile`,
+/// `npm ci`, nothing at all for a Rust crate — so it is a git-config value,
+/// set once per clone by the person who knows:
+///
+/// ```sh
+/// git config amont.snapshotPrepare "pnpm install --offline --frozen-lockfile"
+/// ```
+///
+/// Runs through the shell, in the snapshot, before the gate, and a failure
+/// is the snapshot's failure: no suite runs on a tree that was never made
+/// runnable. Used by both snapshot consumers — `amont.testPushedTree` at
+/// push time and the background rehearsal — so the two cannot drift.
+const PREPARE: &str = "amont.snapshotPrepare";
+
+pub fn prepare_command() -> Option<String> {
+    crate::config::string_value(PREPARE).filter(|s| !s.trim().is_empty())
+}
+
 /// A checkout of the pushed commit, removed when it goes out of scope.
 pub struct PushedTree {
     path: PathBuf,
@@ -88,10 +111,48 @@ impl PushedTree {
             let _ = std::fs::remove_dir_all(&base);
             return None;
         }
-        Some(PushedTree {
+        let tree = PushedTree {
             path: base,
             repo: repo.to_path_buf(),
-        })
+        };
+        if !tree.prepare() {
+            // `Drop` removes the worktree; the caller hears `None` and says
+            // what it is doing instead.
+            return None;
+        }
+        Some(tree)
+    }
+
+    /// Run `amont.snapshotPrepare`, if set, inside the checkout. True when
+    /// there was nothing to run or it exited 0.
+    fn prepare(&self) -> bool {
+        let Some(script) = prepare_command() else {
+            return true;
+        };
+        println!("preparing the snapshot: {script}");
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(&script);
+            c
+        };
+        #[cfg(not(unix))]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.arg("/C").arg(&script);
+            c
+        };
+        cmd.current_dir(&self.path)
+            .stdin(std::process::Stdio::null());
+        crate::hooks::common::strip_git_env(&mut cmd);
+        let ok = crate::hooks::common::bounded_success(&mut cmd, PREPARE);
+        if !ok {
+            println!(
+                "{} {PREPARE} failed in the snapshot — nothing can be tested there",
+                warning_sign()
+            );
+        }
+        ok
     }
 
     pub fn path(&self) -> &Path {
@@ -150,6 +211,12 @@ impl Drop for PushedTree {
 /// Returns the directory plus the guard that owns it — dropping the guard
 /// removes the worktree, so the caller must hold it for the length of the run.
 pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) {
+    // Inside a rehearsal the working tree IS a snapshot of the tip: a
+    // second checkout would test the same content twice, and the warning
+    // below would be false.
+    if crate::rehearsal::in_snapshot() {
+        return (PathBuf::from(fallback), None);
+    }
     if !enabled() {
         // Today's behaviour, but no longer silent about it.
         println!(

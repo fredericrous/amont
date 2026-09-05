@@ -176,6 +176,8 @@ amont run --all-files          # does my working tree pass? (git ls-files)
 amont check src/main.rs        # what is wrong with these FILES — no index, no
                                # staging; `file:line: message` an editor can parse
 amont list                     # what would run here, and why not
+amont rehearse --wait          # the push gate on a snapshot of HEAD, before
+                               # git opens a connection — the push then skips it
 amont restore                  # bring back unstaged work a killed hook parked
 ```
 

@@ -241,6 +241,39 @@ gates (test suites) are stamped or skipped, and only for content the suite
 actually tested — see "Rehearsing the push gate" on the checks page. `false`
 turns off both the writing and the honouring.
 
+## `amont.rehearseOnCommit` — run the push gate in the background after every commit
+
+```sh
+git config amont.rehearseOnCommit true   # default false
+```
+
+`post-commit` starts `amont rehearse` for you: a detached worker checks out
+`HEAD` into a throwaway worktree, runs the test gates there — the
+push-shaped checks (branch-protect, secrets, the auto-rebase) wait for the
+push — and stamps the tree when they pass. By the time you `git push`, the
+suite has usually already run; if it is still running, the push waits for
+it rather than starting over. A newer commit cancels a rehearsal of the
+older tree, suite and snapshot included, so committing often does not queue
+work. Off by default because every commit then costs a suite's worth of CPU
+in the background; see "Rehearsing in the background" on the checks page for
+what it prints and what `amont rehearse --wait`, `--status` and `--stop` do.
+Needs `amont.pushStamps` (the default) — the stamp is the hand-off.
+
+## `amont.snapshotPrepare` — make a fresh checkout runnable
+
+```sh
+git config amont.snapshotPrepare "pnpm install --offline --frozen-lockfile"
+```
+
+A worktree git just created is a checkout, not a workspace: a pnpm monorepo
+has no `node_modules` there, and a suite started in it fails on `Cannot find
+module` having tested nothing. This command runs, through the shell, inside
+every snapshot before any suite does — the background rehearsal's and
+`amont.testPushedTree`'s alike. Nothing is needed for a Rust crate (cargo
+resolves from the shared registry; the build is cold, which is the cost the
+`testPushedTree` section describes). A preparation that fails is the
+snapshot's failure: no suite runs there and nothing is stamped.
+
 ## `amont.autoRebase` — whether pre-push may sync a behind branch for you
 
 ```sh
@@ -354,7 +387,8 @@ an uncommitted fix makes a broken commit look green.
 With this set, the suite runs in a throwaway checkout of the commits being
 pushed, and your tree is not touched. It costs a second checkout and a build
 that cannot reuse your `target/` cache, which is why it is opt-in rather than
-the default.
+the default. A checkout that needs a step before it can run anything — a
+pnpm install, say — names it in `amont.snapshotPrepare`, above.
 
 ## `amont.attest` / `amont.attestKey` — sign what pre-push proved, for CI
 

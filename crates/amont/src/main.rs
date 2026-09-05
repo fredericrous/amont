@@ -59,6 +59,11 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   run            rehearse checks without committing: the pre-commit stage,
                  `run pre-push` for the push gate, or one check by name
                  [--all-files] [--hooks-dir <dir>]
+  rehearse       run the push gate on a snapshot of HEAD in the background
+                 and stamp the tree, so `git push` skips the suite
+                 (`git config amont.rehearseOnCommit true` does this after
+                 every commit) [--wait: follow it, or run it here if none]
+                 [--status] [--stop]
   restore        bring back unstaged changes a killed pre-commit left parked
   agents-md      write the agent-guidance block into AGENTS.md, plus the
                  CLAUDE.md signpost pointing at it (both generated, both
@@ -114,6 +119,7 @@ enum Sub {
     Attest,
     Check,
     Add,
+    Rehearse,
 }
 
 impl Sub {
@@ -144,6 +150,7 @@ impl Sub {
             Sub::Attest => 10,
             Sub::Check => 11,
             Sub::Add => 12,
+            Sub::Rehearse => 13,
         }
     }
 }
@@ -153,7 +160,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 13] = [
+const SUBCOMMANDS: [(&str, Sub); 14] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -167,6 +174,7 @@ const SUBCOMMANDS: [(&str, Sub); 13] = [
     ("attest", Sub::Attest),
     ("check", Sub::Check),
     ("add", Sub::Add),
+    ("rehearse", Sub::Rehearse),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -337,6 +345,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Attest => (&[], &["--signers", "--principal", "--platform"]),
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
         Sub::Add => (&["--dry-run"], &[]),
+        Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
     }
 }
 
@@ -443,6 +452,10 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Trust => report(amont_runtime::trust::command(args)),
         Sub::Run => run_mode(args),
         Sub::AgentsMd => agents_md(args),
+        // `amont rehearse` — the push gate on a snapshot of HEAD, in the
+        // background. The verb the post-commit hook spawns (`--worker`) and
+        // the one a person or agent types to start, follow or stop it.
+        Sub::Rehearse => amont_runtime::rehearsal::command(args),
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one

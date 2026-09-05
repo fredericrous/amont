@@ -21,7 +21,13 @@ start.
 
 `git commit` and `git push` both run their checks first, and neither is
 instant: pre-commit can invoke formatters, linters or clippy (a workspace
-build), and pre-push can run the test suite. Give both commands the
+build), and pre-push can run the test suite. Run `amont rehearse --wait`
+BEFORE `git push`: it runs the same push gate on a snapshot of HEAD with no
+connection open and stamps the tree, so the push itself skips the suite and
+holds the remote for seconds instead of minutes (git connects before
+pre-push runs, and a remote may drop the idle session while a suite runs).
+Where `amont.rehearseOnCommit` is on, every commit already starts that
+rehearsal in the background and `--wait` only follows it. Give both commands the
 longest timeout your tooling allows, never its default: here a check is
 killed only after 2m00s of silence or 1h00m in total
 (`amont.idleTimeout` / `amont.timeout`), and a test suite may legitimately

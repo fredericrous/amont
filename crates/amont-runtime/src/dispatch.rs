@@ -731,11 +731,26 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         t
     };
     let reuse_stamps = crate::gate_stamp::push_stamps_enabled();
+    // A background rehearsal of one of these tips may be mid-suite right
+    // now. Waiting for it is strictly less work than starting over, and
+    // its stamp — read AFTER the wait, below — is the hand-off.
+    if reuse_stamps && !tips.is_empty() {
+        crate::rehearsal::await_for(&tips);
+    }
     let push_stamps = if reuse_stamps && !tips.is_empty() {
         crate::gate_stamp::stamps_for(&tips)
     } else {
         Default::default()
     };
+    // Inside a rehearsal snapshot only the content gates make sense: the
+    // unscoped checks ask about a PUSH — its branch name, its target, its
+    // secrets — and no push is happening. Said once, not per check.
+    let rehearsing = crate::rehearsal::in_snapshot();
+    if rehearsing {
+        crate::say!(
+            "rehearsal: running the test gates only — the push-shaped checks run at push time"
+        );
+    }
     let stamped_on_every_tip = |name: &str| -> bool {
         !tips.is_empty()
             && tips.iter().all(|t| {
@@ -767,6 +782,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // The external is tried FIRST and its inputs are unchanged, so the
         // declared path behaves exactly as before — that is what the
         // untouched declared-pair tests prove.
+        if rehearsing && check.scope().is_unscoped() {
+            continue;
+        }
         if !check.scope().is_unscoped() && stamped_on_every_tip(check.name()) {
             crate::say!(
                 "{} {} passed on this exact tree earlier — not repeating it here",
@@ -907,6 +925,22 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     }
     crate::downgrade::note(&downgraded);
     Verdict::Proceed
+}
+
+/// The scoped pre-push gates — test suites — that have work to do for a
+/// push that changed `changed`: what a rehearsal would run, and therefore
+/// what its stamp would have to name before a push may skip anything.
+///
+/// The same two filters `pre_push` applies before stamping (selected here,
+/// and `scope().touches` the change), so the rehearsal's idea of "nothing to
+/// do" is the push's idea of "nothing to stamp".
+pub fn scoped_push_gates(manifest: &crate::manifest::Manifest, changed: &[String]) -> Vec<String> {
+    let in_progress = crate::git_states_in_progress();
+    selected_during(Stage::PrePush, &in_progress, manifest)
+        .into_iter()
+        .filter(|c| !c.scope().is_unscoped() && c.scope().touches(changed))
+        .map(|c| c.name().to_string())
+        .collect()
 }
 
 /// Push-stamp every tip whose content is what the gates actually tested.
