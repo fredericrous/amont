@@ -734,14 +734,16 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // The working tree AS THE SUITE WILL BE HANDED IT, captured before any
     // gate has run.
     //
-    // Timing is the whole point. Asking afterwards means a gate that writes
-    // anything — a log, a coverage directory, a `.pytest_cache` somebody
-    // forgot to ignore — disqualifies its OWN stamp, and amont's own test
-    // fixture caught exactly that. What a stamp needs to know is what the
-    // suite could READ, which is the state it started from; a file the suite
-    // itself created was never an input to it.
+    // Timing is the point. Asking afterwards means a gate that modifies a
+    // tracked file — a formatter, a suite that updates a snapshot fixture —
+    // disqualifies its OWN stamp. What a stamp needs to know is what the
+    // suite could READ, which is the state it was handed; a change the suite
+    // itself made was never an input to it.
+    //
+    // Tracked modifications only. `stamp_tips` argues that gap, which is a
+    // deliberate one.
     let tree_at_start = if reuse_stamps {
-        crate::git::stdout(&["status", "--porcelain"]).unwrap_or_default()
+        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default()
     } else {
         String::new()
     };
@@ -967,17 +969,28 @@ pub fn scoped_push_gates(manifest: &crate::manifest::Manifest, changed: &[String
 fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
     let pushed_tree_mode = crate::pushed_tree::enabled();
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
-    // A stamp says the gate ran on exactly this content, so the question is
-    // what the suite could SEE — not what git would report as a change.
+    // TRACKED modifications only — a KNOWN gap, kept deliberately, and
+    // spelled out because the comment that used to sit here argued it
+    // backwards ("untracked files are not in any tree the suite could have
+    // been asked about"). That is not the reason. The danger is not that the
+    // tree lacks them, it is that the RUN had them: a new test file, a
+    // fixture, a local `.env`, present while the suite ran and absent from
+    // the tree the stamp vouches for.
     //
-    // Untracked files count. The earlier reading (`--untracked-files=no`,
-    // "untracked files are not in any tree the suite could have been asked
-    // about") argued the risk backwards: the danger is not that the tree
-    // lacks them, it is that the RUN had them. A new test file, a fixture, a
-    // local `.env` — present while the suite ran, absent from the tree the
-    // stamp then vouches for. Ignored files stay ignored, because
-    // `--porcelain` does not list them, so `target/` and `node_modules/` do
-    // not cost anybody a stamp.
+    // Counting them was tried, and is worse than the gap. Gates leave
+    // artefacts — a log, a coverage directory, whatever a declared
+    // `amont.conf` command writes — and nothing cleans them up, so a
+    // repository using declared gates would stop earning stamps permanently
+    // after its first commit. That does not merely lose an optimisation: it
+    // puts the suite back INSIDE the push, which is the failure the whole
+    // stamping mechanism exists to prevent. amont's own
+    // `a_push_stamp_merges_with_a_commit_time_stamp` fixture is exactly that
+    // shape, and CI is where it surfaced — a `*.log` line in one developer's
+    // global gitignore had hidden it on the machine that wrote the change.
+    //
+    // `amont.testPushedTree true` closes the gap properly for anyone who
+    // wants it closed: it runs the suite in a checkout of the commit, where
+    // no untracked file exists to be read.
     //
     // `tree_at_start` — not a fresh `git status`. The gates have run by now
     // and may have written into the tree; what a stamp needs to know is what
@@ -985,10 +998,6 @@ fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
     // capture in `pre_push`.
     let worktree_clean = tree_at_start.trim().is_empty();
     let in_snapshot = crate::rehearsal::in_snapshot();
-    let dirt = tree_at_start;
-    // The one shape worth explaining below: everything git reports is an
-    // untracked file, which used to qualify for a stamp and now does not.
-    let only_untracked = !worktree_clean && dirt.lines().all(|l| l.trim_start().starts_with("??"));
     let mut stamped: Vec<&str> = Vec::new();
     for tip in tips {
         // `pushed_tree_mode` is the CONFIG, not what happened. A snapshot
@@ -1021,25 +1030,6 @@ fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
             valid_sign(),
             highlight(&gates.join(" ")),
             crate::gate_stamp::NOTES_REF,
-        );
-        return;
-    }
-    // Silence is right for the ordinary dirty tree — see the note above — but
-    // NOT for the one case where the answer changed under somebody. An
-    // untracked file used to earn a stamp and no longer does, and a push that
-    // quietly stopped skipping its suite with no explanation is the kind of
-    // thing people spend an afternoon on. Said only when that is genuinely
-    // the whole reason.
-    if only_untracked
-        && !pushed_tree_mode
-        && !in_snapshot
-        && tips.iter().any(|t| head.as_deref() == Some(t))
-    {
-        crate::say!(
-            "{} not stamping this tree: the gate ran with untracked files present that \
-             the pushed commit does not have. `git status` lists them; \
-             `git config amont.testPushedTree true` tests the commit itself instead.",
-            warning_sign(),
         );
     }
 }

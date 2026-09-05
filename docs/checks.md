@@ -377,14 +377,15 @@ only for content the suite actually tested:
   tree and says so; that tip is then stamped by nothing, because the suite
   that passed never saw its content;
 - in the default working-tree mode it is the tip only when `HEAD` *is* the
-  tip and the tree was clean **when the gate started** — nothing modified
-  and nothing untracked. An untracked file is not in the tree the stamp
-  would vouch for, but it was there while the suite ran, and a new test
-  file or a local `.env` is exactly the sort of thing that changes a
-  suite's answer. Two things deliberately do not count: ignored files
-  (`target/`, `node_modules/`), and anything the gate itself writes — the
-  state is captured before any check runs, so a suite that leaves a log or
-  a coverage directory does not disqualify its own stamp;
+  tip and no tracked file was modified **when the gate started** — captured
+  before any check runs, so a formatter or a snapshot-updating suite cannot
+  disqualify the stamp for work it just did. Untracked files do not count,
+  and that is a known gap rather than an oversight: the file was there
+  while the suite ran and is not in the tree the stamp vouches for, but
+  counting it would mean any repository whose gates leave an artefact
+  (a log, a coverage directory) stopped earning stamps permanently — which
+  puts the suite back inside the push, the failure stamping exists to
+  prevent. Use `amont.testPushedTree` to close it;
 - inside a rehearsal the checkout *is* the commit, because git made it, so
   whatever `amont.snapshotPrepare` added to make it runnable is not a
   reason to distrust it.

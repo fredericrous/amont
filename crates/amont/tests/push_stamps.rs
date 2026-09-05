@@ -253,57 +253,52 @@ fn a_push_stamp_merges_with_a_commit_time_stamp() {
     assert_eq!(runs(&r), 2, "nothing ran the second time");
 }
 
-/// An UNTRACKED file earns no stamp either, and says why.
+/// An untracked file does NOT block a stamp, and that is a decision rather
+/// than an oversight.
 ///
-/// The cleanliness test used to pass `--untracked-files=no`, reasoning that
-/// untracked files are not in the tree the stamp vouches for. That is the
-/// risk, not the reason: they were there while the suite ran. A new test
-/// file, a fixture, a local `.env` is exactly the sort of thing that changes
-/// a suite's answer, and the stamp would then vouch for a tree that does not
-/// contain it.
+/// It is a real gap — the file was there while the suite ran and is not in
+/// the tree the stamp vouches for. Counting it is worse: gates leave
+/// artefacts nothing cleans up (this fixture's own `gate.log` is one), so a
+/// repository with declared gates would stop earning stamps permanently
+/// after its first commit, and the suite would move back inside the push.
+/// `amont.testPushedTree` is the way to close the gap properly.
 ///
-/// Ignored files still cost nobody a stamp — `--porcelain` does not list
-/// them — and the one line is worth its noise because the answer changed
-/// under people who used to get a stamp here.
+/// This test exists so the trade is visible and cannot be flipped by
+/// accident. It was flipped once; CI caught it here.
 #[test]
-fn an_untracked_file_earns_no_stamp_and_says_so() {
+fn an_untracked_file_does_not_block_a_stamp() {
     if missing("node") {
         return;
     }
     let (r, base) = gated_repo();
-    r.write("scratch.txt.notes", "a file git has never seen\n");
+    r.write("scratch.notes", "a file git has never seen\n");
 
     let (code, out) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 0, "{out}");
     assert!(
-        !out.contains(STAMPED),
-        "an untracked file was stamped over: {out}"
-    );
-    assert!(
-        out.contains("untracked files present"),
-        "it must say why there is no stamp: {out}"
+        out.contains(STAMPED),
+        "an untracked file cost a stamp: {out}"
     );
 
+    // …and the stamp is honoured, so the gate does not run twice.
     let (code, out) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 0, "{out}");
-    assert!(!out.contains(SKIP), "{out}");
-    assert_eq!(runs(&r), 2, "the gate ran both times: {out}");
+    assert!(out.contains(SKIP), "{out}");
+    assert_eq!(runs(&r), 1, "the gate ran once: {out}");
 }
 
-/// An IGNORED file is not an untracked one. `target/` and `node_modules/`
-/// must not cost anybody a stamp, or the strictness above would make the
-/// whole feature useless in every real repository.
+/// A MODIFIED tracked file is the line that IS drawn: what ran is not what is
+/// being pushed. (`a_dirty_working_tree_earns_no_stamp` above is the same
+/// rule from the other end; this one pins that the two cases differ.)
 #[test]
-fn an_ignored_file_still_earns_a_stamp() {
+fn a_modified_tracked_file_still_blocks_a_stamp() {
     if missing("node") {
         return;
     }
     let (r, base) = gated_repo();
-    r.write(".git/info/exclude", "build-output/\n");
-    std::fs::create_dir_all(r.dir.join("build-output")).expect("mkdir");
-    r.write("build-output/thing.o", "binary-ish\n");
+    r.write("a.txt", "modified, not committed\n");
 
     let (code, out) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains(STAMPED), "an ignored file cost a stamp: {out}");
+    assert!(!out.contains(STAMPED), "a modified tree was stamped: {out}");
 }

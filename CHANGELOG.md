@@ -9,7 +9,7 @@ missing here.
 ## v1.29.0
 
 Gates that quietly stopped gating. A stamp is a promise that the gate ran on
-exactly this content, and two paths could write one without that being true;
+exactly this content, and one path could write one without that being true;
 a rebase that had finished paused every push gate for the life of the
 checkout; and a push waiting on a background rehearsal could hold its
 connection to the remote open for an hour.
@@ -27,18 +27,12 @@ connection to the remote open for an hour.
   actually happened is now recorded per tip and consulted. `gate_stamp`'s
   contract is that no path there can let an unchecked commit through; this
   was one.
-- **An untracked file now blocks a working-tree stamp**, and the push says
-  so rather than going quietly slower. The cleanliness test ignored
-  untracked files, on the grounds that they are not in the tree the stamp
-  vouches for. That is the risk, not the reason: they were there while the
-  suite ran, and a new test file, a fixture or a local `.env` is exactly the
-  sort of thing that changes a suite's answer. Three things deliberately do
-  not count: ignored files (`target/`, `node_modules/`); anything the gate
-  itself writes, since the tree state is now captured *before* any check
-  runs rather than after, so a suite that leaves a log cannot disqualify its
-  own stamp; and a rehearsal snapshot, which is the commit by construction —
-  git made it — so `amont.snapshotPrepare`'s output is not a reason to
-  distrust it.
+- **A gate can no longer disqualify its own stamp.** The working-tree
+  cleanliness test ran *after* the gates, so a check that modified a tracked
+  file — a formatter, a suite that updates a snapshot fixture — made the
+  tree dirty and lost the stamp for work it had just done. The state is
+  captured before any check runs now: what a stamp needs to know is what the
+  suite could READ.
 - **A finished rebase is no longer read as a rebase in progress.**
   `REBASE_HEAD` counted as a marker, and git does not remove it when
   `rebase --continue` completes — it is a convenience ref naming the commit
@@ -71,6 +65,15 @@ connection to the remote open for an hour.
 
 ### Changed
 
+- **The untracked-file gap in working-tree stamps is now documented rather
+  than closed.** An untracked file was there while the suite ran and is not
+  in the tree the stamp vouches for, which is a real gap — but counting it
+  is worse: gates leave artefacts nothing cleans up, so a repository with
+  declared gates would stop earning stamps permanently after its first
+  commit, putting the suite back inside the push. `amont.testPushedTree true`
+  closes the gap properly, by running the suite in a checkout of the commit.
+  `an_untracked_file_does_not_block_a_stamp` pins the trade so it cannot be
+  flipped by accident.
 - `main` settles `AMONT_REHEARSAL` before anything else runs. Reading it
   removes it from the environment — deliberately, so a spawned suite cannot
   inherit it — and `remove_var` is not thread-safe, while the first reader
