@@ -29,7 +29,9 @@ you just made — so `git push` finds the stamp already there.
   honoured. `amont rehearse` by hand starts one; `--wait` follows it or runs
   it in the foreground if none is running (the shape an agent wants before
   `git push`); `--status` and `--stop` do what they say. Off by default:
-  every commit then costs a suite's worth of CPU in the background.
+  every commit then costs a suite's worth of CPU in the background. The
+  detached worker is Unix-only for now — on Windows a child holds its
+  parent's pipes, so the hook says so and `--wait` runs in the foreground.
 - **`amont.snapshotPrepare`.** A worktree git just created is a checkout,
   not a workspace — a pnpm monorepo has no `node_modules` there. This
   command runs inside every snapshot before any suite does, for the

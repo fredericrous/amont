@@ -426,6 +426,11 @@ wrong ends in the gate running at push time exactly as it would have
 without any of this: the background run can only *remove* work from the
 push, never let it skip work nobody did.
 
+The detached worker is Unix-only for now. On Windows a child process
+inherits its parent's pipes, so a worker started from a hook whose output
+is captured would hold the commit until the suite ended; there `amont
+rehearse` says so, and `--wait` runs the rehearsal in the foreground.
+
 A push whose commits all carry the `test` stamp skips the pre-push line with
 the same `✓ test gated at commit instead` message; a `--no-verify` commit
 brings it back with the same warning; and the dodge lands in the bypass

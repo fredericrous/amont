@@ -257,7 +257,10 @@ older tree, suite and snapshot included, so committing often does not queue
 work. Off by default because every commit then costs a suite's worth of CPU
 in the background; see "Rehearsing in the background" on the checks page for
 what it prints and what `amont rehearse --wait`, `--status` and `--stop` do.
-Needs `amont.pushStamps` (the default) — the stamp is the hand-off.
+Needs `amont.pushStamps` (the default) — the stamp is the hand-off. Unix
+only for now: on Windows a detached child would hold its parent's pipes
+until the suite ended, so the hook says so instead and `amont rehearse
+--wait` runs the rehearsal in the foreground.
 
 ## `amont.snapshotPrepare` — make a fresh checkout runnable
 

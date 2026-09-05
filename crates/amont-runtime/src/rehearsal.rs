@@ -356,7 +356,23 @@ fn strip_repo_env(cmd: &mut Command) {
 /// whether there is anything to rehearse, whether the tree is already
 /// stamped, whether another worker has it — so the caller (a post-commit
 /// hook, or `amont rehearse`) pays one `spawn` and nothing else.
+///
+/// Unix only. On Windows a child inherits every inheritable handle of its
+/// parent — Rust's `Command` cannot restrict that today — so a worker
+/// started from a hook whose output is piped (an agent driving `git commit`)
+/// would hold the pipe until the suite ended, and the "background" run
+/// would block the very command it was meant to free. Said plainly instead
+/// of spawned: `amont rehearse --wait` runs the same thing in the foreground.
+#[cfg(not(unix))]
 pub fn spawn_detached() -> Result<u32, String> {
+    Err("background rehearsal is not available on Windows yet — \
+         `amont rehearse --wait` runs it in the foreground"
+        .to_string())
+}
+
+#[cfg(unix)]
+pub fn spawn_detached() -> Result<u32, String> {
+    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate amont: {e}"))?;
     let log = log_path().ok_or("not inside a git repository")?;
     let file =
@@ -371,11 +387,7 @@ pub fn spawn_detached() -> Result<u32, String> {
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err));
     strip_repo_env(&mut cmd);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    cmd.process_group(0);
     let child = cmd
         .spawn()
         .map_err(|e| format!("cannot start the rehearsal: {e}"))?;

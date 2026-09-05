@@ -6,6 +6,10 @@
 //! script: the gate runs inside a throwaway worktree, and a relative log
 //! would be written there and vanish with it.
 
+// The detached worker is Unix-only (see `rehearsal::spawn_detached`); the
+// tests that watch it run are too, and the helpers only they use go quiet.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 mod common;
 use common::{missing, Repo};
 
@@ -211,6 +215,7 @@ fn a_rehearsal_tests_a_snapshot_of_head_and_the_push_skips_the_suite() {
 /// `amont.rehearseOnCommit`: the commit itself starts the worker, git does
 /// not wait for it, and the gate ends up run exactly once.
 #[test]
+#[cfg(unix)]
 fn a_commit_starts_the_rehearsal_when_asked() {
     if missing("node") {
         return;
@@ -252,6 +257,7 @@ fn a_commit_starts_the_rehearsal_when_asked() {
 /// Latest wins: a rehearsal of a tree nobody will push is cancelled, suite
 /// and snapshot included, the moment a newer commit exists.
 #[test]
+#[cfg(unix)]
 fn a_newer_commit_cancels_the_running_rehearsal() {
     if missing("node") {
         return;
@@ -308,6 +314,7 @@ fn a_newer_commit_cancels_the_running_rehearsal() {
 /// A push that arrives mid-rehearsal waits for the verdict instead of
 /// starting the suite over, then finds the stamp.
 #[test]
+#[cfg(unix)]
 fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
     if missing("node") {
         return;
@@ -426,6 +433,7 @@ fn a_rehearsal_with_nothing_to_run_says_so() {
 
 /// `--stop` ends the worker and takes the snapshot with it.
 #[test]
+#[cfg(unix)]
 fn stop_cancels_the_worker_and_removes_its_snapshot() {
     if missing("node") {
         return;
