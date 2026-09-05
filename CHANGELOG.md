@@ -8,9 +8,11 @@ missing here.
 
 ## v1.29.0
 
-A stamp is a promise that the gate ran on exactly this content. Two paths
-could write one without that being true, and a third could hold a push open
-for an hour.
+Gates that quietly stopped gating. A stamp is a promise that the gate ran on
+exactly this content, and two paths could write one without that being true;
+a rebase that had finished paused every push gate for the life of the
+checkout; and a push waiting on a background rehearsal could hold its
+connection to the remote open for an hour.
 
 ### Fixed
 
@@ -37,6 +39,17 @@ for an hour.
   own stamp; and a rehearsal snapshot, which is the commit by construction —
   git made it — so `amont.snapshotPrepare`'s output is not a reason to
   distrust it.
+- **A finished rebase is no longer read as a rebase in progress.**
+  `REBASE_HEAD` counted as a marker, and git does not remove it when
+  `rebase --continue` completes — it is a convenience ref naming the commit
+  the rebase last stopped on. Every other marker (`MERGE_HEAD`,
+  `CHERRY_PICK_HEAD`, `REVERT_HEAD`) is cleaned up by the operation that
+  wrote it. The cost was silent and permanent: in any worktree that had ever
+  hit a rebase conflict, `pull-rebase` and all four push test gates paused on
+  every push from then on, announced only by a line that reads as a passing
+  condition ("5 check(s) paused during a rebase"). The two rebase
+  DIRECTORIES are the honest answer and are what git's own prompt scripts
+  read. Found in this repository, by the branch that fixes it.
 - **`amont rehearse --wait` no longer recurses into itself.** A worker
   answering "another rehearsal already has this tree" re-entered the command
   from inside itself, one stack frame per lost race with no ceiling. It is a

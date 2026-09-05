@@ -587,8 +587,11 @@ pub struct Scope {
 ```
 
 Detected from the files git writes into `$GIT_DIR`: `MERGE_HEAD`,
-`REBASE_HEAD`/`rebase-merge/`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
-`BISECT_LOG`. `cherry_pick_in_progress` becomes one arm of that, and its hard-won
+`rebase-merge/`/`rebase-apply/`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
+`BISECT_LOG`. Not `REBASE_HEAD`: git leaves that one behind after
+`rebase --continue` finishes, so it says a rebase happened rather than that
+one is happening, and reading it paused every push gate forever in a
+worktree that had once hit a conflict. `cherry_pick_in_progress` becomes one arm of that, and its hard-won
 comment about `parent()` being lexical while `join("..")` is not moves with it.
 
 **Only `not_during`, not lefthook's full set.** `ref:` conditions duplicate
