@@ -80,8 +80,22 @@ pub fn on_commit_enabled() -> bool {
 }
 
 /// Is this process the pre-push run inside a rehearsal snapshot?
+///
+/// Read ONCE, and the variable is removed from the environment as it is
+/// read: everything this process spawns — the test suite above all — must
+/// not inherit it. amont's own suite pushes through a real pre-push in
+/// fixture repositories, and with the variable inherited that pre-push
+/// believed itself a rehearsal and skipped branch-protect, which is how the
+/// first rehearsal of this very feature failed its own gate.
 pub fn in_snapshot() -> bool {
-    std::env::var_os(ENV).is_some()
+    static IN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IN.get_or_init(|| {
+        let set = std::env::var_os(ENV).is_some();
+        if set {
+            std::env::remove_var(ENV);
+        }
+        set
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -141,13 +141,16 @@ fn gate_js(r: &Repo, body: &str) -> String {
 /// A repo on `feat/x` with ONE declared pre-push gate (no commit-time twin),
 /// `origin/main` at the base, and one committed `.txt` in the gate's scope.
 /// The gate FAILS when `a.txt` — in its own cwd — says `broken`, which is
-/// how the tests tell a snapshot run from a working-tree run.
+/// how the tests tell a snapshot run from a working-tree run — and when it
+/// inherits `AMONT_REHEARSAL`: a suite must never learn it is a rehearsal,
+/// or a suite that itself drives git hooks (amont's own does) skips checks.
 fn gated_repo(body: &str) -> (Repo, String) {
     let r = Repo::new();
     let script = gate_js(
         &r,
         &format!(
-            "if (fs.readFileSync('a.txt','utf8').includes('broken')) process.exit(1);\n{body}"
+            "if (fs.readFileSync('a.txt','utf8').includes('broken')) process.exit(1);\n\
+             if (process.env.AMONT_REHEARSAL !== undefined) process.exit(1);\n{body}"
         ),
     );
     r.stage("gate.js", &script);
