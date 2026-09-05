@@ -6,6 +6,45 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.28.0
+
+The push gate runs itself, in the background, on a snapshot of the commit
+you just made — so `git push` finds the stamp already there.
+
+### Added
+
+- **`amont rehearse`, and `amont.rehearseOnCommit`.** v1.27's `amont run
+  pre-push` moved the suite off the wire but left it a four-minute
+  foreground wait somebody had to remember to start. Now `post-commit` (with
+  `git config amont.rehearseOnCommit true`) spawns a detached worker that
+  checks `HEAD` out into a throwaway worktree, runs the test gates there —
+  the push-shaped checks wait for the push — and stamps the tree. The
+  snapshot is what makes it safe while you keep editing: the suite reads a
+  tree nobody is touching, and the stamp is for exactly that tree. Latest
+  wins: a newer commit cancels a rehearsal of the older tree, process group
+  and snapshot included, so committing often queues nothing. A push that
+  arrives mid-rehearsal waits for the verdict rather than starting the suite
+  over; a rehearsal that failed or died is said, with the log's path, and
+  the gate runs again in your terminal — a failed rehearsal is never
+  honoured. `amont rehearse` by hand starts one; `--wait` follows it or runs
+  it in the foreground if none is running (the shape an agent wants before
+  `git push`); `--status` and `--stop` do what they say. Off by default:
+  every commit then costs a suite's worth of CPU in the background. The
+  detached worker is Unix-only for now — on Windows a child holds its
+  parent's pipes, so the hook says so and `--wait` runs in the foreground.
+- **`amont.snapshotPrepare`.** A worktree git just created is a checkout,
+  not a workspace — a pnpm monorepo has no `node_modules` there. This
+  command runs inside every snapshot before any suite does, for the
+  background rehearsal and for `amont.testPushedTree` alike; a preparation
+  that fails tests nothing and stamps nothing.
+
+### Changed
+
+- The generated AGENTS.md guidance now tells an agent to run `amont rehearse
+  --wait` before `git push` (it follows a running rehearsal, or runs one),
+  where it used to say `amont run pre-push`. `amont agents-md` refreshes the
+  block.
+
 ## v1.27.0
 
 The test suite can run before git opens a connection, and a push that died

@@ -374,6 +374,63 @@ is the tip itself; in the default working-tree mode it is the tip only when
 `HEAD` is the tip and no tracked file is modified. `git config
 amont.pushStamps false` turns both the writing and the honouring off.
 
+### Rehearsing in the background
+
+`amont run pre-push` is still a wait somebody has to remember to start.
+`amont rehearse` starts it for you and gets out of the way:
+
+```text
+$ git commit -m "feat: the thing"
+rehearsing the push gate in the background (`amont rehearse --status`)
+$ git push
+✓ pre-push-run-tests-js passed on this exact tree earlier — not repeating it here
+```
+
+With `git config amont.rehearseOnCommit true`, `post-commit` spawns a
+detached worker — its own process group, output on
+`$GIT_DIR/amont-rehearsal.log`, nothing for git to wait for. The worker
+checks out `HEAD` into a throwaway worktree (the `amont.testPushedTree`
+machinery) and runs the ordinary pre-push dispatcher there, with the branch
+and its upstream as the ref line. The snapshot is what makes this safe while
+you keep editing: the suite reads a tree nobody is touching, and the stamp
+it earns is for exactly that tree. Only the test gates run — `branch-protect`,
+`secrets` and the auto-rebase ask about a push that is not happening, and
+run when it is. A checkout that needs a step before a suite can start (a
+pnpm monorepo has no `node_modules` in a fresh worktree) names it in
+`amont.snapshotPrepare`.
+
+The stamp is the whole hand-off; there is no second record to keep in step.
+What the state file beside the log adds is *whether someone is still working
+on it*, so a push can choose:
+
+- **stamped** — the push skips the suite, as above;
+- **still running** — the push waits for the verdict rather than starting
+  over (`⚠ a background rehearsal of this tree started 2m ago is still
+  running — waiting for it rather than starting the suite over`): less
+  remaining work than a fresh run, and no extra CPU;
+- **failed**, or died without a verdict — said, with the log's path, and the
+  gate runs again in the terminal you are looking at. A failed rehearsal is
+  never honoured.
+
+Latest wins. A worker that finds another one running on a *different* tree
+kills it — the whole process group, suite included — and removes its
+snapshot; a rebase replaying ten commits does not queue ten suites. One on
+the same tree is left alone. Nothing starts during a rebase, merge or
+cherry-pick: the commit being made is not the one that will be pushed.
+
+`amont rehearse` by hand starts one for `HEAD` in the background;
+`--wait` follows the running one, or runs it in the foreground if none is
+(the shape an agent wants before `git push`); `--status` says which tree the
+last one was for and how it ended; `--stop` cancels. Every path that goes
+wrong ends in the gate running at push time exactly as it would have
+without any of this: the background run can only *remove* work from the
+push, never let it skip work nobody did.
+
+The detached worker is Unix-only for now. On Windows a child process
+inherits its parent's pipes, so a worker started from a hook whose output
+is captured would hold the commit until the suite ended; there `amont
+rehearse` says so, and `--wait` runs the rehearsal in the foreground.
+
 A push whose commits all carry the `test` stamp skips the pre-push line with
 the same `✓ test gated at commit instead` message; a `--no-verify` commit
 brings it back with the same warning; and the dodge lands in the bypass
