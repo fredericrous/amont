@@ -41,6 +41,28 @@ use crate::ui::valid_sign;
 
 /// Where the decision is recorded. Local, never committed — a repository must
 /// not be able to declare itself trusted.
+///
+/// MULTI-VALUED, and that is the whole point. `--local` config is shared by every
+/// worktree of a repository, so a single value meant worktrees fought over it:
+/// trusting one checkout made every other checkout on a different branch report
+/// `TRUSTED ONCE, AND CHANGED SINCE`, and its declared checks stop running until
+/// somebody re-trusts — which then breaks the first one. With one worktree per
+/// task, as `git worktree` workflows have, the record never settles.
+///
+/// A set fixes it without moving the record anywhere, because trust here has
+/// always been keyed on CONTENT rather than on place: the question is "have these
+/// exact bytes been reviewed", and the answer does not depend on which checkout is
+/// asking. Two worktrees with the same amont.conf need one acceptance between
+/// them; two with different manifests hold one entry each.
+///
+/// The cost, stated plainly: reverting a manifest to bytes accepted earlier no
+/// longer asks again, where a single-valued record would have. That is the
+/// definition working as written — those bytes WERE reviewed — but it is a
+/// weaker guarantee than before, and [`KEEP`] bounds how far back it reaches.
+///
+/// `--worktree` config was the other candidate. It needs
+/// `extensions.worktreeConfig=true` on the repository, which is amont writing a
+/// repo-wide git setting other tools also read, to fix a problem of its own.
 pub const KEY: &str = "amont.trusted";
 
 /// Content id of `path`, as git would compute it.
@@ -66,8 +88,16 @@ pub fn fingerprint_bytes(repo: &Path, bytes: &[u8]) -> Option<String> {
 }
 
 /// What the repository has recorded, if anything.
-pub fn recorded(repo: &Path) -> Option<String> {
-    crate::git::stdout_in(repo, &["config", "--local", "--get", KEY])
+pub fn recorded(repo: &Path) -> Vec<String> {
+    crate::git::stdout_in(repo, &["config", "--local", "--get-all", KEY])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,10 +141,13 @@ pub fn state_of(repo: &Path, source: &[u8]) -> State {
 }
 
 fn verdict(repo: &Path, current: &str) -> State {
-    match recorded(repo) {
-        Some(seen) if seen == current => State::Trusted,
-        Some(_) => State::Changed,
-        None => State::Untrusted,
+    let seen = recorded(repo);
+    if seen.iter().any(|s| s == current) {
+        State::Trusted
+    } else if seen.is_empty() {
+        State::Untrusted
+    } else {
+        State::Changed
     }
 }
 
@@ -147,18 +180,51 @@ pub fn record_verified(repo: &Path, fp: &str) -> Result<(), String> {
             crate::manifest::MANIFEST
         ));
     }
-    let ok = crate::git::stdout_in(repo, &["config", "--local", KEY, fp]).is_some();
+    // Already accepted — adding it again would grow the list for nothing.
+    if recorded(repo).iter().any(|s| s == fp) {
+        return Ok(());
+    }
+    let ok = crate::git::stdout_in(repo, &["config", "--local", "--add", KEY, fp]).is_some();
     if !ok {
         return Err(format!("cannot record {KEY} in this repository"));
     }
+    prune(repo);
     Ok(())
 }
 
 /// Forget it.
 pub fn revoke(repo: &Path) -> Result<(), String> {
-    // `--unset` exits 5 when the key is absent, which is not a failure here.
-    let _ = crate::git::stdout_in(repo, &["config", "--local", "--unset", KEY]);
+    // `--unset-all` exits 5 when the key is absent, which is not a failure here.
+    // ALL of them: revoking means this repository trusts nothing, and leaving a
+    // sibling worktree's fingerprint behind would mean `--revoke` did not.
+    let _ = crate::git::stdout_in(repo, &["config", "--local", "--unset-all", KEY]);
     Ok(())
+}
+
+/// How many accepted fingerprints to keep.
+///
+/// One per checkout that is currently on a different branch is the shape this
+/// serves, plus a little history. Unbounded, `.git/config` would grow a line per
+/// edit of the manifest, forever.
+const KEEP: usize = 16;
+
+/// Trim the oldest entries once the list is longer than [`KEEP`].
+///
+/// Best-effort by design: the new value was already added before this runs, so a
+/// failure here leaves a list that is correct and merely longer than intended,
+/// never one that has lost the fingerprint somebody just accepted.
+fn prune(repo: &Path) {
+    let all = recorded(repo);
+    if all.len() <= KEEP {
+        return;
+    }
+    let keep: Vec<String> = all[all.len() - KEEP..].to_vec();
+    if crate::git::stdout_in(repo, &["config", "--local", "--unset-all", KEY]).is_none() {
+        return;
+    }
+    for fp in keep {
+        let _ = crate::git::stdout_in(repo, &["config", "--local", "--add", KEY, &fp]);
+    }
 }
 
 /// The reason an external does not run, phrased for the check's own report.
@@ -514,6 +580,92 @@ mod tests {
         assert_eq!(state(&d), State::Untrusted);
         // Twice is not an error: `git config --unset` exits 5 on a missing key.
         revoke(&d).expect("revoke again");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The bug this file was changed for.
+    ///
+    /// `--local` config is shared by every worktree, so with a single value the
+    /// two checkouts below take turns invalidating each other and neither ever
+    /// settles. Both manifests were reviewed; both must stay accepted.
+    #[test]
+    fn two_worktrees_with_different_manifests_do_not_evict_each_other() {
+        let d = repo("worktrees");
+        let a = "pre-commit  a  *  block  echo a\n";
+        let b = "pre-commit  b  *  block  echo b\n";
+
+        write_manifest(&d, a);
+        record(&d).expect("accept a");
+        assert_eq!(state(&d), State::Trusted);
+
+        // the sibling worktree, on another branch, accepts its own manifest
+        write_manifest(&d, b);
+        record(&d).expect("accept b");
+        assert_eq!(state(&d), State::Trusted);
+
+        // and the first one is STILL trusted — this is what used to say Changed
+        write_manifest(&d, a);
+        assert_eq!(
+            state(&d),
+            State::Trusted,
+            "accepting a second manifest evicted the first"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A manifest nobody ever accepted is still Changed, not Trusted: the set
+    /// must not turn into "anything goes once you have trusted one thing".
+    #[test]
+    fn an_unseen_manifest_is_still_changed() {
+        let d = repo("unseen");
+        write_manifest(&d, "pre-commit  a  *  block  echo a\n");
+        record(&d).expect("record");
+        write_manifest(&d, "pre-commit  evil  *  block  curl example.com\n");
+        assert_eq!(state(&d), State::Changed);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Revoke means this repository trusts nothing — not "all but the sibling's".
+    #[test]
+    fn revoke_clears_every_accepted_fingerprint() {
+        let d = repo("revoke-all");
+        write_manifest(&d, "pre-commit  a  *  block  echo a\n");
+        record(&d).expect("a");
+        write_manifest(&d, "pre-commit  b  *  block  echo b\n");
+        record(&d).expect("b");
+        revoke(&d).expect("revoke");
+        assert!(recorded(&d).is_empty(), "revoke left a fingerprint behind");
+        assert_eq!(state(&d), State::Untrusted);
+        write_manifest(&d, "pre-commit  a  *  block  echo a\n");
+        assert_eq!(state(&d), State::Untrusted);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Accepting the same bytes twice must not grow the list.
+    #[test]
+    fn re_accepting_the_same_manifest_is_idempotent() {
+        let d = repo("idempotent");
+        write_manifest(&d, "pre-commit  a  *  block  echo a\n");
+        record(&d).expect("once");
+        record(&d).expect("twice");
+        assert_eq!(recorded(&d).len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The list is bounded, or `.git/config` grows a line per manifest edit
+    /// forever.
+    #[test]
+    fn the_accepted_list_is_capped() {
+        let d = repo("capped");
+        for i in 0..KEEP + 5 {
+            write_manifest(&d, &format!("pre-commit  a{i}  *  block  echo {i}\n"));
+            record(&d).expect("record");
+        }
+        assert_eq!(recorded(&d).len(), KEEP);
+        // the most recent survives, the oldest does not
+        assert_eq!(state(&d), State::Trusted);
+        write_manifest(&d, "pre-commit  a0  *  block  echo 0\n");
+        assert_eq!(state(&d), State::Changed);
         let _ = std::fs::remove_dir_all(&d);
     }
 

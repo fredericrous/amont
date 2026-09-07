@@ -50,6 +50,21 @@ The record is a **fingerprint of the file**, stored in `--local` git config
 under `amont.trusted` — local, never committed, so a repository cannot
 declare itself trusted.
 
+The key is **multi-valued**: it holds every manifest you have accepted here,
+most recent last, capped at sixteen. `--local` config is shared by all of a
+repository's worktrees, so a single value made them fight — accepting one
+checkout's manifest reported every other checkout on a different branch as
+`TRUSTED ONCE, AND CHANGED SINCE` and stopped its declared checks, until
+somebody re-accepted there and broke the first one. With a worktree per task
+the record never settled. Since consent is keyed on content rather than on
+place, a set is the honest shape: two worktrees with the same `amont.conf`
+need one acceptance between them.
+
+One consequence, stated rather than buried: reverting a manifest to bytes you
+accepted earlier no longer asks again. Those bytes *were* reviewed, and the cap
+bounds how far back that reaches — but it is a weaker guarantee than a single
+value gave.
+
 Because it is keyed on content, a `git pull` that adds a command does not
 inherit the consent given to the file before it. That state is reported
 distinctly from "never trusted", because *somebody changed it* is a different
@@ -77,7 +92,7 @@ what you trusted:
 
 ```sh
 git hash-object --no-filters amont.conf
-git config --local --get amont.trusted
+git config --local --get-all amont.trusted   # every manifest accepted here
 ```
 
 `--no-filters` is the load-bearing flag. Without it, git applies the clean
