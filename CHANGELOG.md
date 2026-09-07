@@ -6,6 +6,21 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **`kubeconform` now renders with `--load-restrictor LoadRestrictionsNone`.**
+  kustomize's CLI refuses a `../` reference that leaves the kustomization root;
+  kustomize-controller does not, because it loads relative to the SOURCE root.
+  So a directory Flux applies every ten minutes failed the check with
+  `security; file ... is not in or below ...`, and since a build failure fails
+  the check, **no commit touching such a directory could be made at all**. Found
+  in a repository where one app is built almost entirely from `../<sibling>/*.yaml`:
+  its CI had grown a whitelist for that exact error string, so the directory was
+  validated by nothing while every local commit to it was blocked. The relaxation
+  is what the controller already does with the same files.
+
 ## v1.29.0
 
 Gates that quietly stopped gating. A stamp is a promise that the gate ran on

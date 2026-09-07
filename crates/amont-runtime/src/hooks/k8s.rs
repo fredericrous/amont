@@ -269,8 +269,31 @@ fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
     // `--` before `sub`: it is a directory name walked up from staged paths,
     // so a kustomization root named e.g. `-overlay` would otherwise be read
     // as a flag by kustomize's own (cobra) parser.
+    // `--load-restrictor LoadRestrictionsNone`, because the question this check
+    // answers is "will the cluster accept what Flux applies", and
+    // kustomize-controller loads relative to the SOURCE root rather than the
+    // kustomization directory. kustomize's CLI default refuses a `../` reference
+    // that leaves the root, so a root the controller renders happily fails here
+    // with `security; file ... is not in or below ...` — and since a build
+    // failure fails the check, the effect is that such a directory cannot be
+    // committed to at all.
+    //
+    // Real example: a repository where `apps/stalwart-secrets/` is built almost
+    // entirely from `../stalwart/*.yaml`. Flux applies it every ten minutes; the
+    // CLI cannot build it; and the repository's CI had grown a whitelist for
+    // that exact error string, so the directory was silently validated by
+    // nothing while every commit touching it was blocked locally.
+    //
+    // The relaxation is what the controller already does with the same files, so
+    // it widens nothing the cluster does not already permit.
     let Ok(mut build) = Command::new(program("kustomize"))
-        .args(["build", "--", sub])
+        .args([
+            "build",
+            "--load-restrictor",
+            "LoadRestrictionsNone",
+            "--",
+            sub,
+        ])
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -335,6 +358,45 @@ mod tests {
         let c = "# comment\nCiliumNetworkPolicy\n\n  Foo Bar \n";
         assert_eq!(skip_kinds(c), vec!["CiliumNetworkPolicy", "FooBar"]);
         assert!(skip_kinds("# only a comment\n").is_empty());
+    }
+
+    /// A root built from files ABOVE it must validate.
+    ///
+    /// kustomize's CLI default refuses `../` out of the root; kustomize-controller
+    /// does not, so a directory Flux applies every ten minutes failed here — and
+    /// because a build failure fails the check, no commit touching that directory
+    /// could be made at all. Needs the real binaries; skipped without them, the
+    /// same soft-tool rule the check itself follows.
+    #[test]
+    fn a_root_that_reaches_above_itself_still_validates() {
+        if which("kustomize").is_none() || which("kubeconform").is_none() {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("amont-loadrestrictor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shared = tmp.join("shared");
+        let overlay = tmp.join("overlay");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(&overlay).unwrap();
+        std::fs::write(
+            shared.join("namespace.yaml"),
+            "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: demo\n",
+        )
+        .unwrap();
+        // The shape that fails without the relaxation: every resource lives in a
+        // sibling directory.
+        std::fs::write(
+            overlay.join("kustomization.yaml"),
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../shared/namespace.yaml\n",
+        )
+        .unwrap();
+
+        let root = tmp.to_string_lossy().to_string();
+        assert!(
+            validate_root(&root, "overlay", None),
+            "a kustomization built from ../shared must validate — kustomize-controller renders it"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
