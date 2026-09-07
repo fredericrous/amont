@@ -6,7 +6,15 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.30.0
+
+Two checks that were quietly not checking. `kubeconform` refused to build any
+kustomization that reaches above its own directory — which kustomize-controller
+renders happily — so a directory Flux applies every ten minutes could not be
+committed to at all, while the repository's CI had learned to skip it. And
+`amont.trusted` held one value in config that every worktree shares, so
+checkouts on different branches took turns switching each other's declared
+checks off.
 
 ### Fixed
 
