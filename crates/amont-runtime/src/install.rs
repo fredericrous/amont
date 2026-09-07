@@ -1356,7 +1356,7 @@ pub fn forget_bookkeeping_in(repo: &Path) -> Vec<&'static str> {
     if crate::git::succeeds_in(repo, &["config", "--unset-all", "amont.knownIdentity"]) {
         gone.push("known-identity memo");
     }
-    if crate::trust::recorded(repo).is_some() && crate::trust::revoke(repo).is_ok() {
+    if !crate::trust::recorded(repo).is_empty() && crate::trust::revoke(repo).is_ok() {
         gone.push("amont.conf trust");
     }
     gone

@@ -20,6 +20,18 @@ missing here.
   its CI had grown a whitelist for that exact error string, so the directory was
   validated by nothing while every local commit to it was blocked. The relaxation
   is what the controller already does with the same files.
+- **`amont.trusted` now holds every accepted manifest, not just the last one.**
+  `--local` git config is shared by all of a repository's worktrees, so a single
+  value made them evict each other: accepting one checkout's `amont.conf`
+  reported every other checkout on a different branch as `TRUSTED ONCE, AND
+  CHANGED SINCE` — with its declared checks silently not running — until somebody
+  re-accepted there, which broke the first one. With a worktree per task the
+  record never settled. Consent has always been keyed on CONTENT rather than on
+  place, so a set is the shape that was always meant: two worktrees with the same
+  manifest need one acceptance between them, `--revoke` still clears all of them,
+  and the list is capped at sixteen. **Reverting to a manifest you accepted
+  earlier no longer prompts again** — those bytes were reviewed, but it is a
+  weaker guarantee than before and the cap bounds it.
 
 ## v1.29.0
 
