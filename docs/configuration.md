@@ -227,6 +227,45 @@ default is that a long-running tool's output arrives when the check ends
 rather than as it happens; this key is the way back if you want to watch a
 test suite scroll.
 
+## `amont.quiet` — say it once, or once per check
+
+```sh
+git config amont.quiet auto     # never (default) | auto | always
+```
+
+A hook that passes prints one line per check, and on a clean run that is the
+whole output: fourteen lines to say nothing happened. At a terminal those
+lines are the reassurance that the gate ran at all. Captured — an agent's
+tool result, a CI log — they are read again on every later turn and say no
+more the tenth time than the first.
+
+So the setting names who is reading:
+
+| value | effect |
+|---|---|
+| `never` | the default: every check says it passed |
+| `auto` | quiet when stderr is not a terminal, verbose when it is |
+| `always` | quiet everywhere |
+
+**Only the success lines go.** A failure, a warning, a check that could not
+run, a repaired file and the blocked summary print under every setting.
+Quiet is about the uneventful path and nothing else — it is not a way to
+lose a refusal, and `quiet_never_swallows_a_failure` pins that.
+
+In their place, one line:
+
+```
+  ✓ 14 check(s) passed
+```
+
+That count is not decoration. A run that says nothing at all is
+indistinguishable from a gate that never ran, which is the confusion this
+whole crate exists to prevent — so quiet gets quieter, never silent.
+
+`auto` is the value to reach for when a coding agent runs your commits: it
+costs the agent one line instead of fourteen, on every commit of every
+session, and changes nothing about what you see when you commit by hand.
+
 ## `amont.pushStamps` — remember what the push gate already proved
 
 ```sh

@@ -581,6 +581,45 @@ macro_rules! say {
     };
 }
 
+/// Should a check's SUCCESS line be swallowed?
+///
+/// A hook that passes says one line per check, and on a clean run that is the
+/// entire output: fourteen lines to say nothing happened. At a terminal those
+/// lines are the reassurance that the gate ran. Captured — an agent's tool
+/// result, a CI log — they are re-read on every later turn of the session and
+/// say no more the tenth time than the first.
+///
+/// So the setting names WHO is reading, not how loud to be:
+///
+/// - `never` (default) — today's output, every check says it passed.
+/// - `auto` — quiet when nobody is watching, verbose at a terminal.
+/// - `always` — quiet everywhere.
+///
+/// Only the success lines go. A failure, a warning, a check that could not
+/// run, a repaired file, and the blocked summary are printed under every
+/// setting: quiet is about the uneventful path, and nothing else.
+pub fn quiet() -> bool {
+    static QUIET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *QUIET.get_or_init(|| {
+        decide(
+            crate::config::enumerated_or("amont.quiet", QUIET_VALUES, "never"),
+            watching(),
+        )
+    })
+}
+
+pub const QUIET_VALUES: &[&str] = &["never", "auto", "always"];
+
+/// Pure, so the three-way decision is testable without a terminal or a config.
+fn decide(setting: &str, watching: bool) -> bool {
+    match setting {
+        "always" => true,
+        "auto" => !watching,
+        // `never`, and anything `enumerated_or` rejected back to the default.
+        _ => false,
+    }
+}
+
 /// Whether the capture mechanism is on at all. `amont.progress false` is the
 /// escape hatch back to raw streaming — one knob, read once.
 pub fn enabled() -> bool {
@@ -609,6 +648,23 @@ pub fn watching() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_asks_who_is_reading() {
+        assert!(!decide("never", true));
+        assert!(!decide("never", false));
+        assert!(always_and_auto_agree_at_a_terminal());
+        assert!(decide("auto", false), "captured: nobody is watching");
+        assert!(decide("always", true));
+        assert!(decide("always", false));
+        // An unreadable value has already been reported by `enumerated_or`,
+        // which hands back the default; silence is never assumed.
+        assert!(!decide("shhh", false));
+    }
+
+    fn always_and_auto_agree_at_a_terminal() -> bool {
+        !decide("auto", true) && decide("always", true)
+    }
 
     /// The atomicity contract at the unit level: two threads writing
     /// interleaved lines into their own slots come out as two contiguous

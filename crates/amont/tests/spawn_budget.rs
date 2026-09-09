@@ -70,8 +70,14 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
         spawns > 0,
         "the shim never ran — the budget measured nothing"
     );
+    // 25 -> 26 (`amont.quiet`): one `git config --get amont.quiet`, read once
+    // per process the first time a check reports success. It buys the removal
+    // of ~90% of a passing hook's output, which is re-read on every later turn
+    // of a session that captured it. One config read for a documented key is
+    // the intended shape of this budget growing; a check that grew a git habit
+    // of its own is not.
     assert!(
-        spawns <= 25,
+        spawns <= 26,
         "a one-file commit spawned git {spawns} times — the per-stage snapshot \
          (staged_files/repo_root caching) has regressed, or a check grew its \
          own git habit; raise this budget only with a reason written here"

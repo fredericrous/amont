@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont.quiet` — say it once, or once per check.** A passing hook prints a
+  line per check, and on a clean run that is the entire output. At a terminal
+  those lines are the reassurance that the gate ran; captured into an agent's
+  tool result or a CI log they are re-read on every later turn and say no more
+  the tenth time than the first. `never` (the default) keeps today's output,
+  `always` swallows the success lines everywhere, and `auto` swallows them
+  only when stderr is not a terminal — verbose for a person, quiet for a
+  capture. Failures, warnings, checks that could not run, repaired files and
+  the blocked summary print under every setting. In place of the many lines,
+  one count: a run that says nothing at all is indistinguishable from a gate
+  that never ran, so quiet gets quieter and never silent.
+
 ## v1.30.0
 
 Two checks that were quietly not checking. `kubeconform` refused to build any

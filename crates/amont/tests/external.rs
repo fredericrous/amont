@@ -741,3 +741,71 @@ fn progress_off_restores_raw_streaming() {
         run.output()
     );
 }
+
+/// `amont.quiet` swallows the per-check success lines and leaves one count in
+/// their place — the same run, told once instead of once per check.
+///
+/// The count is the point. A gate that says nothing at all is
+/// indistinguishable from a gate that never ran, and this crate exists
+/// because that distinction is the one people get wrong.
+#[cfg(unix)]
+#[test]
+fn quiet_replaces_the_success_lines_with_their_count() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage("pass.sh", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(r.path("pass.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "pass.sh"]);
+    manifest(&r, "pre-commit  passes  *  block  ./pass.sh\n");
+
+    // Verbose is the default, and stays the default.
+    let loud = r.hook("pre-commit", &[]);
+    assert!(loud.passed(), "{}", loud.output());
+    assert!(
+        loud.says("No secrets staged"),
+        "the default lost its per-check lines:\n{}",
+        loud.output()
+    );
+
+    r.git(&["config", "amont.quiet", "always"]);
+    let quiet = r.hook("pre-commit", &[]);
+    assert!(quiet.passed(), "{}", quiet.output());
+    assert!(
+        !quiet.says("No secrets staged"),
+        "quiet kept a per-check success line:\n{}",
+        quiet.output()
+    );
+    assert!(
+        quiet.says("check(s) passed"),
+        "quiet said nothing at all, which reads as a gate that never ran:\n{}",
+        quiet.output()
+    );
+}
+
+/// Quiet is about the uneventful path. A check that fails still says so, and
+/// still blocks — the setting must never be a way to lose a refusal.
+#[cfg(unix)]
+#[test]
+fn quiet_never_swallows_a_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage("nope.sh", "#!/bin/sh\necho the-reason\nexit 1\n");
+    std::fs::set_permissions(r.path("nope.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["add", "nope.sh"]);
+    manifest(&r, "pre-commit  refuses  *  block  ./nope.sh\n");
+    r.git(&["config", "amont.quiet", "always"]);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        !run.passed(),
+        "quiet let a blocking check through:\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("the-reason") && run.says("refuses"),
+        "quiet swallowed the reason a check refused:\n{}",
+        run.output()
+    );
+}

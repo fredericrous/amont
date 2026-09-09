@@ -445,6 +445,11 @@ struct Report<'a> {
     downgraded: Vec<&'a str>,
     /// Could not run. Distinct from "passed", which is the whole point.
     unavailable: Vec<&'a str>,
+    /// How many passed outright. Only read when `amont.quiet` swallowed their
+    /// individual lines — a run that says nothing at all is indistinguishable
+    /// from a gate that never ran, and that is the one thing this crate will
+    /// not let a reader believe.
+    passed: usize,
 }
 
 impl Report<'_> {
@@ -462,9 +467,10 @@ fn classify<'a>(
     let mut report = Report::default();
     for (check, outcome) in checks.iter().zip(outcomes) {
         match outcome {
+            Outcome::Passed => report.passed += 1,
             // `Warned` needs nothing: a check that chose to warn has already
             // said what it wanted to, and a roll-up would only repeat it.
-            Outcome::Passed | Outcome::Warned => {}
+            Outcome::Warned => {}
             Outcome::Fixed => report.fixed.push(check.name()),
             Outcome::Unavailable => report.unavailable.push(check.name()),
             Outcome::Failed => match severities.of(*check) {
@@ -478,6 +484,9 @@ fn classify<'a>(
 
 /// Says what happened. Prints; decides nothing.
 fn announce(report: &Report) {
+    if crate::live::quiet() && report.passed > 0 {
+        println!("{} {} check(s) passed", valid_sign(), report.passed);
+    }
     if !report.fixed.is_empty() {
         // Louder than a pass, because files on disk are not what the author
         // left them: they asked for the repair, but they did not watch it.
@@ -1209,11 +1218,22 @@ mod tests {
 
     /// A clean stage concludes nothing at all — not an empty message, no
     /// message. Twenty checks that passed should print no roll-ups.
+    ///
+    /// `passed` is a tally, not a roll-up. It exists so that `amont.quiet` can
+    /// say how many lines it swallowed, and it must never be the reason this
+    /// report looks like it has something to announce.
     #[test]
     fn a_clean_stage_has_nothing_to_report() {
         let checks: [&dyn Check; 2] = [&BLOCKER, &WARNER];
         let got = classify(&checks, &[Outcome::Passed, Outcome::Warned], &none());
-        assert_eq!(got, Report::default());
+        assert!(
+            got.fixed.is_empty()
+                && got.blocked.is_empty()
+                && got.downgraded.is_empty()
+                && got.unavailable.is_empty(),
+            "a clean stage found something to announce: {got:?}"
+        );
+        assert_eq!(got.passed, 1, "the pass was not tallied: {got:?}");
         assert_eq!(got.verdict(), Verdict::Proceed);
     }
 

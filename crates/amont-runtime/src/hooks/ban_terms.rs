@@ -18,7 +18,7 @@
 use crate::check::{Outcome, Severity};
 use crate::finding::Finding;
 use crate::git;
-use crate::ui::{error_sign, highlight, valid_sign};
+use crate::ui::{error_sign, highlight};
 
 /// Everything any term scans. The registry declares the check's scope from
 /// this constant, so a term cannot gain a language without the dashboard
@@ -890,7 +890,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
         }
         return Outcome::Failed;
     }
-    crate::say!("  {} No unwanted terms were found", valid_sign().trim());
+    super::common::ok("No unwanted terms were found");
     Outcome::Passed
 }
 
