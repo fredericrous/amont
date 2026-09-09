@@ -10,7 +10,7 @@
 use crate::check::Outcome;
 use crate::git;
 use crate::pushrefs::PushRef;
-use crate::ui::{error_sign, highlight, valid_sign, warning_sign};
+use crate::ui::{error_sign, highlight, warning_sign};
 
 use crate::vocabulary;
 
@@ -37,10 +37,7 @@ pub fn early() -> Outcome {
         return Outcome::Passed;
     };
     if conforms(branch) {
-        crate::say!(
-            "{} Branch name conforms with authorized pattern",
-            valid_sign()
-        );
+        super::common::ok("Branch name conforms with authorized pattern");
         return Outcome::Passed;
     }
     if !git::has_remote() {
@@ -150,10 +147,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         .filter_map(|r| name_to_validate(r, &zero))
         .collect();
     if candidates.is_empty() {
-        crate::say!(
-            "{} No new branch name to validate. Push is authorized.",
-            valid_sign()
-        );
+        super::common::ok("No new branch name to validate. Push is authorized.");
         return Outcome::Passed;
     }
 
@@ -178,10 +172,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         super::common::network_probe_budget(),
     ) {
         git::Probe::Exit(2) => {
-            crate::say!(
-                "{} Remote has no branches yet (initial push). Name is authorized.",
-                valid_sign()
-            );
+            super::common::ok("Remote has no branches yet (initial push). Name is authorized.");
             return Outcome::Passed;
         }
         git::Probe::TimedOut(secs) => {
@@ -216,10 +207,7 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
 
-    crate::say!(
-        "{} Branch name conforms with authorized pattern",
-        valid_sign()
-    );
+    super::common::ok("Branch name conforms with authorized pattern");
     Outcome::Passed
 }
 

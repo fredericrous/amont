@@ -24,7 +24,7 @@
 
 use crate::check::Verdict;
 use crate::commit_style::{self, Style};
-use crate::ui::{error_sign, highlight, valid_sign};
+use crate::ui::{error_sign, highlight};
 
 use crate::vocabulary::{self, COMMIT_TYPES};
 
@@ -326,7 +326,7 @@ pub fn group_footer(text: &str) -> String {
 }
 
 fn valid(msg: &str) {
-    println!("  {} {msg}", valid_sign().trim());
+    super::common::ok(msg);
 }
 fn error(msg: &str) {
     eprintln!("  {} {msg}", error_sign().trim());

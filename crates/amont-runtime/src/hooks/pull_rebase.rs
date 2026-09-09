@@ -10,7 +10,7 @@
 
 use crate::check::Outcome;
 use crate::git;
-use crate::ui::{error_sign, highlight, valid_sign, warning_sign};
+use crate::ui::{error_sign, highlight, warning_sign};
 
 /// `ahead[[:space:]]+N,[[:space:]]*behind[[:space:]]+M` over `git status -sb`.
 ///
@@ -302,7 +302,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             }
         }
     } else {
-        crate::say!("{} Branch is in sync with its upstream", valid_sign());
+        super::common::ok("Branch is in sync with its upstream");
     }
 
     // 4. Informational only — never acts.

@@ -830,7 +830,12 @@ pub fn restage(paths: &[String]) -> Restaged {
     Restaged::Failed(changed)
 }
 
+/// A check passed. THE funnel for every success line, which is what lets
+/// `amont.quiet` swallow them in one place — see [`crate::live::quiet`].
 pub fn ok(msg: &str) {
+    if crate::live::quiet() {
+        return;
+    }
     crate::live::say(&format!("{} {msg}", valid_sign()));
 }
 pub fn fail(msg: &str) {

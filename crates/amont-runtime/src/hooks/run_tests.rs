@@ -588,12 +588,11 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                 .cloned()
                 .collect();
             if !newly.is_empty() {
-                crate::say!(
-                    "{} {} gated at commit instead — not repeating {} here",
-                    crate::ui::valid_sign(),
+                crate::hooks::common::ok(&format!(
+                    "{} gated at commit instead — not repeating {} here",
                     newly.join(", "),
                     if newly.len() == 1 { "it" } else { "them" },
-                );
+                ));
                 announced.extend(newly);
             }
         }
