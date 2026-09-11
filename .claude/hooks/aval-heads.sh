@@ -30,6 +30,11 @@ to end.
 
 To change one, write a record that `replaces` it. Editing the old record is
 not how supersession works here, and `aval check` will say so.
+
+What is deployed is not what was decided. Two implementations both running is
+not evidence that both were chosen — it is equally consistent with one having
+replaced the other and the code not having caught up. Ask someone; do not
+infer a decision from what is running.
 PREAMBLE
 
 echo
