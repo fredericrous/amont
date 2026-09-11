@@ -49,7 +49,7 @@ jobs:
       # corpus that no longer resolves.
       - name: Ensure aval
         env:
-          AVAL_VERSION: 0.3.1
+          AVAL_VERSION: 0.4.0
         run: |
           set -euo pipefail
           # The baked binary is an optimisation, not the pin. Accepting whatever
@@ -77,6 +77,12 @@ jobs:
 
       - name: aval check
         run: aval check
+
+      # The hook is committed, so it must stay wired. A stale
+      # `.claude/hooks/aval-heads.sh` injects last release's preamble into
+      # every session and nothing else would say so.
+      - name: The session hook is wired and current
+        run: aval hook install --check
 
   deps:
     name: hook binary has no external dependencies
