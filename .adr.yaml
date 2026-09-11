@@ -1,0 +1,121 @@
+# The decision-key vocabulary for amont.
+#
+# This file declares WHICH architectural questions exist. It never holds an
+# answer: answers live in adr/, where they are reviewed. A key that no accepted
+# record decides resolves `undecided`.
+#
+# Read the current answers in adr/HEADS.md, or ask:
+#     aval resolve hooks.index-fidelity --scope pre-push
+#
+# WHY `adr/` AND NOT `docs/`. docs/ is an mdBook with `src = "."`, so every
+# page there is rendered, and YAML frontmatter is not stripped — it comes out as
+# a horizontal rule followed by an `<h2>` reading `id: … status: …` on the
+# published page. Verified by building the book with a frontmatter block in
+# place. `create-missing = false` also means an unlisted page under docs/ is a
+# file the site does not have. So the records sit beside the book and cite it.
+#
+# NOT declared here, on purpose: `ci.test-gate-stage` and `release.trigger`.
+# Both are FLEET decisions, recorded once in the `decisions` repository.
+# amont.conf's own 35-line rationale for gating tests at commit is the evidence
+# behind the fleet record, not a second decision.
+
+dir: adr
+
+# Two axes, and they are not interchangeable.
+#
+# A hook STAGE is when a check runs, and several decisions genuinely differ by
+# stage rather than being one rule with exceptions: what is stashed, whether a
+# check may fix, and whether failures are collected or stop at the first.
+#
+# A SURFACE is which program the decision governs. The hook binary and the
+# fleet tool answer different questions and ship separately.
+scopes: [pre-commit, prepare-commit-msg, commit-msg, post-commit, pre-push, hook-binary, fleet-tool]
+
+keys:
+  # --- Distribution and configuration --------------------------------------
+  dist.binary-shape:
+    description: How many executables ship, and how a hook selects its behaviour
+  dist.binary-name:
+    description: What the executable is called
+  config.source:
+    description: Where per-repository configuration is read from
+  config.repo-declaration:
+    description: How a repository declares checks of its own
+  config.trust-model:
+    description: What makes a committed declaration able to run
+  config.fingerprint:
+    description: What consent is bound to
+  deps.budget:
+    description: Which third-party crates the hook binary may carry
+
+  # --- Internal architecture -----------------------------------------------
+  arch.check-abstraction:
+    description: How a check is represented
+  arch.outcome-model:
+    description: What a check can report
+  arch.scope-model:
+    description: How a check says which files it applies to
+  arch.severity:
+    description: Who decides whether a failing check blocks
+  arch.external-ordering:
+    description: Whether a declared check can run before a built-in
+  arch.external-severity:
+    description: Whether a declared check may block
+
+  # --- Hook behaviour, much of it per stage --------------------------------
+  hooks.install-mechanism:
+    description: How the hooks are attached to a repository
+  hooks.index-fidelity:
+    description: Which content a check reads
+    scopes: [pre-commit, prepare-commit-msg, commit-msg, post-commit, pre-push]
+  hooks.fix-outcome:
+    description: Whether a check may rewrite the files it judges
+    scopes: [pre-commit, prepare-commit-msg, commit-msg, post-commit, pre-push]
+  hooks.failure-collection:
+    description: Whether a stage reports every failure or stops at the first
+    scopes: [pre-commit, prepare-commit-msg, commit-msg, post-commit, pre-push]
+
+  # --- The command line ------------------------------------------------------
+  cli.all-files-semantics:
+    description: What `--all-files` implies beyond widening the file set
+  cli.check-command:
+    description: Whether `amont check` is a read or a rehearsal
+  cli.check-identifier:
+    description: How a check is named where a human or a config refers to it
+
+  # Declared and deliberately undecided. `docs/hook-architecture.md` lists this
+  # under "Open decisions" and it is still open there, while `docs/checks.md`
+  # documents `amont list` as shipped in the hook binary. Practice answered it;
+  # the record did not, and promoting shipped code to a decision is the
+  # inference this model exists to prevent.
+  cli.list-command-home:
+    description: Whether `amont list` belongs to the hook binary or the fleet tool
+
+  # --- Continuous integration -------------------------------------------------
+  ci.runs-amont:
+    description: Whether the hook binary runs on a build server
+  ci.attestation-format:
+    description: How CI learns what the push gate already proved
+  ci.attestation-tool-home:
+    description: Which repository ships the verifier
+  ci.template-distribution:
+    description: How a repository gets its workflow files
+
+  # --- The fleet tool ---------------------------------------------------------
+  fleet.management-tool:
+    description: What propagates and reports on managed repositories
+    scopes: [fleet-tool]
+  fleet.symlink-policy:
+    description: What happens to a repository whose dispatchers are symlinks
+    scopes: [fleet-tool]
+  fleet.reporting-format:
+    description: How a repository's state is reported
+    scopes: [fleet-tool]
+
+  # --- Conventions -------------------------------------------------------------
+  vocab.commit-branch-parity:
+    description: How the commit-type and branch-prefix vocabularies stay in step
+  lang.ban-terms-tokenizer:
+    description: How the banned-terms scanner tells code from string content
+  platform.windows-parity:
+    description: What Windows runs relative to the other platforms
