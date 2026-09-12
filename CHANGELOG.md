@@ -8,6 +8,26 @@ missing here.
 
 ## v1.32.0
 
+### Fixed
+
+- **The fleet dashboard's dependency advisories are cleared.** `ratatui`
+  0.29 → 0.30 and `crossterm` 0.28 → 0.29, which drops `paste`
+  (RUSTSEC-2024-0436, unmaintained with no patched version — only removal
+  helps) and carries `lru` 0.12.5 → 0.18.4, past both RUSTSEC-2026-0002 and
+  RUSTSEC-2026-0253. `cargo audit` now exits 0.
+
+  No narrower fix existed: `lru`'s repairs land in 0.16.3 and 0.18.2 while
+  ratatui 0.29 pins `^0.12`, so nothing short of the bump reaches them. No
+  source change was needed either — the dashboard compiles unmodified.
+
+  None of this was ever on the commit path. `cargo tree -p amont` carries
+  no `ratatui`, `lru`, `paste` or `amont-fleet`; the advisories lived
+  entirely in the opt-in dashboard, which is the asymmetry its `Cargo.toml`
+  already documents. The build graph grows 59 → 77 crates. The lock file
+  grows further, to 186, but those extra entries are ratatui's `termwiz`
+  backend — recorded, never compiled, and `cargo audit` reads the lock file
+  rather than the build graph.
+
 ### Added
 
 - **Vault tokens are a recognised shape.** `pre-commit-secrets` and
