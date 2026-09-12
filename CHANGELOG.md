@@ -35,6 +35,24 @@ missing here.
   then killed the step before any of the exit-code handling it exists for
   could run. Found by this very change: fixing the advisories turned the job
   red, while the branch that still had all three stayed green.
+### Changed
+
+- **`audit-rust` names the crate an advisory is against, and which of your
+  crates reach it.** The warning was a list of ids — `RUSTSEC-2026-0002,
+  RUSTSEC-2026-0253` — which says nothing about whether it matters. It now
+  reads `RUSTSEC-2026-0002 (lru → amont-fleet)`. A finding in an opt-in tool
+  is a different Monday from one on the commit path, and telling them apart
+  meant running `cargo tree --invert` by hand every time.
+
+  `(<crate>, not in the build graph)` is a real verdict, not a fallback.
+  `cargo audit` reads `Cargo.lock`, which records the resolved dependency set
+  with no edge kinds — no dev, no optional, no per-feature — so it flags
+  crates nothing compiles. An optional dependency of an unused feature gets
+  an advisory, and this says so rather than implying you ship it.
+
+  A clean audit spawns nothing extra, which is every run that matters. The
+  `cargo tree` calls happen once per affected crate, only once there is
+  something to say, and a call that fails still leaves the advisory reported.
 
 ### Added
 

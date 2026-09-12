@@ -98,6 +98,85 @@ fn conclude(tool: &str, report: Report, releasing: bool, full: &str) -> Outcome 
     }
 }
 
+/// Is this word a RUSTSEC id? `RUSTSEC-` + 4 digits + `-` + 4 digits.
+fn is_advisory_id(w: &str) -> bool {
+    w.len() == 17
+        && w.starts_with("RUSTSEC-")
+        && w[8..12].bytes().all(|b| b.is_ascii_digit())
+        && w.as_bytes()[12] == b'-'
+        && w[13..17].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Pair each advisory with the crate it was raised against.
+///
+/// `cargo audit`'s terminal report is blocks — `Crate:` … `ID:` — and the
+/// id alone does not say which crate carries it, let alone which of YOUR
+/// crates depends on that. Answering "is this on the commit path or only in
+/// an opt-in tool?" meant running `cargo tree -i` by hand every time.
+///
+/// A `Crate:` binds to the next `ID:` and is then spent, so an id appearing
+/// outside a block — a summary line, a URL — reports no crate rather than
+/// inheriting the previous block's.
+fn ids_with_crates(out: &str) -> Vec<(String, Option<String>)> {
+    let mut pairs: Vec<(String, Option<String>)> = Vec::new();
+    let mut pending: Option<String> = None;
+    for line in out.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("Crate:") {
+            pending = rest.split_whitespace().next().map(str::to_string);
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("ID:") {
+            if let Some(id) = rest.split_whitespace().next().filter(|w| is_advisory_id(w)) {
+                pairs.push((id.to_string(), pending.take()));
+                continue;
+            }
+        }
+        // Ids outside a block still count — the older summary-line shapes
+        // and anything cargo audit prints loose.
+        for w in t.split_whitespace().filter(|w| is_advisory_id(w)) {
+            pairs.push((w.to_string(), None));
+        }
+    }
+    pairs
+}
+
+/// Which of THIS workspace's crates reach `crate`, read from `cargo tree -i`.
+///
+/// Cargo prints a local package with its path in parentheses and a registry
+/// package without one, which is the only discriminator needed and works in
+/// any repository — the hook cannot know a given workspace's member names.
+///
+/// An empty result is an answer, not a failure: `cargo tree` prints
+/// "nothing to print" for a crate that is in `Cargo.lock` but not in the
+/// build graph. `cargo audit` reads the lock file, so an advisory can name a
+/// crate nothing compiles — an optional dependency of a feature nobody
+/// enabled. Saying so is more useful than naming no crate at all.
+fn local_dependents(tree_out: &str) -> Vec<String> {
+    let mut names: Vec<String> = tree_out
+        .lines()
+        .filter(|l| l.contains(" (/"))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .find(|w| !w.is_empty() && w.chars().next().is_some_and(|c| c.is_alphanumeric()))
+                .map(str::to_string)
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// One advisory, said in full: the id, the crate it is against, and which of
+/// this workspace's crates actually reach it.
+fn describe(id: &str, krate: Option<&str>, reaches: &[String]) -> String {
+    match (krate, reaches.is_empty()) {
+        (None, _) => id.to_string(),
+        (Some(k), true) => format!("{id} ({k}, not in the build graph)"),
+        (Some(k), false) => format!("{id} ({k} → {})", reaches.join(", ")),
+    }
+}
+
 /// `cargo audit`, ci.yaml's rules verbatim: the RUSTSEC ids decide, the
 /// exit code only says which class they are.
 fn read_cargo_audit(exit_ok: bool, out: &str) -> Report {
@@ -259,10 +338,69 @@ pub fn rust(refs: &[PushRef]) -> Outcome {
     };
     conclude(
         "audit-rust",
-        read_cargo_audit(exit_ok, &out),
+        attribute(read_cargo_audit(exit_ok, &out), &out, cargo_tree_inverse),
         releasing(refs),
         &out,
     )
+}
+
+/// `cargo tree -i <crate>`, or None if it could not be run. Failure here is
+/// never fatal: attribution is an improvement to a message, and an advisory
+/// reported without it is still an advisory reported.
+fn cargo_tree_inverse(krate: &str) -> Option<String> {
+    let argv = vec![
+        common::program("cargo"),
+        "tree".into(),
+        "--invert".into(),
+        krate.into(),
+        "--edges".into(),
+        "normal".into(),
+        "--color".into(),
+        "never".into(),
+    ];
+    audited(&argv).map(|(_, out)| out)
+}
+
+/// Name the crate behind each advisory, and which of this workspace's crates
+/// reach it.
+///
+/// Deliberately spawns NOTHING on a clean report, which is every run that
+/// matters: the `cargo tree` calls happen once per distinct affected crate,
+/// only when there is already something to say. A hook on the push path does
+/// not pay for a message nobody will read.
+fn attribute(report: Report, out: &str, tree: impl Fn(&str) -> Option<String>) -> Report {
+    match report {
+        Report::Advisories(ids) => Report::Advisories(described(ids, out, tree)),
+        Report::Vulnerabilities(ids) => Report::Vulnerabilities(described(ids, out, tree)),
+        // Clean and CouldNotCheck carry no ids, so there is nothing to
+        // attribute and — the part that matters — nothing to spawn.
+        other => other,
+    }
+}
+
+/// Each id, rewritten with its crate and what reaches it where both are
+/// known. One `cargo tree` per distinct crate, not per advisory: `lru`
+/// carried two advisories in the run that prompted this.
+fn described(ids: Vec<String>, out: &str, tree: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let pairs = ids_with_crates(out);
+    let mut seen: Vec<(String, Vec<String>)> = Vec::new();
+    ids.iter()
+        .map(|id| {
+            let krate = pairs
+                .iter()
+                .find(|(pid, k)| pid == id && k.is_some())
+                .and_then(|(_, k)| k.clone());
+            let Some(k) = krate else {
+                return id.clone();
+            };
+            if let Some((_, reaches)) = seen.iter().find(|(name, _)| *name == k) {
+                return describe(id, Some(&k), reaches);
+            }
+            let reaches = tree(&k).map(|t| local_dependents(&t)).unwrap_or_default();
+            seen.push((k.clone(), reaches.clone()));
+            describe(id, Some(&k), &reaches)
+        })
+        .collect()
 }
 
 pub fn js(refs: &[PushRef]) -> Outcome {
@@ -448,6 +586,135 @@ mod tests {
         );
         // A lookalike is not an id.
         assert_eq!(read_cargo_audit(true, "RUSTSEC-20XX-0001"), Report::Clean);
+    }
+
+    /// The real report shape, trimmed from the run that prompted this: two
+    /// advisories against ONE crate, and one against another.
+    fn real_report() -> String {
+        [
+            "Crate:     paste",
+            "Version:   1.0.15",
+            "Warning:   unmaintained",
+            "ID:        RUSTSEC-2024-0436",
+            "URL:       https://rustsec.org/advisories/RUSTSEC-2024-0436",
+            "",
+            "Crate:     lru",
+            "Version:   0.12.5",
+            "Warning:   unsound",
+            "ID:        RUSTSEC-2026-0253",
+            "",
+            "Crate:     lru",
+            "Version:   0.12.5",
+            "ID:        RUSTSEC-2026-0002",
+            "",
+            "warning: 3 allowed warnings found",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn an_advisory_is_paired_with_its_crate() {
+        let pairs = ids_with_crates(&real_report());
+        assert_eq!(
+            pairs,
+            vec![
+                ("RUSTSEC-2024-0436".into(), Some("paste".into())),
+                ("RUSTSEC-2026-0253".into(), Some("lru".into())),
+                ("RUSTSEC-2026-0002".into(), Some("lru".into())),
+            ]
+        );
+    }
+
+    /// A `Crate:` binds to ONE id. An id printed loose reports no crate
+    /// rather than inheriting whichever block happened to precede it.
+    #[test]
+    fn a_loose_id_borrows_no_crate() {
+        let out = "Crate:     paste\nID:        RUSTSEC-2024-0436\nsee also RUSTSEC-2025-0001";
+        assert_eq!(
+            ids_with_crates(out),
+            vec![
+                ("RUSTSEC-2024-0436".into(), Some("paste".into())),
+                ("RUSTSEC-2025-0001".into(), None),
+            ]
+        );
+    }
+
+    /// Local crates carry a path; registry crates do not. That is the whole
+    /// discriminator, and it has to work without knowing the member names.
+    #[test]
+    fn only_local_crates_are_named_as_reached() {
+        let tree =
+            "lru v0.12.5\n└── ratatui v0.29.0\n    └── amont-fleet v1.32.0 (/w/crates/amont-fleet)";
+        assert_eq!(local_dependents(tree), vec!["amont-fleet".to_string()]);
+        assert!(local_dependents("lru v0.12.5\n└── ratatui v0.29.0").is_empty());
+    }
+
+    /// End to end on the real report, with the tree calls faked: each id
+    /// names its crate and the workspace crate that reaches it, and `lru`'s
+    /// two advisories cost ONE lookup.
+    #[test]
+    fn the_warning_names_the_crate_and_what_reaches_it() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let fake = |k: &str| {
+            calls.borrow_mut().push(k.to_string());
+            Some(format!(
+                "{k} v1\n└── ratatui v0.29.0\n    └── amont-fleet v1.32.0 (/w/crates/amont-fleet)"
+            ))
+        };
+        let out = real_report();
+        let got = attribute(read_cargo_audit(true, &out), &out, fake);
+        assert_eq!(
+            got,
+            Report::Advisories(vec![
+                "RUSTSEC-2024-0436 (paste → amont-fleet)".into(),
+                "RUSTSEC-2026-0002 (lru → amont-fleet)".into(),
+                "RUSTSEC-2026-0253 (lru → amont-fleet)".into(),
+            ])
+        );
+        assert_eq!(
+            calls.into_inner(),
+            vec!["paste", "lru"],
+            "one call per crate"
+        );
+    }
+
+    /// A lock-file-only crate — an optional dependency of a feature nobody
+    /// enabled — is reported as such. `cargo audit` reads Cargo.lock, so this
+    /// is a real and confusing case, and naming it is the point.
+    #[test]
+    fn a_crate_outside_the_build_graph_says_so() {
+        let out = "Crate:     wezterm-input-types\nID:        RUSTSEC-2025-0001";
+        let got = attribute(read_cargo_audit(true, out), out, |_| {
+            Some("warning: nothing to print.".into())
+        });
+        assert_eq!(
+            got,
+            Report::Advisories(vec![
+                "RUSTSEC-2025-0001 (wezterm-input-types, not in the build graph)".into()
+            ])
+        );
+    }
+
+    /// Attribution is a better message, never a gate. A clean report spawns
+    /// nothing, and a `cargo tree` that cannot run still reports the id.
+    #[test]
+    fn attribution_never_changes_the_verdict() {
+        let spawned = std::cell::Cell::new(false);
+        let clean = attribute(read_cargo_audit(true, "0 vulnerabilities"), "", |_| {
+            spawned.set(true);
+            None
+        });
+        assert_eq!(clean, Report::Clean);
+        assert!(!spawned.get(), "a clean report must spawn nothing");
+
+        let out = "Crate:     paste\nID:        RUSTSEC-2024-0436";
+        let blind = attribute(read_cargo_audit(false, out), out, |_| None);
+        assert_eq!(
+            blind,
+            Report::Vulnerabilities(vec![
+                "RUSTSEC-2024-0436 (paste, not in the build graph)".into()
+            ])
+        );
     }
 
     #[test]
