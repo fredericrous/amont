@@ -6,6 +6,44 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.33.0
+
+### Added
+
+- **A repository can declare how to prepare a snapshot.** `set
+  snapshotPrepare <command>` in `amont.conf`, alongside the
+  `set testPushedTree true` that asks for the snapshot in the first place.
+
+  Those two belonged together and only one of them was settable. A
+  repository could commit "run the gate on a checkout of the commit" and
+  then had no way to say how to make that checkout runnable — which for a
+  pnpm or npm workspace is the entire question, because a worktree git
+  just created is a checkout, not a workspace, and a suite started there
+  fails on `Cannot find module` having tested nothing. Every clone had to
+  discover `git config amont.snapshotPrepare` by hand, and a clone that
+  did not got a rehearsal that failed instantly.
+
+  ```
+  set testPushedTree true
+  set snapshotPrepare pnpm install --offline --frozen-lockfile
+  ```
+
+  Consent is unchanged in shape. Policy binds only on a TRUSTED manifest,
+  so an untrusted file supplies no command and it reaches no config read;
+  the trust prompt prints the command beside the checks; editing the line
+  revokes that consent. A local `git config` still outranks the committed
+  value. `fix` remains unsettable for its own reason — a committed file
+  must not change what already-trusted commands may DO to a working tree —
+  and this command runs in a throwaway snapshot, never in that tree.
+
+### Changed
+
+- **A `set` value runs to the end of the line.** Every key settable before
+  took a single word — `true`, `72`, a version — so splitting on
+  whitespace and splitting once were indistinguishable, and a shell
+  command is not expressible the first way. Single-word values parse
+  exactly as before.
+
 ## v1.32.0
 
 ### Fixed
