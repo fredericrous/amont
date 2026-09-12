@@ -220,7 +220,17 @@ jobs:
       # says how loudly to phrase it.
       - name: Audit the resolved tree
         run: |
-          set -uo pipefail
+          # `set +e` is load-bearing, and its absence made this step fail in
+          # exactly one case: a CLEAN tree. GitHub's default shell is
+          # `bash --noprofile --norc -e -o pipefail`, and `-e` survives a
+          # `set -uo pipefail` that does not mention it. With no advisories
+          # the `grep` below matches nothing and exits 1, which under `-e`
+          # killed the step before any of the exit-code handling this script
+          # exists for could run — so the job went red precisely when there
+          # was nothing to report, and green whenever there was. The whole
+          # design here is to INSPECT exit codes rather than die on them, so
+          # say so rather than relying on the runner's default.
+          set +e -uo pipefail
           cargo audit --color never 2>&1 | tee /tmp/audit.log
           rc=${PIPESTATUS[0]}
           ids=$(grep -Eo 'RUSTSEC-[0-9]{4}-[0-9]{4}' /tmp/audit.log | sort -u)

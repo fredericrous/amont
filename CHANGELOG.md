@@ -28,6 +28,14 @@ missing here.
   backend — recorded, never compiled, and `cargo audit` reads the lock file
   rather than the build graph.
 
+- **CI's advisory job no longer fails when the tree is clean.** It went red in
+  exactly one case — no advisories — because GitHub's default shell is
+  `bash -e`, which survives a `set -uo pipefail` that does not mention it, and
+  the `grep` that collects RUSTSEC ids exits 1 when it matches nothing. `-e`
+  then killed the step before any of the exit-code handling it exists for
+  could run. Found by this very change: fixing the advisories turned the job
+  red, while the branch that still had all three stayed green.
+
 ### Added
 
 - **Vault tokens are a recognised shape.** `pre-commit-secrets` and
