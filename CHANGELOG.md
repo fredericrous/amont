@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.34.0
+
+### Fixed
+
+- **The release that v1.32.0 and v1.33.0 were meant to be.** Both were
+  tagged, both built, and neither was ever published: v1.31.0 stayed the
+  latest release for the life of both tags. The audit gate could not pass a
+  clean tree — it looked for advisory ids in `cargo audit`'s output and, on
+  a tree with no advisories, `grep` found none, exited 1, and `pipefail`
+  plus `-e` aborted the step before the branch written for exactly that
+  case could report success. A clean audit was the one input that failed
+  it, so the gate blocked hardest when there was least reason to.
+
+  A tag-triggered run executes the workflow as of its own commit, so
+  neither existing tag can be re-run into a release and neither is worth
+  force-pushing. This version carries both of them: **everything described
+  under v1.32.0 and v1.33.0 below ships here**, and an upgrader coming from
+  v1.31.0 should read those two sections as part of this one.
+
 ## v1.33.0
 
 ### Added
