@@ -231,9 +231,28 @@ jobs:
       - name: Audit the resolved tree
         run: |
           set -uo pipefail
-          cargo audit --color never 2>&1 | tee /tmp/audit.log
-          rc=${PIPESTATUS[0]}
-          ids=$(grep -Eo 'RUSTSEC-[0-9]{4}-[0-9]{4}' /tmp/audit.log | sort -u)
+          # The runner's shell already carries -e, and every branch below was
+          # unreachable because of it. Two aborts, both before any of this
+          # script's own reporting could run:
+          #
+          #   * a CLEAN tree — `grep` finds no RUSTSEC id, exits 1, pipefail
+          #     propagates, -e kills the script. The gate failed precisely
+          #     when there was nothing wrong, and said nothing. v1.33.0 hit
+          #     exactly this.
+          #   * a VULNERABLE tree — `cargo audit` exits non-zero, the pipeline
+          #     fails, -e kills the script at that line. The right outcome,
+          #     reached for the wrong reason, with the ids never named.
+          #
+          # `if` suspends -e for its condition, so a non-zero audit becomes a
+          # value here instead of an abort; with pipefail, $? is the
+          # pipeline's first failure. An empty `ids` is the good case, not an
+          # error, so the grep may fail.
+          if cargo audit --color never 2>&1 | tee /tmp/audit.log; then
+            rc=0
+          else
+            rc=$?
+          fi
+          ids=$(grep -Eo 'RUSTSEC-[0-9]{4}-[0-9]{4}' /tmp/audit.log | sort -u) || ids=""
 
           if [ -z "$ids" ]; then
             if [ "$rc" -eq 0 ]; then
