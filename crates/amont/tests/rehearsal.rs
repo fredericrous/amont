@@ -364,6 +364,43 @@ fn a_failed_rehearsal_is_reported_and_the_push_runs_the_gate() {
     assert_eq!(runs(&r), 2, "the push ran it again");
 }
 
+/// The same preparation, COMMITTED. `testPushedTree` was settable from
+/// amont.conf and this was not, so a repository could ask for a snapshot and
+/// not say how to make it runnable — useless for the workspace case that
+/// needs it. A `set` value also has to survive being a whole command, which
+/// nothing before it exercised: every other settable key takes one word.
+#[test]
+fn a_committed_snapshot_prepare_reaches_the_snapshot() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = gated_repo("fs.readFileSync('prepared.txt');");
+    // No preparation anywhere: the gate cannot start.
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(runs(&r), 0);
+
+    // Declared in the manifest rather than by `git config` — and the value
+    // carries spaces, which is the parse this depends on.
+    r.stage(
+        "amont.conf",
+        "pre-push    suite  *.txt  block  node gate.js
+         set snapshotPrepare echo ready > prepared.txt
+",
+    );
+    r.commit("chore: declare how to prepare a snapshot");
+    trust_and_install(&r);
+
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("preparing the snapshot"), "{out}");
+    assert!(
+        !r.dir.join("prepared.txt").exists(),
+        "preparation happened in the snapshot, not the working tree"
+    );
+    assert!(note(&r, "HEAD").contains("pre-push-suite"));
+}
+
 /// `amont.snapshotPrepare` makes the checkout a workspace — in the snapshot,
 /// never in the developer's tree — and its failure is the snapshot's.
 #[test]
