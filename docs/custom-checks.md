@@ -206,10 +206,30 @@ repository still beats the policy.
 
 Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.gitmoji`, `commit.subjectMax`, `commit.descriptionMax`,
-`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`, and
-`minVersion` — the last being the team's version floor: a binary older
-than `set minVersion 1.11.0` says so once per stage, warn-only, instead
-of silently lacking the checks the team added since. Any other
+`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`,
+`snapshotPrepare`, and `minVersion` — the last being the team's version
+floor: a binary older than `set minVersion 1.11.0` says so once per stage,
+warn-only, instead of silently lacking the checks the team added since.
+
+`snapshotPrepare` is the one whose value is a whole command, and it is
+there because `testPushedTree` was settable and it was not: a repository
+could say "run the gate on a checkout of the commit" and then had no way
+to say how to make that checkout runnable. For a pnpm or npm workspace
+that means an install, and the repository is what knows which — requiring
+every clone to discover the config key by hand made the declarable half
+useless. It runs in the snapshot, through the shell, before any suite, and
+consent covers it exactly as it covers a declared check's command: policy
+binds only on a trusted manifest, the trust prompt prints the command, and
+editing the line revokes the trust.
+
+A `set` value runs to the end of the line, so a command with spaces and
+flags is written plainly:
+
+```
+set snapshotPrepare pnpm install --offline --frozen-lockfile
+```
+
+Any other
 key is refused with its line number — most deliberately `amont.fix`,
 because a committed file must not change what already-trusted commands
 may DO to your working tree (see below). One caveat worth reading before

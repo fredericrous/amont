@@ -230,6 +230,19 @@ pub const SETTABLE: &[&str] = &[
     "timeout",
     "testPushedTree",
     "minVersion",
+    // A snapshot is not a workspace. `testPushedTree` is settable here, so a
+    // repository can say "run the gate on a checkout of the commit" — and
+    // before this it could not say how to make that checkout runnable, which
+    // for a pnpm or npm workspace means an install. The repository is what
+    // knows; requiring every clone to discover `git config
+    // amont.snapshotPrepare` by hand made the declarable half useless.
+    //
+    // Safe on the same terms as a declared check: policy is populated ONLY
+    // when the manifest is trusted, `PolicyLine::describe` puts the command
+    // in front of the person consenting, and any edit revokes that consent.
+    // A local `git config` still outranks it (see `policy`'s ladder), so a
+    // developer can override without touching the file.
+    "snapshotPrepare",
 ];
 
 impl PolicyLine {
@@ -834,9 +847,21 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         };
     }
     if line == "set" || line.starts_with("set ") || line.starts_with("set\t") {
-        let mut it = line.split_whitespace().skip(1);
-        return match (it.next(), it.next(), it.next()) {
-            (Some(key), Some(value), None) => {
+        // The value is the REST of the line, not a third token. Every key
+        // settable before this took a single word — `true`, `72`, a version —
+        // so splitting on whitespace was indistinguishable from splitting
+        // once. `snapshotPrepare` is a shell command, and a rule that only
+        // ever admits one-word values cannot express it.
+        //
+        // A trailing `#` stays part of the value, exactly as it does in a
+        // check's command: comments here are whole-line only (see the caller).
+        let rest = line[3..].trim();
+        let split = rest
+            .split_once(char::is_whitespace)
+            .map(|(k, v)| (k, v.trim()))
+            .filter(|(_, v)| !v.is_empty());
+        return match split {
+            Some((key, value)) => {
                 // Case-insensitive against the allowlist, canonical spelling
                 // stored — `set commit.subjectmax 72` must work, because git
                 // would have accepted the key in any case.
@@ -856,7 +881,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                     ),
                 }
             }
-            _ => broken_at(
+            None => broken_at(
                 lineno,
                 format!("{MANIFEST}:{lineno}"),
                 None,

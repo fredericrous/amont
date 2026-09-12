@@ -364,6 +364,61 @@ fn an_untrusted_set_line_is_inert() {
     );
 }
 
+/// A snapshot is not a workspace, and the repository is what knows how to
+/// make it one. `snapshotPrepare` is a shell command, so this is also the
+/// case that proves a `set` value may hold spaces — every key settable before
+/// it took a single word, which made the two indistinguishable.
+#[test]
+fn a_set_value_may_be_a_whole_command() {
+    let r = Repo::new();
+    manifest(
+        &r,
+        "set snapshotPrepare pnpm install --offline --frozen-lockfile
+",
+    );
+    // The trust listing is the surface that matters: a command a snapshot
+    // will run has to be in front of the person consenting to it.
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .args(["trust", "--show"])
+        .current_dir(&r.dir)
+        .output()
+        .expect("trust --show");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("pnpm install --offline --frozen-lockfile"),
+        "the whole command survives, not just its first word: {text}"
+    );
+}
+
+/// The command a snapshot would run is a command, so consent has to see it —
+/// the same bar a declared check's command clears.
+#[test]
+fn an_untrusted_snapshot_prepare_is_inert() {
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        "set snapshotPrepare touch /tmp/amont-should-not-run
+",
+    );
+    // Policy is populated only when trusted, so the command reaches no
+    // config read at all — `amont list` renders the effective settings.
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("list")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont list");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !text.contains("amont-should-not-run"),
+        "an untrusted manifest supplies no command: {text}"
+    );
+}
+
 /// A key policy may not reach is a loud, positioned gap — `fix` above all,
 /// because a committed file must not change what trusted commands may DO.
 #[test]

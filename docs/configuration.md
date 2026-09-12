@@ -325,6 +325,16 @@ is connected there.
 git config amont.snapshotPrepare "pnpm install --offline --frozen-lockfile"
 ```
 
+Or committed, so every clone has it — the repository is what knows which
+install its workspace needs:
+
+```
+set snapshotPrepare pnpm install --offline --frozen-lockfile
+```
+
+in `amont.conf` (see [custom checks](custom-checks.md)). A local `git
+config` still outranks the committed value.
+
 A worktree git just created is a checkout, not a workspace: a pnpm monorepo
 has no `node_modules` there, and a suite started in it fails on `Cannot find
 module` having tested nothing. This command runs, through the shell, inside
