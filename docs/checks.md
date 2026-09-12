@@ -282,6 +282,25 @@ The tools' output decides, never the exit code alone: every one of these
 tools conflates "found vulnerabilities" with "could not fetch the database"
 in its exit status, and those mean opposite things.
 
+**`audit-rust` names the crate, and what reaches it.** An advisory id says
+nothing about whether it matters to you, so the warning reads
+`RUSTSEC-2026-0002 (lru → amont-fleet)`: the crate the advisory is against,
+and which of this workspace's crates depend on it. A finding in an opt-in
+tool is a different Monday from one on the commit path, and reading the id
+alone meant running `cargo tree --invert` by hand to tell them apart.
+
+Two details that are answers rather than omissions:
+
+- `(<crate>, not in the build graph)` means exactly that. `cargo audit`
+  reads `Cargo.lock`, which records the resolved dependency *set* with no
+  edge kinds — no dev, no optional, no per-feature — so it flags crates
+  nothing ever compiles. An optional dependency of a feature nobody enabled
+  gets reported, and this says so instead of implying you ship it.
+- Attribution is a better message, never a gate. A clean audit runs no extra
+  process at all; the `cargo tree` calls happen once per affected crate, only
+  when there is already something to say, and if one cannot run the advisory
+  is still reported without it.
+
 ### Moving a gate entry earlier
 
 `typecheck` sits in the push gate because nothing checks it sooner. For some
