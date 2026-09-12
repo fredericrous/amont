@@ -6,6 +6,28 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.32.0
+
+### Added
+
+- **Vault tokens are a recognised shape.** `pre-commit-secrets` and
+  `pre-push-secrets` now block a staged or pushed `hvs.` service token, and
+  the `hvb.` batch and `hvr.` recovery forms with it. A Vault root token is
+  the credential whose leak is least recoverable — it is the key to every
+  other secret the cluster holds — and until now it passed both hooks
+  untouched.
+
+  The floor is 40 token characters after the prefix. Real tokens run about
+  ninety, but a repository that *talks* about Vault is full of shorter
+  lookalikes: prefix constants, `strings.HasPrefix(t, "hvs.")`, paste-here
+  placeholders and test fixtures. Measured against a live homelab, the
+  longest such run was 29, and all seventeen occurrences there stay silent.
+
+  The legacy bare `s.` / `b.` / `r.` forms are deliberately not gated. `s.`
+  is a method call on any receiver named `s`, which is most Go files ever
+  written — gating it would make the check unusable in exactly the
+  repositories that manage Vault.
+
 ## v1.31.0
 
 ### Added

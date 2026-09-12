@@ -233,7 +233,7 @@ moment it leaves the machine, and the remedy stops being `git commit
 
 - **`pre-commit-secrets`** scans the staged content and blocks — private
   key headers, cloud access key ids, the well-known API token prefixes
-  (GitHub, Slack, Google, Stripe live keys, npm, OpenAI/Anthropic).
+  (GitHub, Slack, Google, Stripe live keys, npm, OpenAI/Anthropic, Vault).
 - **`pre-push-secrets`** scans every line every pushed commit ADDS —
   including commits made with `--no-verify`, from other tools, or three
   commits ago, and including a secret added and removed *within* the pushed

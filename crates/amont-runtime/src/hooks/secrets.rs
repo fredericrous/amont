@@ -53,6 +53,7 @@ pub(crate) enum Kind {
     StripeLiveKey,
     NpmToken,
     ApiKey,
+    VaultToken,
 }
 
 impl Kind {
@@ -66,6 +67,7 @@ impl Kind {
             Kind::StripeLiveKey => "a Stripe live key",
             Kind::NpmToken => "an npm token",
             Kind::ApiKey => "an API key",
+            Kind::VaultToken => "a Vault token",
         }
     }
 }
@@ -180,6 +182,24 @@ pub(crate) fn sniff(line: &str) -> Option<Kind> {
     for p in [concat!("sk-", "proj-"), concat!("sk-", "ant-")] {
         if has_prefixed_token(line, p, 20) {
             return Some(Kind::ApiKey);
+        }
+    }
+    // Vault 1.10+: hvs. service, hvb. batch, hvr. recovery. Real tokens run
+    // ~90 characters; 40 is the floor because a repository that TALKS about
+    // Vault is full of shorter lookalikes — placeholders, prefix constants,
+    // `strings.HasPrefix(t, "hvs.")`, and test fixtures. The longest such
+    // run measured across a live homelab was 29.
+    //
+    // The legacy bare `s.` / `b.` / `r.` forms are deliberately NOT gated:
+    // `s.` matches a method call on any receiver named `s`, which is most
+    // Go files ever written.
+    for p in [
+        concat!("hv", "s."),
+        concat!("hv", "b."),
+        concat!("hv", "r."),
+    ] {
+        if has_prefixed_token(line, p, 40) {
+            return Some(Kind::VaultToken);
         }
     }
     None
@@ -340,6 +360,10 @@ mod tests {
     fn gh() -> String {
         format!("{}{}{}", "gh", "p_", "a".repeat(36))
     }
+    /// A Vault service token at its real length — ~90 characters of base62.
+    fn vault() -> String {
+        format!("{}{}{}", "hv", "s.", "CAESI".to_owned() + &"x".repeat(90))
+    }
 
     #[test]
     fn the_known_shapes_are_recognised() {
@@ -370,6 +394,17 @@ mod tests {
             )),
             Some(Kind::ApiKey)
         );
+        assert_eq!(
+            sniff(&format!("VAULT_TOKEN={}", vault())),
+            Some(Kind::VaultToken)
+        );
+        // Batch and recovery tokens share the shape and the sensitivity.
+        for p in ["hv", "hv"].iter().zip(["b.", "r."]) {
+            assert_eq!(
+                sniff(&format!("{}{}{}", p.0, p.1, "y".repeat(80))),
+                Some(Kind::VaultToken)
+            );
+        }
     }
 
     /// The shapes are shapes, not prefixes: too short, wrong charset, or
@@ -389,6 +424,40 @@ mod tests {
         );
         assert_eq!(sniff("xoxb- alone"), None);
         assert_eq!(sniff(""), None);
+        // Vault lookalikes, every one of them lifted from a real homelab
+        // rather than invented: a prefix constant, a placeholder, a doc
+        // string, and the longest test fixture found anywhere (29 chars of
+        // token run, against a floor of 40).
+        assert_eq!(
+            sniff(&format!(
+                r#"validPrefixes := []string{{"{}{}"}}"#,
+                "hv", "s."
+            )),
+            None
+        );
+        assert_eq!(
+            sniff(&format!("echo {}{}XXXXX | bootstrap recover", "hv", "s.")),
+            None
+        );
+        assert_eq!(
+            sniff(&format!(
+                "expected {}{}* / {}{}* prefix",
+                "hv", "s.", "hv", "b."
+            )),
+            None
+        );
+        assert_eq!(
+            sniff(&format!(
+                "{}{}{}",
+                "hv", "s.", "CAESID8u5XM-oKyEbaXCUXmzQxWmb"
+            )),
+            None
+        );
+        // The legacy bare forms must never gate — this is a method call.
+        assert_eq!(
+            sniff("return s.Validate(ctx, token, opts, logger, cfg)"),
+            None
+        );
     }
 
     /// The pragma is the surgical opt-out — same line, visible in review.
