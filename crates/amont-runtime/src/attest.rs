@@ -184,6 +184,25 @@ fn sign(payload: &str, key: &std::path::Path) -> Option<String> {
 /// The runtime never gates on this — CI verifies with its own stock tooling —
 /// but owning the verifying half keeps the roundtrip honest in tests and
 /// gives a future `amont attest verify` its engine.
+/// Create `path` for writing, refusing anything already there.
+///
+/// `std::fs::write` is `O_CREAT|O_TRUNC` and FOLLOWS a symlink, which on a
+/// shared `/tmp` is the whole bug: anyone who guesses the name and pre-creates
+/// it as a link to a file we can write gets that file truncated and
+/// overwritten on our behalf. The sticky bit does not help — it stops you
+/// replacing someone else's file, not creating a name nobody has taken.
+///
+/// `create_new` is `O_CREAT|O_EXCL`, which refuses an existing path of any
+/// kind, symlink included, and never follows it. The attack becomes a failed
+/// verification, which is the safe direction for a signature check to fail.
+fn create_exclusive(path: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .ok()
+}
+
 pub fn verify(
     payload: &str,
     sig: &str,
@@ -192,14 +211,29 @@ pub fn verify(
 ) -> bool {
     use std::io::Write;
     // -Y verify takes the signature as a FILE; the payload rides stdin.
+    //
+    // The nanosecond is not decoration. The name was pid + a pointer, which
+    // a squatter on a shared /tmp can sit on: `create_exclusive` then refuses
+    // every call and verification fails permanently. Varying the name per
+    // call makes that a race to lose rather than a door to hold shut.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     let sig_file = std::env::temp_dir().join(format!(
-        "amont-attest-verify-{}-{:p}.sig",
+        "amont-attest-verify-{}-{:p}-{nonce}.sig",
         std::process::id(),
         &sig
     ));
-    if std::fs::write(&sig_file, format!("{sig}\n")).is_err() {
+    let Some(mut f) = create_exclusive(&sig_file) else {
+        return false;
+    };
+    if f.write_all(format!("{sig}\n").as_bytes()).is_err() {
+        let _ = std::fs::remove_file(&sig_file);
         return false;
     }
+    // Closed before ssh-keygen opens it.
+    drop(f);
     let ok = (|| {
         let mut child = Command::new("ssh-keygen")
             .args(["-Y", "verify", "-n", NAMESPACE, "-I", principal, "-f"])
@@ -543,6 +577,47 @@ mod tests {
         let r = f();
         std::env::set_current_dir(prev).unwrap();
         r
+    }
+
+    /// The signature file must never be written THROUGH something already at
+    /// its path. `std::fs::write` would follow a symlink and truncate whatever
+    /// it points at — on a shared `/tmp`, a file chosen by whoever guessed the
+    /// name first.
+    #[test]
+    fn the_signature_file_refuses_to_follow_what_is_already_there() {
+        let dir = std::env::temp_dir().join(format!("amont-excl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // A plain file already there: refused, and left untouched.
+        let taken = dir.join("taken");
+        std::fs::write(&taken, "original").expect("seed");
+        assert!(create_exclusive(&taken).is_none());
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "original");
+
+        // The real attack: the path is a symlink pointing somewhere valuable.
+        #[cfg(unix)]
+        {
+            let victim = dir.join("victim");
+            std::fs::write(&victim, "precious").expect("seed");
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&victim, &link).expect("symlink");
+            assert!(
+                create_exclusive(&link).is_none(),
+                "a symlink must be refused, not followed"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "precious",
+                "the link target was written through"
+            );
+        }
+
+        // And a free name still works, or the fix would break verification.
+        let fresh = dir.join("fresh");
+        assert!(create_exclusive(&fresh).is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
