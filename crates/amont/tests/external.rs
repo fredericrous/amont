@@ -748,6 +748,10 @@ fn progress_off_restores_raw_streaming() {
 /// The count is the point. A gate that says nothing at all is
 /// indistinguishable from a gate that never ran, and this crate exists
 /// because that distinction is the one people get wrong.
+///
+/// All three values in one test, deliberately: `auto` is the default and the
+/// other two are departures from it, so asserting them apart would let the
+/// default drift without anything failing.
 #[cfg(unix)]
 #[test]
 fn quiet_replaces_the_success_lines_with_their_count() {
@@ -759,13 +763,32 @@ fn quiet_replaces_the_success_lines_with_their_count() {
     r.git(&["add", "pass.sh"]);
     manifest(&r, "pre-commit  passes  *  block  ./pass.sh\n");
 
-    // Verbose is the default, and stays the default.
+    // `never` is verbose, whoever is reading. The harness pins this value for
+    // every test (see common::Repo::new), so this arm is also the proof that
+    // the pin does what the rest of the suite assumes.
     let loud = r.hook("pre-commit", &[]);
     assert!(loud.passed(), "{}", loud.output());
     assert!(
         loud.says("No secrets staged"),
-        "the default lost its per-check lines:\n{}",
+        "`never` lost its per-check lines:\n{}",
         loud.output()
+    );
+
+    // And `auto` is the DEFAULT, which this harness cannot reach by simply
+    // unsetting: `auto` asks who is reading, and `Command::output()` means
+    // nobody is. Unset and the run must go quiet on its own.
+    r.git(&["config", "--unset", "amont.quiet"]);
+    let defaulted = r.hook("pre-commit", &[]);
+    assert!(defaulted.passed(), "{}", defaulted.output());
+    assert!(
+        !defaulted.says("No secrets staged"),
+        "the default is `auto`, and nothing is watching a piped run:\n{}",
+        defaulted.output()
+    );
+    assert!(
+        defaulted.says("check(s) passed"),
+        "the default said nothing at all, which reads as a gate that never ran:\n{}",
+        defaulted.output()
     );
 
     r.git(&["config", "amont.quiet", "always"]);

@@ -591,9 +591,16 @@ macro_rules! say {
 ///
 /// So the setting names WHO is reading, not how loud to be:
 ///
-/// - `never` (default) — today's output, every check says it passed.
-/// - `auto` — quiet when nobody is watching, verbose at a terminal.
+/// - `auto` (default) — quiet when nobody is watching, verbose at a terminal.
+/// - `never` — every check says it passed, whoever is reading.
 /// - `always` — quiet everywhere.
+///
+/// `auto` is the default because the reader it costs nothing is the one at a
+/// terminal: `watching()` is true there, so a person sees exactly what they
+/// saw before. The reader it saves is the one who cannot skim — a captured
+/// log, an agent's tool result — and that reader was paying for fourteen
+/// lines of nothing on every turn of a session. A default that is free for
+/// one audience and compounding for the other is not a neutral default.
 ///
 /// Only the success lines go. A failure, a warning, a check that could not
 /// run, a repaired file, and the blocked summary are printed under every
@@ -602,7 +609,7 @@ pub fn quiet() -> bool {
     static QUIET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *QUIET.get_or_init(|| {
         decide(
-            crate::config::enumerated_or("amont.quiet", QUIET_VALUES, "never"),
+            crate::config::enumerated_or("amont.quiet", QUIET_VALUES, "auto"),
             watching(),
         )
     })
@@ -615,7 +622,8 @@ fn decide(setting: &str, watching: bool) -> bool {
     match setting {
         "always" => true,
         "auto" => !watching,
-        // `never`, and anything `enumerated_or` rejected back to the default.
+        // `never`. A value `enumerated_or` rejected never reaches here — it
+        // complains and hands back the default, which is now `auto`.
         _ => false,
     }
 }

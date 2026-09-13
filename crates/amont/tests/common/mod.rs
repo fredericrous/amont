@@ -60,6 +60,21 @@ impl Repo {
         // would be asserting git's newline policy rather than the behaviour
         // under test — and would pass on two platforms and fail on the third.
         r.git(&["config", "core.autocrlf", "false"]);
+        // `amont.quiet` defaults to `auto`, and every command this harness runs
+        // goes through `Command::output()` — so stderr is NEVER a terminal and
+        // `auto` would resolve to quiet for the whole suite. That is not a
+        // harmless difference: roughly twenty assertions here are NEGATIVE
+        // (`!says(...)`, `silent()`), and they would all start passing
+        // vacuously, because the line they guard against could no longer be
+        // printed at all. The scope contracts — a commit touching no Dockerfile
+        // says nothing about hadolint, kube-linter is silent without a config —
+        // would stop being tested while staying green.
+        //
+        // So the suite pins the verbose form and tests that opt out say so:
+        // `quiet_replaces_the_success_lines_with_their_count` sets `auto` and
+        // `always` itself. Pinning also stops every other test asserting a
+        // default by accident.
+        r.git(&["config", "amont.quiet", "never"]);
         r
     }
 
