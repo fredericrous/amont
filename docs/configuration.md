@@ -230,7 +230,7 @@ test suite scroll.
 ## `amont.quiet` — say it once, or once per check
 
 ```sh
-git config amont.quiet auto     # never (default) | auto | always
+git config amont.quiet never    # auto (default) | never | always
 ```
 
 A hook that passes prints one line per check, and on a clean run that is the
@@ -243,8 +243,8 @@ So the setting names who is reading:
 
 | value | effect |
 |---|---|
-| `never` | the default: every check says it passed |
-| `auto` | quiet when stderr is not a terminal, verbose when it is |
+| `auto` | the default: quiet when stderr is not a terminal, verbose when it is |
+| `never` | every check says it passed, whoever is reading |
 | `always` | quiet everywhere |
 
 **Only the success lines go.** A failure, a warning, a check that could not
@@ -262,9 +262,15 @@ That count is not decoration. A run that says nothing at all is
 indistinguishable from a gate that never ran, which is the confusion this
 whole crate exists to prevent — so quiet gets quieter, never silent.
 
-`auto` is the value to reach for when a coding agent runs your commits: it
-costs the agent one line instead of fourteen, on every commit of every
-session, and changes nothing about what you see when you commit by hand.
+`auto` is the default because it is free for the reader it does not help.
+At a terminal `watching()` is true, so committing by hand looks exactly as it
+did. What changes is the reader who cannot skim — a captured log, an agent's
+tool result — who was paying fourteen lines of nothing on every commit of
+every session. Set `never` to have it back.
+
+One consequence worth knowing: the `✓ N check(s) passed` roll-up comes from a
+full stage. Running a single check — `amont run pre-commit-yamllint` — has no
+roll-up to print, so under quiet it succeeds in silence.
 
 ## `amont.pushStamps` — remember what the push gate already proved
 
