@@ -6,6 +6,21 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **Attestations that survive unrelated changes.** With a committed
+  `.github/attest-inputs` (attest 1.3.0) naming the paths each gate reads,
+  the pre-push hook now signs an `input <gate> <fingerprint>` line per
+  declared gate and files the block under that fingerprint in a second notes
+  ref, `refs/notes/amont-attest-inputs`. A verifier on any tree whose
+  declared inputs are byte-identical — a docs commit on main, another
+  package in a monorepo — then skips the gate. The fingerprint is the one
+  attest's `SPEC.md` defines, computed with git alone; an absent or invalid
+  spec leaves the note exactly as before. Each ref is published on its own,
+  so a push whose inputs ref failed repairs it next time.
+
 ## v1.34.1
 
 ### Fixed

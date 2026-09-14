@@ -41,10 +41,16 @@
 //! install just to do it. The CI templates call that action instead of the
 //! ~30 lines of shell they used to carry.
 //!
-//! The copy here is therefore **frozen: bug fixes only**. New work — better
-//! diagnostics, more formats, other forges — happens in that repository, and
-//! its `tests/conformance.sh` is the contract both sides answer to. `amont
-//! attest covered` keeps working for anyone already calling it.
+//! The consumer copy here is therefore **frozen: bug fixes only**. New
+//! verifying work — better diagnostics, other forges — happens in that
+//! repository, and its `tests/conformance.sh` is the contract both sides
+//! answer to. `amont attest covered` keeps working for anyone already calling
+//! it. The producer follows that repository's `SPEC.md` as it grows: since
+//! attest 1.3.0 a committed `.github/attest-inputs` names the paths each gate
+//! reads, and the block carries an `input <gate> <fingerprint>` line per
+//! declared gate and is filed under that fingerprint in a second notes ref,
+//! `refs/notes/amont-attest-inputs`, so an unrelated change on main no longer
+//! voids it.
 //!
 //! Signing uses `ssh-keygen -Y sign` as a subprocess, like every other tool
 //! this crate talks to. Hand-rolling ed25519 in a zero-dependency crate would
@@ -83,6 +89,15 @@ pub const NOTES_REF: &str = "amont-attest";
 /// The same ref, fully qualified — the push refspec and `update-ref -d` both
 /// need it.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-attest";
+
+/// The second ref, keyed by input fingerprint (attest 1.3.0). Every key there
+/// is an oid that is not an object — `git notes` accepts that — which is why
+/// it is its own ref: `git notes prune` on it would drop everything.
+pub const INPUTS_REF: &str = "amont-attest-inputs";
+pub const INPUTS_FULL_REF: &str = "refs/notes/amont-attest-inputs";
+
+/// Where a repository declares what each gate reads, in order of precedence.
+const SPEC_PATHS: [&str; 2] = [".forgejo/attest-inputs", ".github/attest-inputs"];
 
 /// The `ssh-keygen -Y` namespace, on both the signing and verifying side.
 /// Namespaces exist so a signature minted for one purpose cannot be replayed
@@ -146,13 +161,192 @@ pub fn platform() -> String {
 /// something**: `cargo test` green on an arm64 Mac says nothing about the
 /// Windows leg of a matrix, and a note that omitted where it ran invited
 /// exactly that skip.
-pub fn payload(tree: &str, gates: &[String]) -> String {
-    format!(
-        "{FORMAT}\ntree {tree}\ngates {}\nplatform {}\namont {}\n",
+///
+/// `inputs` are the `input <gate> <fingerprint>` lines (attest 1.3.0), after
+/// `platform` and before `amont`, in spec order — additive, so a verifier that
+/// predates them reads the block exactly as before.
+pub fn payload(tree: &str, gates: &[String], inputs: &[(String, String)]) -> String {
+    let mut p = format!(
+        "{FORMAT}\ntree {tree}\ngates {}\nplatform {}\n",
         gates.join(" "),
-        platform(),
-        env!("CARGO_PKG_VERSION")
+        platform()
+    );
+    for (gate, fp) in inputs {
+        p.push_str(&format!("input {gate} {fp}\n"));
+    }
+    p.push_str(&format!("amont {}\n", env!("CARGO_PKG_VERSION")));
+    p
+}
+
+// ---------------------------------------------------------------------------
+// Input fingerprints. attest's SPEC.md, "Input fingerprints": the grammar and
+// the hashing are that repository's contract, ported here verbatim in
+// behaviour — a fingerprint this hook writes must be the one its verifiers
+// compute, byte for byte.
+// ---------------------------------------------------------------------------
+
+const MAX_SPEC_BYTES: usize = 65536;
+const MAX_SPEC_GATES: usize = 64;
+const MAX_SPEC_PATHS: usize = 64;
+
+/// A gate name as the spec allows it: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+fn valid_gate(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    name.len() <= 64 && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// A path token that is not a literal, root-relative file or directory.
+/// `git ls-tree` does not glob, so a wildcard would fingerprint nothing.
+fn bad_path(tok: &str) -> bool {
+    tok.starts_with(':')
+        || tok.starts_with('/')
+        || tok.starts_with("./")
+        || tok.starts_with("../")
+        || tok.ends_with('/')
+        || tok
+            .chars()
+            .any(|c| matches!(c, '*' | '?' | '[' | ']' | '\\'))
+        || tok
+            .split('/')
+            .any(|c| c.is_empty() || c == "." || c == "..")
+}
+
+/// The spec, byte-strict; any violation invalidates the WHOLE spec.
+fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
+    if bytes.len() > MAX_SPEC_BYTES
+        || bytes
+            .iter()
+            .any(|&b| !(b == b' ' || b == b'\t' || b == b'\n' || (0x21..=0x7e).contains(&b)))
+    {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut gates: Vec<(String, Vec<String>)> = Vec::new();
+    for line in text.split('\n') {
+        let mut toks = line.split([' ', '\t']).filter(|t| !t.is_empty());
+        let Some(gate) = toks.next() else { continue };
+        if gate.starts_with('#') {
+            continue;
+        }
+        if !valid_gate(gate) || gates.iter().any(|(g, _)| g == gate) {
+            return None;
+        }
+        let paths: Vec<String> = toks.map(String::from).collect();
+        if paths.is_empty() || paths.len() > MAX_SPEC_PATHS || paths.iter().any(|p| bad_path(p)) {
+            return None;
+        }
+        gates.push((gate.to_string(), paths));
+        if gates.len() > MAX_SPEC_GATES {
+            return None;
+        }
+    }
+    Some(gates)
+}
+
+/// The spec at `tree`, read from the tree (never the working copy). `None`
+/// when there is none, when both locations exist, or when it is invalid —
+/// the hook then attests by tree alone, as before.
+fn spec_at(tree: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let present: Vec<&str> = SPEC_PATHS
+        .iter()
+        .copied()
+        .filter(|p| crate::git::succeeds(&["cat-file", "-e", &format!("{tree}:{p}")]))
+        .collect();
+    let [path] = present.as_slice() else {
+        return None;
+    };
+    let bytes = crate::git::stdout_raw(&["cat-file", "blob", &format!("{tree}:{path}")])?;
+    parse_spec(&bytes)
+}
+
+/// The paths every fingerprint lists besides the gate's own: both spec
+/// locations, `.gitmodules`, and `.gitattributes` at the root and at every
+/// ancestor directory of every declared path. Deduplicated.
+fn implicit_inputs(tokens: &[String]) -> Vec<String> {
+    let mut attrs: Vec<String> = vec![".gitattributes".to_string()];
+    for t in tokens {
+        let comps: Vec<&str> = t.split('/').collect();
+        let mut prefix = String::new();
+        for c in &comps[..comps.len().saturating_sub(1)] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(c);
+            attrs.push(format!("{prefix}/.gitattributes"));
+        }
+    }
+    attrs.sort();
+    attrs.dedup();
+    let mut out: Vec<String> = SPEC_PATHS.iter().map(|s| s.to_string()).collect();
+    out.push(".gitmodules".to_string());
+    out.extend(attrs);
+    out
+}
+
+fn is_oid(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64)
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// The fingerprint of `gate` on `tree`: `git hash-object` over the
+/// `ls-tree -r -z --full-tree` listing of the implicit paths and the gate's
+/// declared ones. `None` when a declared path does not resolve on that tree,
+/// when git fails at any step, or when the listing is empty.
+fn fingerprint(tree: &str, paths: &[String]) -> Option<String> {
+    let names: String = paths.iter().map(|p| format!("{tree}:{p}\n")).collect();
+    let answers = crate::git::stdout_piped(&["cat-file", "--batch-check"], &names)?;
+    if answers.lines().count() != paths.len() || answers.lines().any(|l| l.ends_with(" missing")) {
+        return None;
+    }
+    let mut args: Vec<String> = vec![
+        "ls-tree".into(),
+        "-r".into(),
+        "-z".into(),
+        "--full-tree".into(),
+        tree.to_string(),
+        "--".into(),
+    ];
+    args.extend(implicit_inputs(paths));
+    args.extend(paths.iter().cloned());
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let listing = crate::git::stdout_raw(&argv)?;
+    if listing.is_empty() {
+        return None;
+    }
+    crate::git::stdout_piped_in(
+        std::path::Path::new("."),
+        &["hash-object", "--stdin"],
+        &listing,
     )
+    .filter(|s| is_oid(s))
+}
+
+/// The `input` lines for the gates being attested that the spec at `tree`
+/// declares, in spec order.
+fn inputs_for(tree: &str, gates: &[String]) -> Vec<(String, String)> {
+    let Some(spec) = spec_at(tree) else {
+        return Vec::new();
+    };
+    spec.iter()
+        .filter(|(g, _)| gates.iter().any(|x| x == g))
+        .filter_map(|(g, paths)| fingerprint(tree, paths).map(|fp| (g.clone(), fp)))
+        .collect()
+}
+
+/// The synthetic note key for (gate, fingerprint).
+fn input_key(gate: &str, fp: &str) -> Option<String> {
+    let pre = format!("amont-attest-input {gate} {fp}\n");
+    crate::git::stdout_piped_in(
+        std::path::Path::new("."),
+        &["hash-object", "--stdin"],
+        pre.as_bytes(),
+    )
+    .filter(|s| is_oid(s))
 }
 
 /// `ssh-keygen -Y sign` over `payload`, armored signature back. `None` for
@@ -283,6 +477,7 @@ pub fn attest_push(
         return;
     }
     let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut input_blocks: Vec<(String, String)> = Vec::new();
     for r in refs {
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
@@ -291,10 +486,19 @@ pub fn attest_push(
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        let body = match sign(&payload(&tree, gates), &key) {
-            Some(sig) => format!("{}\n{sig}", payload(&tree, gates)),
+        // Input fingerprints, from the spec in THIS tip's tree — the tree
+        // the gates ran against — for the gates that passed.
+        let inputs = inputs_for(&tree, gates);
+        let p = payload(&tree, gates, &inputs);
+        let body = match sign(&p, &key) {
+            Some(sig) => format!("{p}\n{sig}"),
             None => continue,
         };
+        for (gate, fp) in &inputs {
+            if let Some(k) = input_key(gate, fp) {
+                input_blocks.push((k, body.clone()));
+            }
+        }
         // The note goes on the TREE as well as the commit, and the tree is
         // the key that matches what the signature already covers.
         //
@@ -315,12 +519,27 @@ pub fn attest_push(
         blocks.push((tree, body.clone()));
         blocks.push((r.local_oid.clone(), body));
     }
-    if !blocks.is_empty() && publish(remote, &blocks) {
+    if blocks.is_empty() {
+        return;
+    }
+    // Each ref on its own: a main ref that is already up to date never
+    // short-circuits the inputs ref, which is how a push whose inputs ref
+    // failed earlier repairs the missing keys.
+    let main_ok = publish(remote, NOTES_FULL_REF, &blocks);
+    let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_FULL_REF, &input_blocks);
+    if main_ok {
         crate::say!(
-            "{} attested {} for CI ({})",
+            "{} attested {} for CI ({}{})",
             crate::ui::valid_sign(),
             crate::ui::highlight(&gates.join(" ")),
             NOTES_REF,
+            if input_blocks.is_empty() {
+                String::new()
+            } else if inputs_ok {
+                format!(", {} input fingerprints", input_blocks.len())
+            } else {
+                ", input fingerprints not published".to_string()
+            },
         );
     }
 }
@@ -346,12 +565,14 @@ const PUSH_ATTEMPTS: u32 = 4;
 ///    rejection means another producer wrote meanwhile: go back to 1.
 ///
 /// On success the local ref follows what was published. The temporary ref is
-/// removed on every path.
-fn publish(remote: &str, blocks: &[(String, String)]) -> bool {
-    let tmp = format!("amont-attest-push-{}", std::process::id());
+/// removed on every path. `notes_ref` is the fully qualified ref to publish
+/// to — the main ref or the inputs ref.
+fn publish(remote: &str, notes_ref: &str, blocks: &[(String, String)]) -> bool {
+    let short = notes_ref.trim_start_matches("refs/notes/");
+    let tmp = format!("amont-attest-push-{}-{short}", std::process::id());
     let tmp_full = format!("refs/notes/{tmp}");
-    let fetch_spec = format!("+{NOTES_FULL_REF}:{tmp_full}");
-    let push_spec = format!("{tmp_full}:{NOTES_FULL_REF}");
+    let fetch_spec = format!("+{notes_ref}:{tmp_full}");
+    let push_spec = format!("{tmp_full}:{notes_ref}");
     let mut published = false;
     for _ in 0..PUSH_ATTEMPTS {
         let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
@@ -384,7 +605,7 @@ fn publish(remote: &str, blocks: &[(String, String)]) -> bool {
         }
     }
     if published {
-        let _ = crate::git::succeeds(&["update-ref", NOTES_FULL_REF, &tmp_full]);
+        let _ = crate::git::succeeds(&["update-ref", notes_ref, &tmp_full]);
     }
     let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
     published
@@ -716,6 +937,7 @@ mod tests {
         let p = payload(
             "abc123",
             &["pre-push-pytest".into(), "pre-push-cargo-test".into()],
+            &[],
         );
         let lines: Vec<&str> = p.lines().collect();
         assert_eq!(lines[0], FORMAT);
@@ -733,12 +955,12 @@ mod tests {
     fn sign_verify_roundtrip_and_tamper_rejection() {
         let d = dir("roundtrip");
         let (key, signers) = keypair(&d);
-        let p = payload("deadbeef", &["pre-push-pytest".into()]);
+        let p = payload("deadbeef", &["pre-push-pytest".into()], &[]);
         let sig = sign(&p, &key).expect("signing with a real key succeeds");
         assert!(verify(&p, &sig, &signers, "t@t.test"));
         // One byte of the tree changed: the signature must not carry over —
         // this is the entire difference between this module and gate_stamp.
-        let tampered = payload("deadbeee", &["pre-push-pytest".into()]);
+        let tampered = payload("deadbeee", &["pre-push-pytest".into()], &[]);
         assert!(!verify(&tampered, &sig, &signers, "t@t.test"));
         // The right payload under the wrong principal is also no.
         assert!(!verify(&p, &sig, &signers, "someone@else.test"));
@@ -991,6 +1213,155 @@ mod tests {
         assert_eq!(blocks_in(&body), 1, "one block, not two:\n{body}");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A committed spec: the block carries an `input` line per declared gate
+    /// and is filed under the fingerprint key in the inputs ref — the
+    /// fingerprint being exactly what attest's SPEC.md computes.
+    #[test]
+    fn a_spec_yields_input_lines_and_fingerprint_keyed_notes() {
+        let (d, work, remote, _) = remote_and_work("inputs");
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(
+            work.join(".github/attest-inputs"),
+            "# what each gate reads\npre-push-run-tests-js a.ts\nother nope\n",
+        )
+        .unwrap();
+        git(&work, &["add", ".github/attest-inputs"]);
+        git(&work, &["commit", "-qm", "chore: spec"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        // The reference fingerprint, by hand: implicit paths then the token.
+        let listing = std::process::Command::new("git")
+            .args([
+                "-C",
+                work.to_str().unwrap(),
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                &tree,
+                "--",
+                ".forgejo/attest-inputs",
+                ".github/attest-inputs",
+                ".gitmodules",
+                ".gitattributes",
+                "a.ts",
+            ])
+            .output()
+            .unwrap()
+            .stdout;
+        let expected =
+            crate::git::stdout_piped_in(&work, &["hash-object", "--stdin"], &listing).unwrap();
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into(), "other".into()],
+            );
+        });
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        assert!(
+            body.contains(&format!("input pre-push-run-tests-js {expected}\n")),
+            "the input line carries the reference fingerprint:\n{body}"
+        );
+        assert!(
+            !body.contains("input other "),
+            "a gate whose path does not exist gets no line"
+        );
+        let key = crate::git::stdout_piped_in(
+            &work,
+            &["hash-object", "--stdin"],
+            format!("amont-attest-input pre-push-run-tests-js {expected}\n").as_bytes(),
+        )
+        .unwrap();
+        let under_key = git(&remote, &["notes", "--ref", INPUTS_REF, "show", &key]);
+        assert_eq!(
+            under_key, body,
+            "the same block is filed under the fingerprint key"
+        );
+        // A second push appends nothing anywhere.
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into(), "other".into()],
+            );
+        });
+        assert_eq!(
+            git(&remote, &["notes", "--ref", INPUTS_REF, "show", &key])
+                .matches("BEGIN SSH SIGNATURE")
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// No spec, or an invalid one: no `input` line, no inputs ref, the tree
+    /// note exactly as before.
+    #[test]
+    fn without_a_valid_spec_the_block_is_tree_keyed_only() {
+        let (d, work, remote, _) = remote_and_work("nospec");
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(
+            work.join(".github/attest-inputs"),
+            "pre-push-run-tests-js src/*.ts\n",
+        )
+        .unwrap();
+        git(&work, &["add", ".github/attest-inputs"]);
+        git(&work, &["commit", "-qm", "chore: bad spec"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        assert!(!body.contains("\ninput "), "no input line:\n{body}");
+        assert!(
+            !crate::git::succeeds_in(
+                &remote,
+                &["rev-parse", "--verify", "--quiet", INPUTS_FULL_REF]
+            ),
+            "no inputs ref was created"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn the_spec_grammar_is_attests() {
+        assert!(parse_spec(b"# c\ng src Cargo.toml\n").is_some());
+        for bad in [
+            b"g src/*.rs\n".as_slice(),
+            b"g :!x\n",
+            b"g\n",
+            b"g src\ng x\n",
+            b"g src\r\n",
+            b"g sr\xc3\xa9\n",
+            b"-g src\n",
+            b"g ./src\n",
+            b"g src/\n",
+            b"g a/../b\n",
+        ] {
+            assert!(parse_spec(bad).is_none(), "{bad:?}");
+        }
+        assert_eq!(
+            implicit_inputs(&["crates/foo/src".into()]),
+            [
+                ".forgejo/attest-inputs",
+                ".github/attest-inputs",
+                ".gitmodules",
+                ".gitattributes",
+                "crates/.gitattributes",
+                "crates/foo/.gitattributes"
+            ]
+        );
     }
 
     /// Off by default: a repo that never opted in makes no statement, even
