@@ -31,6 +31,20 @@ staying quiet about it. Verifying what this binary is before putting it in a
 position to read every staged file is the argument the project makes about its
 own dependencies, applied to itself.
 
+The checksum is not the whole story, though. `SHA256SUMS` comes from the same
+release as the archives it describes, so it proves the download is intact —
+not that the release was built by this repository. Every release artifact,
+`SHA256SUMS` included, also carries a GitHub build attestation, and that is
+the check the installer does *not* run for you, because it needs the `gh`
+CLI or a Sigstore client:
+
+```sh
+gh attestation verify amont-<version>-<target>.tar.gz --repo fredericrous/amont
+```
+
+See [SECURITY.md](../SECURITY.md#verifying-what-you-installed) for what each
+check does and does not prove.
+
 `~/.local/bin` is not an arbitrary default: it is a candidate in the shim's
 own resolution order, so a binary there is found even by a shim whose baked
 path is wrong — and it is the same convention systemd, pipx and uv observe.
