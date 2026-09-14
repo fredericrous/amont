@@ -148,6 +148,11 @@ the question read as "no external dependencies".
 curl -fsSLO https://github.com/fredericrous/amont/releases/latest/download/SHA256SUMS
 sha256sum amont-<version>-<target>.tar.gz
 
+# that the archive — and SHA256SUMS itself — were built by this repository's
+# release workflow at that tag, not somewhere else
+gh attestation verify amont-<version>-<target>.tar.gz --repo fredericrous/amont
+gh attestation verify SHA256SUMS --repo fredericrous/amont
+
 # what you trusted in a given repository
 git hash-object --no-filters amont.conf
 git config --local --get amont.trusted
@@ -156,3 +161,17 @@ git config --local --get amont.trusted
 amont list
 amont trust --show
 ```
+
+The checksum answers "is this the file the release published"; the
+attestation answers "did this repository's release workflow build it". They
+are different questions. A checksum file served from the same origin as the
+archives it vouches for cannot survive that origin being compromised — the
+attestation can, because trust binds to GitHub's OIDC identity for this
+workflow at this tag, and there is no key on any laptop or in any secret to
+leak. `SHA256SUMS` is itself a subject, so the installer and the Homebrew tap,
+which already verify against it, now rest on something anchored without
+either having changed.
+
+The trade this makes is explicit: you are trusting GitHub's identity for this
+repository, not a key the maintainer holds. If that is the wrong trade for
+you, build from source.

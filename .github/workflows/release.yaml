@@ -281,6 +281,14 @@ jobs:
     name: publish the release
     needs: [guard, build, audit]
     runs-on: ubuntu-latest
+    # `id-token: write` is the OIDC grant `attest-build-provenance` signs
+    # with — the same one `publish-npm` already holds for `--provenance`.
+    # `attestations: write` lets it store the result against this repo.
+    # No key is held anywhere: trust binds to this workflow at this tag.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -294,6 +302,21 @@ jobs:
           ls -la
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
+      # Attest AFTER the checksums are written, so `SHA256SUMS` is itself a
+      # subject. That is the point: the installer and the tap already verify
+      # against that file, and until now it was served from the same origin
+      # as the artifacts it vouched for — a checksum authenticates nothing
+      # against a compromise of the place it came from. Anchoring the file
+      # anchors every consumer downstream of it without changing one.
+      #
+      # Attestations go to GitHub's API, not into `dist`, so the `dist/*`
+      # release glob below needs no change. Verify with:
+      #   gh attestation verify <file> --repo fredericrous/amont
+      - name: Attest
+        if: needs.guard.outputs.dry_run == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
       # A dry run stops here, having built and checksummed everything. The only
       # step it skips is the irreversible one.
       - name: Publish
