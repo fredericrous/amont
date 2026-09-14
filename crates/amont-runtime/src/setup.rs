@@ -63,10 +63,15 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     // pre-policy state as "current" and offer to re-write it. What setup
     // WRITES is --local/--global git config, so the ladder stays correct
     // either way; only the display needed the truth.
-    if let Ok(root) = crate::hooks::common::repo_root_checked() {
-        let manifest = crate::manifest::load(std::path::Path::new(&root));
-        crate::policy::install(manifest.policy.clone());
-    }
+    // Outside a repository there is no manifest and so no policy — the same
+    // state the global store used to be in when nothing had installed it.
+    let settings = match crate::hooks::common::repo_root_checked() {
+        Ok(root) => {
+            let manifest = crate::manifest::load(std::path::Path::new(&root));
+            crate::config::Settings::new(manifest.policy.clone())
+        }
+        Err(_) => crate::config::Settings::default(),
+    };
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let asked_local = args.iter().any(|a| a == "--local");
     let asked_global = args.iter().any(|a| a == "--global");
@@ -92,7 +97,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
         return Err("amont setup --local: not inside a git repository".to_string());
     }
 
-    let (style, _) = commit_style::describe();
+    let (style, _) = commit_style::describe(&settings);
 
     if !std::io::stdin().is_terminal() {
         return offer_the_commands(

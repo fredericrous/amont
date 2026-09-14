@@ -109,8 +109,8 @@ pub fn push_guard_active() -> bool {
 }
 
 /// Has this repository opted in?
-pub fn enabled() -> bool {
-    crate::config::boolean_or(TOGGLE, false)
+pub fn enabled(settings: &crate::config::Settings) -> bool {
+    crate::config::boolean_or(settings, TOGGLE, false)
 }
 
 /// The signing key path: `amont.attestKey`, else `~/.ssh/amont-attest`.
@@ -264,8 +264,13 @@ pub fn verify(
 /// Best-effort throughout, and quiet about it: pre-push has already printed
 /// its verdicts, and a push that works minus its CI shortcut is not a
 /// problem anyone needs to solve at push time.
-pub fn attest_push(remote: &str, refs: &[PushRef], gates: &[String]) {
-    if gates.is_empty() || remote.is_empty() || !enabled() {
+pub fn attest_push(
+    settings: &crate::config::Settings,
+    remote: &str,
+    refs: &[PushRef],
+    gates: &[String],
+) {
+    if gates.is_empty() || remote.is_empty() || !enabled(settings) {
         return;
     }
     let Some(key) = key_path() else { return };
@@ -502,6 +507,13 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `amont.attest` and the key path come from git config, which each test
+    /// sets on its own repo; no policy is in play.
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
+
     use std::path::Path;
 
     /// Real repositories and real keys: every function here is a conversation
@@ -688,7 +700,12 @@ mod tests {
             remote_oid: "0".repeat(40),
         };
         in_repo(&work, || {
-            attest_push("origin", &[push_ref], &["pre-push-run-tests-js".into()]);
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref],
+                &["pre-push-run-tests-js".into()],
+            );
         });
         // The note exists on the REMOTE — the whole point is that it travels.
         let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]);
@@ -736,7 +753,12 @@ mod tests {
             remote_oid: "0".repeat(40),
         };
         in_repo(&work, || {
-            attest_push("origin", &[push_ref], &["pre-push-run-tests-js".into()]);
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref],
+                &["pre-push-run-tests-js".into()],
+            );
         });
         assert!(
             git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty(),
@@ -779,8 +801,13 @@ mod tests {
             remote_oid: "0".repeat(40),
         };
         in_repo(&work, || {
-            attest_push("origin", &[deletion], &["pre-push-pytest".into()]);
-            attest_push("origin", &[real], &[]);
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[deletion],
+                &["pre-push-pytest".into()],
+            );
+            attest_push(&test_settings(), "origin", &[real], &[]);
         });
         assert!(git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
         let _ = std::fs::remove_dir_all(&d);
@@ -823,7 +850,12 @@ mod tests {
             remote_oid: "0".repeat(40),
         };
         in_repo(&work, || {
-            attest_push("origin", &[push_ref], &["pre-push-pytest".into()]);
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref],
+                &["pre-push-pytest".into()],
+            );
         });
         let clone = d.join("ci-checkout");
         git(
@@ -997,7 +1029,12 @@ mod tests {
             remote_oid: "0".repeat(40),
         };
         in_repo(&work, || {
-            attest_push("origin", &[push_ref], &["pre-push-pytest".into()]);
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref],
+                &["pre-push-pytest".into()],
+            );
         });
 
         // Stand in for the forge's squash: a DIFFERENT commit object with the

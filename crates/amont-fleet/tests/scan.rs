@@ -860,8 +860,10 @@ fn a_repo_without_agents_md_scans_as_missing() {
 #[test]
 fn a_repo_with_the_generated_block_scans_as_up_to_date() {
     let t = Tree::new("agents-md-current");
-    t.managed_repo("a")
-        .agents_md("a", &amont_runtime::agents_md::generate_block());
+    t.managed_repo("a").agents_md(
+        "a",
+        &amont_runtime::agents_md::generate_block(&amont_runtime::config::Settings::default()),
+    );
     let v = json(&["--root", t.path().to_str().unwrap()]);
     assert_eq!(v["repos"][0]["agents_md"], "up_to_date");
 }

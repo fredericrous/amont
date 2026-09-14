@@ -166,8 +166,8 @@ impl Style {
     /// landed, 26.0 ms after. A wash, because the prescan replaced a process
     /// rather than adding one — the `git remote get-url upstream` call the old
     /// fork-suppression heuristic made on every single commit is gone.
-    pub fn resolve() -> Style {
-        let names = config::present(PREFIX);
+    pub fn resolve(settings: &crate::config::Settings) -> Style {
+        let names = config::present(settings, PREFIX);
         if names.is_empty() {
             return Style::default();
         }
@@ -175,6 +175,7 @@ impl Style {
         Style {
             gitmoji: if config::is_present(&names, KEY_GITMOJI) {
                 Gitmoji::parse(config::enumerated_or(
+                    settings,
                     KEY_GITMOJI,
                     &GITMOJI_WORDS,
                     d.gitmoji.as_str(),
@@ -183,14 +184,21 @@ impl Style {
             } else {
                 d.gitmoji
             },
-            subject_max: read_limit(&names, KEY_SUBJECT_MAX, d.subject_max, LIMIT_RANGE),
+            subject_max: read_limit(
+                settings,
+                &names,
+                KEY_SUBJECT_MAX,
+                d.subject_max,
+                LIMIT_RANGE,
+            ),
             description_max: read_limit(
+                settings,
                 &names,
                 KEY_DESCRIPTION_MAX,
                 d.description_max,
                 LIMIT_RANGE,
             ),
-            body_wrap: read_limit(&names, KEY_BODY_WRAP, d.body_wrap, WRAP_RANGE),
+            body_wrap: read_limit(settings, &names, KEY_BODY_WRAP, d.body_wrap, WRAP_RANGE),
         }
     }
 
@@ -215,6 +223,7 @@ impl Style {
 }
 
 fn read_limit(
+    settings: &crate::config::Settings,
     names: &std::collections::BTreeSet<String>,
     key: &str,
     default: usize,
@@ -223,7 +232,7 @@ fn read_limit(
     if !config::is_present(names, key) {
         return default;
     }
-    config::integer_or(key, default as i64, range).max(0) as usize
+    config::integer_or(settings, key, default as i64, range).max(0) as usize
 }
 
 /// One row of `amont list`'s commit-style block.
@@ -248,29 +257,33 @@ pub struct Setting {
 ///
 /// Costs one `--show-origin` call per overridden key, so this is for `list` and
 /// `setup` only — never the commit path. See [`config::scope_of`].
-pub fn describe() -> (Style, Vec<Setting>) {
-    let style = Style::resolve();
+pub fn describe(settings: &crate::config::Settings) -> (Style, Vec<Setting>) {
+    let style = Style::resolve(settings);
     let d = Style::default();
     let rows = vec![
         row(
+            settings,
             KEY_GITMOJI,
             "gitmoji",
             style.gitmoji.as_str().to_string(),
             d.gitmoji.as_str().to_string(),
         ),
         row(
+            settings,
             KEY_SUBJECT_MAX,
             "subject max",
             style.subject_max.to_string(),
             d.subject_max.to_string(),
         ),
         row(
+            settings,
             KEY_DESCRIPTION_MAX,
             "description max",
             style.description_max.to_string(),
             d.description_max.to_string(),
         ),
         row(
+            settings,
             KEY_BODY_WRAP,
             "body wrap",
             wrap_word(style.body_wrap),
@@ -289,8 +302,14 @@ fn wrap_word(n: usize) -> String {
     }
 }
 
-fn row(key: &'static str, label: &'static str, value: String, default: String) -> Setting {
-    let scope = config::scope_of(key);
+fn row(
+    settings: &crate::config::Settings,
+    key: &'static str,
+    label: &'static str,
+    value: String,
+    default: String,
+) -> Setting {
+    let scope = config::scope_of(settings, key);
     Setting {
         key,
         label,

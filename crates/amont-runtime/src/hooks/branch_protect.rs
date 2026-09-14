@@ -99,12 +99,12 @@ fn on_a_remote(branch: &str) -> bool {
 /// it will be refused", and in a repository whose first commit has not been
 /// pushed anywhere that is simply false. Saying it anyway would send someone
 /// to `git switch -c` to escape a refusal that is not coming.
-pub fn early() -> Outcome {
+pub fn early(settings: &crate::config::Settings) -> Outcome {
     let Some(branch) = git::current_branch() else {
         return Outcome::Passed;
     };
     if !PROTECTED.contains(&branch) {
-        crate::hooks::common::ok("Not committing on a protected branch");
+        crate::hooks::common::ok(settings, "Not committing on a protected branch");
         return Outcome::Passed;
     }
     if !git::has_remote() || !on_a_remote(branch) {
@@ -123,7 +123,7 @@ pub fn early() -> Outcome {
     Outcome::Warned
 }
 
-pub fn run(refs: &[PushRef]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let mut blocked = Vec::new();
     for r in refs {
         // A creation is checked BEFORE the name: `main` that the remote has
@@ -138,7 +138,7 @@ pub fn run(refs: &[PushRef]) -> Outcome {
         }
     }
     if blocked.is_empty() {
-        crate::hooks::common::ok("No push to a protected branch");
+        crate::hooks::common::ok(settings, "No push to a protected branch");
         return Outcome::Passed;
     }
     for (name, deleting) in &blocked {
@@ -159,6 +159,11 @@ pub fn run(refs: &[PushRef]) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No policy, no git config: these tests are about the ref names alone.
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
 
     const ZEROS: &str = "0000000000000000000000000000000000000000";
 
@@ -191,21 +196,39 @@ mod tests {
 
     #[test]
     fn blocks_main_and_master() {
-        assert_eq!(run(&[r("a", "refs/heads/main")]), Outcome::Failed);
-        assert_eq!(run(&[r("a", "refs/heads/master")]), Outcome::Failed);
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/main")]),
+            Outcome::Failed
+        );
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/master")]),
+            Outcome::Failed
+        );
     }
 
     #[test]
     fn allows_any_other_branch() {
-        assert_eq!(run(&[r("a", "refs/heads/feat/x")]), Outcome::Passed);
-        assert_eq!(run(&[r("a", "refs/heads/maintenance")]), Outcome::Passed);
-        assert_eq!(run(&[r("a", "refs/heads/mainline")]), Outcome::Passed);
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/feat/x")]),
+            Outcome::Passed
+        );
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/maintenance")]),
+            Outcome::Passed
+        );
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/mainline")]),
+            Outcome::Passed
+        );
     }
 
     /// Tags and other non-branch refs are not branches.
     #[test]
     fn allows_tags_even_named_main() {
-        assert_eq!(run(&[r("a", "refs/tags/main")]), Outcome::Passed);
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/tags/main")]),
+            Outcome::Passed
+        );
     }
 
     /// The check is on the REMOTE ref: pushing a differently-named local branch
@@ -214,30 +237,36 @@ mod tests {
     fn a_renamed_push_to_main_is_still_blocked() {
         let mut p = r("a", "refs/heads/main");
         p.local_ref = "refs/heads/my-feature".into();
-        assert_eq!(run(&[p]), Outcome::Failed);
+        assert_eq!(run(&test_settings(), &[p]), Outcome::Failed);
     }
 
     #[test]
     fn a_branch_delete_is_blocked_too() {
         assert_eq!(
-            run(&[r(
-                "0000000000000000000000000000000000000000",
-                "refs/heads/main"
-            )]),
+            run(
+                &test_settings(),
+                &[r(
+                    "0000000000000000000000000000000000000000",
+                    "refs/heads/main"
+                )]
+            ),
             Outcome::Failed
         );
     }
 
     #[test]
     fn no_refs_is_a_pass() {
-        assert_eq!(run(&[]), Outcome::Passed);
+        assert_eq!(run(&test_settings(), &[]), Outcome::Passed);
     }
 
     /// One bad ref among several still fails the push.
     #[test]
     fn a_mixed_push_is_blocked() {
         assert_eq!(
-            run(&[r("a", "refs/heads/feat/x"), r("a", "refs/heads/main")]),
+            run(
+                &test_settings(),
+                &[r("a", "refs/heads/feat/x"), r("a", "refs/heads/main")]
+            ),
             Outcome::Failed
         );
     }
@@ -252,15 +281,24 @@ mod tests {
     /// the blanket bypass has taught the bypass.
     #[test]
     fn creating_main_on_the_remote_is_allowed() {
-        assert_eq!(run(&[creating("refs/heads/main")]), Outcome::Passed);
-        assert_eq!(run(&[creating("refs/heads/master")]), Outcome::Passed);
+        assert_eq!(
+            run(&test_settings(), &[creating("refs/heads/main")]),
+            Outcome::Passed
+        );
+        assert_eq!(
+            run(&test_settings(), &[creating("refs/heads/master")]),
+            Outcome::Passed
+        );
     }
 
     /// And the protection is unchanged the moment the branch exists: the
     /// SECOND push is a normal update, and normal updates are refused.
     #[test]
     fn the_next_push_to_that_same_branch_is_refused() {
-        assert_eq!(run(&[r("a", "refs/heads/main")]), Outcome::Failed);
+        assert_eq!(
+            run(&test_settings(), &[r("a", "refs/heads/main")]),
+            Outcome::Failed
+        );
     }
 
     /// Creating one branch does not smuggle an update to another through in
@@ -268,7 +306,10 @@ mod tests {
     #[test]
     fn a_creation_beside_a_real_update_still_fails() {
         assert_eq!(
-            run(&[creating("refs/heads/feat/x"), r("a", "refs/heads/main")]),
+            run(
+                &test_settings(),
+                &[creating("refs/heads/feat/x"), r("a", "refs/heads/main")]
+            ),
             Outcome::Failed
         );
     }
@@ -280,7 +321,7 @@ mod tests {
     fn a_delete_of_a_nonexistent_remote_branch_is_not_blocked() {
         let mut p = creating("refs/heads/main");
         p.local_oid = ZEROS.into();
-        assert_eq!(run(&[p]), Outcome::Passed);
+        assert_eq!(run(&test_settings(), &[p]), Outcome::Passed);
     }
 
     /// An empty oid is not "all zeros". Nothing git emits looks like this,
@@ -290,6 +331,6 @@ mod tests {
         let mut p = r("a", "refs/heads/main");
         p.remote_oid = String::new();
         assert!(!is_creation(&p));
-        assert_eq!(run(&[p]), Outcome::Failed);
+        assert_eq!(run(&test_settings(), &[p]), Outcome::Failed);
     }
 }

@@ -325,8 +325,8 @@ pub fn group_footer(text: &str) -> String {
     format!("{}\n", out.join("\n"))
 }
 
-fn valid(msg: &str) {
-    super::common::ok(msg);
+fn valid(settings: &crate::config::Settings, msg: &str) {
+    super::common::ok(settings, msg);
 }
 fn error(msg: &str) {
     eprintln!("  {} {msg}", error_sign().trim());
@@ -356,7 +356,7 @@ fn git_generated(subject: &str) -> bool {
     .any(|p| subject.starts_with(p))
 }
 
-pub fn run(args: &[std::ffi::OsString]) -> Verdict {
+pub fn run(settings: &crate::config::Settings, args: &[std::ffi::OsString]) -> Verdict {
     let Some(filename) = args.first().and_then(|a| a.to_str()) else {
         println!("Usage:\n\n./commit-msg <filename>");
         return Verdict::Block;
@@ -364,7 +364,7 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
     let Ok(raw) = std::fs::read_to_string(filename) else {
         return Verdict::Block;
     };
-    let style = Style::resolve();
+    let style = Style::resolve(settings);
     let cleaned = strip_comments(&raw);
     let mut parts = cleaned.splitn(2, '\n');
     let subject_line = parts.next().unwrap_or("");
@@ -380,7 +380,10 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
     // Said out loud, because a check that stands aside silently is the
     // invisibility this project refuses everywhere else.
     if git_generated(subject_line) {
-        valid("A message git itself wrote — the convention is not applied");
+        valid(
+            settings,
+            "A message git itself wrote — the convention is not applied",
+        );
         return Verdict::Proceed;
     }
     // Everything after the subject's own newline — blank separator lines
@@ -407,10 +410,13 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
         ));
         return Verdict::Block;
     }
-    valid(&format!(
-        "Summary size is at most {} characters",
-        orange(&style.subject_max.to_string())
-    ));
+    valid(
+        settings,
+        &format!(
+            "Summary size is at most {} characters",
+            orange(&style.subject_max.to_string())
+        ),
+    );
 
     let types: Vec<String> = COMMIT_TYPES.iter().map(|t| orange(t.name)).collect();
     let subject = match parse_subject(written) {
@@ -434,7 +440,7 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
             }
         },
     };
-    valid("A prefix is defined");
+    valid(settings, "A prefix is defined");
 
     // The `suffix` placement's half of the same round trip.
     let description = undecorate_tail(&subject.description, vocabulary::emoji_for(&subject.prefix));
@@ -447,7 +453,7 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
         ));
         return Verdict::Block;
     }
-    valid("A description is present in the summary");
+    valid(settings, "A description is present in the summary");
 
     if description.chars().count() > style.description_max {
         error(&format!(
@@ -457,10 +463,13 @@ pub fn run(args: &[std::ffi::OsString]) -> Verdict {
         ));
         return Verdict::Block;
     }
-    valid(&format!(
-        "Description size is at most {} characters",
-        orange(&style.description_max.to_string())
-    ));
+    valid(
+        settings,
+        &format!(
+            "Description size is at most {} characters",
+            orange(&style.description_max.to_string())
+        ),
+    );
 
     let formatted = format!(
         "{}\n\n{}\n",

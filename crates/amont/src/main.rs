@@ -398,6 +398,10 @@ fn verb_name(sub: Sub) -> &'static str {
 /// One `match` over the enum rather than seven `if`s, so the compiler is the
 /// thing that notices an unhandled verb.
 fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
+    // Subcommands that never load a manifest read git config alone. An
+    // empty policy is exactly what `policy::current()` used to hand them
+    // when nothing had been installed, so this preserves their behaviour.
+    let settings = amont_runtime::config::Settings::default();
     // A help or version request is inert in ANY position, before anything
     // else looks at the arguments. `amont install --help` used to RUN THE
     // INSTALLER — copy the binary, populate the template dir, offer trust —
@@ -443,6 +447,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // implementation, tested on every platform, rather than one in `make`
         // and another in PowerShell for the Windows users who have no `make`.
         Sub::Install => report(amont_runtime::install::run(
+            &settings,
             args.iter().any(|a| a == "--force"),
         )),
         // `amont init` — the verb a package manager calls. Deliberately
@@ -459,7 +464,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // provisioning scripts, and never at all for the `init.templateDir`
         // users whose hooks arrive with a clone.
         Sub::Setup => report(amont_runtime::setup::command(args)),
-        Sub::Restore => report(amont_runtime::staged_only::restore_command()),
+        Sub::Restore => report(amont_runtime::staged_only::restore_command(&settings)),
         Sub::Trust => report(amont_runtime::trust::command(args)),
         Sub::Run => run_mode(args),
         Sub::AgentsMd => agents_md(args),
@@ -649,7 +654,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                     eprintln!("amont: could not read stdin");
                     return 2;
                 }
-                findings.extend(amont_runtime::content::scan(name, &buf));
+                findings.extend(amont_runtime::content::scan(&settings, name, &buf));
             } else if paths.is_empty() {
                 eprintln!("amont: check needs a path, or --stdin-filename <path>");
                 eprint!("{USAGE}");
@@ -657,7 +662,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             }
             for p in &paths {
                 match std::fs::read(p) {
-                    Ok(bytes) => findings.extend(amont_runtime::content::scan(p, &bytes)),
+                    Ok(bytes) => {
+                        findings.extend(amont_runtime::content::scan(&settings, p, &bytes))
+                    }
                     // Named but unreadable is the caller's mistake, not a
                     // finding about the file — say so on stderr and keep
                     // going, so one bad path does not hide the other results.
@@ -780,7 +787,7 @@ fn run_mode(args: &[OsString]) -> i32 {
     // INVARIANT: the policy is installed immediately after EVERY
     // manifest::load, before any config read in the process — check_timeout
     // and friends cache on first read.
-    amont_runtime::policy::install(manifest.policy.clone());
+    let settings = amont_runtime::config::Settings::new(manifest.policy.clone());
     // Resolve a short name to its full id BEFORE the push-ref decision:
     // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`
     // must say so rather than fail on an upstream it was never going to use.
@@ -839,6 +846,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         hooks_dir: &hooks_dir,
         push: &push,
         manifest: &manifest,
+        settings: &settings,
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -865,6 +873,10 @@ fn run_mode(args: &[OsString]) -> i32 {
 
 /// `amont agents-md [--check] [--path <file>]`.
 fn agents_md(args: &[OsString]) -> i32 {
+    // `amont agents-md` writes the block from the CONFIGURED budgets; it
+    // loads no manifest, so git config alone — the same empty-policy state
+    // the global store held for this path.
+    let settings = amont_runtime::config::Settings::default();
     let check_only = args.iter().any(|a| a == "--check");
     let path = match path_flag(args) {
         Ok(Some(p)) => p,
@@ -905,7 +917,7 @@ fn agents_md(args: &[OsString]) -> i32 {
                 Ok(_) => 0,
             }
         });
-        let block_code = match amont_runtime::agents_md::check(&path) {
+        let block_code = match amont_runtime::agents_md::check(&settings, &path) {
             Ok(amont_runtime::agents_md::CheckResult::NotPresent) => {
                 println!(
                     "{}: not present (opt-in — run without --check to add it)",
@@ -931,7 +943,7 @@ fn agents_md(args: &[OsString]) -> i32 {
         };
         block_code.max(pointer_code)
     } else {
-        match amont_runtime::agents_md::write(&path) {
+        match amont_runtime::agents_md::write(&settings, &path) {
             Ok(()) => {
                 println!("wrote {}", path.display());
                 pointer_path(&path).map_or(0, |p| {
@@ -983,13 +995,14 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     // INVARIANT: the policy is installed immediately after EVERY
     // manifest::load, before any config read in the process — check_timeout
     // and friends cache on first read.
-    amont_runtime::policy::install(manifest.policy.clone());
+    let settings = amont_runtime::config::Settings::new(manifest.policy.clone());
     let ctx = registry::Ctx {
         name: hook,
         args,
         hooks_dir,
         push: &push,
         manifest: &manifest,
+        settings: &settings,
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`. An unknown name is NOT the usage

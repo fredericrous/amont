@@ -23,13 +23,13 @@ pub const END: &str = "<!-- amont:end -->";
 /// table `pre-push-branch-pattern` enforces — precisely so this file cannot
 /// become a second, driftable copy of the rule. What the block says and what
 /// the hook rejects are the same constant.
-pub fn generate_block() -> String {
+pub fn generate_block(settings: &crate::config::Settings) -> String {
     let clocks = |secs: u64| match secs {
         0 => "no limit".to_string(),
         s => crate::hooks::common::human_secs(s),
     };
-    let idle = clocks(crate::hooks::common::idle_timeout());
-    let ceiling = clocks(crate::hooks::common::check_timeout());
+    let idle = clocks(crate::hooks::common::idle_timeout(settings));
+    let ceiling = clocks(crate::hooks::common::check_timeout(settings));
     let prefixes = crate::vocabulary::BRANCH_PREFIXES
         .iter()
         .map(|p| p.name)
@@ -159,8 +159,11 @@ fn marker_range(text: &str) -> Result<Option<Range<usize>>, MarkerState> {
 /// - file, markers found → everything outside the markers is byte-for-byte
 ///   untouched; the marked span is replaced.
 /// - markers malformed (exactly one present, or out of order) → refused.
-pub fn desired_file_content(existing: &str) -> Result<String, MarkerState> {
-    desired_with(existing, &generate_block())
+pub fn desired_file_content(
+    settings: &crate::config::Settings,
+    existing: &str,
+) -> Result<String, MarkerState> {
+    desired_with(existing, &generate_block(settings))
 }
 
 /// The same splice, for the pointer.
@@ -194,8 +197,8 @@ fn desired_with(existing: &str, block: &str) -> Result<String, MarkerState> {
     }
 }
 
-pub fn write(path: &Path) -> Result<(), String> {
-    write_with(path, &generate_block())
+pub fn write(settings: &crate::config::Settings, path: &Path) -> Result<(), String> {
+    write_with(path, &generate_block(settings))
 }
 
 /// Write the CLAUDE.md signpost.
@@ -227,8 +230,8 @@ pub enum CheckResult {
     Drifted,
 }
 
-pub fn check(path: &Path) -> Result<CheckResult, String> {
-    check_with(path, &generate_block())
+pub fn check(settings: &crate::config::Settings, path: &Path) -> Result<CheckResult, String> {
+    check_with(path, &generate_block(settings))
 }
 
 /// Is the CLAUDE.md signpost the one this binary generates?
@@ -258,9 +261,18 @@ fn check_with(path: &Path, block: &str) -> Result<CheckResult, String> {
 mod tests {
     use super::*;
 
+    /// The block documents the CONFIGURED budgets; with no policy and no git
+    /// config in these tests that means the shipped defaults.
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
+
     #[test]
     fn no_file_produces_just_the_block() {
-        assert_eq!(desired_file_content("").unwrap(), generate_block());
+        assert_eq!(
+            desired_file_content(&test_settings(), "").unwrap(),
+            generate_block(&test_settings())
+        );
     }
 
     /// Both generated files must satisfy Prettier's markdown defaults,
@@ -273,7 +285,10 @@ mod tests {
     /// unit suite honest without making it shell out to node.
     #[test]
     fn the_generated_markdown_satisfies_prettier() {
-        for (what, text) in [("block", generate_block()), ("pointer", generate_pointer())] {
+        for (what, text) in [
+            ("block", generate_block(&test_settings())),
+            ("pointer", generate_pointer()),
+        ] {
             assert!(
                 text.starts_with(&format!("{START}\n\n")),
                 "{what}: prettier wants a blank line after the opening comment"
@@ -306,7 +321,11 @@ mod tests {
         let p = generate_pointer();
         assert!(p.starts_with(START) && p.ends_with(&format!("{END}\n")));
         assert!(p.contains("AGENTS.md"), "it has to name where to look");
-        assert_ne!(p, generate_block(), "a signpost, not a second copy");
+        assert_ne!(
+            p,
+            generate_block(&test_settings()),
+            "a signpost, not a second copy"
+        );
         assert!(
             !p.contains("amont list --json"),
             "the registry command lives in ONE place; duplicating it here is \
@@ -327,42 +346,42 @@ mod tests {
 
     #[test]
     fn no_markers_appends_with_one_blank_line() {
-        let got = desired_file_content("# My Project\n\nSome docs.\n").unwrap();
+        let got = desired_file_content(&test_settings(), "# My Project\n\nSome docs.\n").unwrap();
         assert!(got.starts_with("# My Project\n\nSome docs.\n\n"));
-        assert!(got.ends_with(&generate_block()));
+        assert!(got.ends_with(&generate_block(&test_settings())));
     }
 
     #[test]
     fn no_markers_and_no_trailing_newline_still_gets_a_blank_line() {
-        let got = desired_file_content("# My Project").unwrap();
+        let got = desired_file_content(&test_settings(), "# My Project").unwrap();
         assert!(got.starts_with("# My Project\n\n"));
     }
 
     #[test]
     fn existing_markers_are_replaced_and_everything_else_survives() {
         let before = format!("before\n\n{START}\nstale\n{END}\n\nafter\n");
-        let got = desired_file_content(&before).unwrap();
+        let got = desired_file_content(&test_settings(), &before).unwrap();
         assert!(got.starts_with("before\n\n"));
         assert!(got.ends_with("\n\nafter\n"));
-        assert!(got.contains(&generate_block()));
+        assert!(got.contains(&generate_block(&test_settings())));
         assert!(!got.contains("stale"));
     }
 
     #[test]
     fn applying_twice_is_idempotent() {
-        let once = desired_file_content("preamble\n").unwrap();
-        let twice = desired_file_content(&once).unwrap();
+        let once = desired_file_content(&test_settings(), "preamble\n").unwrap();
+        let twice = desired_file_content(&test_settings(), &once).unwrap();
         assert_eq!(once, twice);
     }
 
     #[test]
     fn an_unpaired_marker_is_refused_not_guessed_at() {
         assert_eq!(
-            desired_file_content(&format!("{START}\nno end here\n")),
+            desired_file_content(&test_settings(), &format!("{START}\nno end here\n")),
             Err(MarkerState::Malformed)
         );
         assert_eq!(
-            desired_file_content(&format!("no start\n{END}\n")),
+            desired_file_content(&test_settings(), &format!("no start\n{END}\n")),
             Err(MarkerState::Malformed)
         );
     }
@@ -374,7 +393,7 @@ mod tests {
     #[test]
     fn end_appearing_before_start_is_malformed_not_reordered() {
         assert_eq!(
-            desired_file_content(&format!("{END}\n...\n{START}\n...\n")),
+            desired_file_content(&test_settings(), &format!("{END}\n...\n{START}\n...\n")),
             Err(MarkerState::Malformed)
         );
     }
@@ -383,15 +402,21 @@ mod tests {
     fn check_reports_not_present_for_a_missing_file() {
         let tmp = std::env::temp_dir().join("amont-agents-md-test-nonexistent-xyz");
         let _ = std::fs::remove_file(&tmp);
-        assert_eq!(check(&tmp).unwrap(), CheckResult::NotPresent);
+        assert_eq!(
+            check(&test_settings(), &tmp).unwrap(),
+            CheckResult::NotPresent
+        );
     }
 
     #[test]
     fn check_reports_matches_generated_after_a_write() {
         let tmp =
             std::env::temp_dir().join(format!("amont-agents-md-test-{}-match", std::process::id()));
-        std::fs::write(&tmp, generate_block()).unwrap();
-        assert_eq!(check(&tmp).unwrap(), CheckResult::MatchesGenerated);
+        std::fs::write(&tmp, generate_block(&test_settings())).unwrap();
+        assert_eq!(
+            check(&test_settings(), &tmp).unwrap(),
+            CheckResult::MatchesGenerated
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -400,7 +425,7 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("amont-agents-md-test-{}-drift", std::process::id()));
         std::fs::write(&tmp, format!("{START}\nstale\n{END}\n")).unwrap();
-        assert_eq!(check(&tmp).unwrap(), CheckResult::Drifted);
+        assert_eq!(check(&test_settings(), &tmp).unwrap(), CheckResult::Drifted);
         let _ = std::fs::remove_file(&tmp);
     }
 }

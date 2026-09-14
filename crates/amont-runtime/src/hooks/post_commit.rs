@@ -17,10 +17,10 @@
 
 use crate::check::Verdict;
 
-pub fn run(ctx: &crate::registry::Ctx) -> Verdict {
+pub fn run(settings: &crate::config::Settings, ctx: &crate::registry::Ctx) -> Verdict {
     let stamped = crate::gate_stamp::bind_to_head();
-    crate::bypass::note_unverified(ctx.manifest, &stamped);
-    rehearse();
+    crate::bypass::note_unverified(ctx.settings, ctx.manifest, &stamped);
+    rehearse(settings);
     Verdict::Proceed
 }
 
@@ -30,8 +30,10 @@ pub fn run(ctx: &crate::registry::Ctx) -> Verdict {
 /// where the commit being made is not the one that will be pushed and the
 /// next replay would cancel this run anyway. The worker itself decides
 /// whether there is anything to run; this only pays the spawn.
-fn rehearse() {
-    if !crate::rehearsal::on_commit_enabled() || !crate::gate_stamp::push_stamps_enabled() {
+fn rehearse(settings: &crate::config::Settings) {
+    if !crate::rehearsal::on_commit_enabled(settings)
+        || !crate::gate_stamp::push_stamps_enabled(settings)
+    {
         return;
     }
     if !crate::git_states_in_progress().is_empty() {

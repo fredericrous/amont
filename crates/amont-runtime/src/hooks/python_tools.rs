@@ -87,7 +87,7 @@ fn opts_in(root: &str, configs: &[&str], table: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn ruff(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn ruff(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -119,9 +119,14 @@ pub fn ruff(_args: &[std::ffi::OsString]) -> Outcome {
     // repair pass's own exit code says nothing about the verdict — and running
     // it loudly would print the surviving offenders twice.
     let mut repaired = false;
-    if fixing_enabled() {
-        let _ = run_quiet(&root, &argv, &with_files(&["check", "--fix"], &files));
-        let _ = run_quiet(&root, &argv, &with_files(&["format"], &files));
+    if fixing_enabled(settings) {
+        let _ = run_quiet(
+            settings,
+            &root,
+            &argv,
+            &with_files(&["check", "--fix"], &files),
+        );
+        let _ = run_quiet(settings, &root, &argv, &with_files(&["format"], &files));
         match restage(&files) {
             Restaged::Staged => repaired = true,
             Restaged::Failed(stuck) => {
@@ -138,14 +143,19 @@ pub fn ruff(_args: &[std::ffi::OsString]) -> Outcome {
     }
 
     let mut failed = false;
-    if !run_tool(&root, &argv, &with_files(&["check"], &files)) {
+    if !run_tool(settings, &root, &argv, &with_files(&["check"], &files)) {
         fail(&format!(
             "Ruff lint issues. Run {}. Offenders above.",
             hl("ruff check --fix")
         ));
         failed = true;
     }
-    if !run_tool(&root, &argv, &with_files(&["format", "--check"], &files)) {
+    if !run_tool(
+        settings,
+        &root,
+        &argv,
+        &with_files(&["format", "--check"], &files),
+    ) {
         fail(&format!(
             "Ruff found unformatted files. Run {} on the files listed above.",
             hl("ruff format")
@@ -159,13 +169,13 @@ pub fn ruff(_args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
     if repaired {
-        ok("Ruff fixed and re-staged");
+        ok(settings, "Ruff fixed and re-staged");
         return Outcome::Fixed;
     }
     // An unpinned ruff RAN, and its verdict was clean — that is a pass, not a
     // gap. The caveat above is advice about which ruff spoke, not a claim that
     // none did.
-    ok("Ruff passed");
+    ok(settings, "Ruff passed");
     Outcome::Passed
 }
 
@@ -183,7 +193,7 @@ fn with_files(sub: &[&str], files: &[String]) -> Vec<String> {
     argv
 }
 
-pub fn pyright(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn pyright(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -237,11 +247,11 @@ pub fn pyright(_args: &[std::ffi::OsString]) -> Outcome {
     // errors — see lint_js for why an unread warn list is worse than a block.
     let mut with_files: Vec<String> = vec!["--warnings".to_string()];
     with_files.extend(files.iter().map(|f| format!("./{f}")));
-    if !run_tool(&root, &argv, &with_files) {
+    if !run_tool(settings, &root, &argv, &with_files) {
         fail("Pyright type errors. Please fix");
         return Outcome::Failed;
     }
-    ok("pyright passed");
+    ok(settings, "pyright passed");
     Outcome::Passed
 }
 
@@ -255,7 +265,7 @@ pub fn pyright(_args: &[std::ffi::OsString]) -> Outcome {
 /// ref (see `pushed_tree`), `Unavailable` — loudly, never green — when
 /// git will not answer or pytest is not installed, and fail-fast on a red
 /// suite.
-pub fn pytest(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn pytest(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
     let Some(root) = crate::git::stdout(&["rev-parse", "--show-toplevel"]) else {
         super::common::warn("pytest: git would not answer — the gate did NOT run");
         return Outcome::Unavailable;
@@ -288,19 +298,19 @@ pub fn pytest(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         };
         // Where THIS ref's suite runs decides what it is answering about —
         // the pushed commits, not whatever is open in the editor.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(&r.local_oid, &root);
+        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         cmd.current_dir(&where_).stdin(std::process::Stdio::null());
         super::common::strip_git_env(&mut cmd);
-        if !super::common::bounded_success(&mut cmd, "pytest") {
+        if !super::common::bounded_success(settings, &mut cmd, "pytest") {
             super::common::fail("Python tests failed. Push aborted.");
             return Outcome::Failed;
         }
         ran_any = true;
     }
     if ran_any {
-        super::common::ok("Python tests passed");
+        super::common::ok(settings, "Python tests passed");
     }
     Outcome::Passed
 }

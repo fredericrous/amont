@@ -33,17 +33,17 @@ pub fn is_helm_template(root: &str, file: &str) -> bool {
         .is_file()
 }
 
-fn parses(root: &str, tool: &str, args: &[&str]) -> bool {
+fn parses(settings: &crate::config::Settings, root: &str, tool: &str, args: &[&str]) -> bool {
     let mut cmd = Command::new(super::common::program(tool));
     cmd.args(args)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    super::common::bounded_success(&mut cmd, tool)
+    super::common::bounded_success(settings, &mut cmd, tool)
 }
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let json: Vec<String> = staged_files(JSON);
     let yaml: Vec<String> = staged_files(YAML);
     if json.is_empty() && yaml.is_empty() {
@@ -62,7 +62,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
                 let script = r#"JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))"#;
                 // `--` before `f`: a staged file named e.g. `-e.json` would
                 // otherwise be read as another `-e` by node's own parser.
-                if !parses(&root, "node", &["-e", script, "--", f]) {
+                if !parses(settings, &root, "node", &["-e", script, "--", f]) {
                     fail(&format!("Invalid JSON: {}", hl(f)));
                     failed = true;
                 }
@@ -84,7 +84,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
                 }
                 // `--` before `f`: a staged file starting with `-` would
                 // otherwise be read as a flag by yq's own parser.
-                if !parses(&root, "yq", &["e", "true", "--", f]) {
+                if !parses(settings, &root, "yq", &["e", "true", "--", f]) {
                     fail(&format!("Invalid YAML: {}", hl(f)));
                     failed = true;
                 }
@@ -102,7 +102,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         (true, _) => Outcome::Failed,
         (false, true) => Outcome::Unavailable,
         (false, false) => {
-            ok("Json/Yaml Lint passed");
+            ok(settings, "Json/Yaml Lint passed");
             Outcome::Passed
         }
     }

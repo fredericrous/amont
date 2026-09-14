@@ -136,12 +136,17 @@ fn cargo_for(roots: &[PathBuf], component: Option<&str>, missing: &str) -> Optio
 }
 
 /// Run one cargo invocation in every manifest root. True when all succeeded.
-fn run_in_roots(roots: &[PathBuf], argv: &[String], args: &[&str]) -> bool {
+fn run_in_roots(
+    settings: &crate::config::Settings,
+    roots: &[PathBuf],
+    argv: &[String],
+    args: &[&str],
+) -> bool {
     let extra: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
     let mut all_ok = true;
     for dir in roots {
         let d = dir.to_string_lossy().into_owned();
-        if !run_tool(&d, argv, &extra) {
+        if !run_tool(settings, &d, argv, &extra) {
             all_ok = false;
         }
     }
@@ -154,16 +159,17 @@ fn run_in_roots(roots: &[PathBuf], argv: &[String], args: &[&str]) -> bool {
 /// `component` is `Some` only for rustfmt/clippy; `None` means a built-in
 /// subcommand where cargo's own presence is the whole requirement.
 fn each_root(
+    settings: &crate::config::Settings,
     roots: &[PathBuf],
     component: Option<&str>,
     args: &[&str],
     missing: &str,
 ) -> Option<bool> {
     let argv = cargo_for(roots, component, missing)?;
-    Some(run_in_roots(roots, &argv, args))
+    Some(run_in_roots(settings, roots, &argv, args))
 }
 
-pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -185,8 +191,8 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
     // the tree IS the staged content. This comment used to call that "the same
     // trade-off cargo fmt gives everyone", which was true of the observation
     // and wrong about the conclusion: see `staged_only`.
-    if run_in_roots(&roots, &argv, &["fmt", "--all", "--", "--check"]) {
-        ok("Rust formatting is clean");
+    if run_in_roots(settings, &roots, &argv, &["fmt", "--all", "--", "--check"]) {
+        ok(settings, "Rust formatting is clean");
         return Outcome::Passed;
     }
 
@@ -196,7 +202,7 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
     // anywhere. Only prettier and the manifest's externals ever called
     // `restage`. Rather than downgrade the declaration, the fixing is now
     // real.
-    if fixing_enabled() && run_in_roots(&roots, &argv, &["fmt", "--all"]) {
+    if fixing_enabled(settings) && run_in_roots(settings, &roots, &argv, &["fmt", "--all"]) {
         // The non-obvious guard: `cargo fmt --all` formats the WHOLE
         // workspace, not just the staged files — but `restage` is handed the
         // staged `.rs` list, so nothing the author did not stage is staged
@@ -204,7 +210,7 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
         // as an unrelated unstaged change would.
         match restage(&files) {
             Restaged::Staged => {
-                ok("Rust reformatted and re-staged");
+                ok(settings, "Rust reformatted and re-staged");
                 return Outcome::Fixed;
             }
             Restaged::Failed(stuck) => {
@@ -226,7 +232,7 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
     Outcome::Failed
 }
 
-pub fn clippy(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     // `staged_files` matches by suffix, which would also accept
     // `vendor/NotCargo.toml`. `is_rust_path` compares the basename, so let it
     // be the only filter rather than keeping two that disagree.
@@ -243,6 +249,7 @@ pub fn clippy(_args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Passed;
     }
     match each_root(
+        settings,
         &roots,
         Some("clippy"),
         &[
@@ -258,7 +265,7 @@ pub fn clippy(_args: &[std::ffi::OsString]) -> Outcome {
     ) {
         None => Outcome::Unavailable,
         Some(true) => {
-            ok("Clippy passed");
+            ok(settings, "Clippy passed");
             Outcome::Passed
         }
         Some(false) => {
@@ -279,7 +286,7 @@ pub fn clippy(_args: &[std::ffi::OsString]) -> Outcome {
 /// second ref's tests against the first ref's tree — a real failure in the
 /// untested branch reported as a pass because nothing actually ran against
 /// it. Each ref that touches Rust gets its own worktree and its own verdict.
-pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
     // `Unavailable`, never `Passed`, when git will not answer — same argument
     // and same wording as run-tests-js: a gate must not report green having
     // asked nothing.
@@ -300,7 +307,7 @@ pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         // Where THIS ref's suite runs decides what it is answering about.
         // `_guard` owns the checkout for the length of this ref's run;
         // dropping it removes the worktree before the next ref's begins.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(&r.local_oid, &root);
+        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
         let roots: Vec<PathBuf> = roots
             .iter()
             .map(|rt| {
@@ -310,6 +317,7 @@ pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
             })
             .collect();
         match each_root(
+            settings,
             &roots,
             None,
             &["test", "--workspace", "--all-features"],
@@ -324,7 +332,7 @@ pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         }
     }
     if ran_any {
-        ok("Rust tests passed");
+        ok(settings, "Rust tests passed");
     }
     Outcome::Passed
 }

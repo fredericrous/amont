@@ -15,13 +15,17 @@
 //! a policy full-id beats a local trigger. Skips are a UNION of all sources:
 //! there is no unskip mechanism anywhere, so ordering has nothing to decide.
 //!
-//! The store is a process-global `OnceLock`, installed by each entrypoint
-//! immediately after `manifest::load` — one process means one repository,
-//! structurally (see the counter-precedent note at `manifest::Manifest`).
-//! The FLEET never touches it: a scanner walks many repositories and reads
-//! `manifest::read_lines` per repo instead. Every RULE here is a pure
-//! function over `&Policy`, so the rules are unit-testable without the
-//! global; no amont-runtime unit test may call [`install`].
+//! There is no store. A `Policy` is owned by the [`crate::config::Settings`]
+//! each entrypoint builds after `manifest::load`, and borrowed from there —
+//! the shape `Ctx` already used for `manifest` and `push`.
+//!
+//! It WAS a process-global `OnceLock`, which was correct for the hook path
+//! (one process, one repository) and wrong as a contract: a multi-repo walker
+//! had to KNOW not to seed it, `amont-fleet` carried that knowledge as a
+//! comment, and no test could assert the rule because asserting it would have
+//! meant seeding it. Now the rule needs no remembering — a scanner cannot
+//! corrupt a store that does not exist. Every RULE here stays a pure function
+//! over `&Policy`.
 
 use crate::check::Severity;
 use crate::manifest::{Line, PolicyLine};
@@ -106,28 +110,6 @@ impl Policy {
         }
         (policy, notes)
     }
-}
-
-static POLICY: std::sync::OnceLock<Policy> = std::sync::OnceLock::new();
-
-/// Install the loaded repository's policy for this process. Idempotent —
-/// first install wins, the `override_file_set` precedent — and called by
-/// every entrypoint immediately after `manifest::load`, BEFORE any config
-/// read. That ordering is the whole contract: `check_timeout` and friends
-/// cache on first read.
-pub fn install(policy: Policy) {
-    let _ = POLICY.set(policy);
-}
-
-/// The installed policy, or an empty one — a process that never loaded a
-/// manifest has no policy, which resolves every rule to today's behaviour.
-pub fn current() -> &'static Policy {
-    static EMPTY: Policy = Policy {
-        severities: Vec::new(),
-        skips: Vec::new(),
-        settings: std::collections::BTreeMap::new(),
-    };
-    POLICY.get().unwrap_or(&EMPTY)
 }
 
 /// The union `hook.skip` resolution sees: machine skips plus policy skips.

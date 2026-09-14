@@ -36,8 +36,12 @@ use crate::ui::{highlight, valid_sign, warning_sign};
 /// The checks for a stage, minus anything `hook.skip` filters out. Resolution
 /// goes through `names_check`, the one rule this and the severity lookup share:
 /// `git config hook.skip ruff` skips `pre-commit-ruff` by short name.
-fn selected(stage: Stage, manifest: &crate::manifest::Manifest) -> Vec<&dyn Check> {
-    selected_during(stage, &[], manifest)
+fn selected<'a>(
+    settings: &crate::config::Settings,
+    stage: Stage,
+    manifest: &'a crate::manifest::Manifest,
+) -> Vec<&'a dyn Check> {
+    selected_during(settings, stage, &[], manifest)
 }
 
 /// Do this repository's hooks apply the CONVENTIONS, or only the safety net?
@@ -52,15 +56,18 @@ fn selected(stage: Stage, manifest: &crate::manifest::Manifest) -> Vec<&dyn Chec
 ///
 /// Presence of the manifest is the declaration; its CONTENT stays
 /// trust-gated. Reading presence executes nothing, so no consent is needed.
-pub fn conventions_apply(manifest: &crate::manifest::Manifest) -> bool {
-    manifest.declared || !declared_mode()
+pub fn conventions_apply(
+    settings: &crate::config::Settings,
+    manifest: &crate::manifest::Manifest,
+) -> bool {
+    manifest.declared || !declared_mode(settings)
 }
 
 /// One config read per process — this sits on the hook path of every commit.
-fn declared_mode() -> bool {
-    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| {
+fn declared_mode(settings: &crate::config::Settings) -> bool {
+    *settings.declared_mode.get_or_init(|| {
         crate::config::enumerated_or(
+            settings,
             "amont.conventions",
             &["everywhere", "declared"],
             "everywhere",
@@ -71,11 +78,12 @@ fn declared_mode() -> bool {
 /// The checks for a stage, minus `hook.skip` and minus anything that declares
 /// it does not run during an operation currently in progress.
 fn selected_during<'a>(
+    settings: &crate::config::Settings,
     stage: Stage,
     in_progress: &[crate::check::GitState],
     manifest: &'a crate::manifest::Manifest,
 ) -> Vec<&'a dyn Check> {
-    let skips = configured_skips();
+    let skips = configured_skips(settings);
     // Externals are included here, so `hook.skip` and the severity override
     // govern a declared command exactly as they govern a built-in. A repository
     // that can add a check it cannot disable would be a worse deal than not
@@ -84,7 +92,7 @@ fn selected_during<'a>(
         .into_iter()
         .partition(|c| !skips.iter().any(|s| crate::skip_suppresses(c.name(), s)));
     let names: Vec<&str> = dropped.iter().map(|c| c.name()).collect();
-    announce_skips(&names);
+    announce_skips(settings, &names);
 
     // Announced separately from `hook.skip`, and with the operation named: "not
     // during a rebase" is a property of the moment and will be true again in a
@@ -121,7 +129,7 @@ fn selected_during<'a>(
     // in the clone-of-somebody-else's-project case this prints on every
     // commit, and fifteen names every time is how a safety message becomes
     // scroll-past noise.
-    if conventions_apply(manifest) {
+    if conventions_apply(settings, manifest) {
         return kept;
     }
     let (kept, held): (Vec<_>, Vec<_>) = kept
@@ -154,7 +162,7 @@ fn selected_during<'a>(
 /// One line, only when something was actually skipped, so a normal commit is
 /// unchanged. This reaches every skip however it was created — hand-edited
 /// config included — which no dashboard can claim.
-fn announce_skips(dropped: &[&str]) {
+fn announce_skips(settings: &crate::config::Settings, dropped: &[&str]) {
     if dropped.is_empty() {
         return;
     }
@@ -163,7 +171,7 @@ fn announce_skips(dropped: &[&str]) {
     // amont.conf) are different things to be told — the same reason paused
     // and held-back get their own sentences. A name both sources suppress
     // is announced as the machine's: the local decision is the nearer one.
-    let (machine, _policy) = crate::skips_by_source();
+    let (machine, _policy) = crate::skips_by_source(settings);
     let (yours, theirs): (Vec<&&str>, Vec<&&str>) = dropped
         .iter()
         .partition(|name| machine.iter().any(|s| crate::skip_suppresses(name, s)));
@@ -188,7 +196,7 @@ fn announce_skips(dropped: &[&str]) {
 /// behind trust, or aiming at names that exist nowhere. Policy that silently
 /// does not apply is a silent behaviour change, which is the one kind this
 /// codebase does not allow itself.
-fn announce_policy_state(manifest: &crate::manifest::Manifest) {
+fn announce_policy_state(settings: &crate::config::Settings, manifest: &crate::manifest::Manifest) {
     if let Some(why) = manifest.policy_withheld {
         println!(
             "{} {} policy not applied: {why}",
@@ -201,7 +209,7 @@ fn announce_policy_state(manifest: &crate::manifest::Manifest) {
     }
     // The version floor rides the same two call sites: once per stage,
     // beside the other "this repository expects something you lack" lines.
-    crate::skew::announce_minimum();
+    crate::skew::announce_minimum(settings);
 }
 
 /// Run every item concurrently and collect `(name, code)` in the INPUT order.
@@ -270,24 +278,28 @@ fn hold_unstaged() -> Result<crate::staged_only::StagedOnly, Verdict> {
 }
 
 pub fn pre_commit(ctx: &Ctx) -> Verdict {
+    let settings = ctx.settings;
     // Before anything runs: a pinned tool at the wrong version makes every
     // verdict below it suspect, and the warning costs one --version per pin.
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
-    announce_policy_state(ctx.manifest);
+    announce_policy_state(ctx.settings, ctx.manifest);
     let in_progress = crate::git_states_in_progress();
-    let checks = selected_during(Stage::PreCommit, &in_progress, ctx.manifest);
+    let checks = selected_during(ctx.settings, Stage::PreCommit, &in_progress, ctx.manifest);
 
     let held = match hold_unstaged() {
         Ok(guard) => guard,
         Err(verdict) => return verdict,
     };
 
-    let severities = Overrides::read();
-    let (verdict, outcomes) = run_stage_traced(&checks, ctx, &severities);
+    let severities = Overrides::read(settings);
+    let (verdict, outcomes) = run_stage_traced(settings, &checks, ctx, &severities);
 
     // The shadow-mode ledger. Silent, best-effort, and never consulted by any
     // verdict — see `crate::downgrade`.
-    crate::downgrade::note(&downgraded_events(&checks, &outcomes, &severities));
+    crate::downgrade::note(
+        settings,
+        &downgraded_events(&checks, &outcomes, &severities),
+    );
 
     // What post-commit will bind to the commit: the gate-declared checks
     // that RAN clean, recorded while the index still is the commit's tree.
@@ -303,7 +315,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     let ran: Vec<String> = if matches!(verdict, Verdict::Block) {
         Vec::new()
     } else {
-        crate::hooks::run_tests::blocking_commit_decls(&ctx.manifest.externals)
+        crate::hooks::run_tests::blocking_commit_decls(ctx.settings, &ctx.manifest.externals)
             .into_iter()
             .filter(|d| {
                 checks
@@ -374,7 +386,8 @@ fn downgrade_origin(check: &dyn Check, severities: &Overrides) -> crate::downgra
 /// standing in for a dead check was a literal at one call site that no test
 /// could reach — the rule was asserted on the runner and merely hoped for here.
 fn run_stage(checks: &[&dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdict {
-    run_stage_traced(checks, ctx, severities).0
+    let settings = ctx.settings;
+    run_stage_traced(settings, checks, ctx, severities).0
 }
 
 /// [`run_stage`], keeping the per-check outcomes — index-aligned with
@@ -382,6 +395,7 @@ fn run_stage(checks: &[&dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdic
 /// gate-declared checks actually ran (`gate_stamp`); `Report` cannot answer
 /// that, because `classify` deliberately drops the names of `Passed`.
 fn run_stage_traced(
+    settings: &crate::config::Settings,
     checks: &[&dyn Check],
     ctx: &Ctx,
     severities: &Overrides,
@@ -393,9 +407,9 @@ fn run_stage_traced(
     // and reaches stdout as ONE block when it finishes — see `live`. Off
     // (`amont.progress false`), no sink is ever installed and every print
     // streams exactly as it always did.
-    let stage = crate::live::enabled().then(|| {
+    let stage = crate::live::enabled(settings).then(|| {
         let names: Vec<&str> = checks.iter().map(|c| c.name()).collect();
-        crate::live::Stage::begin(&names)
+        crate::live::Stage::begin(settings, &names)
     });
     let items: Vec<(usize, &&dyn Check)> = checks.iter().enumerate().collect();
     let outcomes = run_concurrently(
@@ -407,13 +421,14 @@ fn run_stage_traced(
             // dead-check verdict `run_concurrently` fills in.
             let _flush = stage
                 .as_ref()
-                .map(|s| crate::live::FinishOnDrop::new(s, *idx));
+                .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, *idx));
             let sub = Ctx {
                 name: check.name(),
                 args: ctx.args,
                 hooks_dir: ctx.hooks_dir,
                 push: ctx.push,
                 manifest: ctx.manifest,
+                settings: ctx.settings,
             };
             check.run(&sub)
         },
@@ -424,7 +439,7 @@ fn run_stage_traced(
     );
 
     let report = classify(checks, &outcomes, severities);
-    announce(&report);
+    announce(settings, &report);
     (report.verdict(), outcomes)
 }
 
@@ -483,8 +498,8 @@ fn classify<'a>(
 }
 
 /// Says what happened. Prints; decides nothing.
-fn announce(report: &Report) {
-    if crate::live::quiet() && report.passed > 0 {
+fn announce(settings: &crate::config::Settings, report: &Report) {
+    if crate::live::quiet(settings) && report.passed > 0 {
         println!("{} {} check(s) passed", valid_sign(), report.passed);
     }
     if !report.fixed.is_empty() {
@@ -554,12 +569,13 @@ pub fn enter_all_files_mode() {
 ///   and it is why `--all-files` takes no stash — there is no staged/unstaged
 ///   distinction to protect when the answer is "all of it".
 pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
+    let settings = ctx.settings;
     // ORDER: the override goes in FIRST. It is what tells `fixing_enabled` and
     // `restage` that the file set is not the index, and both are consulted
     // from inside the checks below.
     if all_files {
         enter_all_files_mode();
-        if crate::hooks::common::fixing_requested() {
+        if crate::hooks::common::fixing_requested(settings) {
             println!(
                 "{} {} is set, but fixing is off for {}: the input set is the \
                  working tree, not the index",
@@ -573,9 +589,9 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
         // set is `git ls-files`, so a hold would be surprising extra mutation
         // with no correctness upside.
         return run_stage(
-            &selected(Stage::PreCommit, ctx.manifest),
+            &selected(ctx.settings, Stage::PreCommit, ctx.manifest),
             ctx,
-            &Overrides::read(),
+            &Overrides::read(settings),
         );
     }
 
@@ -589,9 +605,9 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
         Err(verdict) => return verdict,
     };
     let verdict = run_stage(
-        &selected(Stage::PreCommit, ctx.manifest),
+        &selected(ctx.settings, Stage::PreCommit, ctx.manifest),
         ctx,
-        &Overrides::read(),
+        &Overrides::read(settings),
     );
     // AFTER the report has been printed: dropping earlier would put the
     // unstaged content back under a check that is still reading files.
@@ -661,6 +677,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         hooks_dir: ctx.hooks_dir,
         push: ctx.push,
         manifest: ctx.manifest,
+        settings: ctx.settings,
     };
     if all_files {
         enter_all_files_mode();
@@ -691,6 +708,7 @@ pub enum Named {
 }
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
+    let settings = ctx.settings;
     // The notes push `attest` makes re-enters this hook; its ref list is only
     // ever the attest ref, so there is nothing to prove — and proving it
     // would recurse.
@@ -698,17 +716,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         return Verdict::Proceed;
     }
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
-    announce_policy_state(ctx.manifest);
+    announce_policy_state(ctx.settings, ctx.manifest);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
-    let severities = Overrides::read();
+    let severities = Overrides::read(settings);
     // pre-push had NO state guard at all, with a comment admitting it existed
     // only because the zsh version had none. Now it asks the same question
     // pre-commit does and each check answers for itself.
     let in_progress = crate::git_states_in_progress();
-    let pre_push_checks = selected_during(Stage::PrePush, &in_progress, ctx.manifest);
-    let stage = crate::live::enabled().then(|| {
+    let pre_push_checks = selected_during(ctx.settings, Stage::PrePush, &in_progress, ctx.manifest);
+    let stage = crate::live::enabled(settings).then(|| {
         let names: Vec<&str> = pre_push_checks.iter().map(|c| c.name()).collect();
-        crate::live::Stage::begin(&names)
+        crate::live::Stage::begin(settings, &names)
     });
     // What actually PASSED, for the attestation at the bottom. `Warned` and
     // `Unavailable` stay out — "could not run" is not "passed" — and a
@@ -739,7 +757,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         t.dedup();
         t
     };
-    let reuse_stamps = crate::gate_stamp::push_stamps_enabled();
+    let reuse_stamps = crate::gate_stamp::push_stamps_enabled(settings);
     // The working tree AS THE SUITE WILL BE HANDED IT, captured before any
     // gate has run.
     //
@@ -760,7 +778,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // now. Waiting for it is strictly less work than starting over, and
     // its stamp — read AFTER the wait, below — is the hand-off.
     if reuse_stamps && !tips.is_empty() {
-        crate::rehearsal::await_for(&tips);
+        crate::rehearsal::await_for(settings, &tips);
     }
     let push_stamps = if reuse_stamps && !tips.is_empty() {
         crate::gate_stamp::stamps_for(&tips)
@@ -791,7 +809,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let _sink = stage.as_ref().map(|s| s.enter(idx));
         let _flush = stage
             .as_ref()
-            .map(|s| crate::live::FinishOnDrop::new(s, idx));
+            .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, idx));
         // A declared pre-push external whose NAME is also declared at
         // pre-commit (blocking) is a gate pair: the commit-time side earned
         // per-commit stamps, and this side runs only for pushes carrying
@@ -837,7 +855,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             None => Some((check.pairing_name(), &builtin_scope)),
         };
         if let Some((name, push_scope)) = pairing {
-            match crate::hooks::run_tests::pair_verdict(name, push_scope, ctx.manifest, ctx.push) {
+            match crate::hooks::run_tests::pair_verdict(
+                ctx.settings,
+                name,
+                push_scope,
+                ctx.manifest,
+                ctx.push,
+            ) {
                 crate::hooks::run_tests::PairVerdict::Gated => {
                     crate::say!(
                         "{} {} gated at commit instead — not repeating it here",
@@ -866,6 +890,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             hooks_dir: ctx.hooks_dir,
             push: ctx.push,
             manifest: ctx.manifest,
+            settings: ctx.settings,
         };
         match check.run(&sub) {
             Outcome::Passed => {
@@ -906,7 +931,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     // ran and reported; a later check blocking does not unmake
                     // them, and dropping them here would make the ledger quietly
                     // under-count every push that ended badly.
-                    crate::downgrade::note(&downgraded);
+                    crate::downgrade::note(settings, &downgraded);
                     println!("\n🚨  Error raised by hook {}", highlight(check.name()));
                     return Verdict::Block;
                 }
@@ -934,13 +959,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .filter(|c| c.scope().touches(&changed))
             .map(|c| c.name().to_string())
             .collect();
-        stamp_tips(&tips, &really_ran, &tree_at_start);
+        stamp_tips(settings, &tips, &really_ran, &tree_at_start);
     }
     // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
     // `ctx.push` may consume stdin, and a disabled repo should leave stdin
     // exactly as it found it.
-    if !passed.is_empty() && crate::attest::enabled() {
+    if !passed.is_empty() && crate::attest::enabled(settings) {
         let remote = ctx
             .args
             .first()
@@ -948,9 +973,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .unwrap_or_default();
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         let vouched = attestable(&pre_push_checks, &passed, &changed);
-        crate::attest::attest_push(&remote, ctx.push.get(), &vouched);
+        crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }
-    crate::downgrade::note(&downgraded);
+    crate::downgrade::note(settings, &downgraded);
     Verdict::Proceed
 }
 
@@ -961,9 +986,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
 /// The same two filters `pre_push` applies before stamping (selected here,
 /// and `scope().touches` the change), so the rehearsal's idea of "nothing to
 /// do" is the push's idea of "nothing to stamp".
-pub fn scoped_push_gates(manifest: &crate::manifest::Manifest, changed: &[String]) -> Vec<String> {
+pub fn scoped_push_gates(
+    settings: &crate::config::Settings,
+    manifest: &crate::manifest::Manifest,
+    changed: &[String],
+) -> Vec<String> {
     let in_progress = crate::git_states_in_progress();
-    selected_during(Stage::PrePush, &in_progress, manifest)
+    selected_during(settings, Stage::PrePush, &in_progress, manifest)
         .into_iter()
         .filter(|c| !c.scope().is_unscoped() && c.scope().touches(changed))
         .map(|c| c.name().to_string())
@@ -975,8 +1004,13 @@ pub fn scoped_push_gates(manifest: &crate::manifest::Manifest, changed: &[String
 /// See the comment at the call site for the two cases. Silent when nothing
 /// qualifies — a dirty working tree is the ordinary state of a machine
 /// mid-work, and a note on every push would teach people to ignore it.
-fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
-    let pushed_tree_mode = crate::pushed_tree::enabled();
+fn stamp_tips(
+    settings: &crate::config::Settings,
+    tips: &[String],
+    gates: &[String],
+    tree_at_start: &str,
+) {
+    let pushed_tree_mode = crate::pushed_tree::enabled(settings);
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     // TRACKED modifications only — a KNOWN gap, kept deliberately, and
     // spelled out because the comment that used to sit here argued it
@@ -1316,12 +1350,14 @@ mod tests {
         std::panic::set_hook(Box::new(|_| {}));
         let push = crate::pushrefs::PushRefs::default();
         let manifest = crate::manifest::Manifest::default();
+        let settings = crate::config::Settings::default();
         let ctx = Ctx {
             name: "pre-commit",
             args: &[],
             hooks_dir: std::path::Path::new("."),
             push: &push,
             manifest: &manifest,
+            settings: &settings,
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

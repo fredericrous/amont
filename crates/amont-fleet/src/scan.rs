@@ -181,7 +181,11 @@ pub enum AgentsMdState {
 
 fn agents_md_state(repo: &Path) -> AgentsMdState {
     use amont_runtime::agents_md::CheckResult;
-    match amont_runtime::agents_md::check(&repo.join("AGENTS.md")) {
+    // The fleet never installed a policy, so the global store it used to
+    // read was always empty here. A config-only `Settings` is the same
+    // answer, said out loud.
+    let settings = amont_runtime::config::Settings::default();
+    match amont_runtime::agents_md::check(&settings, &repo.join("AGENTS.md")) {
         Ok(CheckResult::MatchesGenerated) => AgentsMdState::UpToDate,
         Ok(CheckResult::NotPresent) => AgentsMdState::Missing,
         Ok(CheckResult::Drifted) => AgentsMdState::Drifted,

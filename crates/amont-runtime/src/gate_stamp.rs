@@ -67,8 +67,8 @@ const MARKER: &str = "amont-gate";
 const PUSH_STAMPS: &str = "amont.pushStamps";
 
 /// Does this repository reuse push-time stamps?
-pub fn push_stamps_enabled() -> bool {
-    crate::config::boolean_or(PUSH_STAMPS, true)
+pub fn push_stamps_enabled(settings: &crate::config::Settings) -> bool {
+    crate::config::boolean_or(settings, PUSH_STAMPS, true)
 }
 
 /// `$GIT_DIR/amont-gate` — the worktree-PRIVATE gitdir, deliberately: the

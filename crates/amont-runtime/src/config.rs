@@ -100,15 +100,15 @@ fn typed_literal(key: &str, raw: &str, ty: Option<&str>) -> Value<String> {
 /// The invariant this shape buys: a repository with no `set` lines spawns
 /// not one extra git process anywhere — the scoped scan below runs only
 /// when the policy actually carries settings.
-fn resolve(key: &str, ty: Option<&str>) -> Value<String> {
-    let policy = crate::policy::current();
+fn resolve(settings: &crate::config::Settings, key: &str, ty: Option<&str>) -> Value<String> {
+    let policy = settings.policy();
     let Some(raw) = policy.settings.get(key) else {
         return match ty {
             Some(t) => typed(key, t),
             None => untyped(key),
         };
     };
-    if key_set_above_policy(key) {
+    if key_set_above_policy(settings, key) {
         return match ty {
             Some(t) => typed(key, t),
             None => untyped(key),
@@ -145,10 +145,8 @@ fn untyped(key: &str) -> Value<String> {
 /// On a git too old for `--show-scope` the cache is `None` and this
 /// DEGRADES fail-safe: any set key counts as above, i.e. all git config
 /// beats policy.
-fn key_set_above_policy(key: &str) -> bool {
-    static SCOPED: std::sync::OnceLock<Option<std::collections::BTreeSet<String>>> =
-        std::sync::OnceLock::new();
-    let above = SCOPED.get_or_init(|| {
+fn key_set_above_policy(settings: &crate::config::Settings, key: &str) -> bool {
+    let above = settings.scoped.get_or_init(|| {
         crate::git::stdout(&["config", "--show-scope", "--get-regexp", r"^amont\."]).map(|scoped| {
             scoped
                 .lines()
@@ -181,8 +179,66 @@ fn first_line(stderr: &str) -> String {
     }
 }
 
-pub fn boolean(key: &str) -> Value<bool> {
-    match resolve(key, Some("bool")) {
+/// Everything this process resolved once about configuration: the trusted
+/// repository policy, and the reads memoised on top of it.
+///
+/// This replaces a process-global `OnceLock<Policy>`. The global was correct
+/// for the hook path — one process means one repository — but it made a rule
+/// the compiler could not see. A multi-repo walker had to KNOW not to seed
+/// it, and `amont-fleet` carried that knowledge as a comment with no test
+/// able to assert it, because asserting it would have meant seeding it.
+///
+/// Owned high and borrowed everywhere — the shape `Ctx` already uses for
+/// `manifest` and `push` — the rule stops needing to be remembered: there is
+/// no store to seed. The memo fields keep the per-process caching these reads
+/// have always had, which `spawn_budget` measures; one `Settings` per process
+/// buys the same number of git spawns the statics did.
+#[derive(Debug, Default)]
+pub struct Settings {
+    policy: crate::policy::Policy,
+    /// The precedence reader: one `--show-scope` scan per process.
+    scoped: OnceLock<Option<BTreeSet<String>>>,
+    /// Reads memoised on first use. Each was a module-level `OnceLock` beside
+    /// its accessor; here, "resolved once" is scoped to a `Settings` rather
+    /// than to the process, so a second one cannot inherit the first's answers.
+    pub(crate) timeout: OnceLock<u64>,
+    pub(crate) idle: OnceLock<u64>,
+    pub(crate) quiet: OnceLock<bool>,
+    pub(crate) progress: OnceLock<bool>,
+    pub(crate) declared_mode: OnceLock<bool>,
+    pub(crate) fixing: OnceLock<bool>,
+}
+
+impl Settings {
+    /// The policy a trusted manifest declared — empty when nothing was
+    /// declared or the manifest was not trusted. `manifest::load` decides
+    /// that and hands the answer here.
+    pub fn new(policy: crate::policy::Policy) -> Self {
+        Self {
+            policy,
+            ..Self::default()
+        }
+    }
+
+    pub fn policy(&self) -> &crate::policy::Policy {
+        &self.policy
+    }
+
+    /// A fresh `Settings` over the same policy, with empty caches.
+    ///
+    /// For a spawned thread, which cannot borrow this one. It resolves the
+    /// same answers — same policy, same git config — and it resolves them
+    /// LAZILY, which is the property that matters: a paint or heartbeat
+    /// thread that never lives long enough to read a budget must not have
+    /// cost a `git config` spawn for it up front. Handing the thread
+    /// pre-resolved numbers did exactly that, and `spawn_budget` said so.
+    pub fn for_thread(&self) -> Settings {
+        Settings::new(self.policy.clone())
+    }
+}
+
+pub fn boolean(settings: &crate::config::Settings, key: &str) -> Value<bool> {
+    match resolve(settings, key, Some("bool")) {
         Value::Set(v) => match v.as_str() {
             "true" => Value::Set(true),
             "false" => Value::Set(false),
@@ -197,8 +253,8 @@ pub fn boolean(key: &str) -> Value<bool> {
 
 /// An integer, in git's own spelling — which includes the `k`/`m`/`g` suffixes
 /// git accepts, since `--type=int` expands them before we see them.
-pub fn integer(key: &str) -> Value<i64> {
-    match resolve(key, Some("int")) {
+pub fn integer(settings: &crate::config::Settings, key: &str) -> Value<i64> {
+    match resolve(settings, key, Some("int")) {
         Value::Set(v) => match v.parse::<i64>() {
             Ok(n) => Value::Set(n),
             Err(_) => Value::Bad {
@@ -216,8 +272,12 @@ pub fn integer(key: &str) -> Value<i64> {
 /// which means this is the one reader whose `Bad` message is ours. It names
 /// every accepted spelling, because a rejection that does not say what was
 /// wanted sends the reader to the documentation for a list we already hold.
-pub fn enumerated(key: &str, allowed: &[&'static str]) -> Value<&'static str> {
-    match resolve(key, None) {
+pub fn enumerated(
+    settings: &crate::config::Settings,
+    key: &str,
+    allowed: &[&'static str],
+) -> Value<&'static str> {
+    match resolve(settings, key, None) {
         Value::Set(v) => {
             let got = v.trim().to_ascii_lowercase();
             match allowed.iter().find(|a| a.eq_ignore_ascii_case(&got)) {
@@ -239,8 +299,8 @@ pub fn enumerated(key: &str, allowed: &[&'static str]) -> Value<&'static str> {
 /// separate mistakes.
 /// A free-form string key, policy-aware. Untyped reads have no `--type`
 /// for git to refuse, so `Bad` cannot arise — this is Set-or-not.
-pub fn string_value(key: &str) -> Option<String> {
-    match resolve(key, None) {
+pub fn string_value(settings: &crate::config::Settings, key: &str) -> Option<String> {
+    match resolve(settings, key, None) {
         Value::Set(v) => Some(v),
         _ => None,
     }
@@ -264,8 +324,8 @@ pub fn complain(key: &str, why: &str, using: &str) {
     }
 }
 
-pub fn boolean_or(key: &str, default: bool) -> bool {
-    match boolean(key) {
+pub fn boolean_or(settings: &crate::config::Settings, key: &str, default: bool) -> bool {
+    match boolean(settings, key) {
         Value::Set(v) => v,
         Value::Unset => default,
         Value::Bad { why } => {
@@ -280,8 +340,13 @@ pub fn boolean_or(key: &str, default: bool) -> bool {
 /// Out of range is treated exactly as unparseable: a `subjectMax` of 0 would
 /// block every commit forever from a config file, and one of 10_000 is not a
 /// limit. Both are mistakes, and both get the default plus a line saying so.
-pub fn integer_or(key: &str, default: i64, range: RangeInclusive<i64>) -> i64 {
-    match integer(key) {
+pub fn integer_or(
+    settings: &crate::config::Settings,
+    key: &str,
+    default: i64,
+    range: RangeInclusive<i64>,
+) -> i64 {
+    match integer(settings, key) {
         Value::Set(v) if range.contains(&v) => v,
         Value::Set(v) => {
             complain(
@@ -299,8 +364,13 @@ pub fn integer_or(key: &str, default: i64, range: RangeInclusive<i64>) -> i64 {
     }
 }
 
-pub fn enumerated_or(key: &str, allowed: &[&'static str], default: &'static str) -> &'static str {
-    match enumerated(key, allowed) {
+pub fn enumerated_or(
+    settings: &crate::config::Settings,
+    key: &str,
+    allowed: &[&'static str],
+    default: &'static str,
+) -> &'static str {
+    match enumerated(settings, key, allowed) {
         Value::Set(v) => v,
         Value::Unset => default,
         Value::Bad { why } => {
@@ -323,10 +393,11 @@ pub fn enumerated_or(key: &str, allowed: &[&'static str], default: &'static str)
 /// `amont.commit.subjectmax`. Keys are case-insensitive on lookup, so this
 /// only affects comparison here — hence [`is_present`] rather than a bare
 /// `contains`.
-pub fn present(prefix: &str) -> BTreeSet<String> {
+pub fn present(settings: &crate::config::Settings, prefix: &str) -> BTreeSet<String> {
     let pattern = format!("^{}", regex_escape(prefix));
     let policy_names = || -> BTreeSet<String> {
-        crate::policy::current()
+        settings
+            .policy()
             .settings
             .keys()
             .filter(|k| {
@@ -349,7 +420,8 @@ pub fn present(prefix: &str) -> BTreeSet<String> {
         .map(|k| k.to_ascii_lowercase())
         .collect();
     names.extend(
-        crate::policy::current()
+        settings
+            .policy()
             .settings
             .keys()
             .filter(|k| {
@@ -417,11 +489,11 @@ impl Scope {
 ///
 /// `Default` for a key nobody set, which is also the answer when git cannot be
 /// asked — the value in use is the shipped one either way.
-pub fn scope_of(key: &str) -> Scope {
+pub fn scope_of(settings: &crate::config::Settings, key: &str) -> Scope {
     // Display mirrors resolution: policy owns the key unless something above
     // it on the ladder set it. The precedence answer comes from the same
     // classifier `resolve` uses, never re-derived from file paths.
-    if crate::policy::current().settings.contains_key(key) && !key_set_above_policy(key) {
+    if settings.policy().settings.contains_key(key) && !key_set_above_policy(settings, key) {
         return Scope::Policy;
     }
     let Some(out) = git::output(&["config", "--show-origin", "--get", key]) else {

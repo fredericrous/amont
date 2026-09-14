@@ -441,13 +441,13 @@ fn make_executable(_p: &Path) -> std::io::Result<()> {
 /// Three steps, three functions. This was one 88-line body whose own comments
 /// numbered its sections — which is the tell that the sections wanted to be
 /// functions.
-pub fn run(force: bool) -> Result<(), String> {
+pub fn run(settings: &crate::config::Settings, force: bool) -> Result<(), String> {
     let binary = install_binary()?;
     populate_template_dir(&binary, force)?;
     bake_repo_hooks(&binary, force)?;
     offer_trust();
-    offer_agents_md();
-    point_at_setup();
+    offer_agents_md(settings);
+    point_at_setup(settings);
     Ok(())
 }
 
@@ -698,8 +698,8 @@ pub fn init() -> Result<(), String> {
 /// at all for the `init.templateDir` users whose hooks arrive with a clone. A
 /// third question would break all three; a line of output breaks none of them,
 /// and it puts the dial in front of the one person guaranteed to be reading.
-fn point_at_setup() {
-    let s = crate::commit_style::Style::resolve();
+fn point_at_setup(settings: &crate::config::Settings) {
+    let s = crate::commit_style::Style::resolve(settings);
     println!(
         "  commit style: gitmoji {}, subject ≤{}, description ≤{} — `amont setup` to change",
         s.gitmoji.as_str(),
@@ -793,7 +793,7 @@ fn offer_trust() {
 /// Never blocks and never fails the install: skips silently when there is
 /// nothing to offer, and a non-interactive install simply leaves the
 /// question unanswered — `trust::confirm` already treats no tty as "no".
-fn offer_agents_md() {
+fn offer_agents_md(settings: &crate::config::Settings) {
     // Same reason as `offer_trust`: with `repo_root()`'s "." fallback, an
     // install run outside a repository offered to write an AGENTS.md into the
     // current directory — the one thing `install` writes to TRACKED content,
@@ -802,7 +802,7 @@ fn offer_agents_md() {
         return;
     };
     let path = Path::new(&root).join("AGENTS.md");
-    match crate::agents_md::check(&path) {
+    match crate::agents_md::check(settings, &path) {
         Ok(crate::agents_md::CheckResult::MatchesGenerated) => return,
         Ok(_) => {}
         // Malformed markers: nothing this prompt can safely offer to fix.
@@ -816,7 +816,7 @@ fn offer_agents_md() {
         warning_sign()
     );
     if crate::trust::confirm("    Add it? (y/N) ") {
-        match crate::agents_md::write(&path) {
+        match crate::agents_md::write(settings, &path) {
             Ok(()) => println!("{} wrote {}", valid_sign(), path.display()),
             Err(e) => println!("{} {e}", warning_sign()),
         }
