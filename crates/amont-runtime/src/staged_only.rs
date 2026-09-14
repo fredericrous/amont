@@ -918,7 +918,7 @@ pub fn install_signal_handler() {
 #[cfg(windows)]
 pub fn install_signal_handler() {
     extern "system" fn on_ctrl(_event: u32) -> i32 {
-        StagedOnly::restore();
+        StagedOnly::restore(fixing_from_config());
         0 // FALSE: pass to the default handler, which terminates
     }
     #[link(name = "kernel32")]
