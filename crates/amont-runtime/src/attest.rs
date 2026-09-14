@@ -282,7 +282,7 @@ pub fn attest_push(
         );
         return;
     }
-    let mut noted = false;
+    let mut blocks: Vec<(String, String)> = Vec::new();
     for r in refs {
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
@@ -312,22 +312,10 @@ pub fn attest_push(
         // Both, not either: the commit note is what `git log --notes` shows
         // and what an older verifier looks for, so dropping it would break
         // consumers mid-upgrade for no gain.
-        let _ =
-            crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &body, &tree]);
-        if crate::git::succeeds(&[
-            "notes",
-            "--ref",
-            NOTES_REF,
-            "add",
-            "-f",
-            "-m",
-            &body,
-            &r.local_oid,
-        ]) {
-            noted = true;
-        }
+        blocks.push((tree, body.clone()));
+        blocks.push((r.local_oid.clone(), body));
     }
-    if noted && push_notes(remote) {
+    if !blocks.is_empty() && publish(remote, &blocks) {
         crate::say!(
             "{} attested {} for CI ({})",
             crate::ui::valid_sign(),
@@ -335,6 +323,81 @@ pub fn attest_push(
             NOTES_REF,
         );
     }
+}
+
+/// How many times a push that lost a race is retried before giving up.
+const PUSH_ATTEMPTS: u32 = 4;
+
+/// Attach each block to its object on the REMOTE's copy of the notes ref, and
+/// push the result. Never `notes add -f`, never a blind push of the local ref.
+///
+/// A note is one per object and may already hold blocks by other producers —
+/// since attest 1.2.0, CI signs the same tree on its own platform, and a
+/// teammate's push may have attested it too. `add -f` erased them all; a push
+/// of the local ref, which never fetched, was rejected as non-fast-forward the
+/// moment anyone else had written the ref, and the failure was silent. So:
+///
+/// 1. fetch the remote's ref into a TEMPORARY ref, leaving the local
+///    `refs/notes/amont-attest` alone whatever happens next;
+/// 2. `notes append` each block there, unless that exact block is already
+///    present (ed25519 signatures are deterministic, so a re-push of the
+///    same tree produces the same bytes);
+/// 3. push the temporary ref to the remote's ref. A non-fast-forward
+///    rejection means another producer wrote meanwhile: go back to 1.
+///
+/// On success the local ref follows what was published. The temporary ref is
+/// removed on every path.
+fn publish(remote: &str, blocks: &[(String, String)]) -> bool {
+    let tmp = format!("amont-attest-push-{}", std::process::id());
+    let tmp_full = format!("refs/notes/{tmp}");
+    let fetch_spec = format!("+{NOTES_FULL_REF}:{tmp_full}");
+    let push_spec = format!("{tmp_full}:{NOTES_FULL_REF}");
+    let mut published = false;
+    for _ in 0..PUSH_ATTEMPTS {
+        let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
+        // A remote with no such ref yet fails the fetch, harmlessly: append
+        // then creates the note from nothing.
+        let _ = crate::git::succeeds(&["fetch", "--quiet", remote, &fetch_spec]);
+        let mut appended = false;
+        for (object, body) in blocks {
+            let existing =
+                crate::git::stdout(&["notes", "--ref", &tmp, "show", object]).unwrap_or_default();
+            if existing.contains(body.trim_end()) {
+                continue;
+            }
+            if crate::git::succeeds(&["notes", "--ref", &tmp, "append", "-m", body, object]) {
+                appended = true;
+            }
+        }
+        if !appended {
+            // Everything is already there — a re-push of an attested tree.
+            published = true;
+            break;
+        }
+        match push_notes(remote, &push_spec) {
+            Push::Done => {
+                published = true;
+                break;
+            }
+            Push::Raced => continue,
+            Push::Refused => break,
+        }
+    }
+    if published {
+        let _ = crate::git::succeeds(&["update-ref", NOTES_FULL_REF, &tmp_full]);
+    }
+    let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
+    published
+}
+
+/// What a notes push came back with.
+enum Push {
+    Done,
+    /// Rejected as non-fast-forward: another producer wrote the ref between
+    /// our fetch and our push. Worth another round.
+    Raced,
+    /// Anything else — no network, no permission, no remote. Not worth one.
+    Refused,
 }
 
 /// `amont attest covered` — the verifying side, as CI's one-liner.
@@ -469,21 +532,37 @@ fn split_note(body: &str) -> Option<(String, String)> {
     Some((format!("{payload}\n"), sig.to_string()))
 }
 
-/// Push the notes ref, marked so the recursive pre-push yields.
+/// Push `refspec`, marked so the recursive pre-push yields.
 ///
 /// Not `git::succeeds` — that helper cannot set an environment variable, and
-/// the guard is the entire point of this wrapper existing.
-fn push_notes(remote: &str) -> bool {
-    let refspec = format!("{NOTES_FULL_REF}:{NOTES_FULL_REF}");
-    Command::new("git")
-        .args(["push", remote, &refspec])
+/// the guard is the entire point of this wrapper existing. stderr is read
+/// only to tell a lost race from a real refusal.
+fn push_notes(remote: &str, refspec: &str) -> Push {
+    let out = Command::new("git")
+        .args(["push", "--quiet", remote, refspec])
         .env(PUSH_GUARD, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .output();
+    let Ok(out) = out else { return Push::Refused };
+    if out.status.success() {
+        return Push::Done;
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    if [
+        "non-fast-forward",
+        "fetch first",
+        "stale info",
+        "cannot lock ref",
+        "failed to lock",
+    ]
+    .iter()
+    .any(|m| err.contains(m))
+    {
+        Push::Raced
+    } else {
+        Push::Refused
+    }
 }
 
 /// A ref oid that is all zeros — git's spelling of "no object" in the
@@ -723,6 +802,193 @@ mod tests {
             verify(&p, sig, &signers, "t@t.test"),
             "the remote copy verifies"
         );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A bare remote plus a work repo opted in, ready to push.
+    fn remote_and_work(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let d = dir(name);
+        let (key, signers) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo(&format!("{name}-work"));
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        (d, work, remote, signers)
+    }
+
+    fn push_ref_for(work: &Path) -> PushRef {
+        PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: git(work, &["rev-parse", "HEAD"]),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        }
+    }
+
+    fn blocks_in(body: &str) -> usize {
+        body.matches("-----BEGIN SSH SIGNATURE-----").count()
+    }
+
+    /// The remote already holds a block on this tree — CI's, or a teammate's.
+    /// Ours is APPENDED beside it; nothing is erased, and the local notes ref
+    /// was never consulted for what the remote has.
+    #[test]
+    fn a_block_already_on_the_remote_survives_and_ours_is_appended() {
+        let (d, work, remote, _) = remote_and_work("append");
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        // Someone else's block, written straight into the remote.
+        let seed = repo("append-seed");
+        git(
+            &seed,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&seed, &["fetch", "-q", "origin"]);
+        std::fs::write(seed.join("a.ts"), "x").unwrap();
+        git(&seed, &["add", "a.ts"]);
+        git(&seed, &["commit", "-qm", "chore: a"]);
+        let foreign = "amont-attest-v2\ntree x\ngates ci-fmt\nplatform s390x-aix\namont other\n\n-----BEGIN SSH SIGNATURE-----\nnope\n-----END SSH SIGNATURE-----";
+        git(
+            &seed,
+            &["notes", "--ref", NOTES_REF, "add", "-m", foreign, &tree],
+        );
+        git(
+            &seed,
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("{NOTES_FULL_REF}:{NOTES_FULL_REF}"),
+            ],
+        );
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        assert_eq!(blocks_in(&body), 2, "both blocks on the remote:\n{body}");
+        assert!(body.contains("gates ci-fmt"), "the foreign block survives");
+        assert!(
+            body.contains("gates pre-push-run-tests-js"),
+            "ours was appended"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+        let _ = std::fs::remove_dir_all(&seed);
+    }
+
+    /// A local notes ref that is behind the remote — the shape after CI has
+    /// signed since our last push — used to make the push non-fast-forward
+    /// and silently lose the attestation. The remote's copy is fetched first,
+    /// so the push lands, and the local ref then follows it.
+    #[test]
+    fn a_stale_local_notes_ref_no_longer_loses_the_push() {
+        let (d, work, remote, _) = remote_and_work("stale");
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        // An unrelated local note, never pushed: the local ref exists and has
+        // nothing in common with what the remote will hold.
+        git(
+            &work,
+            &[
+                "notes",
+                "--ref",
+                NOTES_REF,
+                "add",
+                "-m",
+                "stale local",
+                &head,
+            ],
+        );
+        let stale = git(&work, &["rev-parse", NOTES_FULL_REF]);
+        // Meanwhile the remote got a note from someone else on another object.
+        let seed = repo("stale-seed");
+        std::fs::write(seed.join("b.ts"), "y").unwrap();
+        git(&seed, &["add", "b.ts"]);
+        git(&seed, &["commit", "-qm", "chore: b"]);
+        git(
+            &seed,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(
+            &seed,
+            &[
+                "notes",
+                "--ref",
+                NOTES_REF,
+                "add",
+                "-m",
+                "remote first",
+                "HEAD",
+            ],
+        );
+        git(&seed, &["push", "-q", "origin", "HEAD:refs/heads/other"]);
+        git(
+            &seed,
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("{NOTES_FULL_REF}:{NOTES_FULL_REF}"),
+            ],
+        );
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]);
+        assert!(
+            body.contains("gates pre-push-run-tests-js"),
+            "the push landed:\n{body}"
+        );
+        assert_ne!(
+            git(&work, &["rev-parse", NOTES_FULL_REF]),
+            stale,
+            "the local ref followed the published state"
+        );
+        assert!(
+            git(&work, &["for-each-ref", "refs/notes/amont-attest-push-*"]).is_empty(),
+            "no temporary ref left behind"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+        let _ = std::fs::remove_dir_all(&seed);
+    }
+
+    /// Pushing the same tree twice appends nothing the second time: the block
+    /// is byte-identical (ed25519 is deterministic) and already there.
+    #[test]
+    fn a_second_push_of_the_same_tree_appends_nothing() {
+        let (d, work, remote, _) = remote_and_work("twice");
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        for _ in 0..2 {
+            in_repo(&work, || {
+                attest_push(
+                    &test_settings(),
+                    "origin",
+                    &[push_ref_for(&work)],
+                    &["pre-push-run-tests-js".into()],
+                );
+            });
+        }
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        assert_eq!(blocks_in(&body), 1, "one block, not two:\n{body}");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
     }
