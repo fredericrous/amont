@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A pushed attestation no longer erases, or is no longer lost to, anyone
+  else's.** The pre-push hook wrote its note with `git notes add -f` and
+  pushed the local notes ref blind. Since attest 1.2.0 CI signs the same
+  tree on its own platform and appends its block to the same note, so the
+  next laptop push either overwrote CI's block or — when the remote ref had
+  moved since the laptop last saw it — was rejected as non-fast-forward and
+  silently attested nothing. The hook now fetches the remote's notes ref
+  into a temporary ref, appends its block beside whatever is there (unless
+  that exact block already is), pushes that, and retries a push that lost a
+  race with another producer. The local notes ref is never consulted for
+  what the remote holds and never left half-updated. `amont attest covered`
+  still reads the first block of a note; the CI templates verify with
+  `fredericrous/attest`, which reads them all.
+
 ## v1.34.0
 
 ### Fixed
