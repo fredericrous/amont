@@ -6,6 +6,38 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **Restoring unstaged work no longer writes through a symlink.** When the
+  index held a symlink and the working tree held a regular file in its
+  place, pre-commit's checkout put the link back for the checks and the
+  restore then wrote the held bytes to that path — through the link, so
+  they landed in its target, a file anywhere on the machine, and the link
+  stayed. The restore now removes the link and puts the regular file back
+  where it was; the target is never opened.
+- **A commit-time pair with an opt-in marker can no longer hide an
+  unchecked commit.** A declaration scoped `*.txt+marker` was judged per
+  pushed commit against that commit's changed files, so any commit that
+  left `marker` alone — every ordinary commit — read as one the pair would
+  never fire on, was not counted, and the push-side twin was skipped as
+  "gated at commit" with no stamp behind it. Opt-in is now judged once
+  against the repository, as the commit-time run judges it, and each commit
+  only against whether it touched the scope.
+- **A declared pre-push gate tests what is pushed, and a stamp names only
+  the gates that did.** With `amont.testPushedTree true` the built-in
+  suites ran in a throwaway checkout of the tip, but a declared `amont.conf`
+  gate still ran in the working tree — where an uncommitted fix made a
+  broken commit pass — and the stamp, written from the config rather than
+  from what happened, vouched for the tip on its behalf, so the next push of
+  that commit skipped it. Declared pre-push gates now run per pushed ref,
+  in that ref's snapshot when the flag asks for one, and a tip is stamped
+  per gate from the record of which gates actually ran in its checkout;
+  a gate that ran anywhere else vouches for the tip only when the working
+  tree was the tip. The "testing the WORKING TREE" notice is printed once
+  per push rather than once per gate.
+
 ## v1.35.0
 
 ### Added

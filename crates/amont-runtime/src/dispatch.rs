@@ -959,7 +959,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .filter(|c| c.scope().touches(&changed))
             .map(|c| c.name().to_string())
             .collect();
-        stamp_tips(settings, &tips, &really_ran, &tree_at_start);
+        stamp_tips(&tips, &really_ran, &tree_at_start);
     }
     // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
@@ -1004,13 +1004,7 @@ pub fn scoped_push_gates(
 /// See the comment at the call site for the two cases. Silent when nothing
 /// qualifies — a dirty working tree is the ordinary state of a machine
 /// mid-work, and a note on every push would teach people to ignore it.
-fn stamp_tips(
-    settings: &crate::config::Settings,
-    tips: &[String],
-    gates: &[String],
-    tree_at_start: &str,
-) {
-    let pushed_tree_mode = crate::pushed_tree::enabled(settings);
+fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     // TRACKED modifications only — a KNOWN gap, kept deliberately, and
     // spelled out because the comment that used to sit here argued it
@@ -1041,37 +1035,48 @@ fn stamp_tips(
     // capture in `pre_push`.
     let worktree_clean = tree_at_start.trim().is_empty();
     let in_snapshot = crate::rehearsal::in_snapshot();
-    let mut stamped: Vec<&str> = Vec::new();
+    let mut stamped: Vec<String> = Vec::new();
     for tip in tips {
-        // `pushed_tree_mode` is the CONFIG, not what happened. A snapshot
-        // that could not be created falls back to the working tree and says
-        // so, and stamping on the strength of the flag vouched for content
-        // the suite never saw. `pushed_tree::fell_back` is what actually
-        // happened.
-        let snapshot_ran = pushed_tree_mode && !crate::pushed_tree::fell_back(tip);
         // Inside a rehearsal the working tree IS a checkout git made of this
         // commit, so it is the tip's content by construction — and whatever
         // `amont.snapshotPrepare` had to add to make it runnable (a
         // `node_modules`, a virtualenv) is not a reason to distrust it. That
-        // is the same argument `snapshot_ran` makes for the pushed-tree mode.
+        // is the same argument a pushed-tree snapshot makes.
         let is_head = head.as_deref() == Some(tip.as_str());
-        let vouchable = snapshot_ran || (is_head && (in_snapshot || worktree_clean));
-        if !vouchable {
+        let tree_is_tip = is_head && (in_snapshot || worktree_clean);
+        // PER GATE, from what each one actually did — not from the config.
+        // `amont.testPushedTree` is a request; `pushed_tree::ran_on_tip` is
+        // the record of which gates were handed a checkout of this tip. A
+        // gate that ran somewhere else (a snapshot that could not be made,
+        // or a check that ran in the working tree) may vouch for the tip
+        // only when the working tree WAS the tip. Deciding from the flag
+        // stamped every passing gate onto a tip that one of them had never
+        // seen.
+        let vouched: Vec<String> = gates
+            .iter()
+            .filter(|g| tree_is_tip || crate::pushed_tree::ran_on_tip(g, tip))
+            .cloned()
+            .collect();
+        if vouched.is_empty() {
             continue;
         }
         let spec = format!("{tip}^{{tree}}");
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        if crate::gate_stamp::stamp_push(tip, &tree, gates) {
-            stamped.push(tip);
+        if crate::gate_stamp::stamp_push(tip, &tree, &vouched) {
+            for g in vouched {
+                if !stamped.contains(&g) {
+                    stamped.push(g);
+                }
+            }
         }
     }
     if !stamped.is_empty() {
         crate::say!(
             "{} stamped {} for this tree — the next push of it skips them ({})",
             valid_sign(),
-            highlight(&gates.join(" ")),
+            highlight(&stamped.join(" ")),
             crate::gate_stamp::NOTES_REF,
         );
     }

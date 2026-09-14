@@ -90,7 +90,10 @@ prints, and lets the commit through. It is your choice, per check.
 **command** — the rest of the line, split on whitespace and executed directly
 from the repository root, through the same program resolution the built-ins
 use — so `npx` and friends work on Windows, where a bare `Command::new` cannot
-start a `.cmd`.
+start a `.cmd`. On `pre-push` it runs once per pushed ref, over that ref's
+changed files, and — with [`amont.testPushedTree`](configuration.md#amonttestpushedtree--test-what-you-are-pushing)
+— in a throwaway checkout of that ref's tip rather than your working tree,
+exactly as the built-in test suites do.
 
 ## Your command gets the file list
 

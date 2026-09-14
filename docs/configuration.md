@@ -463,7 +463,9 @@ so. That is fast and usually what you want, but it is not what you are pushing:
 an uncommitted fix makes a broken commit look green.
 
 With this set, the suite runs in a throwaway checkout of the commits being
-pushed, and your tree is not touched. It costs a second checkout and a build
+pushed, and your tree is not touched. This covers every pre-push gate that
+runs a suite — the built-ins and any `pre-push` line in your `amont.conf`
+alike, each once per pushed ref. It costs a second checkout and a build
 that cannot reuse your `target/` cache, which is why it is opt-in rather than
 the default. A checkout that needs a step before it can run anything — a
 pnpm install, say — names it in `amont.snapshotPrepare`, above.

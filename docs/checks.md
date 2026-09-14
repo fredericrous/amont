@@ -390,11 +390,13 @@ are stamped or skipped; `branch-protect`, `secrets` and the other unscoped
 checks ask questions about the *push* and always run. A stamp is written
 only for content the suite actually tested:
 
-- with `amont.testPushedTree`, that is the tip itself — **unless the
-  snapshot could not be made.** A `worktree add` that fails, or an
-  `amont.snapshotPrepare` that exits non-zero, falls back to the working
-  tree and says so; that tip is then stamped by nothing, because the suite
-  that passed never saw its content;
+- with `amont.testPushedTree`, that is the tip itself, for each gate that
+  actually ran in its checkout — the stamp is written from the record of
+  which gates were handed the snapshot, never from the config flag —
+  **unless the snapshot could not be made.** A `worktree add` that fails,
+  or an `amont.snapshotPrepare` that exits non-zero, falls back to the
+  working tree and says so; that tip is then stamped by nothing, because
+  the suite that passed never saw its content;
 - in the default working-tree mode it is the tip only when `HEAD` *is* the
   tip and no tracked file was modified **when the gate started** — captured
   before any check runs, so a formatter or a snapshot-updating suite cannot

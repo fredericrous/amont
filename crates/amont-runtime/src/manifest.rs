@@ -466,43 +466,119 @@ impl Check for External {
             return Outcome::Unavailable;
         }
 
-        let in_scope = match self.stage {
-            Stage::PreCommit => crate::hooks::common::staged_files(&[]),
-            Stage::PrePush => crate::pushrefs::changed_files(ctx.push.get()),
-        };
         // Two questions, two path lists. `touches` asks what the CHANGE
         // contains; `opted_in` asks what the REPOSITORY carries, and answering
-        // the second from `in_scope` made a `+marker` row fire only when the
-        // marker itself was staged — so a pack that followed our own advice to
-        // gate every row was a pack that never ran. `tracked_files` returning
-        // `None` means git would not say, and an unverified answer must not
-        // silently switch a check off: run it, and let the command judge.
+        // the second from the change set made a `+marker` row fire only when
+        // the marker itself was staged — so a pack that followed our own
+        // advice to gate every row was a pack that never ran. `tracked_files`
+        // returning `None` means git would not say, and an unverified answer
+        // must not silently switch a check off: run it, and let the command
+        // judge.
         let opted_in =
             crate::hooks::common::tracked_files().map_or(true, |tracked| scope.opted_in(&tracked));
-        // No `is_unscoped()` guard: `touches` already answers true for an
-        // unscoped trigger, so the gate reduces to the opt-in — which is what
-        // a row with nothing on the left (`+Gemfile`: "any change, in a
-        // repository that carries a Gemfile") means. Guarding on it here
-        // skipped the opt-in for exactly those rows.
-        if !(scope.touches(&in_scope) && opted_in) {
-            return Outcome::Passed;
-        }
-        // The paths the declaration's scope actually matched — what a builtin
-        // would be handed. Computed here, after the gate, and given to the
-        // command two ways: `$AMONT_FILES` always (newline-separated, so a
-        // wrapper script never re-derives `git diff --cached` and diverges
-        // from the set this gate judged — `amont run --all-files` overrides
-        // the set in-process, invisibly to any child that asks git itself),
-        // and appended to the argv when the declaration carries the `files`
-        // marker.
-        let matched = scoped(scope, &in_scope);
-        // A files-taking command with no files has nothing to judge — running
-        // it bare would make most linters error on an empty argv, blocking a
-        // commit over nothing. The builtin convention, applied here.
-        if files && matched.is_empty() {
+        if !opted_in {
             return Outcome::Passed;
         }
         let root = crate::hooks::common::repo_root();
+        match self.stage {
+            Stage::PreCommit => {
+                let staged = crate::hooks::common::staged_files(&[]);
+                let Some(matched) = files_to_judge(scope, files, &staged) else {
+                    return Outcome::Passed;
+                };
+                self.execute(
+                    settings,
+                    program,
+                    args,
+                    fix,
+                    files,
+                    &matched,
+                    Path::new(&root),
+                )
+            }
+            // PER REF, and — when `amont.testPushedTree` asks for it — in a
+            // checkout of that ref's tip, exactly as the built-in suites do
+            // and for the same reason: a declared `test *.rs block cargo
+            // test` line used to run once, in the working tree, whatever the
+            // flag said. It passed on an uncommitted fix, and `stamp_tips`
+            // then read the flag and stamped it onto the tip as though it had
+            // run there, so the next push of that tip skipped it. The flag is
+            // a promise about what a push gate tests; a declared gate is a
+            // push gate.
+            Stage::PrePush => {
+                let zero = crate::git::stdout(&["hash-object", "--stdin"])
+                    .map(|h| "0".repeat(h.len()))
+                    .unwrap_or_else(|| "0".repeat(40));
+                for r in ctx.push.get() {
+                    if r.local_oid == zero {
+                        continue; // deleting a ref pushes no code
+                    }
+                    let changed = crate::pushrefs::changed_files_for(r, &zero);
+                    let Some(matched) = files_to_judge(scope, files, &changed) else {
+                        continue;
+                    };
+                    // `_guard` owns the checkout for the length of this ref's
+                    // run; dropping it removes the worktree before the next
+                    // ref's begins. `self.id`, because that is what a stamp
+                    // names and what `stamp_tips` asks `ran_on_tip` about.
+                    let (run_in, _guard) =
+                        crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, &self.id);
+                    match self.execute(settings, program, args, fix, files, &matched, &run_in) {
+                        Outcome::Passed => {}
+                        other => return other,
+                    }
+                }
+                Outcome::Passed
+            }
+        }
+    }
+}
+
+/// The paths a declared check is handed for `in_scope`, or `None` when it
+/// has nothing to judge and must not run.
+///
+/// No `is_unscoped()` guard: `touches` already answers true for an unscoped
+/// trigger, so the gate reduces to the opt-in the caller has already
+/// settled — which is what a row with nothing on the left (`+Gemfile`: "any
+/// change, in a repository that carries a Gemfile") means. Guarding on it
+/// here skipped the opt-in for exactly those rows.
+///
+/// The paths are what the declaration's scope actually matched — what a
+/// builtin would be handed. A files-taking command with no files has
+/// nothing to judge — running it bare would make most linters error on an
+/// empty argv, blocking a commit over nothing. The builtin convention,
+/// applied here.
+fn files_to_judge(scope: &Scope, files: bool, in_scope: &[String]) -> Option<Vec<String>> {
+    if !scope.touches(in_scope) {
+        return None;
+    }
+    let matched = scoped(scope, in_scope);
+    if files && matched.is_empty() {
+        return None;
+    }
+    Some(matched)
+}
+
+impl External {
+    /// Spawn the declared command over `matched`, in `run_in`, and judge it.
+    ///
+    /// `matched` reaches the command two ways: `$AMONT_FILES` always
+    /// (newline-separated, so a wrapper script never re-derives `git diff
+    /// --cached` and diverges from the set this gate judged — `amont run
+    /// --all-files` overrides the set in-process, invisibly to any child that
+    /// asks git itself), and appended to the argv when the declaration
+    /// carries the `files` marker.
+    #[allow(clippy::too_many_arguments)]
+    fn execute(
+        &self,
+        settings: &crate::config::Settings,
+        program: &str,
+        args: &[String],
+        fix: Fix,
+        files: bool,
+        matched: &[String],
+        run_in: &Path,
+    ) -> Outcome {
         // Through `program()`, exactly like every builtin: on Windows,
         // `Command::new("npx")` cannot start `npx.cmd`, and an external that
         // fails to SPAWN reports Unavailable — warn, never block — so the
@@ -510,7 +586,7 @@ impl Check for External {
         // for builtins scans only `src/hooks/`; this call is the manifest's
         // half of the same rule.
         let mut cmd = Command::new(crate::hooks::common::program(program));
-        cmd.args(args).current_dir(&root).stdin(Stdio::null());
+        cmd.args(args).current_dir(run_in).stdin(Stdio::null());
         // Env, not only argv: newline-separated so ordinary shell loops can
         // read it. A path with a newline in its name would split wrong — the
         // list is repo-controlled and such a path is already hostile input —
@@ -527,7 +603,7 @@ impl Check for External {
             },
         );
         if files {
-            cmd.args(&matched);
+            cmd.args(matched);
         }
         crate::hooks::common::strip_git_env(&mut cmd);
         // Under the deadline: repo-authored code that outlives the budget is
@@ -561,7 +637,7 @@ impl Check for External {
                 // something; re-stage exactly what moved. Only its own scope,
                 // so it cannot stage a file it never looked at.
                 if fix == Fix::Rewrite && crate::hooks::common::fixing_enabled(settings) {
-                    match crate::hooks::common::restage(&matched) {
+                    match crate::hooks::common::restage(matched) {
                         Restaged::Staged => {
                             crate::hooks::common::ok(
                                 settings,

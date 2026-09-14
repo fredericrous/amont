@@ -286,7 +286,11 @@ pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) 
 /// second ref's tests against the first ref's tree — a real failure in the
 /// untested branch reported as a pass because nothing actually ran against
 /// it. Each ref that touches Rust gets its own worktree and its own verdict.
-pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn test(
+    settings: &crate::config::Settings,
+    refs: &[crate::pushrefs::PushRef],
+    gate: &str,
+) -> Outcome {
     // `Unavailable`, never `Passed`, when git will not answer — same argument
     // and same wording as run-tests-js: a gate must not report green having
     // asked nothing.
@@ -307,7 +311,8 @@ pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef
         // Where THIS ref's suite runs decides what it is answering about.
         // `_guard` owns the checkout for the length of this ref's run;
         // dropping it removes the worktree before the next ref's begins.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
+        let (where_, _guard) =
+            crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, gate);
         let roots: Vec<PathBuf> = roots
             .iter()
             .map(|rt| {
