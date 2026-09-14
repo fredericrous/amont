@@ -29,9 +29,9 @@ use crate::hooks::common::{fail, fixing_enabled, hl, ok, repo_root, restage, war
 const BLOCK: &str = "AGENTS.md";
 const POINTER: &str = "CLAUDE.md";
 
-pub fn run() -> Outcome {
+pub fn run(settings: &crate::config::Settings) -> Outcome {
     let root = PathBuf::from(repo_root());
-    run_in(&root)
+    run_in(settings, &root)
 }
 
 /// Does `path` carry our markers at all? Answered from the file alone, so
@@ -40,7 +40,7 @@ fn has_markers(path: &Path) -> bool {
     std::fs::read_to_string(path).is_ok_and(|s| s.contains(agents_md::START))
 }
 
-pub fn run_in(root: &Path) -> Outcome {
+pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {
     let block = root.join(BLOCK);
     let pointer = root.join(POINTER);
     if !has_markers(&block) && !has_markers(&pointer) {
@@ -48,7 +48,7 @@ pub fn run_in(root: &Path) -> Outcome {
     }
     let mut drifted: Vec<&str> = Vec::new();
     for (name, path, result) in [
-        (BLOCK, &block, agents_md::check(&block)),
+        (BLOCK, &block, agents_md::check(settings, &block)),
         (POINTER, &pointer, agents_md::check_pointer(&pointer)),
     ] {
         match result {
@@ -63,15 +63,15 @@ pub fn run_in(root: &Path) -> Outcome {
         }
     }
     if drifted.is_empty() {
-        ok("AGENTS.md matches what this amont generates");
+        ok(settings, "AGENTS.md matches what this amont generates");
         return Outcome::Passed;
     }
     let names = drifted.join(" and ");
-    if fixing_enabled() {
+    if fixing_enabled(settings) {
         let mut written: Vec<String> = Vec::new();
         for name in &drifted {
             let result = if *name == BLOCK {
-                agents_md::write(&block)
+                agents_md::write(settings, &block)
             } else {
                 agents_md::write_pointer(&pointer)
             };
@@ -85,10 +85,13 @@ pub fn run_in(root: &Path) -> Outcome {
         }
         match restage(&written) {
             Restaged::Staged => {
-                ok(&format!(
-                    "{names} regenerated for amont {} and re-staged",
-                    env!("CARGO_PKG_VERSION")
-                ));
+                ok(
+                    settings,
+                    &format!(
+                        "{names} regenerated for amont {} and re-staged",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                );
                 return Outcome::Fixed;
             }
             Restaged::Failed(stuck) => {

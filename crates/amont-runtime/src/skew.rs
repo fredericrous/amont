@@ -85,8 +85,8 @@ fn remember(version: &str) {
 /// old to KNOW about minVersion cannot honour it anyway — so the floor is
 /// advice that gets loudly better with adoption, never a gate that lies
 /// about being one.
-pub fn announce_minimum() {
-    let Some(want) = crate::config::string_value("amont.minVersion") else {
+pub fn announce_minimum(settings: &crate::config::Settings) {
+    let Some(want) = crate::config::string_value(settings, "amont.minVersion") else {
         return;
     };
     let Some(min) = parse_version(&want) else {

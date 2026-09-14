@@ -415,6 +415,7 @@ impl Check for External {
     }
 
     fn run(&self, ctx: &Ctx) -> Outcome {
+        let settings = ctx.settings;
         let (scope, program, args, fix, files) = match &self.kind {
             Kind::Runnable {
                 scope,
@@ -456,7 +457,7 @@ impl Check for External {
         // then show a check that never executed as clean. With a message,
         // because every other `Unavailable` in this codebase says what was
         // missing and an unexplained count on every commit is worse than none.
-        if fix == Fix::Rewrite && !crate::hooks::common::fixing_enabled() {
+        if fix == Fix::Rewrite && !crate::hooks::common::fixing_enabled(settings) {
             crate::hooks::common::warn(&format!(
                 "{}: declares fix, and {} is off — not run",
                 crate::ui::highlight(&self.short_name),
@@ -532,7 +533,7 @@ impl Check for External {
         // Under the deadline: repo-authored code that outlives the budget is
         // killed and FAILS — "hung" must not read as "passed", and pre-push
         // runs these serially where one hang stalls the entire push.
-        let status = match crate::hooks::common::status_streamed(&mut cmd) {
+        let status = match crate::hooks::common::status_streamed(settings, &mut cmd) {
             Ok(crate::hooks::common::Ran::Status(s)) => Ok(s),
             Ok(crate::hooks::common::Ran::TimedOut(budget)) => {
                 crate::hooks::common::say_timed_out(&self.short_name, budget);
@@ -559,13 +560,16 @@ impl Check for External {
                 // A declared fixer that ran clean may still have rewritten
                 // something; re-stage exactly what moved. Only its own scope,
                 // so it cannot stage a file it never looked at.
-                if fix == Fix::Rewrite && crate::hooks::common::fixing_enabled() {
+                if fix == Fix::Rewrite && crate::hooks::common::fixing_enabled(settings) {
                     match crate::hooks::common::restage(&matched) {
                         Restaged::Staged => {
-                            crate::hooks::common::ok(&format!(
-                                "{} fixed and re-staged",
-                                crate::ui::highlight(&self.short_name)
-                            ));
+                            crate::hooks::common::ok(
+                                settings,
+                                &format!(
+                                    "{} fixed and re-staged",
+                                    crate::ui::highlight(&self.short_name)
+                                ),
+                            );
                             return Outcome::Fixed;
                         }
                         // `git add` failed, so the index still holds whatever

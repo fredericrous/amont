@@ -14,7 +14,7 @@ pub const EXTS: &[&str] = &[".yaml", ".yml", ".tpl"];
 /// directory holding this file.
 pub const MARKERS: &[&str] = &["Chart.yaml"];
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -62,10 +62,13 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         ));
         return Outcome::Failed;
     }
-    ok(&format!(
-        "helm lint passed ({} chart{})",
-        charts.len(),
-        if charts.len() == 1 { "" } else { "s" }
-    ));
+    ok(
+        settings,
+        &format!(
+            "helm lint passed ({} chart{})",
+            charts.len(),
+            if charts.len() == 1 { "" } else { "s" }
+        ),
+    );
     Outcome::Passed
 }

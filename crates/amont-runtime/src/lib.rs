@@ -240,6 +240,7 @@ pub struct ListOptions {
 /// pure helpers (unit-tested) and config-dependent behaviour (integration
 /// tested) for the precedent.
 pub fn gather_checks(
+    settings: &crate::config::Settings,
     stage_filter: Option<check::Stage>,
     paths: &[String],
     manifest: &manifest::Manifest,
@@ -249,8 +250,8 @@ pub fn gather_checks(
         Some(s) => vec![s],
         None => vec![Stage::PreCommit, Stage::PrePush],
     };
-    let skips = configured_skips();
-    let overrides = registry::Overrides::read();
+    let skips = configured_skips(settings);
+    let overrides = registry::Overrides::read(settings);
     let externals_by_id: std::collections::BTreeMap<&str, &manifest::External> = manifest
         .externals
         .iter()
@@ -281,7 +282,8 @@ pub fn gather_checks(
                 // Which source? Policy skips read differently from machine
                 // skips — the legend and the fleet detail pane echo this
                 // wording, so the three move together.
-                let via = if policy::current()
+                let via = if settings
+                    .policy()
                     .skips
                     .iter()
                     .any(|s| skip_suppresses(name, s))
@@ -566,6 +568,7 @@ pub const LIST_FORMAT: &str = "amont-list-v1";
 /// object, not a bare array, so a field can be added later without changing
 /// the top-level shape.
 pub fn print_json(
+    settings: &crate::config::Settings,
     stage_filter: Option<check::Stage>,
     pushed: bool,
     listings: &[CheckListing],
@@ -612,7 +615,7 @@ pub fn print_json(
         })
         .collect();
 
-    let (style, rows) = commit_style::describe();
+    let (style, rows) = commit_style::describe(settings);
     println!(
         "{}",
         json::object(&[
@@ -737,14 +740,18 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     // Loaded HERE, with the repository this command is standing in — the
     // owned-manifest shape every entrypoint now follows. See manifest::load.
     let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
-    // INVARIANT: policy installed immediately after every manifest::load.
-    policy::install(manifest.policy.clone());
-    let listings = gather_checks(opts.stage, &paths, &manifest);
+    // The policy is OWNED here and borrowed downstream. The invariant that
+    // used to be a comment — install immediately after load, before any
+    // config read — is now the borrow checker's: nothing downstream can read
+    // configuration without being handed this.
+    let settings = crate::config::Settings::new(manifest.policy.clone());
+    let listings = gather_checks(&settings, opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
     let downgrades = downgrade::read();
-    let conventions_apply = dispatch::conventions_apply(&manifest);
+    let conventions_apply = dispatch::conventions_apply(&settings, &manifest);
     if opts.json {
         print_json(
+            &settings,
             opts.stage,
             opts.pushed,
             &listings,
@@ -757,7 +764,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         // Not filtered by `--stage`: commit style belongs to no stage, and
         // suppressing it for `--stage pre-push` would only hide it from the
         // reader who narrowed their question.
-        let (style, rows) = commit_style::describe();
+        let (style, rows) = commit_style::describe(&settings);
         print_commit_style(&style, &rows);
         print_bypasses(&bypasses);
         print_downgrades(&downgrades);
@@ -885,14 +892,14 @@ fn describe(s: crate::check::Scope) -> String {
 /// lines — the union every resolution site sees. Callers that must tell the
 /// two apart (the dispatcher announces them separately) use
 /// [`skips_by_source`].
-pub fn configured_skips() -> Vec<String> {
-    policy::union_skips(machine_skips(), policy::current())
+pub fn configured_skips(settings: &config::Settings) -> Vec<String> {
+    policy::union_skips(machine_skips(), settings.policy())
 }
 
 /// `(machine, policy)` — the split the announcements need: "you decided
 /// this" and "your team decided this" are different things to be told.
-pub fn skips_by_source() -> (Vec<String>, Vec<String>) {
-    (machine_skips(), policy::current().skips.clone())
+pub fn skips_by_source(settings: &config::Settings) -> (Vec<String>, Vec<String>) {
+    (machine_skips(), settings.policy().skips.clone())
 }
 
 fn machine_skips() -> Vec<String> {

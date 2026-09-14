@@ -10,7 +10,7 @@ use crate::check::Outcome;
 /// prevents.
 pub const EXTS: &[&str] = &[".js", ".jsx", ".ts", ".tsx", ".vue"];
 
-pub fn run(args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -41,7 +41,7 @@ pub fn run(args: &[std::ffi::OsString]) -> Outcome {
             .map(|p| p.contains("\"eslintConfig\""))
             .unwrap_or(false);
     if !has_config {
-        ok("ESLint skipped (no eslint config)");
+        ok(settings, "ESLint skipped (no eslint config)");
         return Outcome::Passed;
     }
 
@@ -68,10 +68,10 @@ pub fn run(args: &[std::ffi::OsString]) -> Outcome {
     extra.extend(args.iter().filter_map(|a| a.to_str()).map(str::to_owned));
     extra.push("--".to_string());
     extra.extend(files);
-    if !run_tool(&root, &argv, &extra) {
+    if !run_tool(settings, &root, &argv, &extra) {
         fail("ESLint issues found. Please fix");
         return Outcome::Failed;
     }
-    ok("ESLint passed");
+    ok(settings, "ESLint passed");
     Outcome::Passed
 }

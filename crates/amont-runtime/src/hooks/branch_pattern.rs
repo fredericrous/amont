@@ -32,12 +32,12 @@ use crate::vocabulary;
 ///     on a server. pre-push authorises an existing branch by its non-zero
 ///     remote oid; the remote-tracking ref is the local mirror of that same
 ///     fact, and costs no network to consult.
-pub fn early() -> Outcome {
+pub fn early(settings: &crate::config::Settings) -> Outcome {
     let Some(branch) = git::current_branch() else {
         return Outcome::Passed;
     };
     if conforms(branch) {
-        super::common::ok("Branch name conforms with authorized pattern");
+        super::common::ok(settings, "Branch name conforms with authorized pattern");
         return Outcome::Passed;
     }
     if !git::has_remote() {
@@ -132,7 +132,11 @@ fn name_to_validate<'a>(r: &'a PushRef, zero: &str) -> Option<&'a str> {
 /// The `show-branch` probe is gone, replaced by the non-zero remote oid: git
 /// has already told us whether the branch exists on the server, and the probe
 /// depended on a remote-tracking ref that a fresh clone may not have.
-pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(
+    settings: &crate::config::Settings,
+    refs: &[PushRef],
+    args: &[std::ffi::OsString],
+) -> Outcome {
     // Matches `branch_protect::no_refs_is_a_pass`: nothing pushed, nothing to
     // judge.
     if refs.is_empty() {
@@ -147,7 +151,10 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         .filter_map(|r| name_to_validate(r, &zero))
         .collect();
     if candidates.is_empty() {
-        super::common::ok("No new branch name to validate. Push is authorized.");
+        super::common::ok(
+            settings,
+            "No new branch name to validate. Push is authorized.",
+        );
         return Outcome::Passed;
     }
 
@@ -169,10 +176,13 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
     // check — git failing is NOT the same as "no branches".
     match git::probe(
         &["ls-remote", "--exit-code", "--heads", remote],
-        super::common::network_probe_budget(),
+        super::common::network_probe_budget(settings),
     ) {
         git::Probe::Exit(2) => {
-            super::common::ok("Remote has no branches yet (initial push). Name is authorized.");
+            super::common::ok(
+                settings,
+                "Remote has no branches yet (initial push). Name is authorized.",
+            );
             return Outcome::Passed;
         }
         git::Probe::TimedOut(secs) => {
@@ -207,13 +217,17 @@ pub fn run(refs: &[PushRef], args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
 
-    super::common::ok("Branch name conforms with authorized pattern");
+    super::common::ok(settings, "Branch name conforms with authorized pattern");
     Outcome::Passed
 }
 
 #[cfg(test)]
 mod tests {
     use super::{conforms, name_to_validate, run, Outcome, PushRef};
+
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
 
     const ZERO: &str = "0000000000000000000000000000000000000000";
 
@@ -265,7 +279,7 @@ mod tests {
     /// Matches `branch_protect::no_refs_is_a_pass`, and reaches no git at all.
     #[test]
     fn no_refs_is_a_pass() {
-        assert_eq!(run(&[], &[]), Outcome::Passed);
+        assert_eq!(run(&test_settings(), &[], &[]), Outcome::Passed);
     }
 
     #[test]

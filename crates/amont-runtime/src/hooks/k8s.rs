@@ -49,7 +49,7 @@ pub fn declares_argo_kind(content: &str) -> bool {
     })
 }
 
-pub fn argo_lint(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn argo_lint(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let staged = k8s_staged();
     if staged.is_empty() {
         return Outcome::Passed;
@@ -86,16 +86,19 @@ pub fn argo_lint(_args: &[std::ffi::OsString]) -> Outcome {
     argv.extend(workflows.iter().cloned());
     let mut cmd = Command::new(program("argo"));
     cmd.args(&argv).current_dir(&root).stdin(Stdio::null());
-    let okd = super::common::bounded_success(&mut cmd, "argo");
+    let okd = super::common::bounded_success(settings, &mut cmd, "argo");
     if !okd {
         fail("argo lint failed (output above)");
         return Outcome::Failed;
     }
     let n = workflows.len();
-    ok(&format!(
-        "argo lint passed ({n} workflow manifest{})",
-        if n > 1 { "s" } else { "" }
-    ));
+    ok(
+        settings,
+        &format!(
+            "argo lint passed ({n} workflow manifest{})",
+            if n > 1 { "s" } else { "" }
+        ),
+    );
     Outcome::Passed
 }
 
@@ -113,7 +116,7 @@ pub fn kube_linter_configs(root: &str) -> Vec<String> {
     out
 }
 
-pub fn kube_linter(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn kube_linter(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     if k8s_staged().is_empty() {
         return Outcome::Passed;
     }
@@ -148,7 +151,7 @@ pub fn kube_linter(_args: &[std::ffi::OsString]) -> Outcome {
         cmd.args(["lint", ".", "--config", cfg])
             .current_dir(&root)
             .stdin(Stdio::null());
-        let okd = super::common::bounded_success(&mut cmd, "kube-linter");
+        let okd = super::common::bounded_success(settings, &mut cmd, "kube-linter");
         if !okd {
             fail(&format!("kube-linter ({cfg}) found issues"));
             overall = 1;
@@ -158,10 +161,13 @@ pub fn kube_linter(_args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
     let n = configs.len();
-    ok(&format!(
-        "kube-linter passed ({n} config{})",
-        if n > 1 { "s" } else { "" }
-    ));
+    ok(
+        settings,
+        &format!(
+            "kube-linter passed ({n} config{})",
+            if n > 1 { "s" } else { "" }
+        ),
+    );
     Outcome::Passed
 }
 
@@ -213,7 +219,7 @@ pub fn skip_kinds(content: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn kubeconform(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn kubeconform(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let staged = k8s_staged();
     if staged.is_empty() {
         return Outcome::Passed;
@@ -246,7 +252,7 @@ pub fn kubeconform(_args: &[std::ffi::OsString]) -> Outcome {
 
     let mut overall = 0;
     for r in &roots {
-        if !validate_root(&root, r, skip.as_deref()) {
+        if !validate_root(settings, &root, r, skip.as_deref()) {
             fail(&format!("kubeconform failed for {r}"));
             overall = 1;
         }
@@ -255,17 +261,25 @@ pub fn kubeconform(_args: &[std::ffi::OsString]) -> Outcome {
         return Outcome::Failed;
     }
     let n = roots.len();
-    ok(&format!(
-        "kubeconform passed ({n} kustomization root{})",
-        if n > 1 { "s" } else { "" }
-    ));
+    ok(
+        settings,
+        &format!(
+            "kubeconform passed ({n} kustomization root{})",
+            if n > 1 { "s" } else { "" }
+        ),
+    );
     Outcome::Passed
 }
 
 /// `kustomize build <root> | kubeconform …`, with the shell's `pipefail`
 /// semantics: a kustomize failure fails the check even when kubeconform would
 /// happily consume the empty input.
-fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
+fn validate_root(
+    settings: &crate::config::Settings,
+    root: &str,
+    sub: &str,
+    skip: Option<&str>,
+) -> bool {
     // `--` before `sub`: it is a directory name walked up from staged paths,
     // so a kustomization root named e.g. `-overlay` would otherwise be read
     // as a flag by kustomize's own (cobra) parser.
@@ -324,13 +338,13 @@ fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
 
     let mut cmd = Command::new(program("kubeconform"));
     cmd.args(&argv).current_dir(root).stdin(Stdio::from(out));
-    let conform = super::common::bounded_success(&mut cmd, "kubeconform");
+    let conform = super::common::bounded_success(settings, &mut cmd, "kubeconform");
     // kubeconform's deadline closes the pipe, which normally ends kustomize
     // too — but a kustomize hung BEFORE writing (a remote base fetching over
     // the network, say) never feels the pipe close, and an unbounded wait
     // here would inherit its hang. Same clock, and a kill on expiry.
     let built = matches!(
-        super::common::wait_within(&mut build, super::common::check_timeout(), 0, None),
+        super::common::wait_within(&mut build, super::common::check_timeout(settings), 0, None),
         Ok(super::common::Ran::Status(s)) if s.success()
     );
     built && conform
@@ -339,6 +353,10 @@ fn validate_root(root: &str, sub: &str, skip: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
 
     #[test]
     fn recognises_every_argo_kind_and_nothing_else() {
@@ -393,7 +411,7 @@ mod tests {
 
         let root = tmp.to_string_lossy().to_string();
         assert!(
-            validate_root(&root, "overlay", None),
+            validate_root(&test_settings(), &root, "overlay", None),
             "a kustomization built from ../shared must validate — kustomize-controller renders it"
         );
         let _ = std::fs::remove_dir_all(&tmp);

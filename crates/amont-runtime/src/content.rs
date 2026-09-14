@@ -27,12 +27,12 @@ use crate::hooks::{ban_terms, large_files, merge_conflict, secrets};
 /// bytes: a file's SIZE is a byte count, and whether a file is text at all is
 /// git's NUL heuristic. Converting first would answer both questions wrongly
 /// for exactly the files where they matter.
-pub fn scan(file: &str, bytes: &[u8]) -> Vec<Finding> {
+pub fn scan(settings: &crate::config::Settings, file: &str, bytes: &[u8]) -> Vec<Finding> {
     let mut out = Vec::new();
 
     // Size first, and unconditionally: it is the one thing still worth saying
     // about a file too big or too binary for everything below.
-    if let Some(f) = large_files::scan(file, bytes.len() as u64) {
+    if let Some(f) = large_files::scan(settings, file, bytes.len() as u64) {
         out.push(f);
     }
     if !secrets::is_scannable(bytes) {
@@ -72,16 +72,21 @@ fn sorted(mut findings: Vec<Finding>) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
+
     use crate::check::Severity;
 
     #[test]
     fn a_clean_file_has_nothing_to_say() {
-        assert!(scan("app.js", b"const x = 1;\n").is_empty());
+        assert!(scan(&test_settings(), "app.js", b"const x = 1;\n").is_empty());
     }
 
     #[test]
     fn a_banned_term_is_placed() {
-        let f = scan("app.js", b"const x = 1;\n\n  debugger;\n");
+        let f = scan(&test_settings(), "app.js", b"const x = 1;\n\n  debugger;\n");
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].check, "ban-terms");
         assert_eq!(f[0].line, Some(3));
@@ -91,7 +96,7 @@ mod tests {
     /// The extension gate still applies: `debugger;` in a `.txt` is prose.
     #[test]
     fn scope_is_respected_outside_the_index_too() {
-        assert!(scan("notes.txt", b"debugger;\n").is_empty());
+        assert!(scan(&test_settings(), "notes.txt", b"debugger;\n").is_empty());
     }
 
     /// A binary blob gets a size verdict and no text scanning — reading it as
@@ -100,7 +105,7 @@ mod tests {
     fn a_binary_file_is_sized_but_not_read() {
         let mut bytes = vec![0u8; 200];
         bytes.extend_from_slice(b"debugger;");
-        let f = scan("blob.js", &bytes);
+        let f = scan(&test_settings(), "blob.js", &bytes);
         assert!(f.iter().all(|f| f.check != "ban-terms"), "{f:?}");
     }
 

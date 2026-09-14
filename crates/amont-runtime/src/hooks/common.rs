@@ -353,9 +353,10 @@ pub fn strip_git_env(cmd: &mut Command) {
 /// the tool that keeps printing and never finishes, which is rare enough to
 /// afford an hour. `0` disables. Read once per process: twenty concurrent
 /// checks must not each spawn a `git config` to learn the same number.
-pub fn check_timeout() -> u64 {
-    static TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *TIMEOUT.get_or_init(|| crate::config::integer_or("amont.timeout", 3600, 0..=86_400) as u64)
+pub fn check_timeout(settings: &crate::config::Settings) -> u64 {
+    *settings.timeout.get_or_init(|| {
+        crate::config::integer_or(settings, "amont.timeout", 3600, 0..=86_400) as u64
+    })
 }
 
 /// The SILENCE budget: how long a spawned command may go without writing a
@@ -368,9 +369,10 @@ pub fn check_timeout() -> u64 {
 /// letting a chatty twenty-five-minute suite finish. Only applies where the
 /// output is observed (the captured runners); a command inheriting the
 /// terminal directly answers to the ceiling alone. `0` disables.
-pub fn idle_timeout() -> u64 {
-    static IDLE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *IDLE.get_or_init(|| crate::config::integer_or("amont.idleTimeout", 120, 0..=86_400) as u64)
+pub fn idle_timeout(settings: &crate::config::Settings) -> u64 {
+    *settings.idle.get_or_init(|| {
+        crate::config::integer_or(settings, "amont.idleTimeout", 120, 0..=86_400) as u64
+    })
 }
 
 /// `secs` as people read it: `12s`, `8m12s`, `1h02m`.
@@ -412,8 +414,8 @@ impl Activity {
 /// for deciding whether the remote is reachable. Shrinking `amont.timeout`
 /// below the cap shrinks this too, and `0` keeps meaning no deadline —
 /// somebody who disabled the clock disabled all of it.
-pub fn network_probe_budget() -> u64 {
-    match check_timeout() {
+pub fn network_probe_budget(settings: &crate::config::Settings) -> u64 {
+    match check_timeout(settings) {
         0 => 0,
         t => t.min(30),
     }
@@ -459,8 +461,11 @@ pub enum Ran {
 /// The kill reaches the direct child only. A grandchild that detached
 /// survives, orphaned — but the COMMIT is no longer hostage to it, which is
 /// the property that matters.
-pub fn status_within(cmd: &mut Command) -> std::io::Result<Ran> {
-    status_within_secs(cmd, check_timeout())
+pub fn status_within(
+    settings: &crate::config::Settings,
+    cmd: &mut Command,
+) -> std::io::Result<Ran> {
+    status_within_secs(cmd, check_timeout(settings))
 }
 
 /// [`status_within`] with an explicit ceiling — the testable seam. The
@@ -479,6 +484,7 @@ pub fn status_within_secs(cmd: &mut Command, budget_secs: u64) -> std::io::Resul
 /// make the silence budget observable. The shared runner behind the
 /// streamed, captured and discarded variants.
 fn run_observed(
+    settings: &crate::config::Settings,
     cmd: &mut Command,
     on_output: impl Fn(&[u8]) + Send + Sync + 'static,
 ) -> std::io::Result<Ran> {
@@ -520,7 +526,12 @@ fn run_observed(
             }
         }));
     }
-    let ran = wait_within(&mut child, check_timeout(), idle_timeout(), Some(&activity));
+    let ran = wait_within(
+        &mut child,
+        check_timeout(settings),
+        idle_timeout(settings),
+        Some(&activity),
+    );
     for r in readers {
         let _ = r.join();
     }
@@ -538,9 +549,12 @@ fn run_observed(
 /// the terminal showed before. The readers are threads, not processes, and
 /// they are joined before the status is returned so a block can never grow
 /// after its check finished.
-pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
+pub fn status_streamed(
+    settings: &crate::config::Settings,
+    cmd: &mut Command,
+) -> std::io::Result<Ran> {
     let Some((stage, idx)) = crate::live::current_sink() else {
-        return status_within(cmd);
+        return status_within(settings, cmd);
     };
     if crate::live::watching() {
         // The block lands on a real terminal but the tool sees a pipe and
@@ -549,7 +563,7 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
             .env("CLICOLOR_FORCE", "1")
             .env("CARGO_TERM_COLOR", "always");
     }
-    run_observed(cmd, move |bytes| stage.append_raw(idx, bytes))
+    run_observed(settings, cmd, move |bytes| stage.append_raw(idx, bytes))
 }
 
 /// Run to completion under the `amont.timeout` deadline with stdout and
@@ -557,10 +571,13 @@ pub fn status_streamed(cmd: &mut Command) -> std::io::Result<Ran> {
 /// checks need: their verdict lives in the tool's output, not its exit
 /// code alone. Arrival-ordered merge of both streams, like
 /// [`status_streamed`]'s blocks. `None` when the child cannot be spawned.
-pub fn capture_within(cmd: &mut Command) -> Option<(Ran, String)> {
+pub fn capture_within(
+    settings: &crate::config::Settings,
+    cmd: &mut Command,
+) -> Option<(Ran, String)> {
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let sink = std::sync::Arc::clone(&text);
-    let ran = run_observed(cmd, move |bytes| {
+    let ran = run_observed(settings, cmd, move |bytes| {
         sink.lock()
             .unwrap_or_else(|p| p.into_inner())
             .push_str(&String::from_utf8_lossy(bytes));
@@ -680,8 +697,8 @@ pub fn say_timed_out(what: &str, k: Killed) {
 
 /// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
 /// tool spawns want. A timeout says so, names `what`, and reads as failure.
-pub fn bounded_success(cmd: &mut Command, what: &str) -> bool {
-    match status_streamed(cmd) {
+pub fn bounded_success(settings: &crate::config::Settings, cmd: &mut Command, what: &str) -> bool {
+    match status_streamed(settings, cmd) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(what, b);
@@ -692,7 +709,12 @@ pub fn bounded_success(cmd: &mut Command, what: &str) -> bool {
 }
 
 /// Run `argv` from `root`, inheriting stdio. True when it exits 0.
-pub fn run(root: &str, argv: &[String], extra: &[String]) -> bool {
+pub fn run(
+    settings: &crate::config::Settings,
+    root: &str,
+    argv: &[String],
+    extra: &[String],
+) -> bool {
     let Some((program, rest)) = argv.split_first() else {
         return true;
     };
@@ -702,7 +724,7 @@ pub fn run(root: &str, argv: &[String], extra: &[String]) -> bool {
         .current_dir(root)
         .stdin(Stdio::null());
     strip_git_env(&mut cmd);
-    bounded_success(&mut cmd, program)
+    bounded_success(settings, &mut cmd, program)
 }
 
 /// As [`run`], but with the tool's own output discarded.
@@ -710,7 +732,12 @@ pub fn run(root: &str, argv: &[String], extra: &[String]) -> bool {
 /// For a pass whose only job is to decide something — prettier's `--check`,
 /// ruff's `--fix` sweep — where the offenders are printed once, by the pass
 /// that reports them, rather than twice.
-pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
+pub fn run_quiet(
+    settings: &crate::config::Settings,
+    root: &str,
+    argv: &[String],
+    extra: &[String],
+) -> bool {
     let Some((program, rest)) = argv.split_first() else {
         return true;
     };
@@ -724,7 +751,7 @@ pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
     // the output is discarded, and capture would resurrect it into the
     // block. Observed and dropped instead of `/dev/null`, so the silence
     // clock still sees whether the tool is alive.
-    match run_observed(&mut cmd, |_| {}) {
+    match run_observed(settings, &mut cmd, |_| {}) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(program, b);
@@ -741,9 +768,9 @@ pub fn run_quiet(root: &str, argv: &[String], extra: &[String]) -> bool {
 /// surprise than one that complains — and because with index fidelity in place
 /// the repair lands in the commit you are making, which is a bigger claim to
 /// make on somebody's behalf than printing an error.
-pub fn fixing_enabled() -> bool {
+pub fn fixing_enabled(settings: &crate::config::Settings) -> bool {
     // Never while the file set is not the index — see `NOT_THE_INDEX`.
-    !not_the_index() && fixing_requested()
+    !not_the_index() && fixing_requested(settings)
 }
 
 /// What the CONFIG says, ignoring whether the current run may act on it.
@@ -751,8 +778,10 @@ pub fn fixing_enabled() -> bool {
 /// Split out so `run_all` can tell the difference between "fixing is off" and
 /// "you asked for fixing and this mode will not do it", and say the second out
 /// loud instead of silently ignoring the key.
-pub fn fixing_requested() -> bool {
-    crate::config::boolean_or("amont.fix", false)
+pub fn fixing_requested(settings: &crate::config::Settings) -> bool {
+    *settings
+        .fixing
+        .get_or_init(|| crate::config::boolean_or(settings, "amont.fix", false))
 }
 
 /// What a re-stage actually did. THREE answers, because the old `bool`
@@ -832,8 +861,8 @@ pub fn restage(paths: &[String]) -> Restaged {
 
 /// A check passed. THE funnel for every success line, which is what lets
 /// `amont.quiet` swallow them in one place — see [`crate::live::quiet`].
-pub fn ok(msg: &str) {
-    if crate::live::quiet() {
+pub fn ok(settings: &crate::config::Settings, msg: &str) {
+    if crate::live::quiet(settings) {
         return;
     }
     crate::live::say(&format!("{} {msg}", valid_sign()));

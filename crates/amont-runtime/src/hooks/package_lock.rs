@@ -81,13 +81,13 @@ pub fn classify(staged: &[String], lock_exists: impl Fn(&str) -> bool) -> Verdic
 }
 
 /// Report, and never ask — see the module doc for why.
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let staged = staged_files(&[]);
     let root = repo_root();
     let v = classify(&staged, |lock| Path::new(&root).join(lock).is_file());
 
     if v.forgot_lock.is_empty() && v.orphan_lock.is_empty() {
-        ok("package.json & package-lock.json look in sync");
+        ok(settings, "package.json & package-lock.json look in sync");
         return Outcome::Passed;
     }
     for f in &v.orphan_lock {

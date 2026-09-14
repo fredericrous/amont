@@ -31,7 +31,7 @@ fn staged_dockerfiles() -> Vec<String> {
         .collect()
 }
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_dockerfiles();
     if files.is_empty() {
         return Outcome::Passed;
@@ -52,10 +52,10 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     let argv = vec![bin];
     let mut with_files = vec!["--".to_string()];
     with_files.extend(files);
-    if !run_tool(&root, &argv, &with_files) {
+    if !run_tool(settings, &root, &argv, &with_files) {
         fail("hadolint found issues. Please fix");
         return Outcome::Failed;
     }
-    ok("hadolint passed");
+    ok(settings, "hadolint passed");
     Outcome::Passed
 }

@@ -97,7 +97,7 @@ thread_local! {
 impl Stage {
     /// A stage over `names`, in dispatch order. Does nothing visible until
     /// checks start entering (the region) or finishing (the blocks).
-    pub fn begin(names: &[&str]) -> Arc<Stage> {
+    pub fn begin(settings: &crate::config::Settings, names: &[&str]) -> Arc<Stage> {
         let now = Instant::now();
         let stage = Arc::new(Stage {
             slots: Mutex::new(
@@ -122,7 +122,7 @@ impl Stage {
                     .collect(),
             ),
             out: Mutex::new(0),
-            live: enabled() && watching(),
+            live: enabled(settings) && watching(),
             // The names arrive fully qualified and the loop above has
             // already had to strip the trigger to display them, so the
             // stage can answer this without dispatch passing anything in.
@@ -133,19 +133,21 @@ impl Stage {
             // The ticker holds a Weak: the stage dropping is what ends it,
             // so a paint can never outlive the region's owner.
             let weak = Arc::downgrade(&stage);
+            let own = settings.for_thread();
             let _ = std::thread::Builder::new()
                 .name("amont-live".into())
-                .spawn(move || tick(weak));
-        } else if enabled() {
+                .spawn(move || tick(own, weak));
+        } else if enabled(settings) {
             // Nobody is watching a terminal — an agent, CI, a pipe — and a
             // captured check shows nothing until it finishes. The heartbeat
             // is the one line a minute that says it is alive, which is the
             // difference between "wait" and "kill it" for whoever is on the
             // other end of the pipe.
             let weak = Arc::downgrade(&stage);
+            let own = settings.for_thread();
             let _ = std::thread::Builder::new()
                 .name("amont-heartbeat".into())
-                .spawn(move || heartbeat(weak));
+                .spawn(move || heartbeat(own, weak));
         }
         stage
     }
@@ -196,7 +198,7 @@ impl Stage {
     /// Called by the dispatcher after `check.run` returns (still on the
     /// check's thread, so a torn-down thread cannot strand a buffer — the
     /// same `catch_unwind` that feeds the dead-check outcome runs first).
-    pub fn finish(&self, idx: usize) {
+    pub fn finish(&self, settings: &crate::config::Settings, idx: usize) {
         let block = {
             let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
             let Some(slot) = slots.get_mut(idx) else {
@@ -222,12 +224,12 @@ impl Stage {
             let _ = handle.write_all(&block);
             let _ = handle.flush();
         }
-        self.repaint(&mut drawn);
+        self.repaint(settings, &mut drawn);
     }
 
     /// Erase and redraw the region in one stderr write. Lock order is
     /// `out` → `slots`, everywhere — never the reverse.
-    fn repaint(&self, drawn: &mut usize) {
+    fn repaint(&self, settings: &crate::config::Settings, drawn: &mut usize) {
         if !self.live {
             return;
         }
@@ -244,7 +246,7 @@ impl Stage {
                 })
                 .collect()
         };
-        let text = region(&entries, term_width(), budgets());
+        let text = region(&entries, term_width(), budgets(settings));
         let mut paint = String::new();
         if *drawn > 0 {
             paint.push_str(&format!("\x1b[{}A\x1b[J", *drawn));
@@ -282,7 +284,10 @@ impl Drop for Stage {
 
 /// The ticker: repaint every 80ms until the stage drops or tells it to
 /// stop. Holds only a `Weak`, so it can never keep a finished stage alive.
-fn tick(weak: Weak<Stage>) {
+/// Owns its `Settings` (see [`crate::config::Settings::for_thread`]): a
+/// spawned thread is `'static`, and the budgets must be read lazily, not
+/// pre-resolved at the spawn.
+fn tick(settings: crate::config::Settings, weak: Weak<Stage>) {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(80));
         let Some(stage) = weak.upgrade() else { return };
@@ -290,7 +295,7 @@ fn tick(weak: Weak<Stage>) {
             return;
         }
         let mut drawn = stage.out.lock().unwrap_or_else(|p| p.into_inner());
-        stage.repaint(&mut drawn);
+        stage.repaint(&settings, &mut drawn);
     }
 }
 
@@ -312,10 +317,10 @@ pub struct Budgets {
     pub ceiling: u64,
 }
 
-fn budgets() -> Budgets {
+fn budgets(settings: &crate::config::Settings) -> Budgets {
     Budgets {
-        idle: crate::hooks::common::idle_timeout(),
-        ceiling: crate::hooks::common::check_timeout(),
+        idle: crate::hooks::common::idle_timeout(settings),
+        ceiling: crate::hooks::common::check_timeout(settings),
     }
 }
 
@@ -401,7 +406,8 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
 /// reader can tell how far it is from being killed without opening the
 /// docs. Written under the same `out` lock as the blocks, so a beat never
 /// lands inside one.
-fn heartbeat(weak: Weak<Stage>) {
+/// Owns its `Settings` for the same reason [`tick`] does.
+fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let Some(stage) = weak.upgrade() else { return };
@@ -434,7 +440,7 @@ fn heartbeat(weak: Weak<Stage>) {
         }
         let text: String = due
             .iter()
-            .map(|(row, first)| beat_line(row, *first, budgets(), stage.on_push))
+            .map(|(row, first)| beat_line(row, *first, budgets(&settings), stage.on_push))
             .collect();
         let _guard = stage.out.lock().unwrap_or_else(|p| p.into_inner());
         let mut err = std::io::stderr().lock();
@@ -525,17 +531,28 @@ pub fn term_width() -> usize {
 pub struct FinishOnDrop<'a> {
     stage: &'a Stage,
     idx: usize,
+    /// Carried, because `Drop` takes no arguments and the finish paint
+    /// needs the budgets. Same lifetime as the stage it belongs to.
+    settings: &'a crate::config::Settings,
 }
 
 impl<'a> FinishOnDrop<'a> {
-    pub fn new(stage: &'a Stage, idx: usize) -> FinishOnDrop<'a> {
-        FinishOnDrop { stage, idx }
+    pub fn new(
+        settings: &'a crate::config::Settings,
+        stage: &'a Stage,
+        idx: usize,
+    ) -> FinishOnDrop<'a> {
+        FinishOnDrop {
+            stage,
+            idx,
+            settings,
+        }
     }
 }
 
 impl Drop for FinishOnDrop<'_> {
     fn drop(&mut self) {
-        self.stage.finish(self.idx);
+        self.stage.finish(self.settings, self.idx);
     }
 }
 
@@ -605,11 +622,10 @@ macro_rules! say {
 /// Only the success lines go. A failure, a warning, a check that could not
 /// run, a repaired file, and the blocked summary are printed under every
 /// setting: quiet is about the uneventful path, and nothing else.
-pub fn quiet() -> bool {
-    static QUIET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *QUIET.get_or_init(|| {
+pub fn quiet(settings: &crate::config::Settings) -> bool {
+    *settings.quiet.get_or_init(|| {
         decide(
-            crate::config::enumerated_or("amont.quiet", QUIET_VALUES, "auto"),
+            crate::config::enumerated_or(settings, "amont.quiet", QUIET_VALUES, "auto"),
             watching(),
         )
     })
@@ -630,9 +646,10 @@ fn decide(setting: &str, watching: bool) -> bool {
 
 /// Whether the capture mechanism is on at all. `amont.progress false` is the
 /// escape hatch back to raw streaming — one knob, read once.
-pub fn enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| crate::config::boolean_or("amont.progress", true))
+pub fn enabled(settings: &crate::config::Settings) -> bool {
+    *settings
+        .progress
+        .get_or_init(|| crate::config::boolean_or(settings, "amont.progress", true))
 }
 
 /// Is anyone watching? True only when stderr is a real terminal that speaks
@@ -657,6 +674,10 @@ pub fn watching() -> bool {
 mod tests {
     use super::*;
 
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
+
     #[test]
     fn quiet_asks_who_is_reading() {
         assert!(!decide("never", true));
@@ -679,7 +700,7 @@ mod tests {
     /// buffers, whatever the scheduler did.
     #[test]
     fn slots_do_not_share_a_buffer() {
-        let stage = Stage::begin(&["a", "b"]);
+        let stage = Stage::begin(&test_settings(), &["a", "b"]);
         std::thread::scope(|scope| {
             for idx in 0..2 {
                 let stage = Arc::clone(&stage);
@@ -707,7 +728,7 @@ mod tests {
     /// A thread with no sink prints; its lines never land in anyone's slot.
     #[test]
     fn no_sink_means_no_capture() {
-        let stage = Stage::begin(&["a"]);
+        let stage = Stage::begin(&test_settings(), &["a"]);
         say("goes to stdout, not to a slot");
         let slots = stage.slots.lock().unwrap();
         assert!(slots[0].buf.is_empty());
@@ -717,9 +738,9 @@ mod tests {
     /// reader thread that outlives its check must not corrupt a later block.
     #[test]
     fn a_finished_slot_takes_no_more_writes() {
-        let stage = Stage::begin(&["a"]);
+        let stage = Stage::begin(&test_settings(), &["a"]);
         stage.append_raw(0, b"before\n");
-        stage.finish(0);
+        stage.finish(&test_settings(), 0);
         stage.append_raw(0, b"after\n");
         let slots = stage.slots.lock().unwrap();
         assert!(slots[0].buf.is_empty(), "a write landed after finish");
@@ -729,7 +750,7 @@ mod tests {
     /// terminal: sanitised at begin, once, for every later paint.
     #[test]
     fn a_slot_name_is_sanitised_at_begin() {
-        let stage = Stage::begin(&["evil\u{1b}[2Jname\rhere"]);
+        let stage = Stage::begin(&test_settings(), &["evil\u{1b}[2Jname\rhere"]);
         let slots = stage.slots.lock().unwrap();
         assert!(!slots[0].name.contains('\u{1b}'), "{:?}", slots[0].name);
         assert!(!slots[0].name.contains('\r'), "{:?}", slots[0].name);
@@ -739,7 +760,10 @@ mod tests {
     /// characters on every line.
     #[test]
     fn a_slot_name_drops_the_stage_prefix() {
-        let stage = Stage::begin(&["pre-commit-clippy", "pre-push-run-tests", "bare"]);
+        let stage = Stage::begin(
+            &test_settings(),
+            &["pre-commit-clippy", "pre-push-run-tests", "bare"],
+        );
         let slots = stage.slots.lock().unwrap();
         assert_eq!(slots[0].name, "clippy");
         assert_eq!(slots[1].name, "run-tests");

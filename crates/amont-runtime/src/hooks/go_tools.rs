@@ -80,12 +80,17 @@ fn module_roots<'a>(root: &str, files: impl Iterator<Item = &'a str>) -> Vec<Pat
 
 /// Run one `go`/`gofmt` invocation in every module root. True when all
 /// succeeded.
-fn run_in_roots(roots: &[PathBuf], argv: &[String], args: &[&str]) -> bool {
+fn run_in_roots(
+    settings: &crate::config::Settings,
+    roots: &[PathBuf],
+    argv: &[String],
+    args: &[&str],
+) -> bool {
     let extra: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
     let mut all_ok = true;
     for dir in roots {
         let d = dir.to_string_lossy().into_owned();
-        if !run_tool(&d, argv, &extra) {
+        if !run_tool(settings, &d, argv, &extra) {
             all_ok = false;
         }
     }
@@ -96,14 +101,19 @@ fn run_in_roots(roots: &[PathBuf], argv: &[String], args: &[&str]) -> bool {
 /// ones and exits 0 either way, so the listing decides, not the exit code.
 /// A non-zero exit is a parse error in a staged file — the commit has bigger
 /// problems, and hiding them behind "formatting is clean" would be a lie.
-fn unformatted(root: &str, gofmt: &str, files: &[String]) -> Option<Vec<String>> {
+fn unformatted(
+    settings: &crate::config::Settings,
+    root: &str,
+    gofmt: &str,
+    files: &[String],
+) -> Option<Vec<String>> {
     let mut cmd = std::process::Command::new(gofmt);
     cmd.arg("-l")
         .args(files)
         .current_dir(root)
         .stdin(std::process::Stdio::null());
     super::common::strip_git_env(&mut cmd);
-    let (ran, out) = super::common::capture_within(&mut cmd)?;
+    let (ran, out) = super::common::capture_within(settings, &mut cmd)?;
     match ran {
         super::common::Ran::TimedOut(budget) => {
             super::common::say_timed_out(gofmt, budget);
@@ -126,7 +136,7 @@ fn unformatted(root: &str, gofmt: &str, files: &[String]) -> Option<Vec<String>>
     }
 }
 
-pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -139,24 +149,24 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
         warn("Go staged but gofmt is not installed — install the Go toolchain.");
         return Outcome::Unavailable;
     };
-    let Some(dirty) = unformatted(&root, &gofmt, &files) else {
+    let Some(dirty) = unformatted(settings, &root, &gofmt, &files) else {
         return Outcome::Unavailable;
     };
     if dirty.is_empty() {
-        ok("Go formatting is clean");
+        ok(settings, "Go formatting is clean");
         return Outcome::Passed;
     }
 
     // `gofmt -w` rewrites only the files `-l` named — never the whole module,
     // so `restage` never stages anything the author did not stage.
-    if fixing_enabled() {
+    if fixing_enabled(settings) {
         let argv = vec![gofmt.clone()];
         let mut args: Vec<&str> = vec!["-w"];
         args.extend(dirty.iter().map(String::as_str));
-        if run_in_roots(&[PathBuf::from(&root)], &argv, &args) {
+        if run_in_roots(settings, &[PathBuf::from(&root)], &argv, &args) {
             match restage(&files) {
                 Restaged::Staged => {
-                    ok("Go reformatted and re-staged");
+                    ok(settings, "Go reformatted and re-staged");
                     return Outcome::Fixed;
                 }
                 Restaged::Failed(stuck) => {
@@ -181,7 +191,7 @@ pub fn fmt(_args: &[std::ffi::OsString]) -> Outcome {
     Outcome::Failed
 }
 
-pub fn vet(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn vet(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     // Basename-matched like `is_rust_path`, so `vendor/Notgo.mod` is not a
     // module marker.
     let files: Vec<String> = staged_files(&[])
@@ -200,8 +210,8 @@ pub fn vet(_args: &[std::ffi::OsString]) -> Outcome {
         warn("Go staged but the go toolchain is not installed.");
         return Outcome::Unavailable;
     };
-    if run_in_roots(&roots, &[go], &["vet", "./..."]) {
-        ok("go vet passed");
+    if run_in_roots(settings, &roots, &[go], &["vet", "./..."]) {
+        ok(settings, "go vet passed");
         Outcome::Passed
     } else {
         fail(&format!("{} found problems.", hl("go vet")));
@@ -213,7 +223,7 @@ pub fn vet(_args: &[std::ffi::OsString]) -> Outcome {
 /// whether the suite runs, per ref, against the pushed tree — a docs-only
 /// push costs nothing, and a multi-ref push tests each tip in its own
 /// worktree.
-pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
     let Some(root) = git::stdout(&["rev-parse", "--show-toplevel"]) else {
         warn("go-test: git would not answer — the gate did NOT run");
         return Outcome::Unavailable;
@@ -234,7 +244,7 @@ pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
         };
         // Where THIS ref's suite runs decides what it is answering about —
         // the pushed commits, not whatever is open in the editor.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(&r.local_oid, &root);
+        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
         let roots: Vec<PathBuf> = roots
             .iter()
             .map(|rt| {
@@ -243,14 +253,19 @@ pub fn test(refs: &[crate::pushrefs::PushRef]) -> Outcome {
                     .unwrap_or_else(|_| rt.clone())
             })
             .collect();
-        if !run_in_roots(&roots, std::slice::from_ref(&go), &["test", "./..."]) {
+        if !run_in_roots(
+            settings,
+            &roots,
+            std::slice::from_ref(&go),
+            &["test", "./..."],
+        ) {
             fail("Go tests failed. Push aborted.");
             return Outcome::Failed;
         }
         ran_any = true;
     }
     if ran_any {
-        ok("Go tests passed");
+        ok(settings, "Go tests passed");
     }
     Outcome::Passed
 }

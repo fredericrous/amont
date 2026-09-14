@@ -254,7 +254,7 @@ pub fn is_scannable(bytes: &[u8]) -> bool {
 
 /// pre-commit: the staged content. Under the staged-only hold the working
 /// tree IS the commit's content, so reading the files is reading the stage.
-pub fn staged() -> Outcome {
+pub fn staged(settings: &crate::config::Settings) -> Outcome {
     let files = common::staged_files(&[]);
     let root = common::repo_root();
     let mut found = false;
@@ -279,14 +279,14 @@ pub fn staged() -> Outcome {
     if found {
         return Outcome::Failed;
     }
-    common::ok("No secrets staged");
+    common::ok(settings, "No secrets staged");
     Outcome::Passed
 }
 
 /// pre-push: every line every pushed commit ADDS — the last moment a
 /// secret is recoverable at all. `--no-verify` skipped the commit half;
 /// it does not skip this one.
-pub fn pushed(refs: &[PushRef]) -> Outcome {
+pub fn pushed(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let zero = crate::git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
         .unwrap_or_else(|| "0".repeat(40));
@@ -341,7 +341,7 @@ pub fn pushed(refs: &[PushRef]) -> Outcome {
         return Outcome::Failed;
     }
     let _ = checked_any_ref; // a push of nothing is a clean push
-    common::ok("No secrets in the pushed commits");
+    common::ok(settings, "No secrets in the pushed commits");
     Outcome::Passed
 }
 

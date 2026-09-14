@@ -846,7 +846,11 @@ pub fn scan(file: &str, content: &str, hook_name: &str) -> Vec<Finding> {
     findings
 }
 
-pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(
+    settings: &crate::config::Settings,
+    hook_name: &str,
+    _args: &[std::ffi::OsString],
+) -> Outcome {
     // The `-G` prefilters narrow WHICH files to read; `scan` is what decides.
     // Two stages because the prefilter is a cheap regex git runs over the diff,
     // and the real matchers have to see the content with comments and strings
@@ -890,7 +894,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
         }
         return Outcome::Failed;
     }
-    super::common::ok("No unwanted terms were found");
+    super::common::ok(settings, "No unwanted terms were found");
     Outcome::Passed
 }
 

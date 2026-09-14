@@ -37,8 +37,8 @@ use crate::ui::warning_sign;
 /// Read through [`crate::config`], so `on`, `yes` and every capitalisation work
 /// exactly as git-config(1) says they do — and a value git cannot parse takes
 /// the default while SAYING so, rather than reading as a quiet "no".
-pub fn enabled() -> bool {
-    crate::config::boolean_or("amont.testPushedTree", false)
+pub fn enabled(settings: &crate::config::Settings) -> bool {
+    crate::config::boolean_or(settings, "amont.testPushedTree", false)
 }
 
 /// A command to run inside a fresh snapshot before any suite does.
@@ -60,8 +60,8 @@ pub fn enabled() -> bool {
 /// push time and the background rehearsal — so the two cannot drift.
 const PREPARE: &str = "amont.snapshotPrepare";
 
-pub fn prepare_command() -> Option<String> {
-    crate::config::string_value(PREPARE).filter(|s| !s.trim().is_empty())
+pub fn prepare_command(settings: &crate::config::Settings) -> Option<String> {
+    crate::config::string_value(settings, PREPARE).filter(|s| !s.trim().is_empty())
 }
 
 /// A checkout of the pushed commit, removed when it goes out of scope.
@@ -76,9 +76,13 @@ impl PushedTree {
     /// Takes the repository explicitly rather than relying on the working
     /// directory: `set_current_dir` is process-global, so a test that changed
     /// it would race every other test in the binary.
-    pub fn create(repo: &Path, tip: &str) -> Option<PushedTree> {
+    pub fn create(
+        settings: &crate::config::Settings,
+        repo: &Path,
+        tip: &str,
+    ) -> Option<PushedTree> {
         let base = std::env::temp_dir().join(unique_name("amont-push"));
-        Self::create_at(base, repo, tip)
+        Self::create_at(settings, base, repo, tip)
     }
 
     /// The actual work, over an explicit path — split out so a test can hand
@@ -93,7 +97,12 @@ impl PushedTree {
     /// instead of removing it, and git's own `worktree add` is content to
     /// receive a directory that already exists as long as it is empty —
     /// which this one, having just been created, provably is.
-    fn create_at(base: PathBuf, repo: &Path, tip: &str) -> Option<PushedTree> {
+    fn create_at(
+        settings: &crate::config::Settings,
+        base: PathBuf,
+        repo: &Path,
+        tip: &str,
+    ) -> Option<PushedTree> {
         std::fs::create_dir(&base).ok()?;
         let ok = crate::git::succeeds(&[
             "-C",
@@ -115,7 +124,7 @@ impl PushedTree {
             path: base,
             repo: repo.to_path_buf(),
         };
-        if !tree.prepare() {
+        if !tree.prepare(settings) {
             // `Drop` removes the worktree; the caller hears `None` and says
             // what it is doing instead.
             return None;
@@ -125,8 +134,8 @@ impl PushedTree {
 
     /// Run `amont.snapshotPrepare`, if set, inside the checkout. True when
     /// there was nothing to run or it exited 0.
-    fn prepare(&self) -> bool {
-        let Some(script) = prepare_command() else {
+    fn prepare(&self, settings: &crate::config::Settings) -> bool {
+        let Some(script) = prepare_command(settings) else {
             return true;
         };
         println!("preparing the snapshot: {script}");
@@ -145,7 +154,7 @@ impl PushedTree {
         cmd.current_dir(&self.path)
             .stdin(std::process::Stdio::null());
         crate::hooks::common::strip_git_env(&mut cmd);
-        let ok = crate::hooks::common::bounded_success(&mut cmd, PREPARE);
+        let ok = crate::hooks::common::bounded_success(settings, &mut cmd, PREPARE);
         if !ok {
             println!(
                 "{} {PREPARE} failed in the snapshot — nothing can be tested there",
@@ -252,14 +261,18 @@ pub fn fell_back(tip: &str) -> bool {
 ///
 /// Returns the directory plus the guard that owns it — dropping the guard
 /// removes the worktree, so the caller must hold it for the length of the run.
-pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) {
+pub fn where_to_run(
+    settings: &crate::config::Settings,
+    tip: &str,
+    fallback: &str,
+) -> (PathBuf, Option<PushedTree>) {
     // Inside a rehearsal the working tree IS a snapshot of the tip: a
     // second checkout would test the same content twice, and the warning
     // below would be false.
     if crate::rehearsal::in_snapshot() {
         return (PathBuf::from(fallback), None);
     }
-    if !enabled() {
+    if !enabled(settings) {
         // Today's behaviour, but no longer silent about it. NOT a fallback:
         // nobody asked for a snapshot, and `stamp_tips` already knows to
         // vouch for the working tree only when it IS the tip.
@@ -270,7 +283,7 @@ pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) 
         );
         return (PathBuf::from(fallback), None);
     }
-    match PushedTree::create(Path::new(fallback), tip) {
+    match PushedTree::create(settings, Path::new(fallback), tip) {
         Some(tree) => {
             let path = tree.path().to_path_buf();
             (path, Some(tree))
@@ -299,6 +312,10 @@ pub fn where_to_run(tip: &str, fallback: &str) -> (PathBuf, Option<PushedTree>) 
 mod tests {
     use super::*;
 
+    fn test_settings() -> crate::config::Settings {
+        crate::config::Settings::default()
+    }
+
     /// The whole point: two calls must not name the same path, or a
     /// predictable name is right back to being predictable.
     #[test]
@@ -321,7 +338,12 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("sentinel.txt"), "do not delete me").unwrap();
 
-        let got = PushedTree::create_at(base.clone(), Path::new("/does/not/matter"), "HEAD");
+        let got = PushedTree::create_at(
+            &test_settings(),
+            base.clone(),
+            Path::new("/does/not/matter"),
+            "HEAD",
+        );
         assert!(
             got.is_none(),
             "must refuse rather than reuse a path it did not create"
@@ -376,7 +398,7 @@ mod tests {
         // Uncommitted, and it must not travel.
         std::fs::write(d.join("a.txt"), "dirty, not pushed\n").unwrap();
 
-        let tree = PushedTree::create(&d, &head).expect("worktree");
+        let tree = PushedTree::create(&test_settings(), &d, &head).expect("worktree");
         let seen = std::fs::read_to_string(tree.path().join("a.txt")).unwrap();
         let at = tree.path().to_path_buf();
         drop(tree);

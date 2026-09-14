@@ -282,6 +282,18 @@ pub struct StagedOnly {
     held: bool,
 }
 
+/// `amont.fix`, read the moment a restore needs it and not before.
+///
+/// `Drop` and the signal watcher both restore, and neither can hold a borrow
+/// of the process's `Settings`. Reading through a config-only `Settings` is
+/// EXACT here, not an approximation: `amont.fix` is not in
+/// [`crate::manifest::SETTABLE`], so no policy can set it and the answer is
+/// git config's alone. Lazy on purpose — the spawn budget counts every read
+/// on the happy path, and a restore is the unhappy one.
+fn fixing_from_config() -> bool {
+    crate::hooks::common::fixing_requested(&crate::config::Settings::default())
+}
+
 /// Why COPIES and not `git stash --keep-index`, and not a patch either.
 ///
 /// Saving is the easy half; restoring is the whole problem.
@@ -497,7 +509,9 @@ impl StagedOnly {
 
     /// Put them back. Idempotent, and safe to call from the watcher thread
     /// `install_signal_handler` starts — never from the signal handler itself.
-    pub fn restore() {
+    /// `fixing` rather than the whole configuration: this runs from `Drop` and
+    /// from the signal thread, neither of which can hold a borrow.
+    pub fn restore(fixing: bool) {
         // Blocks until `enter()` has definitely finished its own checkout —
         // see `ENTER_LOCK`. The common case (no `enter()` active) is
         // uncontended.
@@ -512,7 +526,7 @@ impl StagedOnly {
             return;
         }
         let root = crate::hooks::common::repo_root();
-        match put_back(&store, Path::new(&root)) {
+        match put_back(fixing, &store, Path::new(&root)) {
             Ok(()) => {
                 let _ = std::fs::remove_dir_all(&store);
             }
@@ -549,18 +563,18 @@ fn held_nothing(store: &Path) -> String {
 /// Dispatches on the index: a store written by this version describes itself,
 /// and one left behind by an older binary mid-upgrade is still recoverable
 /// through [`put_back_legacy`]. Nobody's work is stranded by the format change.
-fn put_back(store: &Path, root: &Path) -> std::io::Result<()> {
+fn put_back(fixing: bool, store: &Path, root: &Path) -> std::io::Result<()> {
     match std::fs::read(store.join(INDEX)) {
         Ok(raw) => {
             let entries = parse_index(&raw).map_err(std::io::Error::other)?;
-            put_back_v1(store, root, &entries)
+            put_back_v1(fixing, store, root, &entries)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => put_back_legacy(store, root),
         Err(e) => Err(e),
     }
 }
 
-fn put_back_v1(store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<()> {
+fn put_back_v1(fixing: bool, store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<()> {
     let expected = read_expected(store);
     // The guard stands down when fixing is ON: a repo-wide fixer (`prettier
     // --write .`) legitimately rewrites held files mid-run, and telling its
@@ -568,7 +582,7 @@ fn put_back_v1(store: &Path, root: &Path, entries: &[Held]) -> std::io::Result<(
     // is an explicit opt-in whose documented contract has always been "the
     // tree returns to your unstaged version"; the guard protects the default
     // population, which is everyone else.
-    let guard = !crate::hooks::common::fixing_requested();
+    let guard = !fixing;
     let mut preserved: Vec<(String, std::path::PathBuf)> = Vec::new();
     let escapes = |rel: &str| {
         std::io::Error::other(format!(
@@ -779,7 +793,7 @@ fn store_dir() -> Option<std::path::PathBuf> {
 impl Drop for StagedOnly {
     fn drop(&mut self) {
         if self.held {
-            StagedOnly::restore();
+            StagedOnly::restore(fixing_from_config());
         }
     }
 }
@@ -787,7 +801,7 @@ impl Drop for StagedOnly {
 /// Put back files this tool parked, from a later invocation.
 ///
 /// For when even the signal handler was interrupted.
-pub fn restore_command() -> Result<(), String> {
+pub fn restore_command(settings: &crate::config::Settings) -> Result<(), String> {
     let store = store_dir().ok_or_else(|| "not inside a git repository".to_string())?;
     if !store.is_dir() {
         println!("{} nothing of ours to restore", warning_sign());
@@ -799,8 +813,12 @@ pub fn restore_command() -> Result<(), String> {
     // rather than the work tree, and a restore that lands in the wrong place is
     // the failure this whole module exists to prevent.
     let root = crate::hooks::common::repo_root_checked()?;
-    put_back(&store, Path::new(&root))
-        .map_err(|e| format!("could not put {} back: {e}", store.display()))?;
+    put_back(
+        crate::hooks::common::fixing_requested(settings),
+        &store,
+        Path::new(&root),
+    )
+    .map_err(|e| format!("could not put {} back: {e}", store.display()))?;
     let _ = std::fs::remove_dir_all(&store);
     println!("restored your unstaged changes");
     Ok(())
@@ -842,7 +860,7 @@ pub fn install_signal_handler() {
         if n <= 0 {
             return; // pipe closed, or a real error: nothing left to watch for
         }
-        StagedOnly::restore();
+        StagedOnly::restore(fixing_from_config());
         // Re-raise with the default handler so the exit status is honest
         // about having been killed.
         let sig = PENDING_SIGNAL.load(Ordering::SeqCst);

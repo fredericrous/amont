@@ -49,7 +49,7 @@ fn has_config(root: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -95,25 +95,25 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     check.push("--check".into());
     check.push("--".into());
     check.extend(files.iter().cloned());
-    if run_quiet(&root, &argv, &check) {
-        ok("Prettier passed");
+    if run_quiet(settings, &root, &argv, &check) {
+        ok(settings, "Prettier passed");
         return Outcome::Passed;
     }
 
-    if fixing_enabled() {
+    if fixing_enabled(settings) {
         // Asked to repair, so repair rather than reporting an instruction the
         // author would carry out identically by hand.
         let mut write = flags.clone();
         write.push("--write".into());
         write.push("--".into());
         write.extend(files.iter().cloned());
-        if run_quiet(&root, &argv, &write) {
+        if run_quiet(settings, &root, &argv, &write) {
             // Dropping the confirming re-`--check` after the write is safe:
             // `prettier --write` exits NON-ZERO on a parse error, so a
             // successful write means the files are formatted.
             match restage(&files) {
                 Restaged::Staged => {
-                    ok("Prettier reformatted and re-staged");
+                    ok(settings, "Prettier reformatted and re-staged");
                     return Outcome::Fixed;
                 }
                 // The index still holds the content prettier has just replaced
@@ -143,6 +143,6 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     list.push("--list-different".into());
     list.push("--".into());
     list.extend(files);
-    let _ = run_tool(&root, &argv, &list);
+    let _ = run_tool(settings, &root, &argv, &list);
     Outcome::Failed
 }

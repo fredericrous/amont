@@ -62,8 +62,11 @@ const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 /// A declaration passing this filter is still only a PROMISE: whether the
 /// check executed for the commits actually being pushed is what
 /// [`crate::gate_stamp`]'s per-commit stamps answer, in `run`.
-pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<GateDecl> {
-    let mut decls = blocking_commit_decls(declared);
+pub(crate) fn gated_at_commit(
+    settings: &crate::config::Settings,
+    declared: &[crate::manifest::External],
+) -> Vec<GateDecl> {
+    let mut decls = blocking_commit_decls(settings, declared);
     decls.retain(|d| GATE.contains(&d.script.as_str()));
     decls
 }
@@ -75,15 +78,18 @@ pub(crate) fn gated_at_commit(declared: &[crate::manifest::External]) -> Vec<Gat
 /// a same-named pre-push declaration defers to its stamps (see
 /// [`pair_verdict`]). The npm push gate was the first consumer of this
 /// machinery, not its definition.
-pub(crate) fn blocking_commit_decls(declared: &[crate::manifest::External]) -> Vec<GateDecl> {
+pub(crate) fn blocking_commit_decls(
+    settings: &crate::config::Settings,
+    declared: &[crate::manifest::External],
+) -> Vec<GateDecl> {
     // The fast path: pre-commit calls this on every commit to know what to
     // stamp, and most repositories declare nothing — no pre-commit
     // declaration means no git spawns for skips and severity overrides.
     if gate_names_declared(declared).is_empty() {
         return Vec::new();
     }
-    let skips = crate::configured_skips();
-    let severities = crate::registry::Overrides::read();
+    let skips = crate::configured_skips(settings);
+    let severities = crate::registry::Overrides::read(settings);
     declared
         .iter()
         .filter_map(|ext| {
@@ -148,6 +154,7 @@ pub(crate) enum PairVerdict {
 /// `amont.conf`. Passing an id here matches nothing and silently pairs
 /// nothing; see `Check::pairing_name`.
 pub(crate) fn pair_verdict(
+    settings: &crate::config::Settings,
     name: &str,
     push_scope: &crate::check::Scope,
     manifest: &crate::manifest::Manifest,
@@ -162,7 +169,7 @@ pub(crate) fn pair_verdict(
     {
         return PairVerdict::NotPaired;
     }
-    let Some(pair) = blocking_commit_decls(&manifest.externals)
+    let Some(pair) = blocking_commit_decls(settings, &manifest.externals)
         .into_iter()
         .find(|d| d.script == name)
     else {
@@ -428,7 +435,12 @@ pub fn gate_for(pkg_json: &str, already: &[&str]) -> Vec<&'static str> {
 }
 
 /// True when the gate passed (or there was none to run).
-fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
+fn run_gate(
+    settings: &crate::config::Settings,
+    root: &str,
+    folder: &str,
+    already: &[&str],
+) -> bool {
     let dir = if folder.is_empty() {
         root.to_string()
     } else {
@@ -446,7 +458,7 @@ fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
             .current_dir(&dir)
             .stdin(Stdio::null());
         super::common::strip_git_env(&mut cmd);
-        match super::common::status_streamed(&mut cmd) {
+        match super::common::status_streamed(settings, &mut cmd) {
             Ok(super::common::Ran::Status(status)) if status.success() => {}
             Ok(super::common::Ran::TimedOut(budget)) => {
                 super::common::say_timed_out(script, budget);
@@ -461,7 +473,11 @@ fn run_gate(root: &str, folder: &str, already: &[&str]) -> bool {
     true
 }
 
-pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::External]) -> Outcome {
+pub fn run(
+    settings: &crate::config::Settings,
+    refs: &[crate::pushrefs::PushRef],
+    declared: &[crate::manifest::External],
+) -> Outcome {
     // An all-zero oid, of whatever length this repo's hash is (sha1 or sha256).
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
@@ -485,7 +501,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
     // The DECLARATIONS are a property of the repository, resolved once; whether
     // one covers a given push is a property of that ref's changed files and of
     // its commits' stamps, judged inside the loop.
-    let declared_gate = gated_at_commit(declared);
+    let declared_gate = gated_at_commit(settings, declared);
     let mut announced: Vec<String> = Vec::new();
     let mut warned: Vec<String> = Vec::new();
 
@@ -570,7 +586,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
         // editor — and about THIS ref's commits, not some other ref in the
         // same push. A single worktree shared across every ref would run a
         // second ref's tests against a first ref's tree.
-        let (run_in, _guard) = crate::pushed_tree::where_to_run(local_oid, &root);
+        let (run_in, _guard) = crate::pushed_tree::where_to_run(settings, local_oid, &root);
         let where_ = run_in.to_string_lossy().into_owned();
         let folders = packages_to_test(&pkg_dirs, &changed_dirs);
 
@@ -588,11 +604,14 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
                 .cloned()
                 .collect();
             if !newly.is_empty() {
-                crate::hooks::common::ok(&format!(
-                    "{} gated at commit instead — not repeating {} here",
-                    newly.join(", "),
-                    if newly.len() == 1 { "it" } else { "them" },
-                ));
+                crate::hooks::common::ok(
+                    settings,
+                    &format!(
+                        "{} gated at commit instead — not repeating {} here",
+                        newly.join(", "),
+                        if newly.len() == 1 { "it" } else { "them" },
+                    ),
+                );
                 announced.extend(newly);
             }
         }
@@ -605,7 +624,7 @@ pub fn run(refs: &[crate::pushrefs::PushRef], declared: &[crate::manifest::Exter
             } else {
                 &[]
             };
-            if !run_gate(&where_, &folder, already_here) {
+            if !run_gate(settings, &where_, &folder, already_here) {
                 return Outcome::Failed;
             }
         }

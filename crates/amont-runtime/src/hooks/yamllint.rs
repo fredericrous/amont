@@ -9,7 +9,7 @@ use crate::check::Outcome;
 /// prevents.
 pub const EXTS: &[&str] = &[".yaml", ".yml"];
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     let files = staged_files(EXTS);
     if files.is_empty() {
         return Outcome::Passed;
@@ -47,10 +47,10 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     // otherwise be read as a flag by yamllint's own (argparse) parser.
     let mut with_files = vec!["--".to_string()];
     with_files.extend(files);
-    if !run_tool(&root, &argv, &with_files) {
+    if !run_tool(settings, &root, &argv, &with_files) {
         fail("yamllint found issues. Please fix");
         return Outcome::Failed;
     }
-    ok("yamllint passed");
+    ok(settings, "yamllint passed");
     Outcome::Passed
 }

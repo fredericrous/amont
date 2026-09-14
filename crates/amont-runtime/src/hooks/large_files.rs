@@ -30,9 +30,10 @@ const MB: u64 = 1024 * 1024;
 pub const NAME: &str = "large-files";
 
 /// The two thresholds, in bytes, as configured here.
-pub fn thresholds() -> (u64, u64) {
-    let warn = crate::config::integer_or("amont.largeFileWarn", 10, 1..=1_000_000) as u64;
-    let block = crate::config::integer_or("amont.largeFileBlock", 100, 1..=1_000_000) as u64;
+pub fn thresholds(settings: &crate::config::Settings) -> (u64, u64) {
+    let warn = crate::config::integer_or(settings, "amont.largeFileWarn", 10, 1..=1_000_000) as u64;
+    let block =
+        crate::config::integer_or(settings, "amont.largeFileBlock", 100, 1..=1_000_000) as u64;
     (warn * MB, block * MB)
 }
 
@@ -41,8 +42,8 @@ pub fn thresholds() -> (u64, u64) {
 /// Deliberately without a position: the problem is the file, not a place in
 /// it. `Finding::line` being `None` is how that is said, and every renderer
 /// degrades to naming the file — which is all this check could ever say.
-pub fn scan(file: &str, len: u64) -> Option<Finding> {
-    let (warn_bytes, block_bytes) = thresholds();
+pub fn scan(settings: &crate::config::Settings, file: &str, len: u64) -> Option<Finding> {
+    let (warn_bytes, block_bytes) = thresholds(settings);
     let mb = len / MB;
     if len >= block_bytes {
         Some(Finding::new(
@@ -71,7 +72,7 @@ pub fn scan(file: &str, len: u64) -> Option<Finding> {
     }
 }
 
-pub fn staged() -> Outcome {
+pub fn staged(settings: &crate::config::Settings) -> Outcome {
     let root = common::repo_root();
     let mut blocked = false;
     let mut warned = false;
@@ -83,7 +84,7 @@ pub fn staged() -> Outcome {
         if !meta.is_file() {
             continue;
         }
-        let Some(finding) = scan(&f, meta.len()) else {
+        let Some(finding) = scan(settings, &f, meta.len()) else {
             continue;
         };
         let line = format!("large-files: {} is {}", finding.file, finding.message);
@@ -104,6 +105,6 @@ pub fn staged() -> Outcome {
     if warned {
         return Outcome::Warned;
     }
-    common::ok("No oversized files staged");
+    common::ok(settings, "No oversized files staged");
     Outcome::Passed
 }

@@ -179,9 +179,13 @@ pub fn apply(plan: &FixPlan) -> Outcome {
         // Re-check at the moment of action, same rule as `is_tracked` above:
         // the scan this plan was built from may be stale, and a repo that
         // reached `MatchesGenerated` in between must not be overwritten.
-        match amont_runtime::agents_md::check(&w.path) {
+        // The fleet never installed a policy, so the global store it used to
+        // read was always empty here. A config-only `Settings` is the same
+        // answer, said out loud.
+        let settings = amont_runtime::config::Settings::default();
+        match amont_runtime::agents_md::check(&settings, &w.path) {
             Ok(amont_runtime::agents_md::CheckResult::MatchesGenerated) => {}
-            Ok(_) => match amont_runtime::agents_md::write(&w.path) {
+            Ok(_) => match amont_runtime::agents_md::write(&settings, &w.path) {
                 Ok(()) => written += 1,
                 Err(e) => {
                     return Outcome::Failed {
@@ -445,7 +449,7 @@ mod tests {
         let agents_md = abs.join("AGENTS.md");
         assert_eq!(
             std::fs::read_to_string(&agents_md).unwrap(),
-            amont_runtime::agents_md::generate_block()
+            amont_runtime::agents_md::generate_block(&amont_runtime::config::Settings::default())
         );
         #[cfg(unix)]
         {
@@ -473,7 +477,7 @@ mod tests {
         // Something else won the race and wrote the current block first.
         std::fs::write(
             abs.join("AGENTS.md"),
-            amont_runtime::agents_md::generate_block(),
+            amont_runtime::agents_md::generate_block(&amont_runtime::config::Settings::default()),
         )
         .unwrap();
 
@@ -487,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(abs.join("AGENTS.md")).unwrap(),
-            amont_runtime::agents_md::generate_block(),
+            amont_runtime::agents_md::generate_block(&amont_runtime::config::Settings::default()),
             "must still be exactly the generated block, not doubled or corrupted"
         );
         assert_eq!(

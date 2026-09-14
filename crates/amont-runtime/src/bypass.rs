@@ -172,7 +172,11 @@ pub fn age(now: u64, then: u64) -> String {
 /// pays ZERO extra git spawns, and a gated repository whose commit was
 /// properly stamped pays zero too. Only a commit already known to be
 /// unverified spends processes.
-pub(crate) fn note_unverified(manifest: &crate::manifest::Manifest, stamped: &[String]) {
+pub(crate) fn note_unverified(
+    settings: &crate::config::Settings,
+    manifest: &crate::manifest::Manifest,
+    stamped: &[String],
+) {
     let names = crate::hooks::run_tests::gate_names_declared(&manifest.externals);
     if names.is_empty() {
         return;
@@ -184,7 +188,7 @@ pub(crate) fn note_unverified(manifest: &crate::manifest::Manifest, stamped: &[S
     // an entry the push gate would not trust cannot be "bypassed". EVERY
     // blocking declaration counts, whatever its name — the ledger is about
     // dodged checks, not about npm's vocabulary.
-    let declared = crate::hooks::run_tests::blocking_commit_decls(&manifest.externals);
+    let declared = crate::hooks::run_tests::blocking_commit_decls(settings, &manifest.externals);
     let missing: Vec<_> = declared
         .iter()
         .filter(|d| !stamped.contains(&d.script))
@@ -192,7 +196,7 @@ pub(crate) fn note_unverified(manifest: &crate::manifest::Manifest, stamped: &[S
     if missing.is_empty() {
         return;
     }
-    if !crate::config::boolean_or("amont.recordBypasses", true) {
+    if !crate::config::boolean_or(settings, "amont.recordBypasses", true) {
         return;
     }
     let files = head_files();

@@ -65,7 +65,11 @@ pub fn scan(file: &str, content: &str, hook_name: &str) -> Vec<Finding> {
     vec![finding]
 }
 
-pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(
+    settings: &crate::config::Settings,
+    hook_name: &str,
+    _args: &[std::ffi::OsString],
+) -> Outcome {
     // Scoped to what this commit STAGES, not the whole index.
     //
     // `git grep --cached` scanned every tracked file, so a marker anywhere in
@@ -93,7 +97,7 @@ pub fn run(hook_name: &str, _args: &[std::ffi::OsString]) -> Outcome {
         }
         return Outcome::Failed;
     }
-    ok("No merge conflict detected");
+    ok(settings, "No merge conflict detected");
     Outcome::Passed
 }
 

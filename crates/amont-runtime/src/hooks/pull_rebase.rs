@@ -99,7 +99,7 @@ pub fn ahead_count(rev_list: &str) -> Option<u64> {
     rev_list.split_whitespace().next()?.parse().ok()
 }
 
-pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
+pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     // 1. Never auto-rebase a dirty tree: that autostashes real work and can
     //    leave a broken mid-rebase state during a push.
     if !git::stdout(&["status", "--porcelain"])
@@ -161,7 +161,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     // rebase you did not type — the shape a check is expected to have. On (the
     // default, and the behaviour every install so far has had), it syncs a
     // behind branch for you and then asks for a second push.
-    let auto = crate::config::boolean_or("amont.autoRebase", true);
+    let auto = crate::config::boolean_or(settings, "amont.autoRebase", true);
 
     // 2b. The upstream can be configured locally but GONE on the remote — the
     //     normal state right after a PR squash-merges with delete-on-merge.
@@ -173,7 +173,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         // "connected, the ref is gone" and 128 for "could not connect", and
         // this used to read both as the first — offline was reported as
         // "upstream deleted", which is a diagnosis someone acts on.
-        let budget = super::common::network_probe_budget();
+        let budget = super::common::network_probe_budget(settings);
         match git::probe(
             &["ls-remote", "--exit-code", "--heads", &remote, branch],
             budget,
@@ -266,7 +266,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
         // nothing about how the transfer goes.
         match git::probe(
             &["pull", "--rebase", &remote, branch],
-            super::common::check_timeout(),
+            super::common::check_timeout(settings),
         ) {
             git::Probe::Exit(0) => {
                 // HEAD moved; the oids git handed THIS push on stdin have
@@ -302,7 +302,7 @@ pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
             }
         }
     } else {
-        super::common::ok("Branch is in sync with its upstream");
+        super::common::ok(settings, "Branch is in sync with its upstream");
     }
 
     // 4. Informational only — never acts.

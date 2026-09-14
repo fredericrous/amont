@@ -38,6 +38,11 @@ pub struct Ctx<'a> {
     /// by the entrypoint, lent to everything downstream. The same shape as
     /// `push`: read once, owned high, borrowed everywhere.
     pub manifest: &'a crate::manifest::Manifest,
+    /// Configuration resolved once for this process: the manifest's trusted
+    /// policy plus the reads memoised over it. Joins `manifest` and `push` in
+    /// the read-once-borrow-everywhere shape, and replaces the process-global
+    /// policy store — see [`crate::config::Settings`].
+    pub settings: &'a crate::config::Settings,
 }
 
 pub type HookFn = fn(&Ctx) -> Verdict;
@@ -54,18 +59,20 @@ pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     // and third line every commit would be the noise that gets amont
     // uninstalled. post-commit stays: it records, never opines.
     ("commit-msg", |ctx| {
-        if !dispatch::conventions_apply(ctx.manifest) {
+        if !dispatch::conventions_apply(ctx.settings, ctx.manifest) {
             return Verdict::Proceed;
         }
-        hooks::commit_msg::run(ctx.args)
+        hooks::commit_msg::run(ctx.settings, ctx.args)
     }),
     ("prepare-commit-msg", |ctx| {
-        if !dispatch::conventions_apply(ctx.manifest) {
+        if !dispatch::conventions_apply(ctx.settings, ctx.manifest) {
             return Verdict::Proceed;
         }
         hooks::prepare_commit_msg::run(ctx.args)
     }),
-    ("post-commit", |ctx| hooks::post_commit::run(ctx)),
+    ("post-commit", |ctx| {
+        hooks::post_commit::run(ctx.settings, ctx)
+    }),
 ];
 
 /// Every check, in the order its stage runs them.
@@ -105,7 +112,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Warn,
         fix: Fix::Rewrite,
         reach: Reach::Convention,
-        run: |_ctx| hooks::agents_md_drift::run(),
+        run: |ctx| hooks::agents_md_drift::run(ctx.settings),
     },
     Builtin {
         name: "pre-commit-argo-lint",
@@ -118,7 +125,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::k8s::argo_lint(ctx.args),
+        run: |ctx| hooks::k8s::argo_lint(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-ban-terms",
@@ -127,7 +134,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
-        run: |ctx| hooks::ban_terms::run(ctx.name, ctx.args),
+        run: |ctx| hooks::ban_terms::run(ctx.settings, ctx.name, ctx.args),
     },
     // The push-time contract, said at the first commit — when renaming the
     // branch costs one command and zero rework. Same short name as the
@@ -140,7 +147,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Warn,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |_ctx| hooks::branch_pattern::early(),
+        run: |ctx| hooks::branch_pattern::early(ctx.settings),
     },
     // Same device for the other push-time refusal: a commit landing on
     // `main` will be refused at push, and the commit is the moment moving
@@ -153,7 +160,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Warn,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |_ctx| hooks::branch_protect::early(),
+        run: |ctx| hooks::branch_protect::early(ctx.settings),
     },
     Builtin {
         name: "pre-commit-cargo-fmt",
@@ -162,7 +169,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::Rewrite,
         reach: Reach::Convention,
-        run: |ctx| hooks::rust_tools::fmt(ctx.args),
+        run: |ctx| hooks::rust_tools::fmt(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-clippy",
@@ -171,7 +178,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::rust_tools::clippy(ctx.args),
+        run: |ctx| hooks::rust_tools::clippy(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-go-vet",
@@ -180,7 +187,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::go_tools::vet(ctx.args),
+        run: |ctx| hooks::go_tools::vet(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-gofmt",
@@ -189,7 +196,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::Rewrite,
         reach: Reach::Convention,
-        run: |ctx| hooks::go_tools::fmt(ctx.args),
+        run: |ctx| hooks::go_tools::fmt(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-kube-linter",
@@ -202,7 +209,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::k8s::kube_linter(ctx.args),
+        run: |ctx| hooks::k8s::kube_linter(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-kubeconform",
@@ -215,7 +222,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::k8s::kubeconform(ctx.args),
+        run: |ctx| hooks::k8s::kubeconform(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-large-files",
@@ -224,7 +231,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
-        run: |_ctx| hooks::large_files::staged(),
+        run: |ctx| hooks::large_files::staged(ctx.settings),
     },
     Builtin {
         name: "pre-commit-lint-js",
@@ -233,7 +240,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::lint_js::run(ctx.args),
+        run: |ctx| hooks::lint_js::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-lint-json-yaml",
@@ -242,7 +249,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::lint_json_yaml::run(ctx.args),
+        run: |ctx| hooks::lint_json_yaml::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-merge-conflict",
@@ -251,7 +258,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
-        run: |ctx| hooks::merge_conflict::run(ctx.name, ctx.args),
+        run: |ctx| hooks::merge_conflict::run(ctx.settings, ctx.name, ctx.args),
     },
     Builtin {
         name: "pre-commit-package-lock",
@@ -260,7 +267,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::package_lock::run(ctx.args),
+        run: |ctx| hooks::package_lock::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-prettier",
@@ -280,7 +287,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::Rewrite,
         reach: Reach::Convention,
-        run: |ctx| hooks::prettier::run(ctx.args),
+        run: |ctx| hooks::prettier::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-pyright",
@@ -297,7 +304,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::python_tools::pyright(ctx.args),
+        run: |ctx| hooks::python_tools::pyright(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-ruff",
@@ -310,7 +317,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::Rewrite,
         reach: Reach::Convention,
-        run: |ctx| hooks::python_tools::ruff(ctx.args),
+        run: |ctx| hooks::python_tools::ruff(ctx.settings, ctx.args),
     },
     // A staged credential is a ten-second fix; a pushed one is an
     // incident. Both halves of that sentence are checks — see
@@ -322,7 +329,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
-        run: |_ctx| hooks::secrets::staged(),
+        run: |ctx| hooks::secrets::staged(ctx.settings),
     },
     Builtin {
         name: "pre-commit-usual-name",
@@ -342,7 +349,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::shellcheck::run(ctx.args),
+        run: |ctx| hooks::shellcheck::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-hadolint",
@@ -354,7 +361,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::hadolint::run(ctx.args),
+        run: |ctx| hooks::hadolint::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-helm-lint",
@@ -365,7 +372,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::helm::run(ctx.args),
+        run: |ctx| hooks::helm::run(ctx.settings, ctx.args),
     },
     Builtin {
         name: "pre-commit-yamllint",
@@ -378,7 +385,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::yamllint::run(ctx.args),
+        run: |ctx| hooks::yamllint::run(ctx.settings, ctx.args),
     },
     // ---- pre-push, cheapest and most decisive first ----
     Builtin {
@@ -388,7 +395,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::branch_protect::run(ctx.push.get()),
+        run: |ctx| hooks::branch_protect::run(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-branch-pattern",
@@ -397,7 +404,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::branch_pattern::run(ctx.push.get(), ctx.args),
+        run: |ctx| hooks::branch_pattern::run(ctx.settings, ctx.push.get(), ctx.args),
     },
     Builtin {
         name: "pre-push-secrets",
@@ -406,7 +413,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
-        run: |ctx| hooks::secrets::pushed(ctx.push.get()),
+        run: |ctx| hooks::secrets::pushed(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-pull-rebase",
@@ -415,7 +422,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::pull_rebase::run(ctx.args),
+        run: |ctx| hooks::pull_rebase::run(ctx.settings, ctx.args),
     },
     // The four dependency audits sit between the structural checks and the
     // test suites: network-bound but seconds, where a suite is minutes —
@@ -430,7 +437,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::go(ctx.push.get()),
+        run: |ctx| hooks::audit::go(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-audit-js",
@@ -439,7 +446,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::js(ctx.push.get()),
+        run: |ctx| hooks::audit::js(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-audit-python",
@@ -448,7 +455,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::python(ctx.push.get()),
+        run: |ctx| hooks::audit::python(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-audit-rust",
@@ -457,7 +464,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::rust(ctx.push.get()),
+        run: |ctx| hooks::audit::rust(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-run-tests-js",
@@ -467,7 +474,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::run_tests::run(ctx.push.get(), &ctx.manifest.externals),
+        run: |ctx| hooks::run_tests::run(ctx.settings, ctx.push.get(), &ctx.manifest.externals),
     },
     Builtin {
         name: "pre-push-cargo-test",
@@ -477,7 +484,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::rust_tools::test(ctx.push.get()),
+        run: |ctx| hooks::rust_tools::test(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-go-test",
@@ -487,7 +494,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::go_tools::test(ctx.push.get()),
+        run: |ctx| hooks::go_tools::test(ctx.settings, ctx.push.get()),
     },
     Builtin {
         name: "pre-push-pytest",
@@ -497,7 +504,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::python_tools::pytest(ctx.push.get()),
+        run: |ctx| hooks::python_tools::pytest(ctx.settings, ctx.push.get()),
     },
 ];
 
@@ -506,8 +513,8 @@ pub const CHECKS: &[Builtin] = &[
 /// `git config amont.severity.<check> warn` downgrades a blocking check to a
 /// warning. Unlike `hook.skip` it keeps the signal: the check still runs and
 /// still reports, it just stops failing the commit.
-pub fn severity_of(check: &dyn Check) -> Severity {
-    effective_override(None, check.name()).unwrap_or_else(|| check.severity())
+pub fn severity_of(settings: &crate::config::Settings, check: &dyn Check) -> Severity {
+    effective_override(settings, None, check.name()).unwrap_or_else(|| check.severity())
 }
 
 /// The config key a severity override lives under.
@@ -553,8 +560,8 @@ impl Overrides {
     /// know the flag (exit 129 → `None`) this degrades, deliberately, to
     /// "ALL git config beats policy" — the fail-safe direction, because the
     /// alternative was an EMPTY override set silently discarding both.
-    pub fn read() -> Overrides {
-        let policy = crate::policy::current();
+    pub fn read(settings: &crate::config::Settings) -> Overrides {
+        let policy = settings.policy();
         match crate::git::stdout(&[
             "config",
             "--show-scope",
@@ -759,8 +766,14 @@ mod precedence {
 /// apply — which is exactly what the dashboard used to do.
 ///
 /// `repo` is `None` for the current directory, which is where a hook runs.
-pub fn effective_override(repo: Option<&Path>, check: &str) -> Option<Severity> {
-    overrides_in(repo).applied_to(check).map(|(_, s)| s)
+pub fn effective_override(
+    settings: &crate::config::Settings,
+    repo: Option<&Path>,
+    check: &str,
+) -> Option<Severity> {
+    overrides_in(settings, repo)
+        .applied_to(check)
+        .map(|(_, s)| s)
 }
 
 /// Which configured KEY applies to `check` here, if any.
@@ -768,18 +781,22 @@ pub fn effective_override(repo: Option<&Path>, check: &str) -> Option<Severity> 
 /// The dashboard needs the key rather than the value: with three ways to name a
 /// check, "which of these lines is the one doing something" is the question a
 /// reader actually has.
-pub fn effective_key(repo: Option<&Path>, check: &str) -> Option<String> {
-    overrides_in(repo)
+pub fn effective_key(
+    settings: &crate::config::Settings,
+    repo: Option<&Path>,
+    check: &str,
+) -> Option<String> {
+    overrides_in(settings, repo)
         .applied_to(check)
         .map(|(pattern, _)| pattern.to_string())
 }
 
-fn overrides_in(repo: Option<&Path>) -> Overrides {
+fn overrides_in(settings: &crate::config::Settings, repo: Option<&Path>) -> Overrides {
     match repo {
         // The current repository: same fold the dispatcher uses, policy
         // included — `amont run <check>` resolves through here and must not
         // disagree with the stage that would have run it.
-        None => Overrides::read(),
+        None => Overrides::read(settings),
         // Somebody ELSE's repository (the fleet's per-repo question): never
         // this process's policy — the store belongs to the repo the process
         // is standing in, and a scanner walks many.
@@ -837,7 +854,7 @@ pub fn lookup(name: &str, manifest: &crate::manifest::Manifest) -> Option<HookFn
         return Some(|ctx: &Ctx| {
             let check = one_named(ctx.name, ctx.manifest).expect("checked above");
             Verdict::blocking(matches!(
-                (check.run(ctx), severity_of(check)),
+                (check.run(ctx), severity_of(ctx.settings, check)),
                 (Outcome::Failed, Severity::Block)
             ))
         });

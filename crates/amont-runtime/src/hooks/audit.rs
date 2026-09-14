@@ -55,10 +55,16 @@ fn releasing(refs: &[PushRef]) -> bool {
 /// Apply the push's stakes to the tool's report. `full` is the captured
 /// output, reprinted only when the verdict blocks — that is the moment the
 /// reader needs the table, and the only moment worth the scrollback.
-fn conclude(tool: &str, report: Report, releasing: bool, full: &str) -> Outcome {
+fn conclude(
+    settings: &crate::config::Settings,
+    tool: &str,
+    report: Report,
+    releasing: bool,
+    full: &str,
+) -> Outcome {
     match report {
         Report::Clean => {
-            common::ok(&format!("{tool}: no known vulnerabilities"));
+            common::ok(settings, &format!("{tool}: no known vulnerabilities"));
             Outcome::Passed
         }
         Report::Advisories(ids) => {
@@ -302,14 +308,14 @@ fn venv_site_packages(root: &str) -> Option<String> {
 }
 
 /// Run one audit tool from the repo root and read its answer.
-fn audited(argv: &[String]) -> Option<(bool, String)> {
+fn audited(settings: &crate::config::Settings, argv: &[String]) -> Option<(bool, String)> {
     let root = common::repo_root();
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .current_dir(&root)
         .stdin(std::process::Stdio::null());
     common::strip_git_env(&mut cmd);
-    let (ran, out) = common::capture_within(&mut cmd)?;
+    let (ran, out) = common::capture_within(settings, &mut cmd)?;
     match ran {
         common::Ran::Status(s) => Some((s.success(), out)),
         common::Ran::TimedOut(budget) => {
@@ -319,7 +325,7 @@ fn audited(argv: &[String]) -> Option<(bool, String)> {
     }
 }
 
-pub fn rust(refs: &[PushRef]) -> Outcome {
+pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if common::which("cargo-audit").is_none() {
         common::warn(
             "audit-rust: cargo-audit is not installed (cargo install cargo-audit) — \
@@ -333,12 +339,15 @@ pub fn rust(refs: &[PushRef]) -> Outcome {
         "--color".into(),
         "never".into(),
     ];
-    let Some((exit_ok, out)) = audited(&argv) else {
+    let Some((exit_ok, out)) = audited(settings, &argv) else {
         return Outcome::Unavailable;
     };
     conclude(
+        settings,
         "audit-rust",
-        attribute(read_cargo_audit(exit_ok, &out), &out, cargo_tree_inverse),
+        attribute(read_cargo_audit(exit_ok, &out), &out, |krate| {
+            cargo_tree_inverse(settings, krate)
+        }),
         releasing(refs),
         &out,
     )
@@ -347,7 +356,7 @@ pub fn rust(refs: &[PushRef]) -> Outcome {
 /// `cargo tree -i <crate>`, or None if it could not be run. Failure here is
 /// never fatal: attribution is an improvement to a message, and an advisory
 /// reported without it is still an advisory reported.
-fn cargo_tree_inverse(krate: &str) -> Option<String> {
+fn cargo_tree_inverse(settings: &crate::config::Settings, krate: &str) -> Option<String> {
     let argv = vec![
         common::program("cargo"),
         "tree".into(),
@@ -358,7 +367,7 @@ fn cargo_tree_inverse(krate: &str) -> Option<String> {
         "--color".into(),
         "never".into(),
     ];
-    audited(&argv).map(|(_, out)| out)
+    audited(settings, &argv).map(|(_, out)| out)
 }
 
 /// Name the crate behind each advisory, and which of this workspace's crates
@@ -403,13 +412,14 @@ fn described(ids: Vec<String>, out: &str, tree: impl Fn(&str) -> Option<String>)
         .collect()
 }
 
-pub fn js(refs: &[PushRef]) -> Outcome {
+pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let argv = vec![common::program("npm"), "audit".into()];
-    let Some((exit_ok, out)) = audited(&argv) else {
+    let Some((exit_ok, out)) = audited(settings, &argv) else {
         common::warn("audit-js: npm could not run — the audit did NOT run");
         return Outcome::Unavailable;
     };
     conclude(
+        settings,
         "audit-js",
         read_npm_audit(exit_ok, &out),
         releasing(refs),
@@ -417,7 +427,7 @@ pub fn js(refs: &[PushRef]) -> Outcome {
     )
 }
 
-pub fn go(refs: &[PushRef]) -> Outcome {
+pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if common::which("govulncheck").is_none() {
         common::warn(
             "audit-go: govulncheck is not installed \
@@ -426,10 +436,11 @@ pub fn go(refs: &[PushRef]) -> Outcome {
         return Outcome::Unavailable;
     }
     let argv = vec![common::program("govulncheck"), "./...".into()];
-    let Some((exit_ok, out)) = audited(&argv) else {
+    let Some((exit_ok, out)) = audited(settings, &argv) else {
         return Outcome::Unavailable;
     };
     conclude(
+        settings,
         "audit-go",
         read_govulncheck(exit_ok, &out),
         releasing(refs),
@@ -437,7 +448,7 @@ pub fn go(refs: &[PushRef]) -> Outcome {
     )
 }
 
-pub fn python(refs: &[PushRef]) -> Outcome {
+pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if common::which("pip-audit").is_none() {
         common::warn(
             "audit-python: pip-audit is not installed (pip install pip-audit) — \
@@ -478,10 +489,11 @@ pub fn python(refs: &[PushRef]) -> Outcome {
         );
         return Outcome::Unavailable;
     };
-    let Some((exit_ok, out)) = audited(&argv) else {
+    let Some((exit_ok, out)) = audited(settings, &argv) else {
         return Outcome::Unavailable;
     };
     conclude(
+        settings,
         "audit-python",
         read_pip_audit(exit_ok, &out),
         releasing(refs),

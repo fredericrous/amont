@@ -238,11 +238,11 @@ fn read_file(path: &Path) -> Ledger {
 /// Best-effort and silent, like the hook it runs in: the number's whole value
 /// is that it is collected without a lecture, and a bookkeeping failure must
 /// never disturb a commit.
-pub(crate) fn note(events: &[(String, Origin)]) {
+pub(crate) fn note(settings: &crate::config::Settings, events: &[(String, Origin)]) {
     if events.is_empty() {
         return;
     }
-    if !crate::config::boolean_or("amont.recordDowngrades", true) {
+    if !crate::config::boolean_or(settings, "amont.recordDowngrades", true) {
         return;
     }
     // The parent commit, which groups an afternoon's repeated attempts at one

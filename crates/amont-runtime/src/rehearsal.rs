@@ -77,8 +77,8 @@ const ON_COMMIT: &str = "amont.rehearseOnCommit";
 /// asking to be told when the suite ends.
 const WAIT_BUDGET: &str = "amont.rehearsalWait";
 
-pub fn wait_budget() -> Option<Duration> {
-    match crate::config::integer_or(WAIT_BUDGET, 300, 0..=86_400) {
+pub fn wait_budget(settings: &crate::config::Settings) -> Option<Duration> {
+    match crate::config::integer_or(settings, WAIT_BUDGET, 300, 0..=86_400) {
         0 => None,
         secs => Some(Duration::from_secs(secs as u64)),
     }
@@ -100,8 +100,8 @@ const FORMAT: &str = "amont-rehearsal-v1";
 pub const ENV: &str = "AMONT_REHEARSAL";
 
 /// Does this repository rehearse after every commit?
-pub fn on_commit_enabled() -> bool {
-    crate::config::boolean_or(ON_COMMIT, false)
+pub fn on_commit_enabled(settings: &crate::config::Settings) -> bool {
+    crate::config::boolean_or(settings, ON_COMMIT, false)
 }
 
 /// Is this process the pre-push run inside a rehearsal snapshot?
@@ -453,9 +453,9 @@ pub fn worker() -> Result<Outcome, String> {
     // snapshot is a detached HEAD and could not answer.
     let push_ref = crate::pushrefs::synthetic_from_upstream()?;
     let manifest = crate::manifest::load(repo);
-    crate::policy::install(manifest.policy.clone());
+    let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&push_ref));
-    let gates = crate::dispatch::scoped_push_gates(&manifest, &changed);
+    let gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
     let short = head.get(..8).unwrap_or(&head);
     if gates.is_empty() {
         println!("nothing to rehearse: no test gate has work to do for what {short} would push");
@@ -493,7 +493,7 @@ pub fn worker() -> Result<Outcome, String> {
             remove_snapshot(repo, &prev.snapshot);
         }
     }
-    let snapshot = crate::pushed_tree::PushedTree::create(repo, &head)
+    let snapshot = crate::pushed_tree::PushedTree::create(&settings, repo, &head)
         .ok_or("could not check out HEAD into a snapshot worktree")?;
     let me = State {
         pid: std::process::id(),
@@ -558,7 +558,7 @@ pub fn worker() -> Result<Outcome, String> {
 /// A rehearsal that already FAILED is reported, not honoured: the gate runs
 /// again here, which is what shows the developer the failure in the
 /// terminal they are looking at.
-pub fn await_for(tips: &[String]) -> Option<Phase> {
+pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<Phase> {
     if in_snapshot() {
         return None;
     }
@@ -591,7 +591,7 @@ pub fn await_for(tips: &[String]) -> Option<Phase> {
             None
         }
         Phase::Running => {
-            let budget = wait_budget();
+            let budget = wait_budget(settings);
             crate::say!(
                 "{} a background rehearsal of this tree started {} ago is still running — \
                  waiting{} for it rather than starting the suite over{log}",
