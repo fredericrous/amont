@@ -518,6 +518,58 @@ fn an_unstaged_symlink_retarget_survives_the_hook() {
     );
 }
 
+/// The other direction: the INDEX holds a symlink and the unstaged version is
+/// a regular file. `checkout` puts the link back for the checks, and the
+/// restore then writes the held bytes to that path — through the link, since
+/// `fs::write` follows one, so the bytes landed in the link's TARGET. Here the
+/// target is a file outside the repository: it must be exactly as it was, and
+/// the regular file must be back in the link's place.
+#[test]
+fn a_tracked_symlink_replaced_by_an_unstaged_file_is_not_written_through() {
+    let r = Repo::new();
+    seed(&r);
+    // The link's target lives OUTSIDE the worktree — a file no hook of this
+    // repository was ever asked to touch.
+    let outside = r.dir.with_extension("outside");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).expect("create the outside dir");
+    let sentinel = outside.join("sentinel.txt");
+    std::fs::write(&sentinel, "untouched\n").expect("write the sentinel");
+    if !try_symlink(sentinel.to_str().expect("utf-8 path"), &r.path("link")) {
+        println!("  ! symlinks unavailable — skipping");
+        let _ = std::fs::remove_dir_all(&outside);
+        return;
+    }
+    r.git(&["add", "link"]);
+    r.commit("chore: add a symlink");
+
+    // Unstaged: the link is now a plain file with content of its own.
+    std::fs::remove_file(r.path("link")).expect("remove the link");
+    std::fs::write(r.path("link"), "a regular file now\n").expect("write the file");
+    // Something staged, so the hook has work and parks the tree.
+    r.stage("x.json", VALID);
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).expect("read the sentinel"),
+        "untouched\n",
+        "the restore wrote THROUGH the staged symlink into its target"
+    );
+    let meta = std::fs::symlink_metadata(r.path("link")).expect("link path must exist");
+    assert!(
+        meta.file_type().is_file(),
+        "the unstaged regular file was not put back in the link's place"
+    );
+    assert_eq!(
+        tree(&r, "link"),
+        "a regular file now\n",
+        "the unstaged content was not restored"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// A symlink mid-retarget commonly points at nothing for a moment. `fs::read`
 /// on a dangling link fails exactly like it does on a deleted file, so this
 /// must not be mistaken for one — that reads the working tree, decides the

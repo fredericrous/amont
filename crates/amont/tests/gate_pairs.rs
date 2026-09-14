@@ -138,6 +138,61 @@ fn an_unstamped_commit_brings_the_pair_back_at_push() {
     assert_eq!(runs(&r), 1, "the push-side twin ran");
 }
 
+/// An opt-in marker on the pair (`*.txt+marker`) is a fact about the
+/// REPOSITORY, and it must be judged there. Judging it per commit — against
+/// the files each commit changed — answered "would never fire" for every
+/// commit that left `marker` alone, which is every ordinary commit; no
+/// commit counted as unstamped, the verdict was "gated at commit", and the
+/// push-side twin was skipped for a commit nothing had ever checked.
+#[test]
+fn an_opt_in_marker_does_not_hide_an_unstamped_commit() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage("marker", "opted in\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  check  *.txt+marker  block  node gate.js\n\
+         pre-push    check  *.txt+marker  block  node gate.js\n",
+    );
+    r.commit("chore: the pair");
+    trust_and_install(&r);
+
+    r.stage("a.txt", "hello\n");
+    r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
+    assert_eq!(runs(&r), 0, "nothing ran at commit");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("gated at commit instead"),
+        "an unstamped commit was reported as gated: {out}"
+    );
+    assert!(
+        out.contains("no record of it — running it here"),
+        "the reason is named: {out}"
+    );
+    assert_eq!(runs(&r), 1, "the push-side twin must run");
+
+    // And the other half, so this is not passing by never pairing at all: a
+    // verified commit in the same repository IS gated.
+    r.stage("b.txt", "world\n");
+    let out = r.git(&["commit", "-q", "-m", "feat: through the gate"]);
+    assert!(out.status.success(), "verified commit failed");
+    assert_eq!(runs(&r), 2, "the commit-time side ran");
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("no record of it — running it here"),
+        "the earlier --no-verify commit is still in the range: {out}"
+    );
+    assert_eq!(runs(&r), 3, "the range still carries an unstamped commit");
+}
+
 /// A WARN commit-time side vouches for nothing: no stamp, push always runs.
 #[test]
 fn a_warn_severity_pair_cannot_vouch() {

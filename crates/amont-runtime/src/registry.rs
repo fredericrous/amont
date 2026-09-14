@@ -474,7 +474,14 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::run_tests::run(ctx.settings, ctx.push.get(), &ctx.manifest.externals),
+        run: |ctx| {
+            hooks::run_tests::run(
+                ctx.settings,
+                ctx.push.get(),
+                &ctx.manifest.externals,
+                ctx.name,
+            )
+        },
     },
     Builtin {
         name: "pre-push-cargo-test",
@@ -484,7 +491,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::rust_tools::test(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::rust_tools::test(ctx.settings, ctx.push.get(), ctx.name),
     },
     Builtin {
         name: "pre-push-go-test",
@@ -494,7 +501,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::go_tools::test(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::go_tools::test(ctx.settings, ctx.push.get(), ctx.name),
     },
     Builtin {
         name: "pre-push-pytest",
@@ -504,7 +511,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::python_tools::pytest(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::python_tools::pytest(ctx.settings, ctx.push.get(), ctx.name),
     },
 ];
 

@@ -599,9 +599,9 @@ fn put_back_v1(fixing: bool, store: &Path, root: &Path, entries: &[Held]) -> std
             Held::Symlink { rel, target } => {
                 let relp = safe_rel(rel).ok_or_else(|| escapes(rel))?;
                 let link = root.join(relp);
-                // `checkout` put the staged symlink there; replace it, don't
-                // merge with it.
-                let _ = std::fs::remove_file(&link);
+                // `checkout` put the staged content there — a regular file,
+                // or a link of its own; replace it, don't merge with it.
+                let _ = remove_link(&link);
                 create_symlink(target, &link)?;
             }
             Held::Modified { rel, mode } => {
@@ -611,6 +611,18 @@ fn put_back_v1(fixing: bool, store: &Path, root: &Path, entries: &[Held]) -> std
                     std::fs::create_dir_all(parent)?;
                 }
                 let held = std::fs::read(store.join(FILES).join(&relp))?;
+                // What `checkout` put here may be a SYMLINK: the staged content
+                // of a path whose unstaged version is a regular file. Both
+                // `fs::read` below and `fs::write` FOLLOW a link, so restoring
+                // through it would compare against, and then overwrite, the
+                // link's TARGET — a file anywhere on the machine, outside the
+                // worktree included, that this module was never asked to
+                // touch. The link is the index's content, not the author's;
+                // the author's is the regular file in the store. Remove the
+                // link so the write lands on the path itself.
+                if is_symlink(&target) {
+                    remove_link(&target)?;
+                }
                 // The clobber guard. If the file on disk no longer holds what
                 // `enter()`'s checkout put there, somebody wrote it while the
                 // checks ran — an editor save is WORK, and this write used to
@@ -749,6 +761,25 @@ fn create_symlink(target: &str, link: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(target, link)
     } else {
         std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+/// Is the path itself a symlink? `symlink_metadata`, never `metadata`: the
+/// latter follows the link and answers about whatever it points at.
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Remove a symlink — the LINK, never its target. On Windows a link to a
+/// directory is removed with `remove_dir`, and `remove_file` refuses it; on
+/// unix `remove_file` unlinks either kind.
+fn remove_link(link: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(link) {
+        Ok(()) => Ok(()),
+        Err(first) => match std::fs::remove_dir(link) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(first),
+        },
     }
 }
 

@@ -6,7 +6,7 @@
 //! the pre-commit one, from the other end.
 
 mod common;
-use common::Repo;
+use common::{missing, Repo};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -209,5 +209,86 @@ fn a_snapshot_that_ran_does_stamp_its_tip() {
     assert!(
         note.status.success(),
         "a snapshot that ran left no stamp:\n{out}"
+    );
+}
+
+fn trust(r: &Repo) {
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("trust")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont trust");
+    assert!(out.status.success(), "could not trust the manifest");
+}
+
+/// A repo whose DECLARED gate fails on the committed tip and passes on the
+/// working tree — the `diverging` fixture, with an `amont.conf` line in
+/// place of the npm gate.
+fn diverging_declared(r: &Repo) -> (String, String) {
+    r.stage("check.js", "process.exit(0);\n");
+    r.stage(
+        "amont.conf",
+        "pre-push  check  *.js  block  node check.js\n",
+    );
+    r.commit("chore: seed");
+    trust(r);
+    let base = rev(r, "HEAD");
+    r.git(&["checkout", "-q", "-b", "feat/x"]);
+
+    r.stage("check.js", "process.exit(1);\n");
+    r.commit("feat: break the suite");
+    let tip = rev(r, "HEAD");
+
+    // Fixed on disk, deliberately not committed.
+    r.write("check.js", "process.exit(0);\n");
+    (tip, base)
+}
+
+/// A declared pre-push gate is a push gate, and `amont.testPushedTree` is a
+/// promise about what push gates test. It used to run in the working tree
+/// whatever the flag said — passing on the uncommitted fix — and `stamp_tips`
+/// then read the flag, concluded the gate had run on the tip, and stamped
+/// it: the next push of that broken commit skipped the gate entirely.
+#[test]
+fn a_declared_gate_tests_the_pushed_commits_when_opted_in() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    let (tip, base) = diverging_declared(&r);
+    r.git(&["config", "amont.testPushedTree", "true"]);
+
+    let (code, out) = pre_push(&r, &tip, &base);
+    assert_ne!(
+        code, 0,
+        "the pushed commit is broken and the declared gate let it through:\n{out}"
+    );
+    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    assert!(
+        !note.status.success(),
+        "a tip the declared gate never passed on was stamped: {}",
+        String::from_utf8_lossy(&note.stdout)
+    );
+}
+
+/// The same fixture without the flag keeps today's behaviour: the working
+/// tree passes, the push proceeds, and — the tree not being the tip — nothing
+/// is stamped for a commit that was never tested.
+#[test]
+fn a_declared_gate_on_a_dirty_tree_stamps_nothing() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    let (tip, base) = diverging_declared(&r);
+
+    let (code, out) = pre_push(&r, &tip, &base);
+    assert_eq!(code, 0, "the working tree passes:\n{out}");
+    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    assert!(
+        !note.status.success(),
+        "a dirty working tree vouched for the tip: {}",
+        String::from_utf8_lossy(&note.stdout)
     );
 }

@@ -223,7 +223,11 @@ pub fn vet(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
 /// whether the suite runs, per ref, against the pushed tree — a docs-only
 /// push costs nothing, and a multi-ref push tests each tip in its own
 /// worktree.
-pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn test(
+    settings: &crate::config::Settings,
+    refs: &[crate::pushrefs::PushRef],
+    gate: &str,
+) -> Outcome {
     let Some(root) = git::stdout(&["rev-parse", "--show-toplevel"]) else {
         warn("go-test: git would not answer — the gate did NOT run");
         return Outcome::Unavailable;
@@ -244,7 +248,8 @@ pub fn test(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef
         };
         // Where THIS ref's suite runs decides what it is answering about —
         // the pushed commits, not whatever is open in the editor.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
+        let (where_, _guard) =
+            crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, gate);
         let roots: Vec<PathBuf> = roots
             .iter()
             .map(|rt| {

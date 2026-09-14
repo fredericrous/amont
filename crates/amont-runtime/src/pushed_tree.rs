@@ -216,38 +216,45 @@ impl Drop for PushedTree {
     }
 }
 
-/// Tips whose snapshot was ASKED FOR and could not be made, so their suite
-/// ran against the working tree after all.
+/// `(gate, tip)` pairs whose suite ACTUALLY ran in a checkout of `tip` —
+/// what happened, per check, as opposed to what `enabled()` says was asked
+/// for.
 ///
-/// Read by `dispatch::stamp_tips`, which otherwise decides a tip is vouchable
-/// from `enabled()` — the CONFIG — and would stamp a tip whose content was
-/// never tested. See [`fell_back`].
+/// Read by `dispatch::stamp_tips`. It used to decide from the CONFIG plus a
+/// per-tip "the snapshot could not be made" set, which answers for the
+/// checks that asked for a snapshot and says nothing about one that never
+/// did: a declared `amont.conf` gate ran in the working tree, passed on an
+/// uncommitted fix, and was stamped onto a tip that had never been tested —
+/// so the next push of that tip skipped it. A stamp is a claim about one
+/// gate and one tree, and the record it is made from has to be that fine.
 ///
 /// A `Mutex` because pre-push checks run concurrently and each loops over its
-/// own refs; a poisoned lock is treated as "it fell back", which costs a
+/// own refs; a poisoned lock reads as "did not run there", which costs a
 /// redundant gate run and never a false stamp.
-static FELL_BACK: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
+static SNAPSHOTTED: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+> = std::sync::OnceLock::new();
 
-fn fallbacks() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    FELL_BACK.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+fn snapshotted() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+    SNAPSHOTTED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
-fn note_fallback(tip: &str) {
-    if let Ok(mut set) = fallbacks().lock() {
-        set.insert(tip.to_string());
+fn note_snapshot(gate: &str, tip: &str) {
+    if let Ok(mut set) = snapshotted().lock() {
+        set.insert((gate.to_string(), tip.to_string()));
     }
 }
 
-/// Did the snapshot for `tip` fail, leaving its suite on the working tree?
+/// Did `gate` run in a checkout of `tip` — the pushed content itself, not
+/// whatever the working tree held?
 ///
-/// `true` also when the lock is poisoned: a stamp is a claim that the gate
+/// `false` also when the lock is poisoned: a stamp is a claim that the gate
 /// ran on exactly this content, and a claim we cannot check is one we do not
 /// make.
-pub fn fell_back(tip: &str) -> bool {
-    match fallbacks().lock() {
-        Ok(set) => set.contains(tip),
-        Err(_) => true,
+pub fn ran_on_tip(gate: &str, tip: &str) -> bool {
+    match snapshotted().lock() {
+        Ok(set) => set.contains(&(gate.to_string(), tip.to_string())),
+        Err(_) => false,
     }
 }
 
@@ -259,12 +266,19 @@ pub fn fell_back(tip: &str) -> bool {
 /// the second ref's code against the first ref's tree. Callers loop over
 /// their own refs and pass each one's tip in turn.
 ///
+/// `gate` is the check's id (`Check::name`) — what a stamp names, and what
+/// [`ran_on_tip`] is asked about when `dispatch::stamp_tips` decides whether
+/// this gate may vouch for this tip. A check that runs a suite anywhere
+/// else than the directory returned here is answering about content no
+/// stamp may claim.
+///
 /// Returns the directory plus the guard that owns it — dropping the guard
 /// removes the worktree, so the caller must hold it for the length of the run.
 pub fn where_to_run(
     settings: &crate::config::Settings,
     tip: &str,
     fallback: &str,
+    gate: &str,
 ) -> (PathBuf, Option<PushedTree>) {
     // Inside a rehearsal the working tree IS a snapshot of the tip: a
     // second checkout would test the same content twice, and the warning
@@ -276,28 +290,37 @@ pub fn where_to_run(
         // Today's behaviour, but no longer silent about it. NOT a fallback:
         // nobody asked for a snapshot, and `stamp_tips` already knows to
         // vouch for the working tree only when it IS the tip.
-        println!(
-            "{} testing the WORKING TREE, not the pushed commits \
-             (`git config amont.testPushedTree true` to test what you are pushing)",
-            warning_sign()
-        );
+        //
+        // Once per process: every gate in the push asks this, and one line
+        // says it — the fourth repetition would teach the reader to skip it.
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            println!(
+                "{} testing the WORKING TREE, not the pushed commits \
+                 (`git config amont.testPushedTree true` to test what you are pushing)",
+                warning_sign()
+            );
+        }
         return (PathBuf::from(fallback), None);
     }
     match PushedTree::create(settings, Path::new(fallback), tip) {
         Some(tree) => {
+            // Recorded, not inferred. `stamp_tips` used to read `enabled()`
+            // and conclude "the suite ran on the tip itself" — for every
+            // gate, including ones that never came here. Only a gate that
+            // was handed this checkout can be said to have run in it.
+            note_snapshot(gate, tip);
             let path = tree.path().to_path_buf();
             (path, Some(tree))
         }
         None => {
-            // Recorded, not just printed. `stamp_tips` used to read
-            // `enabled()` and conclude "the suite ran on the tip itself",
-            // which is exactly what did NOT happen here: the gate passed on
-            // a possibly-dirty working tree and the tip was stamped anyway,
-            // so the next push of that tree — a retry after a dropped
-            // connection, or a tag on the merged commit — skipped a gate
-            // nobody had run on its content. `gate_stamp`'s own promise is
-            // that no path here can let an unchecked commit through.
-            note_fallback(tip);
+            // Not recorded, and that IS the record: the gate passed on a
+            // possibly-dirty working tree, and stamping the tip anyway —
+            // which reading the config would do — let the next push of that
+            // tree (a retry after a dropped connection, or a tag on the
+            // merged commit) skip a gate nobody had run on its content.
+            // `gate_stamp`'s own promise is that no path here can let an
+            // unchecked commit through.
             println!(
                 "{} could not check out {tip} to test it; testing the working tree instead \
                  (nothing will be stamped for it)",

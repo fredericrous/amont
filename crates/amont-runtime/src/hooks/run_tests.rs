@@ -175,6 +175,13 @@ pub(crate) fn pair_verdict(
     else {
         return PairVerdict::NotPaired;
     };
+    // A declaration this repository has not opted into never ran at commit
+    // time, so it has nothing to vouch with — the push side runs on its own
+    // word. Judged against the REPOSITORY, once, and never against a commit's
+    // changed files: see `repo_opted_in`.
+    if !repo_opted_in(&pair.scope) {
+        return PairVerdict::NotPaired;
+    }
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
         .unwrap_or_else(|| "0".repeat(40));
@@ -195,9 +202,7 @@ pub(crate) fn pair_verdict(
         //
         // Opt-in is a fact about the REPOSITORY, settled once by the
         // dispatcher when it decided this check runs here at all. What this
-        // loop needs is the per-file question, which is `covers`. For a
-        // declared external the two are identical — `amont.conf` scopes
-        // carry no opt-in — so this changes nothing for the declared path.
+        // loop needs is the per-file question, which is `covers`.
         let relevant: Vec<String> = changed
             .iter()
             .filter(|f| push_scope.is_unscoped() || push_scope.covers(f))
@@ -216,9 +221,18 @@ pub(crate) fn pair_verdict(
         let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
         let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
         let stamps = crate::gate_stamp::stamps_for(&ids);
+        // `touches`, NOT `matches`, for the same reason as above and with a
+        // worse consequence. `matches` asks the opt-in question of ONE
+        // COMMIT's changed files: a `*.txt+marker` pair judged a commit that
+        // changed `a.txt` and left `marker` alone as "would never fire", so
+        // the commit was not counted, `unstamped` stayed 0, and the verdict
+        // was `Gated` — the push-side twin skipped on the strength of a
+        // stamp that did not exist. Opt-in was settled for the repository
+        // above; per commit the only question is whether it touched the
+        // scope.
         unstamped += per_commit
             .iter()
-            .filter(|(_, files)| pair.scope.matches(files))
+            .filter(|(_, files)| pair.scope.touches(files))
             .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair.script)))
             .count();
     }
@@ -230,6 +244,20 @@ pub(crate) fn pair_verdict(
     } else {
         PairVerdict::Unstamped(unstamped)
     }
+}
+
+/// Has this repository opted into `scope`? The index is the only honest
+/// source — the same question `manifest.rs` asks before running the
+/// declaration at commit time, so the stamp check and the run agree on
+/// whether it could have run at all.
+///
+/// `true` when git will not list the files: an unverified answer must not
+/// silently promote a declaration to "never ran" — that direction re-runs
+/// the push-side gate, which is the safe one. `tracked_files` is cached
+/// per process, so the git spawn is paid once however many pairs ask.
+fn repo_opted_in(scope: &crate::check::Scope) -> bool {
+    scope.opt_in.is_empty()
+        || crate::hooks::common::tracked_files().map_or(true, |tracked| scope.opted_in(&tracked))
 }
 
 /// One gate entry a commit-time declaration stands in for.
@@ -477,6 +505,7 @@ pub fn run(
     settings: &crate::config::Settings,
     refs: &[crate::pushrefs::PushRef],
     declared: &[crate::manifest::External],
+    gate: &str,
 ) -> Outcome {
     // An all-zero oid, of whatever length this repo's hash is (sha1 or sha256).
     let zero = git::stdout(&["hash-object", "--stdin"])
@@ -548,9 +577,13 @@ pub fn run(
         // machine without amont, or with a rewritten hash has no stamp — and
         // an unstamped commit is one the check never judged, so the gate runs
         // rather than trusting the declaration's word for it.
+        //
+        // And the REPOSITORY must have opted into it — judged against the
+        // index, not per commit: see `pair_verdict` for the skipped-gate bug
+        // that asking it of a commit's changed files produced.
         let candidates: Vec<&GateDecl> = declared_gate
             .iter()
-            .filter(|d| d.scope.covers_all(&js_changed))
+            .filter(|d| d.scope.covers_all(&js_changed) && repo_opted_in(&d.scope))
             .collect();
         let mut already: Vec<String> = Vec::new();
         if !candidates.is_empty() {
@@ -560,7 +593,7 @@ pub fn run(
             for d in candidates {
                 let unstamped = per_commit
                     .iter()
-                    .filter(|(_, files)| d.scope.matches(files))
+                    .filter(|(_, files)| d.scope.touches(files))
                     .filter(|(commit, _)| {
                         !stamps.get(commit).is_some_and(|s| s.contains(&d.script))
                     })
@@ -586,7 +619,7 @@ pub fn run(
         // editor — and about THIS ref's commits, not some other ref in the
         // same push. A single worktree shared across every ref would run a
         // second ref's tests against a first ref's tree.
-        let (run_in, _guard) = crate::pushed_tree::where_to_run(settings, local_oid, &root);
+        let (run_in, _guard) = crate::pushed_tree::where_to_run(settings, local_oid, &root, gate);
         let where_ = run_in.to_string_lossy().into_owned();
         let folders = packages_to_test(&pkg_dirs, &changed_dirs);
 

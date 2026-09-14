@@ -265,7 +265,11 @@ pub fn pyright(settings: &crate::config::Settings, _args: &[std::ffi::OsString])
 /// ref (see `pushed_tree`), `Unavailable` — loudly, never green — when
 /// git will not answer or pytest is not installed, and fail-fast on a red
 /// suite.
-pub fn pytest(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushRef]) -> Outcome {
+pub fn pytest(
+    settings: &crate::config::Settings,
+    refs: &[crate::pushrefs::PushRef],
+    gate: &str,
+) -> Outcome {
     let Some(root) = crate::git::stdout(&["rev-parse", "--show-toplevel"]) else {
         super::common::warn("pytest: git would not answer — the gate did NOT run");
         return Outcome::Unavailable;
@@ -298,7 +302,8 @@ pub fn pytest(settings: &crate::config::Settings, refs: &[crate::pushrefs::PushR
         };
         // Where THIS ref's suite runs decides what it is answering about —
         // the pushed commits, not whatever is open in the editor.
-        let (where_, _guard) = crate::pushed_tree::where_to_run(settings, &r.local_oid, &root);
+        let (where_, _guard) =
+            crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, gate);
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         cmd.current_dir(&where_).stdin(std::process::Stdio::null());
