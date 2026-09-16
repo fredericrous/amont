@@ -71,6 +71,18 @@ pub fn push_stamps_enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, PUSH_STAMPS, true)
 }
 
+/// The switch for commit-time reuse — a pre-commit gate that already ran
+/// clean against exactly this staged tree is not run again. On by default,
+/// for the same reason `pushStamps` is: the record is amont's own, bound to
+/// the content, and identical content is what a test suite reads.
+const COMMIT_STAMPS: &str = "amont.commitStamps";
+
+/// Does this repository reuse a gate's verdict across commit attempts of
+/// one tree?
+pub fn commit_stamps_enabled(settings: &crate::config::Settings) -> bool {
+    crate::config::boolean_or(settings, COMMIT_STAMPS, true)
+}
+
 /// `$GIT_DIR/amont-gate` — the worktree-PRIVATE gitdir, deliberately: the
 /// commit this marker waits for happens in this worktree. The stamps the
 /// marker becomes live in the common dir (a notes ref) and are shared.
@@ -114,6 +126,60 @@ pub fn record(scripts: &[&str]) {
         body.push('\n');
     }
     let _ = std::fs::write(&path, body);
+}
+
+/// pre-commit, before a gate runs: the scripts a previous run already
+/// vouched for against the tree this commit is about to seal.
+///
+/// Two records answer, both bound to the TREE (`git write-tree` of the index
+/// under the staged-only hold — the commit's content, not the working
+/// tree):
+///
+/// 1. the one-shot marker [`record`] left behind. post-commit consumes it,
+///    so a marker that is still there belongs to an attempt that never
+///    reached post-commit — a `commit-msg` refusal, an editor closed on an
+///    empty message, a Ctrl-C at the prompt. The gates ran, the tree is the
+///    same, the verdict stands: measured on this machine, a subject three
+///    characters too long replayed a ten-minute suite for nothing.
+/// 2. the tree note [`bind_to_head`] writes — a reword, a `reset --soft` and
+///    re-commit, or a rebase that kept the tree.
+///
+/// Every failure mode reads as "nothing is vouched for", which runs the
+/// gate: no `write-tree`, a marker for another tree, a wrong format, a git
+/// that would not answer. Reuse can only ever skip a run the record proves
+/// happened on this exact content; it can never let unjudged content
+/// through — the direction every function in this module fails in.
+///
+/// Repo-controlled inputs to the gate (its command line, its scope) live in
+/// the manifest, which is part of the tree: a changed declaration is a
+/// changed tree, and nothing is reused.
+pub fn vouched_for_staged_tree() -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Some(tree) = crate::git::stdout(&["write-tree"]) else {
+        return out;
+    };
+    if let Some(path) = marker_path() {
+        if let Ok(body) = std::fs::read_to_string(&path) {
+            let mut lines = body.lines();
+            if lines.next() == Some(FORMAT) && lines.next() == Some(tree.as_str()) {
+                out.extend(lines.filter(|l| !l.trim().is_empty()).map(str::to_string));
+            }
+        }
+    }
+    // The tree note: `notes show` fails loudly on an absent note, and a
+    // failure here is simply "no note" — the marker's answer stands alone.
+    if let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &tree]) {
+        if let Some(first) = body.lines().next() {
+            let mut tokens = first.split_whitespace();
+            if tokens.next() == Some(FORMAT) {
+                // Commit-time tokens are script names; push-time ones are
+                // full ids (`pre-push-…`), which no pre-commit declaration is
+                // named after — harmless in the set.
+                out.extend(tokens.map(str::to_string));
+            }
+        }
+    }
+    out
 }
 
 /// post-commit: consume the marker; stamp HEAD when the tree still matches.
