@@ -6,7 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.36.0
+
+### Added
+
+- **A commit-time gate is not repeated on the same tree.** pre-commit has
+  always recorded the gates that ran clean, bound to the tree the commit is
+  about to seal, for post-commit to stamp. When the commit never reached
+  post-commit — `commit-msg` refused a subject three characters too long, an
+  editor closed on an empty message — the next attempt on the identical tree
+  replayed the whole suite (measured: ten minutes, for nothing). pre-commit
+  now reads that record, and the tree stamp post-commit wrote, before running
+  a blocking declared gate, and skips it out loud in the push gate's words:
+  `✓ run-tests-js passed on this exact tree earlier — not repeating it here`.
+  A changed byte, a changed declaration or a gate that failed still run it.
+  `git config amont.commitStamps false` turns the reuse off.
+
 
 ### Fixed
 

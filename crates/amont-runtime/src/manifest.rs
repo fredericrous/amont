@@ -389,6 +389,15 @@ pub enum Kind {
     },
 }
 
+/// The scripts already vouched for against the staged tree, read once per
+/// hook process — a stage's externals run concurrently, and each asking git
+/// itself would be two spawns per check for one answer.
+fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
+    static VOUCHED: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    VOUCHED.get_or_init(crate::gate_stamp::vouched_for_staged_tree)
+}
+
 impl Check for External {
     fn name(&self) -> &str {
         &self.id
@@ -486,6 +495,25 @@ impl Check for External {
                 let Some(matched) = files_to_judge(scope, files, &staged) else {
                     return Outcome::Passed;
                 };
+                // A blocking gate that already ran clean against exactly this
+                // staged tree is not run again: the attempt that ran it never
+                // reached post-commit (commit-msg refused the subject, the
+                // editor was closed on the message) or the same tree is
+                // being re-committed. Said out loud, in the push gate's
+                // words, and answered as `Passed` so pre-commit records the
+                // marker again and post-commit binds it as usual. What can
+                // and cannot be vouched for: `gate_stamp::vouched_for_staged_tree`.
+                if self.severity() == Severity::Block
+                    && crate::gate_stamp::commit_stamps_enabled(settings)
+                    && vouched_for_staged_tree().contains(&self.short_name)
+                {
+                    crate::say!(
+                        "{} {} passed on this exact tree earlier — not repeating it here",
+                        crate::ui::valid_sign(),
+                        crate::ui::highlight(&self.short_name),
+                    );
+                    return Outcome::Passed;
+                }
                 self.execute(
                     settings,
                     program,

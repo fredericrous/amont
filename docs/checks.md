@@ -359,6 +359,25 @@ connection to the remote *before* calling `pre-push` and holds it idle until
 the gate finishes, and a remote may close it first (ssh keepalive does not
 prevent that).
 
+**A commit-time gate is not repeated for the same tree either.** pre-commit
+records the gates that ran clean, bound to the tree the commit is about to
+seal; post-commit turns that record into the stamp. When the commit never
+reaches post-commit — `commit-msg` refused the subject, the editor was
+closed on an empty message — the record is still there, and the next
+attempt on the same staged tree reads it instead of running the suite
+again:
+
+```text
+✓ run-tests-js passed on this exact tree earlier — not repeating it here
+```
+
+The stamp on the tree answers the same way for a commit undone with
+`reset --soft` and made again. Anything that changes the content — one
+staged byte, the declaration's own line in `amont.conf` — is a different
+tree and runs the gate; a gate that *failed* records nothing, so a
+rejection is never reused. `git config amont.commitStamps false` turns the
+reuse off.
+
 ### Rehearsing the push gate
 
 A push-time gate that passes stamps the tips it vouched for — the same

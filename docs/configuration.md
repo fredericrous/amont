@@ -286,6 +286,22 @@ gates (test suites) are stamped or skipped, and only for content the suite
 actually tested — see "Rehearsing the push gate" on the checks page. `false`
 turns off both the writing and the honouring.
 
+## `amont.commitStamps` — do not repeat a commit-time gate on the same tree
+
+```sh
+git config amont.commitStamps false   # default true
+```
+
+A blocking commit-time gate that already ran clean against exactly the tree
+being committed is not run again: the record pre-commit leaves for
+post-commit is bound to the tree and survives a `commit-msg` refusal or a
+closed editor, and the stamp post-commit writes on the tree answers for a
+`reset --soft` and re-commit. The reuse is announced in the push gate's
+words ("passed on this exact tree earlier"). A changed byte, a changed
+declaration, or a gate that failed all run the gate. `false` turns the reuse
+off; the record is still written. See "Moving a gate entry earlier" on the
+checks page.
+
 ## `amont.rehearseOnCommit` — run the push gate in the background after every commit
 
 ```sh
