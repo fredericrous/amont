@@ -326,6 +326,9 @@ fn audited(settings: &crate::config::Settings, argv: &[String]) -> Option<(bool,
 }
 
 pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    if !has_lockfile("Cargo.lock") {
+        return Outcome::Inert;
+    }
     if common::which("cargo-audit").is_none() {
         common::warn(
             "audit-rust: cargo-audit is not installed (cargo install cargo-audit) — \
@@ -412,7 +415,22 @@ fn described(ids: Vec<String>, out: &str, tree: impl Fn(&str) -> Option<String>)
         .collect()
 }
 
+/// Does the repository carry `lockfile` anywhere in its index? An audit
+/// without a resolved tree audits a guess — and one asked about a
+/// repository in another language has nothing to audit at all. That is
+/// `Inert`, not "could not run": the dispatcher asks the same question
+/// from the registry's scope, and this is the answer for a check invoked
+/// by name.
+fn has_lockfile(lockfile: &str) -> bool {
+    crate::tracked_paths()
+        .iter()
+        .any(|p| p.rsplit('/').next().unwrap_or(p) == lockfile)
+}
+
 pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    if !has_lockfile("package-lock.json") {
+        return Outcome::Inert;
+    }
     let argv = vec![common::program("npm"), "audit".into()];
     let Some((exit_ok, out)) = audited(settings, &argv) else {
         common::warn("audit-js: npm could not run — the audit did NOT run");
@@ -428,6 +446,9 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
 }
 
 pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    if !has_lockfile("go.sum") {
+        return Outcome::Inert;
+    }
     if common::which("govulncheck").is_none() {
         common::warn(
             "audit-go: govulncheck is not installed \
@@ -449,6 +470,9 @@ pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
 }
 
 pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    if !has_lockfile("requirements.txt") && !has_lockfile("pyproject.toml") {
+        return Outcome::Inert;
+    }
     if common::which("pip-audit").is_none() {
         common::warn(
             "audit-python: pip-audit is not installed (pip install pip-audit) — \

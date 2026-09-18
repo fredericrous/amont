@@ -703,7 +703,7 @@ fn branch_style_json() -> String {
 /// covers. Cosmetic here (this only decides what `list` prints) and not
 /// cosmetic in `dispatch::enter_all_files_mode`, which is the same bug — so
 /// both ask the same way.
-fn tracked_paths() -> Vec<String> {
+pub(crate) fn tracked_paths() -> Vec<String> {
     git::stdout_paths(&["ls-files"]).unwrap_or_default()
 }
 

@@ -58,7 +58,27 @@ fn push_check(r: &Repo, check: &str, remote_ref: &str) -> (i32, String) {
     )
 }
 
+/// A repository that has opted every audit in: each audit runs only where
+/// its lockfile is tracked, so the fixture carries all four. Content is
+/// irrelevant — the fake tools on PATH decide, and parsing is what these
+/// tests pin.
 fn repo() -> Repo {
+    let r = bare_repo();
+    for lockfile in [
+        "Cargo.lock",
+        "package-lock.json",
+        "go.sum",
+        "requirements.txt",
+    ] {
+        r.stage(lockfile, "# fixture\n");
+    }
+    r.commit("chore: opt every audit in");
+    r
+}
+
+/// No lockfile at all: what a repository in some other language looks like
+/// to the audits.
+fn bare_repo() -> Repo {
     let r = Repo::new();
     r.stage("a.txt", "x\n");
     r.commit("chore: base");
@@ -132,14 +152,18 @@ fn warning_class_advisories_do_not_block_a_release() {
 /// teach --no-verify.
 #[test]
 fn a_missing_audit_tool_warns_and_never_blocks() {
-    let r = repo(); // no shims at all: cargo-audit absent from the fake dir
+    // No shims at all: cargo-audit absent from the fake dir. The lockfile
+    // opts the audit in but is not one cargo-audit can read, so that on a
+    // machine with a REAL cargo-audit on PATH — which the shim dir cannot
+    // hide — the check takes the could-not-check path instead. Both
+    // phrasings honour the same contract this test pins: loud, and never
+    // blocking.
+    let r = bare_repo();
+    r.stage("Cargo.lock", "this is not a lockfile\n");
+    r.commit("chore: unreadable lockfile");
     std::fs::create_dir_all(r.path(".git/toolshims")).unwrap();
     let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/tags/v1.0.0");
     assert_eq!(code, 0, "{out}");
-    // On a machine with a REAL cargo-audit on PATH the shim dir cannot
-    // hide it, and the check takes the could-not-check path instead (the
-    // fixture repo has no Cargo.toml). Both phrasings honour the same
-    // contract this test pins: loud, and never blocking.
     assert!(
         out.contains("did NOT run") || out.contains("could not run") || out.contains("NOT checked"),
         "{out}"
@@ -228,8 +252,9 @@ fn pip_audit_sentence_decides() {
 /// argv it builds is what is being pinned.
 #[test]
 fn a_uv_project_audits_its_venv_not_a_missing_requirements_file() {
-    let r = repo();
-    std::fs::write(r.path("pyproject.toml"), "[project]\nname = \"x\"\n").expect("write");
+    let r = bare_repo();
+    r.stage("pyproject.toml", "[project]\nname = \"x\"\n");
+    r.commit("chore: uv project");
     std::fs::create_dir_all(r.path(".venv/lib/python3.13/site-packages")).expect("mkdir");
     // The shim proves the tool was actually invoked: it only speaks when
     // asked about a --path, so reaching this output means the venv route
@@ -247,8 +272,11 @@ fn a_uv_project_audits_its_venv_not_a_missing_requirements_file() {
         "the tool's own sentence should decide: {out}"
     );
 
-    // And with neither input, it still says so rather than inventing one.
-    let bare = repo();
+    // A Python project with neither a requirements file nor a venv to
+    // audit: it still says so rather than inventing one.
+    let bare = bare_repo();
+    bare.stage("pyproject.toml", "[project]\nname = \"x\"\n");
+    bare.commit("chore: uv project, no venv");
     shim(
         &bare,
         "pip-audit",
@@ -259,5 +287,58 @@ fn a_uv_project_audits_its_venv_not_a_missing_requirements_file() {
     assert!(
         out.contains("did NOT run"),
         "silence would be the bug this fixes: {out}"
+    );
+}
+
+/// The registry calls an audit "inert here — needs go.sum" in a repository
+/// without one; the push gate used to run it anyway, find govulncheck
+/// missing, and warn on every push that it "could not run". A repository
+/// in another language is not an audit that could not run: it is nothing
+/// to audit, and nothing is said.
+#[test]
+fn an_audit_whose_lockfile_the_repository_lacks_is_silent_not_could_not_run() {
+    let r = bare_repo();
+    r.stage("Cargo.lock", "# only rust here\n");
+    r.commit("chore: rust only");
+    // Every tool present and vulnerable-by-default: if any of the three
+    // foreign audits ran, it would say so loudly.
+    for tool in ["govulncheck", "npm", "pip-audit"] {
+        shim(
+            &r,
+            tool,
+            "echo 'Vulnerability #1: GO-2024-0001 found 9 vulnerabilities'; exit 1",
+        );
+    }
+    shim(
+        &r,
+        "cargo-audit",
+        "echo 'Success No vulnerable packages found'; exit 0",
+    );
+    shim(
+        &r,
+        "cargo",
+        "echo 'Success No vulnerable packages found'; exit 0",
+    );
+    for check in [
+        "pre-push-audit-go",
+        "pre-push-audit-js",
+        "pre-push-audit-python",
+    ] {
+        let (code, out) = push_check(&r, check, "refs/tags/v1.0.0");
+        assert_eq!(code, 0, "{check}: inert never blocks: {out}");
+        assert!(
+            !out.contains("could not run")
+                && !out.contains("did NOT run")
+                && !out.contains("NOT checked")
+                && !out.contains("vulnerabilit"),
+            "{check} has no lockfile here and should say nothing: {out}"
+        );
+    }
+    // The one audit the repository DID opt into still runs.
+    let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("could not run") && !out.contains("did NOT run"),
+        "audit-rust has its lockfile and a tool: {out}"
     );
 }

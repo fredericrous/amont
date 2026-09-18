@@ -281,8 +281,16 @@ pub enum Outcome {
     /// repair staged, which is neither `Passed` (something happened, and the
     /// author should know their files changed) nor `Failed`.
     Fixed,
-    /// COULD NOT RUN — a tool is missing, or the opt-in config is absent.
+    /// COULD NOT RUN — a tool is missing, or a precondition it needs to
+    /// answer at all is not met.
     Unavailable,
+    /// NOTHING TO DO HERE — the repository lacks the marker that turns
+    /// the check on, so it judged nothing. Neither `Passed` (nothing was
+    /// verified, so nothing may be stamped or attested) nor
+    /// `Unavailable` (nothing is wrong: `amont list` calls this "inert",
+    /// and a check that is inert by the registry's own account has no
+    /// business announcing that it could not run).
+    Inert,
 }
 
 /// What a HOOK concluded — the only thing git actually reads.
