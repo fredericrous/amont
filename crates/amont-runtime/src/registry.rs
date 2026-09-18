@@ -448,10 +448,14 @@ pub const CHECKS: &[Builtin] = &[
         reach: Reach::Convention,
         run: |ctx| hooks::audit::js(ctx.settings, ctx.push.get()),
     },
+    // `pyproject.toml` too: a uv/PEP-621 project has no requirements.txt
+    // and the runner audits its virtualenv instead — the registry must
+    // say so, or the dispatcher's opt-in gate would silence the audit
+    // exactly where `hooks::audit::python` learned to work.
     Builtin {
         name: "pre-push-audit-python",
         stage: Stage::PrePush,
-        scope: Scope::new(&[], &["requirements.txt"]),
+        scope: Scope::new(&[], &["requirements.txt", "pyproject.toml"]),
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,

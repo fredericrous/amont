@@ -488,6 +488,9 @@ fn classify<'a>(
             Outcome::Warned => {}
             Outcome::Fixed => report.fixed.push(check.name()),
             Outcome::Unavailable => report.unavailable.push(check.name()),
+            // Judged nothing, said nothing: not a pass to count, not a gap
+            // to announce.
+            Outcome::Inert => {}
             Outcome::Failed => match severities.of(*check) {
                 Severity::Block => report.blocked.push(check.name()),
                 Severity::Warn => report.downgraded.push(check.name()),
@@ -805,7 +808,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // What actually RAN and passed here (as opposed to being vouched for by
     // a stamp) — the set this run may stamp in turn.
     let mut ran_and_passed: Vec<String> = Vec::new();
+    // The question `amont list` answers with "inert here — needs go.sum":
+    // does this repository carry the marker that turns the check on? Asked
+    // of the index, once, and answered the same way here — a check the
+    // registry calls inert used to run anyway, find its tool or lockfile
+    // missing, and warn that it "could not run" on every push of a
+    // repository it was never meant to touch.
+    let tracked = crate::tracked_paths();
     for (idx, check) in pre_push_checks.iter().enumerate() {
+        if !check.scope().opted_in(&tracked) {
+            continue;
+        }
         let _sink = stage.as_ref().map(|s| s.enter(idx));
         let _flush = stage
             .as_ref()
@@ -909,6 +922,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 )
             }
             Outcome::Warned => {}
+            // Nothing to judge: not passed (nothing to stamp or attest), not
+            // a gap (nothing is missing). The dispatcher asked the registry's
+            // opt-in question above; this is a check answering it for itself.
+            Outcome::Inert => {}
             // Cannot occur: `Fix::Rewrite` is refused on a pre-push
             // declaration, so nothing here can repair anything.
             Outcome::Fixed => {}
@@ -992,9 +1009,13 @@ pub fn scoped_push_gates(
     changed: &[String],
 ) -> Vec<String> {
     let in_progress = crate::git_states_in_progress();
+    let tracked = crate::tracked_paths();
     selected_during(settings, Stage::PrePush, &in_progress, manifest)
         .into_iter()
         .filter(|c| !c.scope().is_unscoped() && c.scope().touches(changed))
+        // The same opt-in gate `pre_push` applies: a suite the repository
+        // never turned on is not work a rehearsal owes a stamp for.
+        .filter(|c| c.scope().opted_in(&tracked))
         .map(|c| c.name().to_string())
         .collect()
 }
@@ -1239,7 +1260,7 @@ mod tests {
     /// the code and nothing else.
     #[test]
     fn every_outcome_lands_in_the_right_bucket() {
-        let checks: [&dyn Check; 4] = [&BLOCKER, &BLOCKER, &WARNER, &BLOCKER];
+        let checks: [&dyn Check; 5] = [&BLOCKER, &BLOCKER, &WARNER, &BLOCKER, &BLOCKER];
         let got = classify(
             &checks,
             &[
@@ -1247,12 +1268,14 @@ mod tests {
                 Outcome::Unavailable,
                 Outcome::Failed,
                 Outcome::Failed,
+                Outcome::Inert,
             ],
             &none(),
         );
         assert_eq!(got.blocked, ["stub-blocker"], "{got:?}");
         assert_eq!(got.downgraded, ["stub-warner"], "{got:?}");
         assert_eq!(got.unavailable, ["stub-blocker"], "{got:?}");
+        assert_eq!(got.passed, 1, "inert is not a pass: {got:?}");
     }
 
     /// A clean stage concludes nothing at all — not an empty message, no

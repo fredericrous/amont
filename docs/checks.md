@@ -256,9 +256,11 @@ exists to prevent.
 
 At `pre-push`, one vulnerability audit per ecosystem the repository uses:
 `cargo audit` (opted in by a `Cargo.lock`), `npm audit` (`package-lock.json`),
-`pip-audit -r requirements.txt` (`requirements.txt`), and `govulncheck ./...`
-(`go.sum`). No lockfile, no check — an audit without a resolved tree audits
-a guess.
+`pip-audit` (`requirements.txt`, or a `pyproject.toml` project's virtualenv),
+and `govulncheck ./...` (`go.sum`). No lockfile, no check — an audit without
+a resolved tree audits a guess — and no check means nothing said: an audit
+the repository never opted into is inert, exactly as `amont list` reports
+it, not a check that "could not run".
 
 The severity is the push's, not the finding's:
 

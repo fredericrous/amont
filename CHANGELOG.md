@@ -6,6 +6,30 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.36.1
+
+### Fixed
+
+- **An inert check no longer runs and then complains.** `amont list` said
+  `audit-go — inert here — needs go.sum`; `git push` in that same
+  repository ran it anyway, found no `govulncheck`, and warned on every
+  push that *audit-go could not run — the dependency tree was NOT
+  checked*. Three such lines per push of a Rust repository, each reading
+  like a gap. The push gate now asks the registry's own opt-in question
+  before running a check — does the index carry the marker that turns it
+  on? — and a check whose answer is no is inert: not passed (nothing is
+  stamped or attested for it), not a gap (nothing is announced). The
+  rehearsal asks the same question, so what it stamps is what the push
+  would run. The audits answer it for themselves too, so `amont run
+  pre-push-audit-go` in a repository without Go says nothing rather than
+  "could not run". Two consequences worth knowing: `audit-python`'s
+  registry scope now names `pyproject.toml` alongside `requirements.txt`,
+  which is what its runner has audited since v1.15 and what `amont list`
+  had been calling inert; and `pytest`'s documented contract — a
+  `pytest.ini` or a `conftest.py` anywhere in the index, a bare
+  `pyproject.toml` is not a promise to test — is now enforced at push
+  time instead of merely documented.
+
 ## v1.36.0
 
 ### Added
