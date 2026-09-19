@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **`audit-js` now reads what npm actually prints, so a v\* tag no longer
+  ships over known vulnerabilities.** npm 6 closed its report with `found N
+  vulnerabilities`; npm 7 and later — every npm shipped since 2020 — dropped
+  the verb: `17 vulnerabilities (8 moderate, 9 high)`, `1 vulnerability (1
+  high)`. The parser knew only the old sentence, so on a modern npm a tree
+  with real findings read as *audit-js could not complete — the dependency
+  tree was NOT checked*, which warns and lets the push through: the JS audit
+  was fail-open precisely when it had something to say, on branches and on
+  release tags alike, while a clean tree (still `found 0 vulnerabilities`)
+  read correctly and hid the gap. A digit-led summary is now the finding it
+  is; a `v*` tag pushed over one is refused, as the check always promised.
+  Found on a push that printed the warning with `node_modules` present and
+  `npm audit` itself reporting 17.
+
 ## v1.36.1
 
 ### Fixed

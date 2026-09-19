@@ -207,18 +207,22 @@ fn read_cargo_audit(exit_ok: bool, out: &str) -> Report {
     }
 }
 
-/// `npm audit`: the summary line decides. `found 0 vulnerabilities` is
-/// clean; `found N vulnerabilities` (npm appends the severity split) is
-/// the finding; no recognisable summary plus a refusal to exit clean is a
-/// tool that never answered.
+/// `npm audit`: the summary line decides. A clean tree is `found 0
+/// vulnerabilities` on every npm. A finding is `found N vulnerabilities`
+/// on npm 6 and `N vulnerabilities (a moderate, b high)` — the verb dropped,
+/// `1 vulnerability` in the singular — on npm 7 and later, which is every
+/// npm shipped since 2020. No recognisable summary plus a refusal to exit
+/// clean is a tool that never answered.
 fn read_npm_audit(exit_ok: bool, out: &str) -> Report {
-    let summary = out
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| l.starts_with("found ") && l.contains("vulnerabilit"));
+    let summary = out.lines().rev().map(str::trim).find(|l| {
+        l.contains("vulnerabilit")
+            && (l.starts_with("found ")
+                || l.split_whitespace()
+                    .next()
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    });
     match summary {
-        Some(l) if l.starts_with("found 0 ") => Report::Clean,
+        Some(l) if l.starts_with("found 0 ") || l.starts_with("0 ") => Report::Clean,
         Some(l) => Report::Vulnerabilities(vec![l.to_string()]),
         None if exit_ok => Report::Clean,
         None => Report::CouldNotCheck,
@@ -762,6 +766,20 @@ mod tests {
         assert_eq!(
             read_npm_audit(false, "found 3 vulnerabilities (1 moderate, 2 high)\n"),
             Report::Vulnerabilities(vec!["found 3 vulnerabilities (1 moderate, 2 high)".into()])
+        );
+        // npm 7+ dropped the verb: this is what every current npm prints,
+        // and what read as "never answered" until the parser learned it.
+        assert_eq!(
+            read_npm_audit(
+                false,
+                "# npm audit report\n\nvite  6.0.0 - 6.1.5\nSeverity: high\n\n\
+                 17 vulnerabilities (8 moderate, 9 high)\n\nTo address all issues, run:\n  npm audit fix\n"
+            ),
+            Report::Vulnerabilities(vec!["17 vulnerabilities (8 moderate, 9 high)".into()])
+        );
+        assert_eq!(
+            read_npm_audit(false, "1 vulnerability (1 high)\n"),
+            Report::Vulnerabilities(vec!["1 vulnerability (1 high)".into()])
         );
         assert_eq!(
             read_npm_audit(true, "up to date, audited 100 packages\n"),
