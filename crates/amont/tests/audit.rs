@@ -183,6 +183,20 @@ fn npm_audit_summary_decides_both_ways() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("found 3 vulnerabilities"), "{out}");
 
+    // npm 7+ dropped the verb — the summary every current npm prints. Until
+    // the parser learned it, a real finding read as "could not complete"
+    // and a v* tag shipped over it: the audit check was fail-open exactly
+    // when it had something to say.
+    shim(
+        &r,
+        "npm",
+        "echo '17 vulnerabilities (8 moderate, 9 high)'\nexit 1",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("17 vulnerabilities"), "{out}");
+    assert!(!out.contains("could not complete"), "{out}");
+
     shim(&r, "npm", "echo 'found 0 vulnerabilities'\nexit 0");
     let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
     assert_eq!(code, 0, "{out}");
