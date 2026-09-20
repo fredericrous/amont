@@ -48,6 +48,7 @@ pub mod content;
 pub mod dispatch;
 pub mod downgrade;
 pub mod finding;
+pub mod gate_evidence;
 pub mod gate_stamp;
 pub mod git;
 pub mod hookfile;
