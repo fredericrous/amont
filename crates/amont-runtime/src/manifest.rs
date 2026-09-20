@@ -243,6 +243,15 @@ pub const SETTABLE: &[&str] = &[
     // A local `git config` still outranks it (see `policy`'s ladder), so a
     // developer can override without touching the file.
     "snapshotPrepare",
+    // Ordering only. `amont.order evidence` permutes the push gates a
+    // repository already runs, using that machine's own record of them; it
+    // adds nothing, removes nothing and skips nothing, so it grants a
+    // committed file no power over what is enforced — which is the line
+    // `fix` and the `severity.*` family are kept on the other side of. Which
+    // ORDER a team's suites are attempted in is a property of the project
+    // (the four-minute suite, the five-second audit), so the project is the
+    // right place to be able to say it; a local `git config` still wins.
+    "order",
 ];
 
 impl PolicyLine {
