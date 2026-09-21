@@ -183,7 +183,8 @@ mod tests {
         std::fs::write(
             &p,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{calls}\"\n\
+                "#!/bin/sh\n[ \"$*\" = '--probe' ] && exit 0\n\
+                 printf '%s\\n' \"$*\" >> \"{calls}\"\n\
                  case \"$*\" in\n\
                    'hook install --check') exit {check_rc} ;;\n\
                    'hook install') printf '  wrote  {script}  (regenerated)\\n  wrote  {settings}  (merged)\\n'; exit 0 ;;\n\
@@ -196,6 +197,21 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // ETXTBSY on Linux: a sibling test thread can `fork` while the write
+        // above still has the file open, and the child holds that descriptor
+        // until its own `exec` — during which the kernel refuses to execute a
+        // file open for writing (rust-lang/rust#114554). CI hit it once in
+        // ~160 parallel tests. Probe until the window closes; the probe's own
+        // `--probe` argument exits before the script records the call, so the
+        // tests that assert on what aval was asked see nothing of it.
+        for _ in 0..200 {
+            match Command::new(&p).arg("--probe").output() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                _ => break,
+            }
+        }
         p.display().to_string()
     }
 
