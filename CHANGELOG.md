@@ -22,7 +22,13 @@ missing here.
   held against a version pin — `1.94` or `1.94.1`; channel names are left to
   rustup — and a mismatch FAILS the check with the two fixes named, instead
   of running. `rust-toolchain.toml` and `rust-toolchain` now count as Rust
-  paths: a pin bump changes which clippy judges the same source.
+  paths: a pin bump changes which clippy judges the same source. The
+  invocation is `rustup run <pin> cargo …`, not the toolchain's cargo by path:
+  run directly, cargo spawns each `rustc` through the PATH proxy with cwd
+  inside the crate being compiled, and a dependency shipping its own
+  `rust-toolchain` (`convert_case` 0.10 pins 1.83.0) was built by that
+  toolchain inside a 1.94.1 build — `E0514`, found on this release's own
+  push gate. A pin rustup cannot serve fails with the install command.
 
 ## v1.38.0
 
