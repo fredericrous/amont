@@ -11,6 +11,7 @@
 - [Where the hooks fit in your flow](coding-flow.md)
 - [Commit and branch conventions](commit-convention.md)
 - [Configuration](configuration.md)
+- [Gate evidence](gate-evidence.md)
 - [Opting out](opting-out.md)
 - [The trust model](trust.md)
 - [Custom checks](custom-checks.md)
