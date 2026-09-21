@@ -146,6 +146,90 @@ fn selected_during<'a>(
     kept
 }
 
+/// The key that turns evidence ordering on. `declared` — the registry's
+/// order, the one this file's header argues for — is the default and nothing
+/// about it changes.
+const ORDER: &str = "amont.order";
+
+/// How far back [`crate::gate_evidence::order_by_evidence`] looks. Not a
+/// config key: it is an input to an ordering that changes nothing about what
+/// runs, and a knob nobody can predict the effect of is a knob that invites
+/// cargo-culting. Ninety days is the same window the report defaults to, so
+/// the ordering a push takes is the ordering `amont-fleet gates` explains.
+const ORDER_WINDOW_DAYS: u64 = 90;
+
+/// Does this repository want its push gates ordered by what the record says?
+fn evidence_ordering(settings: &crate::config::Settings) -> bool {
+    crate::config::enumerated_or(settings, ORDER, &["declared", "evidence"], "declared")
+        == "evidence"
+}
+
+/// Reorder the SCOPED push gates — the suites and audits — by the local
+/// record, leaving everything else exactly where the registry put it.
+///
+/// Two halves, and the split is the safety property. The unscoped pre-push
+/// checks ask about the PUSH — is this branch protected, is the name legal,
+/// is the branch behind, is there a secret in it — and the registry orders
+/// them "cheapest and most decisive first" for a reason: discovering a
+/// protected branch after twenty minutes of tests is precisely the waste this
+/// feature exists to remove, and promoting a suite above them would
+/// reintroduce it. So they keep their positions absolutely.
+///
+/// The scoped gates are permuted among the positions they already occupy.
+/// Nothing is added, removed or skipped — [`crate::gate_evidence`] argues
+/// that at length — and with no history the permutation is the identity.
+fn ordered_by_evidence<'a>(
+    settings: &crate::config::Settings,
+    checks: Vec<&'a dyn Check>,
+) -> Vec<&'a dyn Check> {
+    if !evidence_ordering(settings) || checks.len() < 2 {
+        return checks;
+    }
+    let slots: Vec<usize> = checks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.scope().is_unscoped())
+        .map(|(i, _)| i)
+        .collect();
+    if slots.len() < 2 {
+        return checks;
+    }
+    let names: Vec<String> = slots
+        .iter()
+        .map(|&i| checks[i].name().to_string())
+        .collect();
+    let history = crate::gate_evidence::history_in(std::path::Path::new("."));
+    if history.is_empty() {
+        return checks;
+    }
+    let order = crate::gate_evidence::order_by_evidence(
+        &names,
+        &history,
+        crate::gate_evidence::now(),
+        ORDER_WINDOW_DAYS,
+    );
+    let mut out = checks.clone();
+    for (slot, &pick) in slots.iter().zip(&order) {
+        out[*slot] = checks[slots[pick]];
+    }
+    if out
+        .iter()
+        .map(|c| c.name())
+        .ne(checks.iter().map(|c| c.name()))
+    {
+        crate::say!(
+            "{} gate order from this repository's own record: {}",
+            valid_sign(),
+            slots
+                .iter()
+                .map(|&i| out[i].name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    out
+}
+
 /// Say out loud which checks did not run.
 ///
 /// A skip is otherwise invisible at exactly the moment it matters. With
@@ -726,7 +810,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // only because the zsh version had none. Now it asks the same question
     // pre-commit does and each check answers for itself.
     let in_progress = crate::git_states_in_progress();
-    let pre_push_checks = selected_during(ctx.settings, Stage::PrePush, &in_progress, ctx.manifest);
+    // Declared order unless this repository asked for the other one. The
+    // permutation is decided BEFORE the live stage is begun, because the
+    // stage draws the list in the order it is given.
+    let pre_push_checks = ordered_by_evidence(
+        settings,
+        selected_during(ctx.settings, Stage::PrePush, &in_progress, ctx.manifest),
+    );
     let stage = crate::live::enabled(settings).then(|| {
         let names: Vec<&str> = pre_push_checks.iter().map(|c| c.name()).collect();
         crate::live::Stage::begin(settings, &names)
@@ -808,6 +898,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // What actually RAN and passed here (as opposed to being vouched for by
     // a stamp) — the set this run may stamp in turn.
     let mut ran_and_passed: Vec<String> = Vec::new();
+    // What each gate COST and how it ENDED, for the record `gate_evidence`
+    // reads. Every outcome, failures included: the stamp deliberately has no
+    // opinion about a gate that failed, and a dataset that kept only the
+    // passes could never say a gate is flaky.
+    let mut evidence: Vec<crate::gate_stamp::Run> = Vec::new();
     // The question `amont list` answers with "inert here — needs go.sum":
     // does this repository carry the marker that turns the check on? Asked
     // of the index, once, and answered the same way here — a check the
@@ -905,7 +1000,18 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             manifest: ctx.manifest,
             settings: ctx.settings,
         };
-        match check.run(&sub) {
+        // Wall clock around the check itself, not around the hook: the number
+        // that catches a suite which stopped finding tests is how long THAT
+        // gate took, and everything outside this call is bookkeeping.
+        let started = std::time::Instant::now();
+        let outcome = check.run(&sub);
+        evidence.push(crate::gate_stamp::Run {
+            at: crate::gate_evidence::now(),
+            gate: check.name().to_string(),
+            outcome: run_outcome(outcome),
+            ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        });
+        match outcome {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
                 if !check.scope().is_unscoped() {
@@ -949,6 +1055,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     // them, and dropping them here would make the ledger quietly
                     // under-count every push that ended badly.
                     crate::downgrade::note(settings, &downgraded);
+                    // The same argument for the evidence, and it matters more
+                    // here: this is the path a FAILURE leaves by, and a record
+                    // written only on the way out of a successful push would
+                    // be a dataset of passes calling itself a dataset of runs.
+                    record_evidence(&tips, &evidence);
                     println!("\n🚨  Error raised by hook {}", highlight(check.name()));
                     return Verdict::Block;
                 }
@@ -993,7 +1104,41 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }
     crate::downgrade::note(settings, &downgraded);
+    record_evidence(&tips, &evidence);
     Verdict::Proceed
+}
+
+/// What one check's outcome is called in the record.
+fn run_outcome(outcome: Outcome) -> crate::gate_stamp::RunOutcome {
+    use crate::gate_stamp::RunOutcome as R;
+    match outcome {
+        Outcome::Passed => R::Passed,
+        Outcome::Failed => R::Failed,
+        Outcome::Warned => R::Warned,
+        Outcome::Fixed => R::Fixed,
+        Outcome::Unavailable => R::Unavailable,
+        Outcome::Inert => R::Inert,
+    }
+}
+
+/// File this push's runs under the content they judged.
+///
+/// ONE key, not one per tip: a push of two branches ran each gate once, and
+/// writing the same run onto both trees would make a report count it twice.
+/// The first tip's tree is that key, falling back to `HEAD` — and to nothing
+/// at all when git will not name either, which costs a row in a report and
+/// never a verdict.
+fn record_evidence(tips: &[String], runs: &[crate::gate_stamp::Run]) {
+    if runs.is_empty() {
+        return;
+    }
+    let tree = tips
+        .first()
+        .and_then(|tip| crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]))
+        .or_else(|| crate::git::stdout(&["rev-parse", "HEAD^{tree}"]));
+    if let Some(tree) = tree {
+        crate::gate_stamp::record_runs(&tree, runs);
+    }
 }
 
 /// The scoped pre-push gates — test suites — that have work to do for a

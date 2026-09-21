@@ -6,6 +6,47 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **The push gate now records how long each check took and how it ended, and
+  `amont-fleet gates` reads it back.** A gate that has quietly stopped
+  checking anything passes faster than one that works, and nothing inside the
+  hook can see that: the exit code is 0 and only the clock changed. Every
+  push now appends a `run <when> <gate> <outcome> <milliseconds>` line to the
+  note it already writes in `refs/notes/amont-gate`, keyed by the tree the
+  gate ran on — failures included, which the stamp deliberately never records.
+  The new `amont-fleet gates` reports, per repository and gate: runs in the
+  window, pass and fail counts, median and last duration, last-run age, and
+  three flags — `no-op suspect` (the last run collapsed below 10% of a median
+  of 30 s or more, or it passed in under a second from a gate that never once
+  did), `flaky` (two runs against the same tree disagreed), and `stale` (ten
+  later trees were judged by other gates and not by this one, or thirty days
+  went by while others ran). Under five verdicts it says `insufficient
+  history (2 verdicts)` and flags nothing. Every threshold is a command-line
+  flag and is printed at the top of every report; `--json` carries them too.
+  Nothing is pushed anywhere and nothing is skipped on the strength of it:
+  the stamp — line one of the note, untouched — is still the only thing that
+  can let a check be skipped, and an older amont reads the note exactly as it
+  did before. Upgrading writes the first lines on your next push; the report
+  is honest about having no history until then.
+- **`amont.order evidence` attempts the push gates in the order your own
+  record justifies.** Pre-push stops at the first blocking failure, so the
+  order decides how long a push that is going to fail takes to say so — and
+  the built-in order is a guess made once for every repository. With this key
+  set (by `git config`, or `set order evidence` in a committed `amont.conf`),
+  the gates that actually failed in the last ninety days are attempted first,
+  ordered by failures per unit of time, so a five-second audit that catches
+  one push in six goes before a twenty-minute suite that catches one in
+  three. It is an order and nothing else: every check still runs, nothing is
+  assumed to pass, and the push-shaped checks — branch-protect,
+  branch-pattern, secrets, pull-rebase — never move, because finding a
+  protected branch after a test suite is the waste this removes. With no
+  history the declared order is kept exactly, and the default is unchanged.
+  See the new [gate evidence](https://github.com/fredericrous/amont/blob/main/docs/gate-evidence.md)
+  page.
+
 ## v1.36.2
 
 ### Fixed

@@ -38,6 +38,32 @@
 //! means the push gate RUNS. Nothing here can let an unchecked commit
 //! through; it can only cost a redundant gate run.
 //!
+//! # The second half of the note: what a run COST, and how it ENDED
+//!
+//! The token line above answers one question — may this gate be skipped for
+//! this content — and it is deliberately a set, with no history in it. A
+//! stamp says a gate passed; it cannot say a gate has been passing in four
+//! seconds since the day its test runner stopped finding any tests.
+//!
+//! So the note carries optional extra lines, one per RUN:
+//!
+//! ```text
+//! amont-gate-v1 pre-push-cargo-test
+//! run 1726900000 pre-push-cargo-test pass 412391
+//! run 1726903600 pre-push-audit-js fail 903
+//! ```
+//!
+//! Additive on purpose, and in the only direction that is safe: every reader
+//! that existed before these lines did reads `body.lines().next()` and is
+//! unaffected, and an amont old enough to rewrite the note without them loses
+//! history — never a verdict. The `run` lines are EVIDENCE, read by
+//! [`crate::gate_evidence`]; nothing in this module's skip decisions consults
+//! them, so a corrupted or forged one cannot make a check be skipped.
+//!
+//! The note's key is the tree, which makes the record a per-FINGERPRINT one
+//! for free: two runs of one gate against one tree are two lines in one note,
+//! and if they disagree the gate is flaky on content that did not change.
+//!
 //! Why a notes ref and not config: notes are keyed by commit, garbage-collect
 //! with unreachable commits (an `amont.checked.<hash>` config key would
 //! outlive every rebase forever), stay local (notes refs are not pushed by
@@ -81,6 +107,217 @@ const COMMIT_STAMPS: &str = "amont.commitStamps";
 /// one tree?
 pub fn commit_stamps_enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, COMMIT_STAMPS, true)
+}
+
+/// The first word of an evidence line. A line that does not start with it is
+/// not one, and is dropped rather than guessed at.
+const RUN: &str = "run";
+
+/// How many runs one note keeps, newest last. A note is read and rewritten on
+/// the push path, so it has to stay small; 64 runs of one tree is already far
+/// more retries than any content sees, and the statistics this feeds are
+/// computed ACROSS notes, not within one.
+const MAX_RUNS: usize = 64;
+
+/// How a single run of one gate ended.
+///
+/// The check vocabulary, kept whole rather than flattened to pass/fail:
+/// `Unavailable` is the outcome the fleet audit of 2026-09-19 kept finding —
+/// a gate that could not run, reported as a warning, counted by nobody — and
+/// collapsing it into "fail" would hide it all over again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    Passed,
+    Failed,
+    Warned,
+    Fixed,
+    Unavailable,
+    Inert,
+}
+
+impl RunOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunOutcome::Passed => "pass",
+            RunOutcome::Failed => "fail",
+            RunOutcome::Warned => "warn",
+            RunOutcome::Fixed => "fixed",
+            RunOutcome::Unavailable => "unavailable",
+            RunOutcome::Inert => "inert",
+        }
+    }
+
+    /// The parse side. `None` for anything unknown — a future amont may write
+    /// an outcome this one has never heard of, and inventing a meaning for it
+    /// would be worse than dropping the line.
+    pub fn parse(s: &str) -> Option<RunOutcome> {
+        Some(match s {
+            "pass" => RunOutcome::Passed,
+            "fail" => RunOutcome::Failed,
+            "warn" => RunOutcome::Warned,
+            "fixed" => RunOutcome::Fixed,
+            "unavailable" => RunOutcome::Unavailable,
+            "inert" => RunOutcome::Inert,
+            _ => return None,
+        })
+    }
+
+    /// Did this run reach a verdict about the content? Only these two are
+    /// evidence about whether a gate works — the rest are a gate declining to
+    /// judge, and counting them as passes is how a no-op looks healthy.
+    pub fn is_verdict(self) -> bool {
+        matches!(self, RunOutcome::Passed | RunOutcome::Failed)
+    }
+}
+
+/// One run of one gate: when, which, how it ended, how long it took.
+///
+/// Wall clock, in milliseconds, measured around the check's own `run` — not
+/// CPU time and not the hook's total, because the number this exists to catch
+/// is "the suite that used to take eleven minutes returned in 0.4 seconds",
+/// and that is a wall-clock claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    /// Seconds since the epoch, as the machine that ran it saw them.
+    pub at: u64,
+    pub gate: String,
+    pub outcome: RunOutcome,
+    pub ms: u64,
+}
+
+impl Run {
+    fn render(&self) -> String {
+        format!(
+            "{RUN} {} {} {} {}",
+            self.at,
+            self.gate,
+            self.outcome.as_str(),
+            self.ms
+        )
+    }
+
+    /// `run <epoch> <gate> <outcome> <ms>`, or nothing. Every field must be
+    /// there and parse; a half-understood line is dropped whole.
+    fn parse(line: &str) -> Option<Run> {
+        let mut t = line.split_whitespace();
+        if t.next() != Some(RUN) {
+            return None;
+        }
+        let at = t.next()?.parse().ok()?;
+        let gate = t.next()?.to_string();
+        let outcome = RunOutcome::parse(t.next()?)?;
+        let ms = t.next()?.parse().ok()?;
+        Some(Run {
+            at,
+            gate,
+            outcome,
+            ms,
+        })
+    }
+}
+
+/// A parsed note body: the skip tokens, and the runs recorded against this
+/// key.
+///
+/// THE reader and THE writer of the format, so that the three callers that
+/// rewrite a note cannot each drop a half of it they were not thinking
+/// about. `stamp_push` merging tokens used to render the note from its own
+/// token list alone, which — once runs existed — would have erased every one
+/// of them on the next push.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Note {
+    pub tokens: Vec<String>,
+    pub runs: Vec<Run>,
+}
+
+impl Note {
+    /// Parse a note body. A first line that is not ours yields an EMPTY note:
+    /// a note somebody else wrote into our ref vouches for nothing, and its
+    /// remaining lines are not evidence either.
+    pub fn parse(body: &str) -> Note {
+        let mut lines = body.lines();
+        let Some(first) = lines.next() else {
+            return Note::default();
+        };
+        let mut tokens = first.split_whitespace();
+        if tokens.next() != Some(FORMAT) {
+            return Note::default();
+        }
+        Note {
+            tokens: tokens.map(str::to_string).collect(),
+            runs: lines.filter_map(Run::parse).collect(),
+        }
+    }
+
+    /// The bytes to hand `git notes add -m`. Line one is exactly what it has
+    /// always been, so every reader that stops there sees no change at all.
+    pub fn render(&self) -> String {
+        let mut body = format!("{FORMAT} {}", self.tokens.join(" "));
+        for run in &self.runs {
+            body.push('\n');
+            body.push_str(&run.render());
+        }
+        body
+    }
+
+    fn add_tokens(&mut self, tokens: &[String]) {
+        for t in tokens {
+            if !self.tokens.iter().any(|have| have == t) {
+                self.tokens.push(t.clone());
+            }
+        }
+    }
+
+    /// Append runs, keeping the newest [`MAX_RUNS`].
+    fn add_runs(&mut self, runs: &[Run]) {
+        self.runs.extend(runs.iter().cloned());
+        if self.runs.len() > MAX_RUNS {
+            self.runs.drain(..self.runs.len() - MAX_RUNS);
+        }
+    }
+}
+
+/// The note at `key`, parsed. An absent note, an absent ref and a git that
+/// would not answer are all an empty note — the same direction everything
+/// here fails in.
+fn note_at(key: &str) -> Note {
+    crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key])
+        .map(|body| Note::parse(&body))
+        .unwrap_or_default()
+}
+
+/// Write `note` at `key`. Best-effort, like every writer here.
+fn write_note(key: &str, note: &Note) -> bool {
+    let body = note.render();
+    crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &body, key])
+}
+
+/// Record what a gate run COST and how it ENDED, against the content it ran
+/// on.
+///
+/// Evidence only: nothing in this module reads these back to decide whether a
+/// check may be skipped, which is why recording a FAILED run — the case the
+/// stamp path deliberately has no opinion about — is safe here.
+///
+/// Best-effort and silent. A note git refused costs a row in a report nobody
+/// is blocked on; warning about it on every push would train people to ignore
+/// the warnings that do gate something.
+pub fn record_runs(key: &str, runs: &[Run]) {
+    // A gate name with whitespace in it would forge a second field on read.
+    // Refused rather than escaped: every id this repository can produce is
+    // already free of it, so the escaping would be a code path no real input
+    // ever reaches — untested by construction.
+    let runs: Vec<Run> = runs
+        .iter()
+        .filter(|r| !r.gate.is_empty() && !r.gate.contains(char::is_whitespace))
+        .cloned()
+        .collect();
+    if runs.is_empty() {
+        return;
+    }
+    let mut note = note_at(key);
+    note.add_runs(&runs);
+    let _ = write_note(key, &note);
 }
 
 /// `$GIT_DIR/amont-gate` — the worktree-PRIVATE gitdir, deliberately: the
@@ -168,17 +405,12 @@ pub fn vouched_for_staged_tree() -> HashSet<String> {
     }
     // The tree note: `notes show` fails loudly on an absent note, and a
     // failure here is simply "no note" — the marker's answer stands alone.
-    if let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &tree]) {
-        if let Some(first) = body.lines().next() {
-            let mut tokens = first.split_whitespace();
-            if tokens.next() == Some(FORMAT) {
-                // Commit-time tokens are script names; push-time ones are
-                // full ids (`pre-push-…`), which no pre-commit declaration is
-                // named after — harmless in the set.
-                out.extend(tokens.map(str::to_string));
-            }
-        }
-    }
+    // Commit-time tokens are script names; push-time ones are full ids
+    // (`pre-push-…`), which no pre-commit declaration is named after —
+    // harmless in the set. The note's `run` lines are evidence and are not
+    // tokens: `Note` keeps the two apart so nothing here can be skipped by a
+    // line that only records how long something took.
+    out.extend(note_at(&tree).tokens);
     out
 }
 
@@ -222,7 +454,7 @@ pub fn bind_to_head() -> Vec<String> {
     if head_tree != tree {
         return Vec::new();
     }
-    let note = format!("{FORMAT} {}", scripts.join(" "));
+    let scripts: Vec<String> = scripts.iter().map(|s| s.to_string()).collect();
     // The stamp goes on the TREE as well as the commit, and the tree is the
     // one that survives the way work actually reaches `main`.
     //
@@ -243,12 +475,16 @@ pub fn bind_to_head() -> Vec<String> {
     // Both, not either: the commit note is what a `git log --notes` reader
     // sees, and dropping it would make the stamps invisible in the place
     // people look for them.
-    let _ = crate::git::succeeds(&[
-        "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, &head_tree,
-    ]);
-    if !crate::git::succeeds(&[
-        "notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, "HEAD",
-    ]) {
+    // MERGED into whatever is there, never rendered from the scripts alone:
+    // a pre-push run against this same tree may already have recorded
+    // evidence lines on it, and an `add -f` built from this list would erase
+    // them.
+    let mut tree_note = note_at(&head_tree);
+    tree_note.add_tokens(&scripts);
+    let _ = write_note(&head_tree, &tree_note);
+    let mut head_note = note_at("HEAD");
+    head_note.add_tokens(&scripts);
+    if !write_note("HEAD", &head_note) {
         // A note git refused is not a stamp — and the push will re-run these
         // checks, which is right but looks arbitrary unless it is said.
         crate::hooks::common::warn(
@@ -256,7 +492,7 @@ pub fn bind_to_head() -> Vec<String> {
         );
         return Vec::new();
     }
-    scripts.iter().map(|s| s.to_string()).collect()
+    scripts
 }
 
 /// pre-push, after every block gate passed: record that `gates` passed
@@ -271,26 +507,11 @@ pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
     if gates.is_empty() {
         return false;
     }
-    let existing = |key: &str| -> Vec<String> {
-        crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key])
-            .and_then(|body| {
-                let first = body.lines().next()?.to_string();
-                let mut tokens = first.split_whitespace();
-                (tokens.next() == Some(FORMAT)).then(|| tokens.map(str::to_string).collect())
-            })
-            .unwrap_or_default()
-    };
     let mut written = false;
     for key in [tree, commit] {
-        let mut tokens = existing(key);
-        for g in gates {
-            if !tokens.iter().any(|t| t == g) {
-                tokens.push(g.clone());
-            }
-        }
-        let note = format!("{FORMAT} {}", tokens.join(" "));
-        let ok =
-            crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &note, key]);
+        let mut note = note_at(key);
+        note.add_tokens(gates);
+        let ok = write_note(key, &note);
         if key == commit {
             written = ok;
         }
@@ -370,17 +591,11 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
                 None => continue,
             }
         };
-        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key]) else {
-            continue;
-        };
-        let Some(first) = body.lines().next() else {
-            continue;
-        };
-        let mut tokens = first.split_whitespace();
-        if tokens.next() != Some(FORMAT) {
+        let tokens = note_at(key).tokens;
+        if tokens.is_empty() {
             continue;
         }
-        out.insert(commit.clone(), tokens.map(str::to_string).collect());
+        out.insert(commit.clone(), tokens);
     }
     out
 }
@@ -605,6 +820,144 @@ mod tests {
             );
             let head = git(&dir, &["rev-parse", "HEAD"]);
             assert!(stamps_for(&[head]).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The compatibility promise, in both directions.
+    ///
+    /// A note written before evidence lines existed is ONE line, and it must
+    /// parse to exactly the tokens it always did — every skip decision in
+    /// this module reads that line, and a reader that needed the new shape
+    /// would stop honouring every stamp on every machine the day it shipped.
+    #[test]
+    fn a_note_from_before_the_run_lines_parses_unchanged() {
+        let note = Note::parse("amont-gate-v1 typecheck test");
+        assert_eq!(note.tokens, vec!["typecheck", "test"]);
+        assert!(note.runs.is_empty());
+        // And round-trips to the same bytes, so an old amont reading a note
+        // this one rewrote sees what it wrote.
+        assert_eq!(note.render(), "amont-gate-v1 typecheck test");
+    }
+
+    /// The new shape: line one unchanged, evidence after it.
+    #[test]
+    fn run_lines_are_read_without_disturbing_the_tokens() {
+        let body = "amont-gate-v1 pre-push-cargo-test\n\
+                    run 1726900000 pre-push-cargo-test pass 412391\n\
+                    run 1726903600 pre-push-audit-js fail 903\n";
+        let note = Note::parse(body);
+        assert_eq!(note.tokens, vec!["pre-push-cargo-test"]);
+        assert_eq!(note.runs.len(), 2);
+        assert_eq!(
+            note.runs[0],
+            Run {
+                at: 1_726_900_000,
+                gate: "pre-push-cargo-test".into(),
+                outcome: RunOutcome::Passed,
+                ms: 412_391,
+            }
+        );
+        assert_eq!(note.runs[1].outcome, RunOutcome::Failed);
+        assert_eq!(note.render(), body.trim_end());
+    }
+
+    /// A line this version does not understand is dropped, not guessed at —
+    /// so a future amont may add a field (or an outcome) without an older one
+    /// inventing a meaning for it.
+    #[test]
+    fn an_unreadable_run_line_is_dropped_and_the_rest_survives() {
+        let note = Note::parse(
+            "amont-gate-v1 test\n\
+             run 1726900000 pre-push-cargo-test pass 400\n\
+             run tomorrow pre-push-cargo-test pass 400\n\
+             run 1726900001 pre-push-cargo-test sideways 400\n\
+             banana\n\
+             run 1726900002 pre-push-cargo-test fail 500\n",
+        );
+        assert_eq!(note.tokens, vec!["test"]);
+        assert_eq!(note.runs.len(), 2, "{:?}", note.runs);
+        assert_eq!(note.runs[1].outcome, RunOutcome::Failed);
+    }
+
+    /// A note somebody else wrote into our ref is not evidence either. The
+    /// token line is the trust boundary for BOTH halves of the note.
+    #[test]
+    fn a_foreign_note_yields_no_runs() {
+        let note = Note::parse("hello\nrun 1726900000 pre-push-cargo-test pass 400\n");
+        assert!(note.tokens.is_empty() && note.runs.is_empty());
+    }
+
+    /// Recording evidence must never cost a stamp. `stamp_push` and
+    /// `bind_to_head` rewrite the same note, and the first version of this
+    /// rendered the note from its own token list — which would have erased
+    /// every run line on the next push.
+    #[test]
+    fn a_stamp_and_its_evidence_survive_each_other() {
+        let dir = repo("evidence");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            record_runs(
+                &tree,
+                &[Run {
+                    at: 1_726_900_000,
+                    gate: "pre-push-cargo-test".into(),
+                    outcome: RunOutcome::Failed,
+                    ms: 412_391,
+                }],
+            );
+            // …and now a later push of the same content passes and stamps it.
+            assert!(stamp_push(&head, &tree, &["pre-push-cargo-test".into()]));
+            let note = note_at(&tree);
+            assert_eq!(note.tokens, vec!["pre-push-cargo-test"]);
+            assert_eq!(note.runs.len(), 1, "the evidence survived the stamp");
+            // The stamp still reads back as a stamp.
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["pre-push-cargo-test".to_string()][..])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of the evidence half: it is not a stamp. A recorded
+    /// run — even a passing one — must not let the gate be skipped, because
+    /// skipping is decided by the token line and nothing else.
+    #[test]
+    fn a_recorded_run_is_not_a_stamp() {
+        let dir = repo("not-a-stamp");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            record_runs(
+                &tree,
+                &[Run {
+                    at: 1_726_900_000,
+                    gate: "pre-push-cargo-test".into(),
+                    outcome: RunOutcome::Passed,
+                    ms: 412_391,
+                }],
+            );
+            assert!(
+                stamps_for(std::slice::from_ref(&head)).is_empty(),
+                "a run line vouched for a gate — evidence must never gate"
+            );
+            assert!(
+                !vouched_for_staged_tree().contains("pre-push-cargo-test"),
+                "a run line vouched at commit time"
+            );
+            // It IS readable as history, though.
+            let history = crate::gate_evidence::history_in(&dir);
+            assert_eq!(history.runs.len(), 1);
+            assert_eq!(history.runs[0].0, tree, "keyed by the content it ran on");
         });
         let _ = std::fs::remove_dir_all(&dir);
     }

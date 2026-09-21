@@ -597,6 +597,32 @@ Add the workflows that make the grid more than a safer propagation report:
 - Remove `scripts/propagate.sh` once v1/v2 fix coverage has replaced its last
   practical use.
 
+### Shipped alongside — `amont-fleet gates`
+
+Not in either list above, because the question it answers was not one this
+design knew to ask. The scan says whether a repository's hooks are
+*installed*; it cannot say whether the checks they run still check anything.
+A fleet audit on 2026-09-19 found four mechanisms that had silently stopped
+— a lockfile audit run one directory too high, a `govulncheck` built with an
+old Go, `uv` with no `.venv`, an `npm` that timed out — all of them green,
+all of them fast.
+
+`amont-fleet gates` reads the run record the hooks keep in each repository's
+`refs/notes/amont-gate` and reports, per repository and gate: runs in the
+window, pass/fail, median and last duration, last-run age, and the flags
+`no-op suspect`, `flaky` and `stale`. Same shape as the rest of this tool —
+read-only, `--json` as a first-class output, every threshold on the command
+line, and an honest abstention (`insufficient history (2 verdicts)`) rather
+than a guess. The statistics belong to `amont_runtime::gate_evidence`; this
+crate contributes the `Serialize` coat and the table, for the same reason
+`downgrades` defers to the runtime's parser.
+
+It is a CLI table today and deliberately not a TUI screen: the overview grid
+is one row per repository, and this is one row per gate per repository with a
+sentence attached to each flag. A screen for it is worth designing once
+somebody has read the table for a few weeks — see
+[gate evidence](gate-evidence.md).
+
 ## Decisions
 
 1. **Scan root.** Use a CLI flag in v1. Add persistent config only after using

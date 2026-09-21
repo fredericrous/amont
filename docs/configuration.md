@@ -286,6 +286,32 @@ gates (test suites) are stamped or skipped, and only for content the suite
 actually tested — see "Rehearsing the push gate" on the checks page. `false`
 turns off both the writing and the honouring.
 
+## `amont.order` — attempt the push gates in the order the record justifies
+
+```sh
+git config amont.order evidence   # default: declared
+```
+
+`declared` is the registry's order, and it is what every repository gets
+unless it says otherwise. `evidence` orders the push gates by this
+repository's own record of them (`refs/notes/amont-gate`, the same notes the
+stamps live in): the gates that have actually failed in the last 90 days go
+first, ordered by failures per unit of time, so a push that is going to be
+refused is refused at minute two instead of minute twenty.
+
+It is an ORDER and nothing else. Every gate still runs, none is assumed to
+pass, and only the scoped gates — the suites and audits — are permuted:
+branch-protect, branch-pattern, secrets and pull-rebase keep their positions,
+because discovering a protected branch after a test suite is the waste this
+is meant to remove. With no record the declared order is kept exactly. When
+the order does differ, the push says so.
+
+Settable in a committed `amont.conf` (`set order evidence`) as well as by
+`git config`, because which suite is worth attempting first is a property of
+the project. It is the only `set` key that changes how checks are RUN rather
+than what they are — safe on the terms above, and a local `git config` still
+outranks it. See [gate evidence](gate-evidence.md).
+
 ## `amont.commitStamps` — do not repeat a commit-time gate on the same tree
 
 ```sh

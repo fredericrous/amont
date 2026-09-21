@@ -14,6 +14,7 @@ mod bypasses;
 mod checks;
 mod downgrades;
 mod fix;
+mod gates;
 mod progress;
 mod scan;
 mod severities;
@@ -36,9 +37,13 @@ fn shown(p: &Path) -> String {
 }
 
 const USAGE: &str = "\
-usage: amont-fleet [scan|tui|fix|install|uninstall] [--root <dir>] [--depth <n>] [--json]
+usage: amont-fleet [scan|gates|tui|fix|install|uninstall] [--root <dir>] [--depth <n>] [--json]
 
   scan           report the fleet (default)
+  gates          what each repository's own record says about its gates:
+                 runs, pass/fail, median and last duration, and the flags
+                 no-op suspect / flaky / stale. Reads only; see the
+                 thresholds below and docs/gate-evidence.md
   tui            the interactive dashboard
   install        turn hooks on across the root
   uninstall      take OUR shims back out — never a hook somebody else wrote,
@@ -55,6 +60,15 @@ usage: amont-fleet [scan|tui|fix|install|uninstall] [--root <dir>] [--depth <n>]
                  write. Off by default, and read the sentence below first.
   --json         emit the result as JSON
 
+  gates only — every threshold it decides with, and its default:
+  --window <days>        how far back to look                        (90)
+  --min-runs <n>         verdicts below which nothing is flagged      (5)
+  --noop-ratio <pct>     a last run under this % of the median        (10)
+  --noop-median <secs>   ...for a gate whose median is at least this  (30)
+  --fast-pass <ms>       a pass under this, never once seen before  (1000)
+  --stale-pushes <n>     later trees other gates judged and it did not (10)
+  --stale-days <days>    ...or this long since it last ran            (30)
+
 install and fix --apply never delete a hook they did not write: a
 pre-commit-* or pre-push-* file without our marker is reported and left
 exactly where it is.
@@ -63,6 +77,8 @@ exactly where it is.
 #[derive(PartialEq)]
 enum Mode {
     Scan,
+    /// The gate record, per repository. Read-only, like `scan`.
+    Gates,
     Fix,
     Tui,
     /// Turn hooks ON across a root. Named after intent, unlike `fix --apply`,
@@ -76,6 +92,8 @@ enum Mode {
 struct Args {
     mode: Mode,
     root: PathBuf,
+    /// What `gates` decides its flags against. Unread by every other mode.
+    thresholds: amont_runtime::gate_evidence::Thresholds,
     depth: usize,
     json: bool,
     apply: bool,
@@ -101,6 +119,15 @@ struct Args {
     remove_unrecognized: bool,
 }
 
+/// A numeric flag value, or a usage error naming the flag. Shared by every
+/// `gates` threshold, so a mistyped number can never quietly become a
+/// default the reader then trusts the report against.
+fn number<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<u64, String> {
+    let v = it.next().ok_or_else(|| format!("{flag} needs a number"))?;
+    v.parse()
+        .map_err(|_| format!("{flag}: {v:?} is not a number"))
+}
+
 /// `home` is threaded through rather than read from the environment here, so
 /// the no-`$HOME`-and-no-`--root` refusal below is a plain unit test rather
 /// than something that can only be exercised by mutating the real process
@@ -114,12 +141,17 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
     let mut binary: Option<String> = None;
     let mut agents_md = false;
     let mut remove_unrecognized = false;
+    let mut thresholds = amont_runtime::gate_evidence::Thresholds::default();
 
     let mut it = argv.iter().peekable();
     if let Some(first) = it.peek() {
         match first.as_str() {
             "scan" => {
                 mode = Mode::Scan;
+                it.next();
+            }
+            "gates" => {
+                mode = Mode::Gates;
                 it.next();
             }
             "fix" => {
@@ -158,6 +190,17 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
                     .map_err(|_| format!("--depth: {v:?} is not a number"))?;
             }
             "--apply" => apply = true,
+            // Every threshold `gates` uses is a flag, so a reader who
+            // disagrees with a default can say so instead of ignoring the
+            // column. A number that will not parse is a usage error, never a
+            // silent fallback to the default.
+            "--window" => thresholds.window_days = number(&mut it, "--window")?,
+            "--min-runs" => thresholds.min_runs = number(&mut it, "--min-runs")? as usize,
+            "--noop-ratio" => thresholds.noop_ratio_percent = number(&mut it, "--noop-ratio")?,
+            "--noop-median" => thresholds.noop_median_secs = number(&mut it, "--noop-median")?,
+            "--fast-pass" => thresholds.fast_pass_ms = number(&mut it, "--fast-pass")?,
+            "--stale-pushes" => thresholds.stale_runs = number(&mut it, "--stale-pushes")? as usize,
+            "--stale-days" => thresholds.stale_days = number(&mut it, "--stale-days")?,
             "--agents-md" => agents_md = true,
             "--remove-unrecognized" => remove_unrecognized = true,
             "--binary" => {
@@ -181,6 +224,7 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
     Ok(Args {
         mode,
         root,
+        thresholds,
         depth,
         json,
         apply,
@@ -323,6 +367,42 @@ fn main() -> ExitCode {
     // a screen, and a report printed over a live status line interleaves with it.
     bar.finish();
     let elapsed = started.elapsed();
+
+    if args.mode == Mode::Gates {
+        let repos: Vec<PathBuf> = scan.repos.iter().map(|r| r.path.clone()).collect();
+        // Two git spawns per repository. Same rule as the scan bar: silence
+        // that cannot be told from a hang is not allowed at any phase.
+        let mut steps = progress::Steps::start("reading gate records", repos.len());
+        let all = gates::collect(
+            &args.root,
+            &repos,
+            amont_runtime::gate_evidence::now(),
+            &args.thresholds,
+            &mut |p| steps.step(p),
+        );
+        steps.finish();
+        if args.json {
+            let doc = gates::Document::new(&args.thresholds, all);
+            match serde_json::to_string_pretty(&doc) {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("amont-fleet: cannot serialise the gate report: {e}");
+                    return ExitCode::from(1);
+                }
+            }
+        } else {
+            gates::report(&all, &args.thresholds, shown);
+        }
+        // A finding is a finding, not an error: this reports, it does not
+        // gate. The one non-zero exit is the scan that found no repositories
+        // at all, which is `scan`'s rule and the failure this whole tool
+        // exists to make loud.
+        return if scan.looks_like_a_failed_scan() {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
 
     if args.mode == Mode::Uninstall {
         let mut removed = 0usize;
@@ -990,6 +1070,65 @@ mod tests {
         };
         assert!(err.contains("--root"), "{err}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Every threshold `gates` decides a flag with is reachable from the
+    /// command line, and the defaults are the runtime's — the report and the
+    /// hooks must not be able to disagree about what "no-op suspect" means.
+    #[test]
+    fn gates_takes_every_threshold_as_a_flag() {
+        let home = std::env::temp_dir().join(format!("fleet-gates-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(home.join("Developer"));
+        let a = parse(&["gates".into()], Some(&home)).expect("gates");
+        assert!(a.mode == Mode::Gates);
+        assert_eq!(
+            a.thresholds,
+            amont_runtime::gate_evidence::Thresholds::default()
+        );
+
+        let argv: Vec<String> = "gates --window 7 --min-runs 2 --noop-ratio 25 --noop-median 10 \
+                                 --fast-pass 500 --stale-pushes 3 --stale-days 5"
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let a = parse(&argv, Some(&home)).expect("thresholds");
+        assert_eq!(a.thresholds.window_days, 7);
+        assert_eq!(a.thresholds.min_runs, 2);
+        assert_eq!(a.thresholds.noop_ratio_percent, 25);
+        assert_eq!(a.thresholds.noop_median_secs, 10);
+        assert_eq!(a.thresholds.fast_pass_ms, 500);
+        assert_eq!(a.thresholds.stale_runs, 3);
+        assert_eq!(a.thresholds.stale_days, 5);
+
+        // A number that will not parse is a usage error, not a silent
+        // fallback: a report read against a threshold nobody set is worse
+        // than no report.
+        let Err(e) = parse(
+            &["gates".into(), "--window".into(), "soon".into()],
+            Some(&home),
+        ) else {
+            panic!("a non-numeric threshold must be refused");
+        };
+        assert!(e.contains("--window"), "{e}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The verb is in the usage block. A subcommand nobody can discover is a
+    /// subcommand nobody runs.
+    #[test]
+    fn the_usage_block_names_the_gates_verb_and_its_thresholds() {
+        assert!(USAGE.contains("gates"), "{USAGE}");
+        for flag in [
+            "--window",
+            "--min-runs",
+            "--noop-ratio",
+            "--noop-median",
+            "--fast-pass",
+            "--stale-pushes",
+            "--stale-days",
+        ] {
+            assert!(USAGE.contains(flag), "{flag} is undocumented");
+        }
     }
 
     /// Deleting hooks other people wrote is opt-in, and the flag's absence is
