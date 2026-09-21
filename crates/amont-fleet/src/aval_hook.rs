@@ -173,6 +173,10 @@ mod tests {
 
     /// A stand-in `aval` whose `--check` exits `check_rc` and whose `install`
     /// prints `wrote` lines. Records what it was asked in `<dir>/calls`.
+    /// A `/bin/sh` script, so unix-only — the same `cfg` every executable
+    /// fixture in this crate carries; the two tests below that need no fake
+    /// binary run everywhere.
+    #[cfg(unix)]
     fn fake_aval(d: &Path, check_rc: i32) -> String {
         use std::os::unix::fs::PermissionsExt;
         let p = d.join("aval");
@@ -195,10 +199,12 @@ mod tests {
         p.display().to_string()
     }
 
+    #[cfg(unix)]
     fn calls(d: &Path) -> String {
         std::fs::read_to_string(d.join("calls")).unwrap_or_default()
     }
 
+    #[cfg(unix)]
     fn git_repo(d: &Path) {
         assert!(Command::new("git")
             .args(["init", "-q"])
@@ -208,6 +214,7 @@ mod tests {
             .success());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_repo_without_a_registry_is_not_asked() {
         let d = dir("no-corpus");
@@ -219,6 +226,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn avals_exit_code_is_the_state() {
         for (rc, want) in [(0, AvalHookState::Current), (1, AvalHookState::Stale)] {
@@ -234,6 +242,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_exit_code_aval_did_not_promise_is_unknown_not_a_state() {
         let d = dir("rc2");
@@ -265,6 +274,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_gitignored_hook_is_named() {
         let d = dir("ignored");
@@ -291,6 +301,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_counts_what_aval_says_it_wrote() {
         let d = dir("install");
