@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- **The Rust checks run the toolchain the repository pins, and say so when
+  they cannot.** `fmt`, `clippy` and `cargo-test` resolved `cargo` with a bare
+  `which` — the first one on PATH. On a machine with a second cargo ahead of
+  the rustup shim (Homebrew's `rust` formula in `/usr/local/bin`, measured
+  2026-09-21) that ignored every `rust-toolchain.toml`: clippy 1.98 judged a
+  repository pinned to 1.94.1 and blocked a commit on a lint CI never runs,
+  and a green run on the wrong toolchain meant nothing. With a pin in
+  place, cargo is now resolved through `rustup which cargo` from the
+  manifest directory (rustup applies the pin); and whatever cargo answers is
+  held against a version pin — `1.94` or `1.94.1`; channel names are left to
+  rustup — and a mismatch FAILS the check with the two fixes named, instead
+  of running. `rust-toolchain.toml` and `rust-toolchain` now count as Rust
+  paths: a pin bump changes which clippy judges the same source.
+
 ## v1.38.0
 
 ### Added
