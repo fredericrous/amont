@@ -24,28 +24,24 @@ fn shim_cargo(r: &Repo, version: &str) {
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
-/// A fake `rustup` whose `which cargo` names the shim cargo: a rustup that
-/// honours the pin. Without it the host's rustup — when there is one — would
-/// answer for its own toolchains, and the test would be about the host.
+/// A fake `rustup` whose `run <pin> cargo …` runs the shim cargo — a rustup
+/// that has the pinned toolchain — and which records the pin it was asked
+/// for. Without it the host's rustup, when there is one, would answer for
+/// its own toolchains and the test would be about the host.
 fn shim_rustup(r: &Repo) {
     let dir = r.path(".git/toolshims");
     let cargo = dir.join("cargo");
+    let asked = dir.join("rustup-asked");
     let p = dir.join("rustup");
     std::fs::write(
         &p,
         format!(
-            "#!/bin/sh\n[ \"$1 $2\" = \"which cargo\" ] && echo \"{}\" && exit 0\nexit 1\n",
+            "#!/bin/sh\nif [ \"$1\" = run ]; then echo \"$2\" >> \"{}\"; shift 3; exec \"{}\" \"$@\"; fi\nexit 1\n",
+            asked.display(),
             cargo.display()
         ),
     )
     .expect("write");
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-}
-
-/// A `rustup` that answers nothing: the fallback-to-`which` path.
-fn shim_no_rustup(r: &Repo) {
-    let p = r.path(".git/toolshims/rustup");
-    std::fs::write(&p, "#!/bin/sh\nexit 1\n").expect("write");
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
@@ -59,12 +55,18 @@ fn shimmed_path(r: &Repo) -> String {
 }
 
 fn clippy(r: &Repo) -> (i32, String) {
+    clippy_with_path(r, &shimmed_path(r))
+}
+
+/// The same check with an explicit PATH: the no-rustup case needs one that
+/// carries git and nothing of the host's toolchains.
+fn clippy_with_path(r: &Repo, path: &str) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_amont"))
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit-clippy")
         .current_dir(&r.dir)
-        .env("PATH", shimmed_path(r))
+        .env("PATH", path)
         .stdin(Stdio::null())
         .output()
         .expect("run");
@@ -107,7 +109,7 @@ fn a_cargo_that_is_not_the_pinned_toolchain_fails_the_check() {
 }
 
 #[test]
-fn the_pinned_toolchain_runs_the_check() {
+fn the_pinned_toolchain_runs_the_check_through_rustup() {
     let r = rust_repo("1.0.0");
     shim_cargo(&r, "1.0.0");
     shim_rustup(&r);
@@ -117,6 +119,26 @@ fn the_pinned_toolchain_runs_the_check() {
         "the pin matches, clippy (the shim) runs and passes: {out}"
     );
     assert!(!out.contains("pins"), "no mismatch talk: {out}");
+    // Every cargo call went through `rustup run <pin>`: that is what keeps
+    // one toolchain for the rustc processes cargo spawns.
+    let asked = std::fs::read_to_string(r.path(".git/toolshims/rustup-asked")).unwrap_or_default();
+    assert!(
+        !asked.is_empty() && asked.lines().all(|l| l == "1.0.0"),
+        "rustup was asked for the pin on every call: {asked:?}"
+    );
+}
+
+#[test]
+fn a_pin_rustup_does_not_have_names_the_install() {
+    let r = rust_repo("1.0.0");
+    shim_cargo(&r, "1.0.0");
+    // A rustup on PATH that has no such toolchain: `run` fails, nothing answers.
+    let p = r.path(".git/toolshims/rustup");
+    std::fs::write(&p, "#!/bin/sh\nexit 1\n").expect("write");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let (code, out) = clippy(&r);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("rustup toolchain install 1.0.0"), "{out}");
 }
 
 #[test]
@@ -129,19 +151,22 @@ fn a_channel_name_is_left_to_rustup() {
 }
 
 /// No rustup to ask: the first cargo on PATH is used, and still held against
-/// the pin.
+/// the pin. PATH is the shim dir plus the system dirs — git, no rustup, no
+/// cargo of the host's — so the host cannot answer for the test.
+fn bare_path(r: &Repo) -> String {
+    format!("{}:/usr/bin:/bin", r.path(".git/toolshims").display())
+}
+
 #[test]
 fn without_rustup_the_path_cargo_is_used_and_still_checked() {
     let r = rust_repo("1.0.0");
     shim_cargo(&r, "1.0.0");
-    shim_no_rustup(&r);
-    let (code, out) = clippy(&r);
+    let (code, out) = clippy_with_path(&r, &bare_path(&r));
     assert_eq!(code, 0, "fallback cargo matches the pin: {out}");
 
     let r = rust_repo("2.0.0");
     shim_cargo(&r, "1.0.0");
-    shim_no_rustup(&r);
-    let (code, out) = clippy(&r);
+    let (code, out) = clippy_with_path(&r, &bare_path(&r));
     assert_ne!(code, 0, "fallback cargo does not match the pin: {out}");
     assert!(
         out.contains("cargo is 1.0.0") && out.contains("pins 2.0.0"),

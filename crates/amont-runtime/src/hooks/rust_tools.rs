@@ -96,8 +96,12 @@ fn cargo_roots<'a>(root: &str, files: impl Iterator<Item = &'a str>) -> Vec<Path
 /// Do NOT probe a BUILT-IN subcommand this way: `cargo test --version` is
 /// "unexpected argument '--version'", so the probe reports test as unavailable
 /// and the gate silently passes — it would never have run a test anywhere.
-fn component_available(cargo: &str, dir: &Path, sub: &str) -> bool {
-    Command::new(cargo)
+fn component_available(cargo: &[String], dir: &Path, sub: &str) -> bool {
+    let Some((program, rest)) = cargo.split_first() else {
+        return false;
+    };
+    Command::new(program)
+        .args(rest)
         .arg(sub)
         .arg("--version")
         .current_dir(dir)
@@ -165,8 +169,10 @@ fn version_pin(pin: &str) -> Option<&str> {
 
 /// `1.94.1` out of `cargo 1.94.1 (29ea6fb6a 2026-03-24)`, run where the pin
 /// applies so a rustup shim answers for that directory.
-fn cargo_version(cargo: &str, dir: &Path) -> Option<String> {
-    let out = Command::new(cargo)
+fn cargo_version(cargo: &[String], dir: &Path) -> Option<String> {
+    let (program, rest) = cargo.split_first()?;
+    let out = Command::new(program)
+        .args(rest)
         .arg("--version")
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -186,33 +192,31 @@ fn version_matches(pin: &str, version: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.'))
 }
 
-/// The cargo that a directory means. With a pin, rustup is asked — `rustup
-/// which cargo` honours the pin from that directory — and a bare `which` is
-/// only the fallback; without one, the first `cargo` on PATH, as before.
+/// The cargo invocation a directory means, as an argv. With a pin and a
+/// rustup: `rustup run <pin> cargo`, so the pin is applied by rustup AND
+/// exported (`RUSTUP_TOOLCHAIN`, PATH) to every `rustc` cargo spawns. Without
+/// either: the first `cargo` on PATH, as before.
 ///
-/// Why not always `which`: on a machine with a second cargo ahead of the
-/// rustup shim (Homebrew's `rust` formula in /usr/local/bin was the case
-/// measured, 2026-09-21), `which` finds the wrong one and the pin is
-/// silently ignored — clippy then judges with lints CI never sees.
-fn resolve_cargo(dir: &Path) -> Option<String> {
-    if pinned_toolchain(dir).is_some() {
+/// Why not `which`: on a machine with a second cargo ahead of the rustup shim
+/// (Homebrew's `rust` formula in /usr/local/bin, measured 2026-09-21) it finds
+/// the wrong one and the pin is silently ignored — clippy then judges with
+/// lints CI never sees.
+///
+/// Why not the toolchain's cargo binary by path (`rustup which cargo`, the
+/// first shape of this fix): run directly, that cargo spawns each `rustc`
+/// through the PATH proxy with cwd set to the crate being compiled, and the
+/// proxy re-resolves the toolchain from THERE. A dependency that ships its own
+/// `rust-toolchain` — `convert_case` 0.10 pins 1.83.0 — was built by 1.83.0
+/// inside a 1.94.1 build: `E0514: crate compiled by an incompatible version
+/// of rustc`, on the release commit of the change itself. `rustup run` is
+/// the invocation that keeps one toolchain for the whole build.
+fn resolve_cargo(dir: &Path) -> Option<Vec<String>> {
+    if let Some((_, pin)) = pinned_toolchain(dir) {
         if let Some(rustup) = which("rustup") {
-            let out = Command::new(rustup)
-                .args(["which", "cargo"])
-                .current_dir(dir)
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok();
-            if let Some(out) = out.filter(|o| o.status.success()) {
-                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !path.is_empty() && Path::new(&path).is_file() {
-                    return Some(path);
-                }
-            }
+            return Some(vec![rustup, "run".into(), pin, "cargo".into()]);
         }
     }
-    which("cargo")
+    which("cargo").map(|c| vec![c])
 }
 
 /// Resolve cargo, hold it against the pin, verify the component.
@@ -244,10 +248,18 @@ fn cargo_for(
         let Some((file, pin)) = pinned_toolchain(dir) else {
             continue;
         };
-        let Some(want) = version_pin(&pin) else {
-            continue;
-        };
         let Some(got) = cargo_version(&cargo, dir) else {
+            // `rustup run <pin>` with nothing installed under that name
+            // answers nothing: say which toolchain to install rather than
+            // let the real run fail on rustup's own message.
+            fail(&format!(
+                "{} pins `{pin}` and no cargo answers for it. {}.",
+                file.display(),
+                hl(&format!("rustup toolchain install {pin}"))
+            ));
+            return Err(Outcome::Failed);
+        };
+        let Some(want) = version_pin(&pin) else {
             continue;
         };
         if !version_matches(want, &got) {
@@ -271,7 +283,7 @@ fn cargo_for(
             }
         }
     }
-    Ok(vec![cargo])
+    Ok(cargo)
 }
 
 /// Run one cargo invocation in every manifest root. True when all succeeded.
