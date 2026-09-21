@@ -35,6 +35,9 @@ pub const RUST_PATHS: &[&str] = &[
     "Cargo.lock",
     "rustfmt.toml",
     "clippy.toml",
+    // A pin bump changes which clippy judges the same source.
+    "rust-toolchain.toml",
+    "rust-toolchain",
 ];
 
 /// What `cargo fmt` is handed. Exported so `registry.rs` declares the scope
@@ -93,10 +96,7 @@ fn cargo_roots<'a>(root: &str, files: impl Iterator<Item = &'a str>) -> Vec<Path
 /// Do NOT probe a BUILT-IN subcommand this way: `cargo test --version` is
 /// "unexpected argument '--version'", so the probe reports test as unavailable
 /// and the gate silently passes — it would never have run a test anywhere.
-fn component_available(dir: &Path, sub: &str) -> bool {
-    let Some(cargo) = which("cargo") else {
-        return false;
-    };
+fn component_available(cargo: &str, dir: &Path, sub: &str) -> bool {
     Command::new(cargo)
         .arg(sub)
         .arg("--version")
@@ -109,30 +109,169 @@ fn component_available(dir: &Path, sub: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn cargo_argv() -> Option<Vec<String>> {
-    which("cargo").map(|c| vec![c])
+/// The toolchain `dir` (or an ancestor) pins, with the file that pins it:
+/// `rust-toolchain.toml`'s `[toolchain] channel`, or the legacy one-line
+/// `rust-toolchain`. The walk is rustup's own — it reads the nearest pin
+/// above the working directory — so what this finds is what rustup applies.
+fn pinned_toolchain(dir: &Path) -> Option<(PathBuf, String)> {
+    let mut d = Some(dir);
+    while let Some(cur) = d {
+        let toml = cur.join("rust-toolchain.toml");
+        if let Ok(text) = std::fs::read_to_string(&toml) {
+            if let Some(ch) = parse_toolchain_toml(&text) {
+                return Some((toml, ch));
+            }
+        }
+        let legacy = cur.join("rust-toolchain");
+        if let Ok(text) = std::fs::read_to_string(&legacy) {
+            let ch = text.lines().next().unwrap_or("").trim();
+            if !ch.is_empty() {
+                return Some((legacy, ch.to_string()));
+            }
+        }
+        d = cur.parent();
+    }
+    None
 }
 
-/// Resolve cargo and verify the component, or warn and give up.
+/// `channel = "1.94.1"` out of a `rust-toolchain.toml`, ignoring comments.
+fn parse_toolchain_toml(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| {
+            let rest = l
+                .strip_prefix("channel")?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim();
+            let rest = rest.split('#').next()?.trim();
+            let v = rest.trim_matches(|c| c == '"' || c == '\'');
+            (!v.is_empty()).then(|| v.to_string())
+        })
+}
+
+/// A pin we can hold a `cargo --version` against: `1.94` or `1.94.1`. A
+/// channel name (`stable`, `nightly-2026-01-01`) is a moving target and is
+/// left to rustup.
+fn version_pin(pin: &str) -> Option<&str> {
+    let parts: Vec<&str> = pin.split('.').collect();
+    let numeric = (2..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    numeric.then_some(pin)
+}
+
+/// `1.94.1` out of `cargo 1.94.1 (29ea6fb6a 2026-03-24)`, run where the pin
+/// applies so a rustup shim answers for that directory.
+fn cargo_version(cargo: &str, dir: &Path) -> Option<String> {
+    let out = Command::new(cargo)
+        .arg("--version")
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v = text.split_whitespace().nth(1)?;
+    Some(v.to_string())
+}
+
+/// `1.94` matches `1.94.1`; `1.94.1` matches only itself.
+fn version_matches(pin: &str, version: &str) -> bool {
+    version == pin
+        || version
+            .strip_prefix(pin)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// The cargo that a directory means. With a pin, rustup is asked — `rustup
+/// which cargo` honours the pin from that directory — and a bare `which` is
+/// only the fallback; without one, the first `cargo` on PATH, as before.
+///
+/// Why not always `which`: on a machine with a second cargo ahead of the
+/// rustup shim (Homebrew's `rust` formula in /usr/local/bin was the case
+/// measured, 2026-09-21), `which` finds the wrong one and the pin is
+/// silently ignored — clippy then judges with lints CI never sees.
+fn resolve_cargo(dir: &Path) -> Option<String> {
+    if pinned_toolchain(dir).is_some() {
+        if let Some(rustup) = which("rustup") {
+            let out = Command::new(rustup)
+                .args(["which", "cargo"])
+                .current_dir(dir)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok();
+            if let Some(out) = out.filter(|o| o.status.success()) {
+                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !path.is_empty() && Path::new(&path).is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    which("cargo")
+}
+
+/// Resolve cargo, hold it against the pin, verify the component.
+///
+/// `Err(Outcome::Unavailable)` when there is no cargo or no component (warned,
+/// never failed: a tool the developer never chose cannot block a commit).
+/// `Err(Outcome::Failed)` when the cargo that would run is NOT the pinned
+/// toolchain: a green verdict from the wrong clippy is worth less than none,
+/// and a red one wastes time on lints that are not CI's.
 ///
 /// Split out from `each_root` because `fmt` now runs TWO passes — a `--check`
 /// and, when repairing, a write — and the second must not re-probe rustfmt
 /// (a second `cargo fmt --version` per manifest root) nor duplicate the
 /// resolution it would have to get identical.
-fn cargo_for(roots: &[PathBuf], component: Option<&str>, missing: &str) -> Option<Vec<String>> {
-    let argv = cargo_argv().or_else(|| {
+fn cargo_for(
+    roots: &[PathBuf],
+    component: Option<&str>,
+    missing: &str,
+) -> Result<Vec<String>, Outcome> {
+    let first = roots
+        .first()
+        .map(PathBuf::as_path)
+        .unwrap_or(Path::new("."));
+    let Some(cargo) = resolve_cargo(first) else {
         warn(missing);
-        None
-    })?;
+        return Err(Outcome::Unavailable);
+    };
+    for dir in roots {
+        let Some((file, pin)) = pinned_toolchain(dir) else {
+            continue;
+        };
+        let Some(want) = version_pin(&pin) else {
+            continue;
+        };
+        let Some(got) = cargo_version(&cargo, dir) else {
+            continue;
+        };
+        if !version_matches(want, &got) {
+            fail(&format!(
+                "cargo is {got} but {} pins {want}, so this check would judge with a \
+                 toolchain CI never runs. Put the rustup shim first on PATH — a second \
+                 cargo ahead of it (Homebrew's {} in /usr/local/bin) is the usual cause — \
+                 or {}.",
+                file.display(),
+                hl("rust"),
+                hl(&format!("rustup toolchain install {want}"))
+            ));
+            return Err(Outcome::Failed);
+        }
+    }
     if let Some(c) = component {
         for dir in roots {
-            if !component_available(dir, c) {
+            if !component_available(&cargo, dir, c) {
                 warn(missing);
-                return None;
+                return Err(Outcome::Unavailable);
             }
         }
     }
-    Some(argv)
+    Ok(vec![cargo])
 }
 
 /// Run one cargo invocation in every manifest root. True when all succeeded.
@@ -164,9 +303,9 @@ fn each_root(
     component: Option<&str>,
     args: &[&str],
     missing: &str,
-) -> Option<bool> {
+) -> Result<bool, Outcome> {
     let argv = cargo_for(roots, component, missing)?;
-    Some(run_in_roots(settings, roots, &argv, args))
+    Ok(run_in_roots(settings, roots, &argv, args))
 }
 
 pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
@@ -181,8 +320,9 @@ pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     }
     const MISSING: &str =
         "Rust staged but rustfmt is not installed. `rustup component add rustfmt`.";
-    let Some(argv) = cargo_for(&roots, Some("fmt"), MISSING) else {
-        return Outcome::Unavailable;
+    let argv = match cargo_for(&roots, Some("fmt"), MISSING) {
+        Ok(argv) => argv,
+        Err(outcome) => return outcome,
     };
 
     // `--all -- --check` per the project convention. It inspects the working
@@ -263,12 +403,12 @@ pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) 
         ],
         "Rust staged but clippy is not installed. `rustup component add clippy`.",
     ) {
-        None => Outcome::Unavailable,
-        Some(true) => {
+        Err(outcome) => outcome,
+        Ok(true) => {
             ok(settings, "Clippy passed");
             Outcome::Passed
         }
-        Some(false) => {
+        Ok(false) => {
             fail(&format!(
                 "Clippy warnings. Fix them or run {}.",
                 hl("cargo clippy --fix")
@@ -328,9 +468,9 @@ pub fn test(
             &["test", "--workspace", "--all-features"],
             "Rust changed but cargo is not installed.",
         ) {
-            None => return Outcome::Unavailable,
-            Some(true) => ran_any = true,
-            Some(false) => {
+            Err(outcome) => return outcome,
+            Ok(true) => ran_any = true,
+            Ok(false) => {
                 fail("Rust tests failed. Push aborted.");
                 return Outcome::Failed;
             }
@@ -394,5 +534,52 @@ mod tests {
     fn non_rust_files_select_nothing() {
         let got = cargo_roots("/tmp", ["README.md", "a.py"].into_iter());
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn reads_the_channel_out_of_the_toml() {
+        let text = "# pinned\n[toolchain]\nchannel = \"1.94.1\" # why\ncomponents = [\"clippy\"]\n";
+        assert_eq!(parse_toolchain_toml(text).as_deref(), Some("1.94.1"));
+        assert_eq!(
+            parse_toolchain_toml("[toolchain]\nchannel = 'stable'\n").as_deref(),
+            Some("stable")
+        );
+        assert_eq!(parse_toolchain_toml("[toolchain]\ncomponents = []\n"), None);
+        assert_eq!(parse_toolchain_toml("# channel = \"1.0\"\n"), None);
+    }
+
+    #[test]
+    fn only_a_version_is_held_against_cargo() {
+        assert_eq!(version_pin("1.94.1"), Some("1.94.1"));
+        assert_eq!(version_pin("1.94"), Some("1.94"));
+        assert_eq!(version_pin("stable"), None);
+        assert_eq!(version_pin("nightly-2026-01-01"), None);
+        assert_eq!(version_pin("1"), None);
+        assert!(version_matches("1.94.1", "1.94.1"));
+        assert!(version_matches("1.94", "1.94.1"));
+        assert!(!version_matches("1.94.1", "1.98.0"));
+        assert!(!version_matches("1.9", "1.94.1"));
+    }
+
+    #[test]
+    fn the_nearest_pin_above_the_manifest_wins() {
+        let tmp = std::env::temp_dir().join("amont-toolchain-pin");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let nested = tmp.join("services/engine");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.join("rust-toolchain"), "1.85.0\n").unwrap();
+        let (file, pin) = pinned_toolchain(&nested).unwrap();
+        assert_eq!((file, pin.as_str()), (tmp.join("rust-toolchain"), "1.85.0"));
+        std::fs::write(
+            nested.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.94.1\"\n",
+        )
+        .unwrap();
+        let (file, pin) = pinned_toolchain(&nested).unwrap();
+        assert_eq!(
+            (file, pin.as_str()),
+            (nested.join("rust-toolchain.toml"), "1.94.1")
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
