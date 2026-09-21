@@ -229,6 +229,44 @@ pub fn apply(plan: &FixPlan) -> Outcome {
         }
     }
 
+    if let Some(h) = &plan.install_aval_hook {
+        // Re-ask aval at the moment of action, same rule as `AGENTS.md`: the
+        // scan may be stale, and a repository somebody re-installed in the
+        // meantime must not be written a third time. The state is read from
+        // the same binary the plan's scan used — `"aval"` on PATH — because
+        // "current" is aval's judgment, not this crate's. Only `Stale`
+        // proceeds: `Current` is nothing to do, and every other answer is
+        // what the plan would have warned about instead of planning.
+        match crate::aval_hook::state(&h.repo, "aval").state {
+            crate::aval_hook::AvalHookState::Stale => {
+                match crate::aval_hook::install(&h.repo, "aval") {
+                    Ok(n) => written += n,
+                    Err(e) => {
+                        return Outcome::Failed {
+                            error: e,
+                            at: h
+                                .repo
+                                .join(crate::aval_hook::SCRIPT_PATH)
+                                .display()
+                                .to_string(),
+                        }
+                    }
+                }
+            }
+            crate::aval_hook::AvalHookState::Current => {}
+            other => {
+                return Outcome::Failed {
+                    error: format!("aval session hook: state changed since the plan — {other:?}"),
+                    at: h
+                        .repo
+                        .join(crate::aval_hook::SCRIPT_PATH)
+                        .display()
+                        .to_string(),
+                }
+            }
+        }
+    }
+
     Outcome::Applied { removed, written }
 }
 
@@ -331,7 +369,7 @@ mod tests {
         std::fs::write(hooks.join("package.json"), "{\"//\":\"Forces Node\"}").unwrap();
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false, false);
         let out = apply(&p);
 
         assert!(
@@ -356,13 +394,29 @@ mod tests {
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
         assert!(matches!(
-            apply(&plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false)),
+            apply(&plan(
+                &repo,
+                &abs,
+                "/bin/gh",
+                Intent::Repair,
+                false,
+                false,
+                false
+            )),
             Outcome::Applied { .. }
         ));
 
         // Re-scan: the world changed, so the plan must be recomputed.
         let (repo2, abs2) = scan_one(&root, "/bin/gh");
-        let p2 = plan(&repo2, &abs2, "/bin/gh", Intent::Repair, false, false);
+        let p2 = plan(
+            &repo2,
+            &abs2,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        );
         assert!(p2.is_noop(), "second plan should be empty: {p2:?}");
         assert_eq!(apply(&p2), Outcome::Unchanged);
         let _ = std::fs::remove_dir_all(&root);
@@ -377,7 +431,15 @@ mod tests {
         std::fs::remove_file(hooks.join("pre-push")).unwrap();
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let out = apply(&plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false));
+        let out = apply(&plan(
+            &repo,
+            &abs,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        ));
         assert!(
             matches!(out, Outcome::Applied { written: 1, .. }),
             "{out:?}"
@@ -416,7 +478,7 @@ mod tests {
         std::fs::write(hooks.join("pre-commit"), shim::render("/old/binary")).unwrap();
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false, false);
         assert!(!p.refused(), "{:?}", p.refuse);
         let out = apply(&p);
         assert!(matches!(out, Outcome::Applied { .. }), "{out:?}");
@@ -442,7 +504,7 @@ mod tests {
         healthy_shims(&hooks, "/bin/gh");
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false, false);
         let out = apply(&p);
         assert!(matches!(out, Outcome::Applied { .. }), "{out:?}");
 
@@ -471,7 +533,7 @@ mod tests {
         healthy_shims(&hooks, "/bin/gh");
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false, false);
         assert!(p.write_agents_md.is_some(), "plan expected a write");
 
         // Something else won the race and wrote the current block first.
@@ -502,7 +564,7 @@ mod tests {
 
         // And with BOTH current there is genuinely nothing to do — the
         // original guarantee of this test, now stated for the pair.
-        let p2 = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false);
+        let p2 = plan(&repo, &abs, "/bin/gh", Intent::Repair, true, false, false);
         let out2 = apply(&p2);
         assert!(
             matches!(out2, Outcome::Applied { written: 0, .. }),
@@ -519,7 +581,7 @@ mod tests {
         let before = std::fs::read_to_string(hooks.join("pre-commit")).unwrap();
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false, false);
         assert_eq!(p.refuse, vec![Refusal::Unmanaged]);
         assert_eq!(apply(&p), Outcome::Refused);
         assert_eq!(
@@ -538,7 +600,7 @@ mod tests {
         healthy_shims(&hooks, "/bin/gh");
         std::fs::write(hooks.join("pre-push-old"), STALE_OURS).unwrap();
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false, false);
         let removals: Vec<_> = p.remove.iter().map(|r| r.path.clone()).collect();
         assert!(!removals.is_empty());
         apply(&p);
@@ -556,7 +618,15 @@ mod tests {
         healthy_shims(&hooks, "/bin/gh");
         std::fs::remove_file(hooks.join("commit-msg")).unwrap();
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        apply(&plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false));
+        apply(&plan(
+            &repo,
+            &abs,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        ));
         let mode = std::fs::metadata(hooks.join("commit-msg"))
             .unwrap()
             .permissions()
@@ -616,6 +686,7 @@ mod tests {
                 changes: true,
             }],
             write_agents_md: None,
+            install_aval_hook: None,
         };
 
         assert_eq!(
@@ -651,7 +722,7 @@ mod tests {
         std::fs::remove_file(hooks.join("pre-push")).unwrap();
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&repo, &abs, "/bin/gh", Intent::Repair, false, false, false);
         assert!(!p.is_noop() && !p.refused(), "fixture: {p:?}");
 
         // Somebody took our shims out — an `uninstall`, a `git clean`, a
@@ -684,7 +755,15 @@ mod tests {
         let (root, hooks) = fixture("foreign-race");
 
         let (repo, abs) = scan_one(&root, "/bin/gh");
-        let p = plan(&repo, &abs, "/bin/gh", Intent::Activate, false, false);
+        let p = plan(
+            &repo,
+            &abs,
+            "/bin/gh",
+            Intent::Activate,
+            false,
+            false,
+            false,
+        );
         assert!(!p.is_noop() && !p.refused(), "fixture: {p:?}");
 
         // Somebody wrote their own hook in the meantime.

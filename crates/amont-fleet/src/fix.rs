@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 use amont_runtime::hookfile::Tracked;
 use serde::Serialize;
 
+use crate::aval_hook::AvalHookState;
 use crate::scan::{AgentsMdState, Repo};
 use crate::shim::{self, DISPATCHERS};
 
@@ -232,6 +233,19 @@ pub struct WriteAgentsMd {
     pub changes: bool,
 }
 
+/// Re-running `aval hook install` in a repository whose session hook is out
+/// of date. Only ever present when the caller opted in (`plan`'s `aval_hook`
+/// argument), for the same reason `WriteAgentsMd` is: it writes tracked
+/// content, and across a fleet that is a materially bigger action than the
+/// untracked shims. Unlike `WriteAgentsMd` the bytes are not ours — aval
+/// renders them, and `apply` runs aval rather than a copy of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstallAvalHook {
+    /// The repository aval is run in. The two files it writes are named by
+    /// [`crate::aval_hook::SCRIPT_PATH`] and [`crate::aval_hook::SETTINGS_PATH`].
+    pub repo: PathBuf,
+}
+
 /// Something the reader must be told that does NOT stop the repair.
 ///
 /// A second channel next to `refuse`, and the separation is the point. A
@@ -277,6 +291,19 @@ pub enum Warning {
     /// `core.hooksPath` handed dispatch to another tool inside the repository.
     /// On both channels for the same reason as `HooksDirOutsideRepo`.
     HooksDirRedirected { path: PathBuf },
+    /// git ignores the aval session hook's files here, so the hook works for
+    /// whoever ran `aval hook install` and ships to nobody. Named, never
+    /// repaired: the `.gitignore` fix is `.claude/*` plus negations in every
+    /// repository seen so far, and "every so far" is not a rule this tool
+    /// gets to write into somebody's ignore file. Only raised under
+    /// `--aval-hook`, since without it the hook is not this run's business.
+    AvalHookIgnored { paths: Vec<String> },
+    /// `--aval-hook` was asked for and this repository has a corpus, but its
+    /// hook could not be judged — no `aval` on `PATH`, or an answer aval did
+    /// not promise. Absence of evidence, reported as such rather than as
+    /// "current" (a missing binary is exactly how "up to date" would be faked
+    /// by silence) or as "stale" (which would plan a write on a guess).
+    AvalHookUnjudged { why: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -297,6 +324,7 @@ pub struct FixPlan {
     pub remove: Vec<Removal>,
     pub write: Vec<WriteShim>,
     pub write_agents_md: Option<WriteAgentsMd>,
+    pub install_aval_hook: Option<InstallAvalHook>,
 }
 
 impl FixPlan {
@@ -310,6 +338,7 @@ impl FixPlan {
         self.remove.is_empty()
             && self.write.iter().all(|w| !w.changes)
             && self.write_agents_md.is_none()
+            && self.install_aval_hook.is_none()
     }
     pub fn refused(&self) -> bool {
         !self.refuse.is_empty()
@@ -376,6 +405,7 @@ pub fn plan(
     binary: &str,
     intent: Intent,
     agents_md: bool,
+    aval_hook: bool,
     remove_unrecognized: bool,
 ) -> FixPlan {
     let hooks_dir = crate::scan::hooks_dir_for(repo_abs);
@@ -389,6 +419,7 @@ pub fn plan(
         remove: Vec::new(),
         write: Vec::new(),
         write_agents_md: None,
+        install_aval_hook: None,
     };
 
     // Before anything else: a path the shim will not accept must not be baked
@@ -611,6 +642,32 @@ pub fn plan(
         }
     }
 
+    // Same shape, one tool over: the session hook is tracked content aval
+    // owns, read from the scan here and re-asked of aval at the moment of
+    // action. A repository with no corpus has nothing to say and says
+    // nothing; one whose hook could not be judged is a warning, not a plan.
+    if aval_hook {
+        match &repo.aval_hook.state {
+            AvalHookState::NoCorpus | AvalHookState::Current => {}
+            AvalHookState::Stale => {
+                p.install_aval_hook = Some(InstallAvalHook {
+                    repo: repo_abs.to_path_buf(),
+                });
+            }
+            AvalHookState::NoAval => p.warn.push(Warning::AvalHookUnjudged {
+                why: "no `aval` on PATH".to_string(),
+            }),
+            AvalHookState::Unknown { why } => {
+                p.warn.push(Warning::AvalHookUnjudged { why: why.clone() })
+            }
+        }
+        if !repo.aval_hook.ignored.is_empty() {
+            p.warn.push(Warning::AvalHookIgnored {
+                paths: repo.aval_hook.ignored.clone(),
+            });
+        }
+    }
+
     p
 }
 
@@ -637,6 +694,7 @@ mod tests {
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
+            aval_hook: crate::aval_hook::AvalHook::default(),
             hooks_dir: crate::scan::HooksDir::In {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
@@ -651,6 +709,7 @@ mod tests {
             Path::new("/nowhere"),
             "/bin/gh",
             Intent::Repair,
+            false,
             false,
             false,
         );
@@ -669,7 +728,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fixplan-nohooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".git")).unwrap();
-        let p = plan(&repo(true), &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(
+            &repo(true),
+            &dir,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        );
         assert_eq!(p.refuse, vec![Refusal::UnreadableHooks]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -689,6 +756,7 @@ mod tests {
             Path::new("/definitely/not/here"),
             "/bin/gh",
             Intent::Repair,
+            false,
             false,
             false,
         );
@@ -716,7 +784,7 @@ mod tests {
         // here, `ForeignSubHook`. It is not ours, so by default it is now a
         // warning and stays where it is; the flag is what puts it back on the
         // removal list. See `Warning::UnrecognizedSubHook` for the evidence.
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, false);
         assert_eq!(p.remove.len(), 2, "{:?}", p.remove);
         let reasons: Vec<_> = p.remove.iter().map(|r| r.reason).collect();
         assert!(reasons.contains(&RemovalReason::StaleOurs));
@@ -737,7 +805,7 @@ mod tests {
         assert!(p.write.iter().all(|w| w.changes), "none exist yet");
 
         // The opt-in restores exactly the third removal, and drops the warning.
-        let opted_in = plan(&r, &dir, "/bin/gh", Intent::Repair, false, true);
+        let opted_in = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, true);
         assert_eq!(opted_in.remove.len(), 3, "{:?}", opted_in.remove);
         assert!(opted_in
             .remove
@@ -760,7 +828,7 @@ mod tests {
 
         let mut r = repo(true);
         r.foreign_subs = vec!["pre-push-mine.sh".into()];
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, false);
 
         assert!(!p.refused(), "{:?}", p.refuse);
         assert_eq!(
@@ -784,7 +852,15 @@ mod tests {
         for n in DISPATCHERS {
             std::fs::write(hooks.join(n), shim::render("/bin/gh")).unwrap();
         }
-        let p = plan(&repo(true), &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(
+            &repo(true),
+            &dir,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        );
         assert!(p.is_noop(), "{p:?}");
         assert_eq!(p.write.len(), DISPATCHERS.len());
         let _ = std::fs::remove_dir_all(&dir);
@@ -809,7 +885,7 @@ mod tests {
         let dir = healthy_repo_dir("optout");
         let mut r = repo(true);
         r.agents_md = AgentsMdState::Missing;
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, false);
         assert!(p.write_agents_md.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -820,7 +896,7 @@ mod tests {
             let dir = healthy_repo_dir("plan");
             let mut r = repo(true);
             r.agents_md = state;
-            let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false);
+            let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false, false);
             assert!(!p.is_noop(), "{p:?}");
             let w = p.write_agents_md.expect("must plan a write");
             assert!(w.changes);
@@ -834,9 +910,94 @@ mod tests {
         let dir = healthy_repo_dir("uptodate");
         let mut r = repo(true);
         r.agents_md = AgentsMdState::UpToDate;
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false, false);
         assert!(p.write_agents_md.is_none());
         assert!(p.is_noop(), "{p:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--aval-hook` mirrors `--agents-md`: never planned without opting in.
+    #[test]
+    fn aval_hook_is_never_planned_without_opting_in() {
+        let dir = healthy_repo_dir("aval-hook-optout");
+        let mut r = repo(true);
+        r.aval_hook.state = AvalHookState::Stale;
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, false);
+        assert!(p.install_aval_hook.is_none());
+        assert!(p.warn.is_empty(), "no hook findings when the flag is off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_aval_hook_is_planned_when_opted_in_and_nothing_else_is() {
+        let dir = healthy_repo_dir("aval-hook-states");
+        for (state, planned) in [
+            (AvalHookState::Stale, true),
+            (AvalHookState::Current, false),
+            (AvalHookState::NoCorpus, false),
+        ] {
+            let mut r = repo(true);
+            r.aval_hook.state = state;
+            let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, true, false);
+            assert_eq!(
+                p.install_aval_hook.is_some(),
+                planned,
+                "{:?}",
+                r.aval_hook.state
+            );
+            assert!(p.warn.is_empty());
+            if planned {
+                assert_eq!(p.install_aval_hook.as_ref().unwrap().repo, dir);
+                assert!(!p.is_noop());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hook that could not be judged is a warning, not a write: a missing
+    /// binary must not read as "current" and must not plan on a guess.
+    #[test]
+    fn an_unjudged_aval_hook_warns_instead_of_planning() {
+        let dir = healthy_repo_dir("aval-hook-unjudged");
+        for state in [
+            AvalHookState::NoAval,
+            AvalHookState::Unknown {
+                why: "exited 3".to_string(),
+            },
+        ] {
+            let mut r = repo(true);
+            r.aval_hook.state = state;
+            let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, true, false);
+            assert!(p.install_aval_hook.is_none());
+            assert!(
+                matches!(p.warn.as_slice(), [Warning::AvalHookUnjudged { .. }]),
+                "{:?}",
+                p.warn
+            );
+            assert!(!p.refused(), "not judged is not a refusal of the shims");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// git ignoring the files is reported on top of whatever the state is,
+    /// and never turns into an edit of `.gitignore`.
+    #[test]
+    fn a_gitignored_aval_hook_is_a_warning_alongside_the_plan() {
+        let dir = healthy_repo_dir("aval-hook-ignored");
+        let mut r = repo(true);
+        r.aval_hook.state = AvalHookState::Stale;
+        r.aval_hook.ignored = vec![crate::aval_hook::SCRIPT_PATH.to_string()];
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, true, false);
+        assert!(
+            p.install_aval_hook.is_some(),
+            "still installed locally, as aval itself does"
+        );
+        assert_eq!(
+            p.warn,
+            vec![Warning::AvalHookIgnored {
+                paths: vec![crate::aval_hook::SCRIPT_PATH.to_string()]
+            }]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -845,7 +1006,7 @@ mod tests {
         let dir = healthy_repo_dir("malformed");
         let mut r = repo(true);
         r.agents_md = AgentsMdState::Malformed;
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, true, false, false);
         assert_eq!(
             p.refuse,
             vec![Refusal::AgentsMdMalformed {
@@ -944,6 +1105,7 @@ mod tests {
                 Intent::Repair,
                 false,
                 false,
+                false,
             );
             (r.baked.clone(), p)
         };
@@ -995,6 +1157,7 @@ mod tests {
             &base.join("npm"),
             "/usr/local/bin/amont",
             Intent::Repair,
+            false,
             false,
             false,
         );
@@ -1061,7 +1224,7 @@ mod tests {
 
         let mut r = repo(true);
         r.stale_ours = vec!["pre-commit-ruff".into()];
-        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(&r, &dir, "/bin/gh", Intent::Repair, false, false, false);
 
         assert!(!p.refused(), "{:?}", p.refuse);
         assert_eq!(
@@ -1111,7 +1274,15 @@ mod tests {
         )
         .unwrap();
 
-        let p = plan(&repo(false), &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(
+            &repo(false),
+            &dir,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        );
         assert_eq!(p.refuse, vec![Refusal::Unmanaged], "{:?}", p.refuse);
 
         let p = plan(
@@ -1119,6 +1290,7 @@ mod tests {
             &dir,
             "/bin/gh",
             Intent::Activate,
+            false,
             false,
             false,
         );
@@ -1152,7 +1324,15 @@ mod tests {
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("pre-commit"), shim::render("/usr/local/bin/amont")).unwrap();
 
-        let p = plan(&repo(false), &dir, "/bin/gh", Intent::Repair, false, false);
+        let p = plan(
+            &repo(false),
+            &dir,
+            "/bin/gh",
+            Intent::Repair,
+            false,
+            false,
+            false,
+        );
         assert!(
             matches!(p.refuse.as_slice(), [Refusal::HooksDirRedirected { .. }]),
             "stranded shims must stay a loud refusal: {:?}",
