@@ -10,6 +10,7 @@
 //! not meaningfully work with a TUI.
 
 mod apply;
+mod aval_hook;
 mod bypasses;
 mod checks;
 mod downgrades;
@@ -55,6 +56,10 @@ usage: amont-fleet [scan|gates|tui|fix|install|uninstall] [--root <dir>] [--dept
   --depth <n>    directory levels to descend  (default: 6)
   --binary <p>   the binary shims should point at (default: the amont on PATH, else $HOME/.local/bin/amont)
   --agents-md    with fix/install: also roll out the AGENTS.md pointer
+  --aval-hook    with fix/install: also re-run `aval hook install` where a
+                 repository keeps an .adr.yaml and its session hook is behind
+                 the aval on PATH. Reports, never edits, a .gitignore that
+                 would drop the hook's files.
   --remove-unrecognized
                  ALSO delete pre-commit-* / pre-push-* files this tool did not
                  write. Off by default, and read the sentence below first.
@@ -106,6 +111,10 @@ struct Args {
     /// content across up to 96 repositories is a materially bigger action
     /// than the untracked `.git/hooks` shims apply already writes.
     agents_md: bool,
+    /// Re-run `aval hook install` where a corpus's session hook is behind the
+    /// installed aval. Opt-in for the same reason as `agents_md`: tracked
+    /// content, across every repository that decides anything.
+    aval_hook: bool,
     /// Also delete `pre-commit-*` / `pre-push-*` files this tool did not write.
     ///
     /// Deliberately NOT called `--remove-stale`, and the naming is the safety
@@ -140,6 +149,7 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
     let mut apply = false;
     let mut binary: Option<String> = None;
     let mut agents_md = false;
+    let mut aval_hook = false;
     let mut remove_unrecognized = false;
     let mut thresholds = amont_runtime::gate_evidence::Thresholds::default();
 
@@ -202,6 +212,7 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
             "--stale-pushes" => thresholds.stale_runs = number(&mut it, "--stale-pushes")? as usize,
             "--stale-days" => thresholds.stale_days = number(&mut it, "--stale-days")?,
             "--agents-md" => agents_md = true,
+            "--aval-hook" => aval_hook = true,
             "--remove-unrecognized" => remove_unrecognized = true,
             "--binary" => {
                 binary = Some(it.next().ok_or("--binary needs a path")?.clone());
@@ -230,6 +241,7 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
         apply,
         binary,
         agents_md,
+        aval_hook,
         remove_unrecognized,
     })
 }
@@ -512,6 +524,7 @@ fn main() -> ExitCode {
                     &installed,
                     intent,
                     args.agents_md,
+                    args.aval_hook,
                     args.remove_unrecognized,
                 )
             })
@@ -737,6 +750,13 @@ fn report_fix(plans: &[fix::FixPlan]) {
         if let Some(w) = &p.write_agents_md {
             println!("  write {}", shown(&w.path));
         }
+        if p.install_aval_hook.is_some() {
+            println!(
+                "  run   aval hook install  ({} · {})",
+                aval_hook::SCRIPT_PATH,
+                aval_hook::SETTINGS_PATH
+            );
+        }
     }
 
     // Warnings are printed for EVERY plan, not only the acting ones. A repo
@@ -759,7 +779,10 @@ fn report_fix(plans: &[fix::FixPlan]) {
         acting
             .iter()
             .map(|p| p.write.iter().filter(|w| w.changes).count()
-                + usize::from(p.write_agents_md.is_some()))
+                + usize::from(p.write_agents_md.is_some())
+                // aval writes two files; the count is a plan, the apply
+                // report carries what aval actually said it wrote.
+                + 2 * usize::from(p.install_aval_hook.is_some()))
             .sum::<usize>()
     );
     println!();
@@ -907,6 +930,27 @@ fn report_warnings(plans: &[fix::FixPlan]) {
                         "  {}  ({}: core.hooksPath — {owner} owns the hooks, amont is not running)",
                         shown(path),
                         shown(&p.repo)
+                    ));
+                }
+                fix::Warning::AvalHookIgnored { paths } => {
+                    // The remedy is spelled out because the symptom is
+                    // silent: `aval hook install` succeeds, the hook runs for
+                    // whoever typed it, and the commit never carries it.
+                    lines.push(format!(
+                        "  {}  ({}: .gitignore drops the aval session hook — it ships to nobody.\n      \
+                         Track it: `.claude/*` then `!{}`, `!.claude/hooks/`, `.claude/hooks/*`, `!{}`)",
+                        amont_runtime::ui::sanitize(&paths.join(", ")),
+                        shown(&p.repo),
+                        aval_hook::SETTINGS_PATH,
+                        aval_hook::SCRIPT_PATH
+                    ));
+                }
+                fix::Warning::AvalHookUnjudged { why } => {
+                    lines.push(format!(
+                        "  {}  ({}: aval session hook not judged — {})",
+                        aval_hook::SCRIPT_PATH,
+                        shown(&p.repo),
+                        amont_runtime::ui::sanitize(why)
                     ));
                 }
             }

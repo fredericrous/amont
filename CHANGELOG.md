@@ -6,6 +6,26 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont-fleet fix --aval-hook` / `install --aval-hook` keeps aval's session
+  hook current across every repository that keeps an `.adr.yaml`.** `aval hook
+  install` writes `.claude/hooks/aval-heads.sh` and a `SessionStart` entry in
+  `.claude/settings.json` so an agent session opens with the decision heads in
+  front of it — and the script's bytes are its version, so every aval release
+  left every corpus behind until somebody re-ran the command in each one (nine
+  repositories, by hand, on 2026-09-21). The fleet now asks `aval hook install
+  --check` per corpus, reads only its exit code, plans `aval hook install` for
+  the stale ones and re-asks at the moment of writing; it never renders the
+  script itself. Opt-in per invocation, like `--agents-md`, because it writes
+  tracked content. A corpus with no `aval` on `PATH` is reported as *not
+  judged* rather than as current, and a `.gitignore` that would drop the
+  hook's files is named — with the negations to add — rather than edited. The
+  scan's JSON and the TUI detail pane carry the new `aval_hook` state; a
+  repository without `.adr.yaml` shows nothing and spawns nothing.
+
 ## v1.37.0
 
 ### Added

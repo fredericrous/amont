@@ -145,6 +145,7 @@ mod tests {
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
+            aval_hook: crate::aval_hook::AvalHook::default(),
             hooks_dir: crate::scan::HooksDir::In {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
@@ -187,6 +188,7 @@ mod tests {
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
+            aval_hook: crate::aval_hook::AvalHook::default(),
             hooks_dir: crate::scan::HooksDir::In {
                 path: std::path::PathBuf::from(".git/hooks"),
             },

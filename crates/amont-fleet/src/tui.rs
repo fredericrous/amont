@@ -224,6 +224,7 @@ impl App {
             crate::fix::Intent::Repair,
             false,
             false,
+            false,
         );
         if let Some(r) = plan.refuse.first() {
             let why = r.explain();
@@ -1147,6 +1148,35 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
     lines.push(
         Line::from(format!("AGENTS.md: {agents_md_word}")).style(tint(app.color, agents_md_colour)),
     );
+    // Only for a repository that decides something: the other ninety have no
+    // corpus and no line, rather than a "not applicable" that reads as a
+    // finding. `ignored` outranks the state — a current hook git drops is
+    // the worse condition, and the one that motivated tracking the files.
+    {
+        use crate::aval_hook::AvalHookState;
+        let hook = &repo.aval_hook;
+        let line = match (&hook.state, hook.ignored.is_empty()) {
+            (AvalHookState::NoCorpus, _) => None,
+            (_, false) => Some((
+                format!("gitignored ({}) — ships to nobody", hook.ignored.join(", ")),
+                Color::Red,
+            )),
+            (AvalHookState::Current, true) => Some(("current".to_string(), Color::Green)),
+            (AvalHookState::Stale, true) => Some((
+                "behind the installed aval (fix --aval-hook)".to_string(),
+                Color::Yellow,
+            )),
+            (AvalHookState::NoAval, true) => {
+                Some(("not judged — no aval on PATH".to_string(), Color::Yellow))
+            }
+            (AvalHookState::Unknown { why }, true) => {
+                Some((format!("not judged — {why}"), Color::Yellow))
+            }
+        };
+        if let Some((word, colour)) = line {
+            lines.push(Line::from(format!("aval hook: {word}")).style(tint(app.color, colour)));
+        }
+    }
     lines.push(Line::from(""));
     lines.push(
         Line::from(format!("CHECKS ({})", crate::checks::all_checks().len()))
@@ -1312,6 +1342,14 @@ fn sync_view(f: &mut Frame, area: Rect, app: &App) {
                 }
                 crate::fix::Warning::HooksDirRedirected { path } => {
                     format!("! hooks redirected to {}", shown_path(path))
+                }
+                // Unreachable from `f`, which plans with `aval_hook = false`;
+                // spelled out so the CLI-only flag cannot grow a silent arm.
+                crate::fix::Warning::AvalHookIgnored { paths } => {
+                    format!("! aval session hook is gitignored: {}", paths.join(", "))
+                }
+                crate::fix::Warning::AvalHookUnjudged { why } => {
+                    format!("! aval session hook not judged: {why}")
                 }
             };
             lines.push(Line::from(text).style(tint(app.color, Color::Yellow)));
@@ -1541,6 +1579,7 @@ mod tests {
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
+            aval_hook: crate::aval_hook::AvalHook::default(),
             hooks_dir: crate::scan::HooksDir::In {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
