@@ -119,3 +119,16 @@ keys:
     description: How the banned-terms scanner tells code from string content
   platform.windows-parity:
     description: What Windows runs relative to the other platforms
+packs:
+  - .adr/packs/decisions.pack
+
+# Which parts of this repository have which traits (aval 1.7, SEMANTICS
+# section 2.5), as `aval traits --detect` proposed and a reviewer accepted.
+# Rules about a trait not named here are left out of the session hook and
+# counted; `aval rules --all-traits` lists them. `aval traits --check`, run
+# by this repository's gate, reports a package this stops describing.
+areas:
+  # cli: crates/amont-fleet/Cargo.toml — `crates/amont-fleet/src/main.rs`
+  "crates/amont-fleet/**": [cli]
+  # cli: crates/amont/Cargo.toml — `crates/amont/src/main.rs`
+  "crates/amont/**": [cli]

@@ -78,6 +78,12 @@ jobs:
       - name: aval check
         run: aval check
 
+      # The areas in .adr.yaml decide which fleet rules the session hook shows;
+      # this says when a crate stops matching them (exit 1) or could not be
+      # inspected (exit 3). A false positive belongs under `disclaims:`.
+      - name: The declared areas still describe the repository
+        run: aval traits --check
+
       # The hook is committed, so it must stay wired. A stale
       # `.claude/hooks/aval-heads.sh` injects last release's preamble into
       # every session and nothing else would say so.
