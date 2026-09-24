@@ -251,6 +251,20 @@ pub const CHECKS: &[Builtin] = &[
         reach: Reach::Convention,
         run: |ctx| hooks::lint_json_yaml::run(ctx.settings, ctx.args),
     },
+    // A commit that changes amont.conf would otherwise go through with every
+    // check that file declares standing down as "could not run" — trust is
+    // keyed on content, and the author has not re-trusted their own edit yet.
+    // Not mid-operation: a manifest arriving from another branch is the
+    // pulled case, which stays a gap by design (docs/trust.md).
+    Builtin {
+        name: "pre-commit-manifest-trust",
+        stage: Stage::PreCommit,
+        scope: Scope::named(&[crate::manifest::MANIFEST]).not_during(MID_OPERATION),
+        severity: Severity::Block,
+        fix: Fix::None,
+        reach: Reach::Safety,
+        run: |ctx| hooks::manifest_trust::run(ctx.settings, ctx.manifest),
+    },
     Builtin {
         name: "pre-commit-merge-conflict",
         stage: Stage::PreCommit,
@@ -1223,6 +1237,7 @@ mod tests {
         ("pre-commit-kubeconform", false),
         ("pre-commit-lint-js", false),
         ("pre-commit-lint-json-yaml", false),
+        ("pre-commit-manifest-trust", false),
         ("pre-commit-merge-conflict", false),
         ("pre-commit-package-lock", false),
         ("pre-commit-prettier", true),
@@ -1298,6 +1313,7 @@ mod tests {
             vec![
                 "pre-commit-ban-terms",
                 "pre-commit-large-files",
+                "pre-commit-manifest-trust",
                 "pre-commit-merge-conflict",
                 "pre-commit-secrets",
                 "pre-push-secrets",
@@ -1307,7 +1323,7 @@ mod tests {
 
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 37);
+        assert_eq!(CHECKS.len(), 38);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

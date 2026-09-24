@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.40.0
+
+### Added
+
+- **`pre-commit-manifest-trust`: a commit that changes `amont.conf` is gated
+  by it.** Trust is keyed on the file's content, so editing `amont.conf` made
+  every check it declares "could not run" until somebody ran `amont trust` —
+  and a "could not run" never blocks. For a pulled manifest that is the
+  point. For the commit that CHANGES it, it was a hole: the new checks stood
+  down for exactly the commit introducing them, and everything else in that
+  commit went through ungated. Measured 2026-09-24: an `.adr.yaml` its own
+  `aval check` would have refused was committed in duro-design-system while
+  that check sat untrusted in the same commit's `amont.conf`. That commit is
+  now blocked, naming the fix: review with `amont trust`, commit again. The
+  check trusts nothing itself, so the threat model is unchanged; it is quiet
+  during a merge, rebase, cherry-pick or revert, where a manifest arriving
+  from another branch stays a gap; and it downgrades like any check
+  (`git config amont.severity.pre-commit-manifest-trust warn`).
+
 ## v1.39.0
 
 ### Changed

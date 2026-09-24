@@ -282,10 +282,10 @@ mod tests {
 
     #[test]
     fn the_table_covers_every_check() {
-        assert_eq!(all_checks().len(), 37);
+        assert_eq!(all_checks().len(), 38);
         let mut names: Vec<&str> = all_checks();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 37, "duplicate check name");
+        assert_eq!(names.len(), 38, "duplicate check name");
     }
 }

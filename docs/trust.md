@@ -74,6 +74,19 @@ thing to tell a reader than *you have not looked at this yet*:
 amont.conf changed since it was trusted — review it, then `amont trust`
 ```
 
+That is a **gap**, not a block, when the change arrived from somewhere else:
+the checks it declares show as "could not run" and your commit proceeds,
+because a command that never ran has judged nothing. It is a **block** when
+the commit at hand is the one changing `amont.conf`
+(`pre-commit-manifest-trust`). You are the author of that content, and
+without it every check the file declares would stand down for exactly the
+commit that introduces them — letting everything else in that commit through
+ungated. The check names the fix and trusts nothing itself; accepting is still
+`amont trust`, and still yours. It stays quiet during a merge, rebase,
+cherry-pick or revert, where a manifest arriving from another branch is the
+pulled case. Downgrade it like any check:
+`git config amont.severity.pre-commit-manifest-trust warn`.
+
 ## Why `git hash-object --no-filters`
 
 `amont` links no external crates ([and CI enforces
@@ -131,7 +144,9 @@ declarations from somebody else's repository into your `amont.conf`. It grants
 no trust, and it gets no exemption:
 
 - the append changes the file's content, so the fingerprint no longer matches
-  and every declared check goes inert — including ones you had already trusted;
+  and every declared check goes inert — including ones you had already trusted
+  — and `pre-commit-manifest-trust` blocks the commit that carries the append
+  until you have reviewed it;
 - the pack's rows are shown by `amont trust` alongside your own, in the same
   listing, with no marking that would invite skimming past them;
 - editing a vendored row by hand revokes consent exactly as editing a

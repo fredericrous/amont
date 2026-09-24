@@ -440,11 +440,16 @@ fn a_file_touched_only_by_a_merge_resolution_still_counts() {
 fn an_untrusted_manifest_does_not_run() {
     let r = Repo::new();
     probe(&r, PROBE, 1);
-    // NOT `manifest()` — that trusts it. This is the cloned-repo case.
+    // NOT `manifest()` — that trusts it. This is the cloned-repo case: the
+    // manifest arrived in history, and the commit at hand is about something
+    // else. (A commit that itself CHANGES the manifest is blocked instead —
+    // see `committing_an_untrusted_manifest_edit_is_blocked`.)
     r.stage(
         "amont.conf",
         &format!("pre-commit  audit  *  block  ./{PROBE}\n"),
     );
+    r.commit("cloned");
+    r.stage("note.txt", "unrelated\n");
 
     let run = r.hook("pre-commit", &[]);
     assert!(
@@ -485,13 +490,18 @@ fn editing_a_trusted_manifest_stops_it_running() {
     manifest(&r, &format!("pre-commit  audit  *  block  ./{PROBE}\n"));
     assert!(r.hook("pre-commit", &[]).says("probe-"), "baseline");
 
-    // As if a pull had added a line.
+    r.commit("trusted manifest");
+
+    // As if a pull had added a line: it arrives in a commit, and the commit
+    // at hand is about something else.
     r.stage(
         "amont.conf",
         &format!(
             "pre-commit  audit  *  block  ./{PROBE}\npre-commit  extra  *  block  ./{PROBE}\n"
         ),
     );
+    r.commit("pulled");
+    r.stage("note.txt", "unrelated\n");
     let run = r.hook("pre-commit", &[]);
     assert!(
         !run.says("probe-"),
@@ -503,6 +513,93 @@ fn editing_a_trusted_manifest_stops_it_running() {
         "must say WHICH happened:\n{}",
         run.output()
     );
+    assert!(
+        run.passed(),
+        "a pulled manifest is a gap, never a block:\n{}",
+        run.output()
+    );
+}
+
+/// The hole the gap left: a commit that CHANGES `amont.conf` went through with
+/// every check that file declares reported "could not run" — the author had
+/// not re-trusted their own edit yet — and so nothing else in that commit was
+/// gated either. That commit is now blocked, naming the fix; trusting it is
+/// still the person's act, and after it the declared checks run on the same
+/// commit.
+#[test]
+fn committing_a_changed_manifest_is_blocked_until_trusted() {
+    let r = Repo::new();
+    probe(&r, PROBE, 0);
+    manifest(&r, &format!("pre-commit  audit  *  block  ./{PROBE}\n"));
+    r.commit("trusted manifest");
+
+    r.stage(
+        "amont.conf",
+        &format!(
+            "pre-commit  audit  *  block  ./{PROBE}\npre-commit  extra  *  block  ./{PROBE}\n"
+        ),
+    );
+    let run = r.hook("pre-commit", &[]);
+    assert!(
+        !run.passed(),
+        "an untrusted edit gated nothing:\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("this commit changes amont.conf"),
+        "must say why:\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("amont trust"),
+        "must name the fix:\n{}",
+        run.output()
+    );
+    assert!(
+        !run.says("probe-"),
+        "blocking must run nothing:\n{}",
+        run.output()
+    );
+
+    trust(&r);
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(
+        run.says("probe-"),
+        "trusted, the checks gate it:\n{}",
+        run.output()
+    );
+}
+
+/// The first manifest a repository gets is the author's too.
+#[test]
+fn committing_an_untrusted_manifest_edit_is_blocked() {
+    let r = Repo::new();
+    probe(&r, PROBE, 0);
+    r.stage(
+        "amont.conf",
+        &format!("pre-commit  audit  *  block  ./{PROBE}\n"),
+    );
+    let run = r.hook("pre-commit", &[]);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(run.says("never been trusted"), "{}", run.output());
+    assert!(!run.says("probe-"), "{}", run.output());
+}
+
+/// A block, and like every block it can be downgraded on purpose.
+#[test]
+fn the_manifest_trust_block_can_be_downgraded() {
+    let r = Repo::new();
+    probe(&r, PROBE, 0);
+    r.stage(
+        "amont.conf",
+        &format!("pre-commit  audit  *  block  ./{PROBE}\n"),
+    );
+    r.git(&["config", "amont.severity.pre-commit-manifest-trust", "warn"]);
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(run.says("amont trust"), "{}", run.output());
+    assert!(!run.says("probe-"), "{}", run.output());
 }
 
 /// No manifest is the normal case for ninety-six repositories, and it must cost
