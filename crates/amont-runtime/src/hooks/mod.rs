@@ -15,6 +15,7 @@ pub mod k8s;
 pub mod large_files;
 pub mod lint_js;
 pub mod lint_json_yaml;
+pub mod manifest_trust;
 pub mod merge_conflict;
 pub mod package_lock;
 pub mod post_commit;

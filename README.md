@@ -9,7 +9,7 @@
 A single Rust binary that checks `git commit` and `git push` — no YAML to
 write, no runtime to install, nothing to configure before it is useful.
 
-- **Useful in the first minute.** Thirty-seven built-in checks — commit-message
+- **Useful in the first minute.** Thirty-eight built-in checks — commit-message
   conventions, merge-conflict markers, the linters and formatters for the
   languages your repository actually uses, branch rules, your test suite —
   and each one fires only where the repository has opted into its tool.
@@ -75,7 +75,7 @@ pre-push
   ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable
 ```
 
-Thirty-seven built-in checks across five git hooks, plus any your repository
+Thirty-eight built-in checks across five git hooks, plus any your repository
 declares itself. What each one needs before it fires:
 [the checks reference](docs/checks.md).
 

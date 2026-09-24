@@ -1,7 +1,7 @@
 # The checks
 
 Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-seven
+`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-eight
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -158,6 +158,7 @@ other twenty-one still report.
 | `pre-commit-kubeconform` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Schema-validates rendered manifests. **soft** |
 | `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint at zero warnings (`--max-warnings 0`), only in repos that carry an eslint config. |
 | `pre-commit-lint-json-yaml` | `.json` `.yaml` `.yml` | Parses staged JSON/YAML so a syntax error never reaches the repo. **soft** |
+| `pre-commit-manifest-trust` | `amont.conf` | Blocks a commit that changes `amont.conf` while the checks it declares are untrusted — otherwise they stand down as "could not run" for exactly the commit that introduces them. Names the fix (`amont trust`); never trusts anything itself. Not during a merge, rebase, cherry-pick or revert: a manifest arriving from another branch stays a gap. |
 | `pre-commit-merge-conflict` | always | Refuses staged files still carrying conflict markers. |
 | `pre-commit-package-lock` | `package.json` | Keeps `package.json` and its lockfile in step, scoped per directory — one project's lockfile does not satisfy another's in a monorepo, and a `package.json` with no lockfile beside it never demands one. |
 | `pre-commit-prettier` | a prettier config is present | Format check. **fixes** |
