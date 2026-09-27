@@ -356,3 +356,48 @@ fn an_audit_whose_lockfile_the_repository_lacks_is_silent_not_could_not_run() {
         "audit-rust has its lockfile and a tool: {out}"
     );
 }
+
+/// npm resolves a project from its own directory. A repository whose
+/// packages live in subdirectories has no lockfile at the root, so the one
+/// root-level `npm audit` answered ENOLOCK and the check said "could not
+/// complete" — a tree with 17 real vulnerabilities (cluster-vision's web/)
+/// was never audited. Each lockfile's directory is audited, and a finding
+/// in any of them decides.
+#[test]
+fn audit_js_runs_in_every_lockfile_directory() {
+    let r = bare_repo();
+    r.stage("web/package-lock.json", "{}\n");
+    r.stage("mcp/package-lock.json", "{}\n");
+    r.commit("chore: two npm projects, none at the root");
+
+    // The fake npm answers by the directory it runs in, and refuses the
+    // root like the real one (no lockfile there).
+    shim(
+        &r,
+        "npm",
+        r#"case "$PWD" in
+  */web) echo '17 vulnerabilities (8 moderate, 9 high)'; exit 1 ;;
+  */mcp) echo 'found 0 vulnerabilities'; exit 0 ;;
+  *) echo 'npm error code ENOLOCK' >&2; exit 1 ;;
+esac"#,
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_ne!(
+        code, 0,
+        "a v* tag must not ship over web/'s findings: {out}"
+    );
+    assert!(out.contains("web: 17 vulnerabilities"), "{out}");
+    assert!(!out.contains("could not complete"), "{out}");
+
+    shim(
+        &r,
+        "npm",
+        r#"case "$PWD" in
+  */web|*/mcp) echo 'found 0 vulnerabilities'; exit 0 ;;
+  *) echo 'npm error code ENOLOCK' >&2; exit 1 ;;
+esac"#,
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("could not complete"), "{out}");
+}
