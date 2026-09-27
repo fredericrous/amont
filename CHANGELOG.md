@@ -6,7 +6,21 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.40.0
+## v1.40.1
+
+### Fixed
+
+- **`pre-push-audit-js` audits every npm project, not just the root.** It ran
+  one `npm audit` at the repository root; a repository whose packages live in
+  subdirectories (cluster-vision's `web/` and `mcp/`) has no lockfile there,
+  npm answered ENOLOCK, and the check reported "could not complete" — which
+  never blocks. So those trees were never audited: measured 2026-09-27,
+  cluster-vision's `web/` carried 17 known vulnerabilities (9 high, including
+  a react-router stored XSS) through every `v*` tag. The audit now runs in
+  each directory that tracks a `package-lock.json`; any finding, labelled
+  with its directory (`web: 17 vulnerabilities …`), counts, and a project
+  npm cannot answer for is named and keeps the result from reading clean.
+
 
 ### Added
 

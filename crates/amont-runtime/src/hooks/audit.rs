@@ -313,10 +313,18 @@ fn venv_site_packages(root: &str) -> Option<String> {
 
 /// Run one audit tool from the repo root and read its answer.
 fn audited(settings: &crate::config::Settings, argv: &[String]) -> Option<(bool, String)> {
-    let root = common::repo_root();
+    audited_in(settings, argv, std::path::Path::new(&common::repo_root()))
+}
+
+/// Run one audit tool from `dir` and read its answer.
+fn audited_in(
+    settings: &crate::config::Settings,
+    argv: &[String],
+    dir: &std::path::Path,
+) -> Option<(bool, String)> {
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
-        .current_dir(&root)
+        .current_dir(dir)
         .stdin(std::process::Stdio::null());
     common::strip_git_env(&mut cmd);
     let (ran, out) = common::capture_within(settings, &mut cmd)?;
@@ -431,22 +439,79 @@ fn has_lockfile(lockfile: &str) -> bool {
         .any(|p| p.rsplit('/').next().unwrap_or(p) == lockfile)
 }
 
+/// The directories holding a tracked `lockfile`, repo-relative ("" for the
+/// root), sorted. npm resolves a project from its own directory, so a
+/// repository whose packages live in subdirectories (`web/`, `mcp/`) has no
+/// lockfile at the root at all.
+fn lockfile_dirs(lockfile: &str) -> Vec<String> {
+    let mut dirs: Vec<String> = crate::tracked_paths()
+        .iter()
+        .filter(|p| p.rsplit('/').next().unwrap_or(p) == lockfile)
+        .map(|p| {
+            p.rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// `npm audit` in every directory that tracks a `package-lock.json`.
+///
+/// It used to run once at the repository root, where a repository whose
+/// packages live in subdirectories has no lockfile: npm answered ENOLOCK,
+/// the check said "could not complete", and a tree with 17 known
+/// vulnerabilities (9 high) went unaudited release after release. Each
+/// project is audited on its own; any finding counts, labelled with its
+/// directory, and a project npm could not answer for keeps the whole
+/// result from reading clean.
 pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
-    if !has_lockfile("package-lock.json") {
+    let dirs = lockfile_dirs("package-lock.json");
+    if dirs.is_empty() {
         return Outcome::Inert;
     }
+    let root = std::path::PathBuf::from(common::repo_root());
     let argv = vec![common::program("npm"), "audit".into()];
-    let Some((exit_ok, out)) = audited(settings, &argv) else {
-        common::warn("audit-js: npm could not run — the audit did NOT run");
-        return Outcome::Unavailable;
+    let mut found = Vec::new();
+    let mut unchecked = Vec::new();
+    let mut full = String::new();
+    for dir in &dirs {
+        let label = if dir.is_empty() {
+            ".".to_string()
+        } else {
+            dir.clone()
+        };
+        let Some((exit_ok, out)) = audited_in(settings, &argv, &root.join(dir)) else {
+            common::warn(&format!(
+                "audit-js: npm could not run in {label} — the audit did NOT run"
+            ));
+            return Outcome::Unavailable;
+        };
+        match read_npm_audit(exit_ok, &out) {
+            Report::Vulnerabilities(what) => {
+                found.extend(what.into_iter().map(|w| format!("{label}: {w}")));
+                full.push_str(&format!("── npm audit in {label}\n{out}\n"));
+            }
+            Report::CouldNotCheck => unchecked.push(label),
+            Report::Clean | Report::Advisories(_) => {}
+        }
+    }
+    if !unchecked.is_empty() {
+        common::warn(&format!(
+            "audit-js: npm audit could not answer in {} — those projects were NOT checked",
+            unchecked.join(", ")
+        ));
+    }
+    let report = if !found.is_empty() {
+        Report::Vulnerabilities(found)
+    } else if !unchecked.is_empty() {
+        Report::CouldNotCheck
+    } else {
+        Report::Clean
     };
-    conclude(
-        settings,
-        "audit-js",
-        read_npm_audit(exit_ok, &out),
-        releasing(refs),
-        &out,
-    )
+    conclude(settings, "audit-js", report, releasing(refs), &full)
 }
 
 pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
