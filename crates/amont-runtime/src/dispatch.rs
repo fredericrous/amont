@@ -980,6 +980,30 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     continue;
                 }
                 crate::hooks::run_tests::PairVerdict::Unstamped(n) => {
+                    // `amont.unstampedPush refuse`: never run a suite with
+                    // the remote's connection held open — say how to earn
+                    // the stamp instead. Not inside a rehearsal snapshot:
+                    // running there is how the stamp is earned.
+                    if !rehearsing && crate::rehearsal::refuse_unstamped(ctx.settings) {
+                        crate::say!(
+                            "{} {} is declared at commit time, but {n} pushed \
+                             commit{} carr{} no record of it (rewritten by a \
+                             rebase or amend, or made without the hooks) — \
+                             refusing the push",
+                            warning_sign(),
+                            name,
+                            if n == 1 { "" } else { "s" },
+                            if n == 1 { "ies" } else { "y" },
+                        );
+                        crate::say!(
+                            "    Test this tree first, with no push waiting on it: {} — then push again",
+                            highlight("amont rehearse --wait"),
+                        );
+                        crate::downgrade::note(settings, &downgraded);
+                        record_evidence(&tips, &evidence);
+                        println!("\n🚨  Error raised by hook {}", highlight(check.name()));
+                        return Verdict::Block;
+                    }
                     crate::say!(
                         "{} {} is declared at commit time, but {n} pushed \
                          commit{} carr{} no record of it — running it here",

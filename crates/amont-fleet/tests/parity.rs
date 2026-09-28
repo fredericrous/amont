@@ -33,9 +33,10 @@ fn shim_for(binary: &str) -> String {
     template().replace("__AMONT_BIN__", binary)
 }
 
-const DISPATCHERS: [&str; 5] = [
+const DISPATCHERS: [&str; 6] = [
     "commit-msg",
     "post-commit",
+    "post-rewrite",
     "pre-commit",
     "pre-push",
     "prepare-commit-msg",

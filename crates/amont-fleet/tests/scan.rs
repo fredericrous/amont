@@ -421,6 +421,7 @@ fn a_baked_shim_is_ok_and_a_hand_edited_one_is_not() {
     for n in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -832,10 +833,10 @@ fn a_non_utf8_hook_is_never_ours_and_never_missing() {
     let v = json(&["--root", t.path().to_str().unwrap()]);
     let r = &v["repos"][0];
     assert_eq!(r["managed"], false, "a binary hook is not one of ours: {r}");
-    // Index 2: shims sit in DISPATCHERS order, and `pre-commit` follows
-    // `commit-msg` and `post-commit`.
+    // Index 3: shims sit in DISPATCHERS order, and `pre-commit` follows
+    // `commit-msg`, `post-commit` and `post-rewrite`.
     assert_eq!(
-        r["shims"][2]["state"], "unreadable",
+        r["shims"][3]["state"], "unreadable",
         "and it is not MISSING, which is what makes fix write: {r}"
     );
     assert_eq!(

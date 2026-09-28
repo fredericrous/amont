@@ -58,7 +58,20 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
 /// is the snapshot's failure: no suite runs on a tree that was never made
 /// runnable. Used by both snapshot consumers — `amont.testPushedTree` at
 /// push time and the background rehearsal — so the two cannot drift.
+///
+/// The command gets `AMONT_SOURCE_WORKTREE`: the working tree the snapshot
+/// was taken from. Installing from scratch on every rehearsal is minutes of
+/// network and disk; a workspace is usually already installed right there,
+/// and a prepare step that knows where can reuse it — copy-on-write clone
+/// `node_modules` when the lockfile matches, install only when it does not:
+///
+/// ```sh
+/// git config amont.snapshotPrepare 'sh scripts/amont-snapshot-prepare.sh'
+/// ```
 const PREPARE: &str = "amont.snapshotPrepare";
+
+/// The environment variable naming the source working tree (see PREPARE).
+pub const SOURCE_WORKTREE_ENV: &str = "AMONT_SOURCE_WORKTREE";
 
 pub fn prepare_command(settings: &crate::config::Settings) -> Option<String> {
     crate::config::string_value(settings, PREPARE).filter(|s| !s.trim().is_empty())
@@ -154,6 +167,9 @@ impl PushedTree {
         cmd.current_dir(&self.path)
             .stdin(std::process::Stdio::null());
         crate::hooks::common::strip_git_env(&mut cmd);
+        // the working tree the snapshot was taken FROM — where an installed
+        // workspace already lives (see PREPARE)
+        cmd.env(SOURCE_WORKTREE_ENV, &self.repo);
         let ok = crate::hooks::common::bounded_success(settings, &mut cmd, PREPARE);
         if !ok {
             println!(

@@ -254,6 +254,68 @@ fn a_commit_starts_the_rehearsal_when_asked() {
     assert_eq!(worktrees(&r), 1);
 }
 
+/// A rebase rewrites every commit it replays, so no stamp vouches for the
+/// branch any more. With `amont.rehearseOnCommit`, the FINISHED rebase
+/// (post-rewrite) rehearses the new tip — once, not once per replayed
+/// commit — and the push that follows skips the suite.
+#[test]
+#[cfg(unix)]
+fn a_rebase_starts_the_rehearsal_of_the_new_tip() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo("");
+    r.stage("a.txt", "second\n");
+    r.commit("feat: a second commit");
+    let before = head(&r);
+    r.git(&["config", "amont.rehearseOnCommit", "true"]);
+
+    // Upstream moved: a new commit under the two feature commits, so the
+    // replay gives each a new id. (`--force-rebase` in place is not enough:
+    // within the same second it reproduces the very same ids.)
+    r.git(&["checkout", "-q", "--no-track", "-b", "upstream", "HEAD~2"]);
+    r.stage("upstream.md", "moved\n");
+    r.commit("docs: upstream moved");
+    r.git(&["checkout", "-q", "feat/x"]);
+    let out = r.git(&["rebase", "-q", "upstream"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = head(&r);
+    assert_ne!(before, after, "the rebase rewrote the tip");
+
+    wait_state(&r, "the rehearsal of the rebased tip to pass", |s| {
+        s.contains(&format!("commit={after}")) && s.contains("phase=passed")
+    });
+    assert_eq!(runs(&r), 1, "one rehearsal, of the tip: {}", log(&r));
+    assert!(note(&r, "HEAD").contains("pre-push-suite"));
+
+    let (code, out) = push_out(&r, &base, &after);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(SKIP), "{out}");
+    assert_eq!(runs(&r), 1, "the push repeated nothing");
+    assert_eq!(worktrees(&r), 1);
+}
+
+/// Without the opt-in a rebase starts nothing.
+#[test]
+fn a_rebase_rehearses_nothing_unless_asked() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = gated_repo("");
+    r.git(&["checkout", "-q", "--no-track", "-b", "upstream", "HEAD~1"]);
+    r.stage("upstream.md", "moved\n");
+    r.commit("docs: upstream moved");
+    r.git(&["checkout", "-q", "feat/x"]);
+    let out = r.git(&["rebase", "-q", "upstream"]);
+    assert!(out.status.success());
+    let (_, status) = rehearse(&r, &["--status"]);
+    assert!(status.contains("no rehearsal recorded"), "{status}");
+}
+
 /// Latest wins: a rehearsal of a tree nobody will push is cancelled, suite
 /// and snapshot included, the moment a newer commit exists.
 #[test]
@@ -442,6 +504,30 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
     assert_eq!(runs(&r), 1);
     assert!(!note(&r, "HEAD").contains("pre-push-suite"));
     assert_eq!(worktrees(&r), 1);
+}
+
+/// The preparation is told which working tree the snapshot came from, in
+/// `$AMONT_SOURCE_WORKTREE` — so it can reuse what is already installed
+/// there (a copy-on-write `node_modules`, a local `.env`) instead of
+/// installing from scratch.
+#[test]
+#[cfg(unix)]
+fn snapshot_prepare_is_told_the_source_worktree() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = gated_repo("fs.readFileSync('prepared.txt');");
+    // Untracked, so only the source tree has it.
+    r.write("local.env", "secret\n");
+    r.git(&[
+        "config",
+        "amont.snapshotPrepare",
+        "cp \"$AMONT_SOURCE_WORKTREE/local.env\" prepared.txt",
+    ]);
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1, "{out}");
+    assert!(note(&r, "HEAD").contains("pre-push-suite"));
 }
 
 /// Nothing to rehearse is said, not done: a push that touches no gate's

@@ -20,7 +20,7 @@ use crate::check::Verdict;
 pub fn run(settings: &crate::config::Settings, ctx: &crate::registry::Ctx) -> Verdict {
     let stamped = crate::gate_stamp::bind_to_head();
     crate::bypass::note_unverified(ctx.settings, ctx.manifest, &stamped);
-    rehearse(settings);
+    rehearse(settings, false);
     Verdict::Proceed
 }
 
@@ -30,13 +30,19 @@ pub fn run(settings: &crate::config::Settings, ctx: &crate::registry::Ctx) -> Ve
 /// where the commit being made is not the one that will be pushed and the
 /// next replay would cancel this run anyway. The worker itself decides
 /// whether there is anything to run; this only pays the spawn.
-fn rehearse(settings: &crate::config::Settings) {
+///
+/// post-rewrite calls it too, once a rebase has FINISHED — the moment the
+/// rebased branch, which no stamp covers any more, first exists. It passes
+/// `after_rebase`: git runs post-rewrite with the branch already updated but
+/// BEFORE it removes `rebase-merge/`, so the in-progress guard would stand
+/// down on exactly the call it exists for.
+pub(crate) fn rehearse(settings: &crate::config::Settings, after_rebase: bool) {
     if !crate::rehearsal::on_commit_enabled(settings)
         || !crate::gate_stamp::push_stamps_enabled(settings)
     {
         return;
     }
-    if !crate::git_states_in_progress().is_empty() {
+    if !after_rebase && !crate::git_states_in_progress().is_empty() {
         return;
     }
     match crate::rehearsal::spawn_detached() {

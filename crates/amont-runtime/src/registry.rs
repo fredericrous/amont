@@ -48,7 +48,7 @@ pub struct Ctx<'a> {
 pub type HookFn = fn(&Ctx) -> Verdict;
 
 /// name → handler. The single place a hook is registered.
-/// The five hook names git itself invokes. Everything else is a `Check`.
+/// The six hook names git itself invokes. Everything else is a `Check`.
 pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("pre-commit", dispatch::pre_commit),
     ("pre-push", dispatch::pre_push),
@@ -72,6 +72,11 @@ pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     }),
     ("post-commit", |ctx| {
         hooks::post_commit::run(ctx.settings, ctx)
+    }),
+    // A rebase rewrote the branch: its stamps no longer vouch for it, so
+    // rehearse again. Like post-commit it records, never opines.
+    ("post-rewrite", |ctx| {
+        hooks::post_rewrite::run(ctx.settings, ctx)
     }),
 ];
 
@@ -995,6 +1000,7 @@ mod tests {
             vec![
                 "commit-msg",
                 "post-commit",
+                "post-rewrite",
                 "pre-commit",
                 "pre-push",
                 "prepare-commit-msg"

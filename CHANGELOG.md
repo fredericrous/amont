@@ -6,6 +6,27 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.41.0
+
+### Added
+
+- **A rebase re-earns its stamps in the background.** A stamp vouches for
+  one commit, so after `git rebase` nothing covers the branch, and the next
+  push ran the whole suite with git's connection to the remote held open —
+  application-landscape's four-minute suite outlived the forge's idle
+  timeout and the push failed after passing. A new `post-rewrite` hook
+  (installed by `amont init`, so re-run it) starts one rehearsal of the
+  rebased tip, under the same opt-in as `post-commit`
+  (`amont.rehearseOnCommit`). `post-commit` already stood down mid-rebase,
+  and still does; an amend needs nothing new.
+- **`amont.unstampedPush refuse`.** A push carrying commits with no record
+  of a check declared at both stages is turned away at once, with the way
+  out (`amont rehearse --wait`, then push again), instead of running the
+  suite while the remote waits. The default, `run`, is unchanged.
+- **`amont.snapshotPrepare` learns where the snapshot came from**, in
+  `$AMONT_SOURCE_WORKTREE`, so a preparation can clone the working tree's
+  installed dependencies copy-on-write instead of installing from scratch.
+
 ## v1.40.2
 
 ### Fixed

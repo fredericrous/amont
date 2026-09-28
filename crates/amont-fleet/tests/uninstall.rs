@@ -118,6 +118,7 @@ fn a_hooks_directory_we_cannot_write_to_is_reported_and_exits_nonzero() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",

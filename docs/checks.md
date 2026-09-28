@@ -1,7 +1,7 @@
 # The checks
 
-Five git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `pre-push` — and behind them thirty-eight
+Six git hooks are installed — `pre-commit`, `commit-msg`,
+`prepare-commit-msg`, `post-commit`, `post-rewrite`, `pre-push` — and behind them thirty-eight
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -460,7 +460,18 @@ it earns is for exactly that tree. Only the test gates run — `branch-protect`,
 `secrets` and the auto-rebase ask about a push that is not happening, and
 run when it is. A checkout that needs a step before a suite can start (a
 pnpm monorepo has no `node_modules` in a fresh worktree) names it in
-`amont.snapshotPrepare`.
+`amont.snapshotPrepare`; the command learns the working tree the snapshot
+came from in `$AMONT_SOURCE_WORKTREE`, so it can clone what is already
+installed there rather than install from scratch.
+
+A rebase rewrites every commit it replays, and a stamp vouches for one
+commit: after `git rebase`, nothing covers the branch. git calls
+`post-commit` for each replayed commit while the rebase is still in
+progress, and the rehearsal stands down then — the commit being made is not
+the one you will push. `post-rewrite` is the moment the rebased branch
+exists whole, and with `amont.rehearseOnCommit` it starts one rehearsal of
+the new tip. (`git commit --amend` needs nothing extra: its `post-commit`
+already rehearsed.)
 
 A push that arrives mid-rehearsal waits for it rather than starting the
 suite over — but not forever. `amont.rehearsalWait` (default 300s, `0` for

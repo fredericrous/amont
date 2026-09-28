@@ -236,9 +236,11 @@ cd <your-repo> && amont install
 amont list                        # what would run here, and why not
 ```
 
-That writes five shims into `.git/hooks` — `pre-commit`, `pre-push`,
-`commit-msg`, `prepare-commit-msg`, `post-commit` — each of which resolves the
-binary at run time and dispatches into it. `post-commit` is the bookkeeping
+That writes six shims into `.git/hooks` — `pre-commit`, `pre-push`,
+`commit-msg`, `prepare-commit-msg`, `post-commit`, `post-rewrite` — each of
+which resolves the binary at run time and dispatches into it. `post-rewrite`
+only starts a background rehearsal after a rebase, and only where
+`amont.rehearseOnCommit` asks for one. `post-commit` is the bookkeeping
 half of [moving a gate entry to commit time](checks.md#moving-a-gate-entry-earlier):
 it records that the moved check actually ran, so the push gate can trust the
 event rather than the declaration. Nothing runs in any repository you did not do this
