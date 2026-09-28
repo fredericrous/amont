@@ -270,8 +270,14 @@ fn a_rebase_starts_the_rehearsal_of_the_new_tip() {
     let before = head(&r);
     r.git(&["config", "amont.rehearseOnCommit", "true"]);
 
-    // Replays both feature commits; each gets a new id.
-    let out = r.git(&["rebase", "-q", "--force-rebase", "HEAD~2"]);
+    // Upstream moved: a new commit under the two feature commits, so the
+    // replay gives each a new id. (`--force-rebase` in place is not enough:
+    // within the same second it reproduces the very same ids.)
+    r.git(&["checkout", "-q", "--no-track", "-b", "upstream", "HEAD~2"]);
+    r.stage("upstream.md", "moved\n");
+    r.commit("docs: upstream moved");
+    r.git(&["checkout", "-q", "feat/x"]);
+    let out = r.git(&["rebase", "-q", "upstream"]);
     assert!(
         out.status.success(),
         "{}",
@@ -300,7 +306,11 @@ fn a_rebase_rehearses_nothing_unless_asked() {
         return;
     }
     let (r, _base) = gated_repo("");
-    let out = r.git(&["rebase", "-q", "--force-rebase", "HEAD~1"]);
+    r.git(&["checkout", "-q", "--no-track", "-b", "upstream", "HEAD~1"]);
+    r.stage("upstream.md", "moved\n");
+    r.commit("docs: upstream moved");
+    r.git(&["checkout", "-q", "feat/x"]);
+    let out = r.git(&["rebase", "-q", "upstream"]);
     assert!(out.status.success());
     let (_, status) = rehearse(&r, &["--status"]);
     assert!(status.contains("no rehearsal recorded"), "{status}");
