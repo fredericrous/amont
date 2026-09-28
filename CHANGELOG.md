@@ -6,6 +6,26 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.43.0
+
+### Changed
+
+- **A snapshot prepares only the units the push touches.** The root unit,
+  plus each unit that is the nearest enclosing lockfile directory of a file
+  changed since the tip forked from its upstream; the rest are named and
+  skipped. website-builder's seven `spikes/*` projects were each installed
+  on every snapshot; now none are unless the push changes them. With no
+  upstream, everything is prepared as before.
+
+### Fixed
+
+- **`snapshotDeps reuse` refuses a tree edited in place.** pnpm's own check
+  does not look at installed file contents, so a hand-patched package was
+  cloned into the snapshot and stamped. amont now rejects any file newer
+  than pnpm's install record (`node_modules/.modules.yaml`), naming it, and
+  installs instead. Found on a real checkout: two `@duro-app/ui` files
+  edited eighteen hours after its install.
+
 ## v1.42.0
 
 ### Added

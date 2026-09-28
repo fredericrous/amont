@@ -75,6 +75,8 @@ pub fn prepare_command(settings: &crate::config::Settings) -> Option<String> {
 pub struct PushedTree {
     path: PathBuf,
     repo: PathBuf,
+    /// The commit checked out — what preparation scopes the push by.
+    tip: String,
 }
 
 impl PushedTree {
@@ -145,6 +147,7 @@ impl PushedTree {
         Some(PushedTree {
             path: base,
             repo: repo.to_path_buf(),
+            tip: tip.to_string(),
         })
     }
 
@@ -152,7 +155,13 @@ impl PushedTree {
     /// `amont.snapshotPrepare`. `Err` says why, in one line.
     pub fn prepare(&self, settings: &crate::config::Settings) -> Result<(), String> {
         let script = prepare_command(settings);
-        crate::snapshot_prep::run(settings, &self.repo, &self.path, script.is_some())?;
+        crate::snapshot_prep::run(
+            settings,
+            &self.repo,
+            &self.path,
+            &self.tip,
+            script.is_some(),
+        )?;
         let Some(script) = script else {
             return Ok(());
         };
