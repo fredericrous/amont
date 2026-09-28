@@ -70,7 +70,7 @@ $ curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/templates
 | `pre-push-audit-rust` | `cargo audit` |
 | `pre-commit-lint-js` | `npx --no-install eslint --max-warnings 0 .` |
 | `pre-push-run-tests-js` | `npm run typecheck / test:unit / test --if-present` |
-| `pre-push-audit-js` | `npm audit` |
+| `pre-push-audit-js` | `npm audit` / `pnpm audit`, per lockfile directory |
 | `pre-commit-ruff` / `pre-commit-pyright` | `ruff check .` / `pyright --warnings` |
 | `pre-push-pytest` | `pytest` |
 | `pre-push-audit-python` | `pip-audit -r requirements.txt` |

@@ -453,10 +453,13 @@ pub const CHECKS: &[Builtin] = &[
         reach: Reach::Convention,
         run: |ctx| hooks::audit::go(ctx.settings, ctx.push.get()),
     },
+    // `pnpm-lock.yaml` too: a pnpm workspace has no package-lock.json, and
+    // without it here the dispatcher's opt-in gate silenced the audit for
+    // every pnpm repository — `hooks::audit::js` runs `pnpm audit` there.
     Builtin {
         name: "pre-push-audit-js",
         stage: Stage::PrePush,
-        scope: Scope::new(&[], &["package-lock.json"]),
+        scope: Scope::new(&[], &["package-lock.json", "pnpm-lock.yaml"]),
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
