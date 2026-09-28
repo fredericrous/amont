@@ -74,9 +74,10 @@ fn init_repo(dir: &Path) {
     git(dir, &["config", "user.name", "t"]);
 }
 
-const DISPATCHERS: [&str; 5] = [
+const DISPATCHERS: [&str; 6] = [
     "commit-msg",
     "post-commit",
+    "post-rewrite",
     "pre-commit",
     "pre-push",
     "prepare-commit-msg",

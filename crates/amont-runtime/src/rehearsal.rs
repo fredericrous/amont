@@ -104,6 +104,25 @@ pub fn on_commit_enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, ON_COMMIT, false)
 }
 
+/// What a push does about a gate-paired check when a pushed commit carries
+/// no record of it — rewritten by a rebase or amend, committed with
+/// `--no-verify`, made where amont is not installed:
+///
+/// - `run` (the default): run the suite in the push, as always;
+/// - `refuse`: block the push and say how to get the stamp instead
+///   (`amont rehearse --wait`). The suite then never runs while git holds
+///   its connection to the remote open — the one place a slow suite can
+///   kill a push whose checks all passed. A rehearsal still RUNNING for the
+///   tip is waited for first (`amont.rehearsalWait`), and its stamp is
+///   honoured; a rehearsal snapshot itself always runs, since that is where
+///   the stamp is earned.
+const UNSTAMPED_PUSH: &str = "amont.unstampedPush";
+
+/// Does this repository refuse a push the gate did not vouch for?
+pub fn refuse_unstamped(settings: &crate::config::Settings) -> bool {
+    crate::config::enumerated_or(settings, UNSTAMPED_PUSH, &["run", "refuse"], "run") == "refuse"
+}
+
 /// Is this process the pre-push run inside a rehearsal snapshot?
 ///
 /// Read ONCE, and the variable is removed from the environment as it is
@@ -573,11 +592,18 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
     let log = log_path()
         .map(|p| format!(" (log: {})", p.display()))
         .unwrap_or_default();
+    // what happens next is the push's call, and under `refuse` it is not a
+    // run here — say so rather than promise one
+    let then = if refuse_unstamped(settings) {
+        "fix it and rehearse again (`amont rehearse --wait`)"
+    } else {
+        "running the gate here"
+    };
     match state.phase {
         Phase::Passed => None, // the stamps say it all
         Phase::Failed => {
             crate::say!(
-                "{} the background rehearsal of this tree failed {} ago{log} — running the gate here",
+                "{} the background rehearsal of this tree failed {} ago{log} — {then}",
                 warning_sign(),
                 human_secs(state.age_secs()),
             );
@@ -585,7 +611,7 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
         }
         Phase::Running if !process_alive(state.pid) => {
             crate::say!(
-                "{} a background rehearsal of this tree died without a verdict{log} — running the gate here",
+                "{} a background rehearsal of this tree died without a verdict{log} — {then}",
                 warning_sign(),
             );
             None

@@ -2544,7 +2544,7 @@ mod tests {
         assert_eq!(app.mode, Mode::Browse, "back where f was pressed");
         assert!(app.pending.is_none());
         let notice = app.notice.clone().unwrap_or_default();
-        assert!(notice.starts_with("synced r: -0 +5"), "{notice}");
+        assert!(notice.starts_with("synced r: -0 +6"), "{notice}");
         assert_eq!(
             std::fs::read_to_string(t.hook("pre-commit")).unwrap(),
             crate::shim::render(DriftedRepo::BINARY),

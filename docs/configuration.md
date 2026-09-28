@@ -342,7 +342,8 @@ suite has usually already run; if it is still running, the push waits for
 it rather than starting over. A newer commit cancels a rehearsal of the
 older tree, suite and snapshot included, so committing often does not queue
 work. Off by default because every commit then costs a suite's worth of CPU
-in the background; see "Rehearsing in the background" on the checks page for
+in the background. A finished `git rebase` starts one too (`post-rewrite`),
+since it leaves no commit on the branch stamped. See "Rehearsing in the background" on the checks page for
 what it prints and what `amont rehearse --wait`, `--status` and `--stop` do.
 Needs `amont.pushStamps` (the default) — the stamp is the hand-off. Unix
 only for now: on Windows a detached child would hold its parent's pipes
@@ -367,6 +368,23 @@ runs in the push and the rehearsal is left running — it may still finish and
 stamp the tree for next time. `amont rehearse --wait` has no budget: nothing
 is connected there.
 
+## `amont.unstampedPush` — refuse a push nothing has tested yet
+
+```sh
+git config amont.unstampedPush refuse   # default run
+```
+
+When a check is declared at both stages and a pushed commit carries no
+record of the commit-time run — rewritten by a rebase or an amend, or made
+with `--no-verify` — the push runs the check itself, with git's connection
+to the remote held open for as long as the suite takes. A long suite
+outlives the forge's idle timeout and the push fails *after* passing.
+`refuse` turns that push away at once instead, and says how to earn the
+stamp with nothing waiting on it: `amont rehearse --wait`, then push again.
+A rehearsal of the tree that is still running or has failed is reported the
+same way. Pairs with `amont.rehearseOnCommit`, which usually earns the stamp
+before you push.
+
 ## `amont.snapshotPrepare` — make a fresh checkout runnable
 
 ```sh
@@ -387,7 +405,10 @@ A worktree git just created is a checkout, not a workspace: a pnpm monorepo
 has no `node_modules` there, and a suite started in it fails on `Cannot find
 module` having tested nothing. This command runs, through the shell, inside
 every snapshot before any suite does — the background rehearsal's and
-`amont.testPushedTree`'s alike. Nothing is needed for a Rust crate (cargo
+`amont.testPushedTree`'s alike — with `$AMONT_SOURCE_WORKTREE` naming the
+working tree the snapshot came from. A repository whose lockfile has not
+changed can clone that tree's installed dependencies instead of installing
+(`cp -cR` on APFS, `cp --reflink` on btrfs: instant, no extra disk). Nothing is needed for a Rust crate (cargo
 resolves from the shared registry; the build is cold, which is the cost the
 `testPushedTree` section describes). A preparation that fails is the
 snapshot's failure: the gate falls back to the working tree, says so, and

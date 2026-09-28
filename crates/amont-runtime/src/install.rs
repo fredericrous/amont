@@ -58,9 +58,10 @@ pub const SHIM: &str = include_str!("../templates/hooks/pre-commit");
 pub use crate::hookfile::{is_our_shim, SHIM_MARKER};
 
 /// The hook names git actually invokes, and so the only files we install.
-pub const DISPATCHERS: [&str; 5] = [
+pub const DISPATCHERS: [&str; 6] = [
     "commit-msg",
     "post-commit",
+    "post-rewrite",
     "pre-commit",
     "pre-push",
     "prepare-commit-msg",

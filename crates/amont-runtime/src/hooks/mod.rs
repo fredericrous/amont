@@ -19,6 +19,7 @@ pub mod manifest_trust;
 pub mod merge_conflict;
 pub mod package_lock;
 pub mod post_commit;
+pub mod post_rewrite;
 pub mod prepare_commit_msg;
 pub mod prettier;
 pub mod pull_rebase;

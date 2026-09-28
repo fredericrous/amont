@@ -75,7 +75,7 @@ pre-push
   ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable
 ```
 
-Thirty-eight built-in checks across five git hooks, plus any your repository
+Thirty-eight built-in checks across six git hooks, plus any your repository
 declares itself. What each one needs before it fires:
 [the checks reference](docs/checks.md).
 

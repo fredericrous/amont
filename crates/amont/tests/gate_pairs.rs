@@ -138,6 +138,33 @@ fn an_unstamped_commit_brings_the_pair_back_at_push() {
     assert_eq!(runs(&r), 1, "the push-side twin ran");
 }
 
+/// `amont.unstampedPush refuse`: the same unstamped push is refused rather
+/// than run with the remote's connection held open — and says how to earn
+/// the stamp instead.
+#[test]
+fn refuse_turns_an_unstamped_push_away_with_the_way_out() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo("block");
+    r.stage("a.txt", "hello\n");
+    r.commit("feat: dodge the gate");
+    r.git(&["config", "amont.unstampedPush", "refuse"]);
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("refusing the push"), "{out}");
+    assert!(out.contains("amont rehearse --wait"), "{out}");
+    assert_eq!(runs(&r), 0, "nothing ran with the push waiting");
+
+    // `run` is the default and keeps the old behaviour.
+    r.git(&["config", "amont.unstampedPush", "run"]);
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("no record of it — running it here"), "{out}");
+    assert_eq!(runs(&r), 1);
+}
+
 /// An opt-in marker on the pair (`*.txt+marker`) is a fact about the
 /// REPOSITORY, and it must be judged there. Judging it per commit — against
 /// the files each commit changed — answered "would never fire" for every

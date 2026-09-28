@@ -97,6 +97,7 @@ fn install_places_the_binary_the_templates_and_the_repo_hooks() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -166,6 +167,7 @@ fn installing_from_a_linked_worktree_bakes_into_the_shared_hooks_dir() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -353,6 +355,7 @@ fn uninstall_removes_our_shims_and_nothing_else() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -525,6 +528,7 @@ fn force_replaces_a_symlinked_hook_and_never_the_file_it_pointed_at() {
     let names = [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -600,6 +604,7 @@ fn a_tracked_hooks_directory_is_refused_even_with_force() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -708,6 +713,7 @@ fn a_deliberate_redirect_with_stale_leftovers_is_still_installed() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -813,6 +819,7 @@ fn a_write_that_cannot_happen_leaves_no_dispatchers_at_all() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -904,6 +911,7 @@ fn uninstall_takes_back_the_template_dir_and_names_the_standing_grant() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -926,6 +934,7 @@ fn uninstall_takes_back_the_template_dir_and_names_the_standing_grant() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -960,6 +969,7 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
@@ -999,6 +1009,7 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
     for name in [
         "commit-msg",
         "post-commit",
+        "post-rewrite",
         "pre-commit",
         "pre-push",
         "prepare-commit-msg",
