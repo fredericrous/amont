@@ -6,6 +6,42 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.42.0
+
+### Added
+
+- **amont prepares a snapshot's JavaScript dependencies itself.** A
+  rehearsal or `testPushedTree` checkout has no `node_modules`, and until
+  now every repository needed its own `amont.snapshotPrepare` script to
+  install one. Each directory with a tracked `package-lock.json` or
+  `pnpm-lock.yaml` — read from the pushed commit, not your index — is now
+  prepared with `npm ci` / `pnpm install --frozen-lockfile`
+  (`amont.snapshotDeps install`, the default). `reuse` (pnpm only) clones
+  your installed `node_modules` instead, root and workspace members, and
+  keeps the clone only when it has pnpm's isolated layout and a frozen
+  offline install accepts it against the commit's manifests and lockfile;
+  any refusal removes the whole clone and installs. It cannot see a package
+  edited in place without a version change, which is why it is opt-in. npm
+  always installs: `npm ls` fails fresh installs of real graphs with
+  peer-range conflicts, so it cannot vouch for a clone.
+- **`amont.snapshotCarry`** copies untracked files (`.env`, `.npmrc`) into
+  the snapshot before the install. Tracked content, `..`/`.git`/absolute
+  paths and symlinks are refused — all of them, in one message — so a
+  carry can never put your uncommitted copy where the commit's belongs.
+- **A rehearsal registers before it prepares.** An install can take
+  minutes; `--status` now says `preparing`, a push waits for it, and a
+  newer commit cancels it, installer included. A preparation that fails is
+  recorded with its reason and fails the rehearsal (exit 2), which the
+  next push reports.
+
+### Changed
+
+- **A JS repository using `testPushedTree` or rehearsals without
+  `snapshotPrepare` now installs in the snapshot** where it used to fail
+  there and fall back. `git config amont.snapshotDeps off` restores the old
+  behaviour. A repository that sets `snapshotPrepare` is unchanged: that
+  command owns the dependencies, and amont's install stands down.
+
 ## v1.41.0
 
 ### Added

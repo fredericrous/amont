@@ -417,7 +417,8 @@ only for content the suite actually tested:
   actually ran in its checkout — the stamp is written from the record of
   which gates were handed the snapshot, never from the config flag —
   **unless the snapshot could not be made.** A `worktree add` that fails,
-  or an `amont.snapshotPrepare` that exits non-zero, falls back to the
+  or a preparation that fails (a refused `amont.snapshotCarry`, an install,
+  an `amont.snapshotPrepare` that exits non-zero), falls back to the
   working tree and says so; that tip is then stamped by nothing, because
   the suite that passed never saw its content;
 - in the default working-tree mode it is the tip only when `HEAD` *is* the
@@ -431,8 +432,10 @@ only for content the suite actually tested:
   puts the suite back inside the push, the failure stamping exists to
   prevent. Use `amont.testPushedTree` to close it;
 - inside a rehearsal the checkout *is* the commit, because git made it, so
-  whatever `amont.snapshotPrepare` added to make it runnable is not a
-  reason to distrust it.
+  what preparation added to make it runnable is not a reason to distrust
+  it: dependencies installed from the commit's lockfile, and only
+  *untracked* carried files — `amont.snapshotCarry` refuses anything that
+  would overwrite committed content.
 
 `git config amont.pushStamps false` turns both the writing and the
 honouring off.
@@ -458,11 +461,15 @@ and its upstream as the ref line. The snapshot is what makes this safe while
 you keep editing: the suite reads a tree nobody is touching, and the stamp
 it earns is for exactly that tree. Only the test gates run — `branch-protect`,
 `secrets` and the auto-rebase ask about a push that is not happening, and
-run when it is. A checkout that needs a step before a suite can start (a
-pnpm monorepo has no `node_modules` in a fresh worktree) names it in
-`amont.snapshotPrepare`; the command learns the working tree the snapshot
-came from in `$AMONT_SOURCE_WORKTREE`, so it can clone what is already
-installed there rather than install from scratch.
+run when it is. A fresh worktree has no `node_modules`, so the snapshot is
+prepared first: the untracked files `amont.snapshotCarry` names, then each
+lockfile's dependencies (`amont.snapshotDeps`: `npm ci` / `pnpm install
+--frozen-lockfile` by default, or a clone of your installed tree that the
+package manager accepts), then `amont.snapshotPrepare` if set. The worker
+registers itself *before* preparing — `--status` reports `preparing`, a
+push waits for it, a newer commit cancels it, installer included — and a
+preparation that fails is recorded with its reason and fails the rehearsal
+rather than leaving nothing behind.
 
 A rebase rewrites every commit it replays, and a stamp vouches for one
 commit: after `git rebase`, nothing covers the branch. git calls

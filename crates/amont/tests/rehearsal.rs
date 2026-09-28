@@ -497,9 +497,18 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
     r.git(&["config", "amont.snapshotPrepare", "exit 3"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 2, "{out}");
+    assert!(out.contains("could not prepare the snapshot"), "{out}");
+    // Recorded, so a push finding this tree hears why rather than nothing.
+    assert!(state(&r).contains("phase=failed"), "{}", state(&r));
     assert!(
-        out.contains("could not check out HEAD into a snapshot"),
-        "{out}"
+        state(&r).contains("reason=could not prepare the snapshot"),
+        "{}",
+        state(&r)
+    );
+    let (_, status) = rehearse(&r, &["--status"]);
+    assert!(
+        status.contains("could not prepare the snapshot"),
+        "{status}"
     );
     assert_eq!(runs(&r), 1);
     assert!(!note(&r, "HEAD").contains("pre-push-suite"));

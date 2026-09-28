@@ -385,35 +385,102 @@ A rehearsal of the tree that is still running or has failed is reported the
 same way. Pairs with `amont.rehearseOnCommit`, which usually earns the stamp
 before you push.
 
-## `amont.snapshotPrepare` — make a fresh checkout runnable
+## `amont.snapshotDeps` — how a snapshot gets its JavaScript dependencies
 
 ```sh
-git config amont.snapshotPrepare "pnpm install --offline --frozen-lockfile"
+git config amont.snapshotDeps install   # default; or reuse, off
 ```
 
-Or committed, so every clone has it — the repository is what knows which
-install its workspace needs:
+A worktree git just created is a checkout, not a workspace: no
+`node_modules`, and a suite started there fails on `Cannot find module`
+having tested nothing. Every snapshot — the background rehearsal's and
+`amont.testPushedTree`'s alike — is prepared before any suite runs, one
+*unit* at a time: each directory holding a tracked `package-lock.json` or
+`pnpm-lock.yaml`, read from the snapshot's own index, so the pushed commit
+decides, not `HEAD` and not what you have staged. A nested project with a
+lockfile of its own is its own unit. A directory with both lockfiles is
+settled by `package.json`'s `packageManager`, or refused.
+
+- **`install`** does what CI does: `npm ci --prefer-offline`, `pnpm install
+  --frozen-lockfile --prefer-offline`. Exact, and it refuses a
+  `package.json` its lockfile does not satisfy — so does the snapshot.
+- **`reuse`** (pnpm only) clones the working tree's `node_modules`
+  (copy-on-write on APFS and btrfs: instant, no extra disk) — the root's
+  and each workspace member's, as `pnpm ls -r` lists them — and keeps the
+  clone only when it is laid out the way pnpm's isolated linker leaves it
+  (every package a link; a stray directory is refused, since pnpm's own
+  check ignores it and a suite could import it) and `pnpm install
+  --frozen-lockfile --offline` accepts it — which also refuses a manifest
+  the lockfile does not satisfy, and relinks small drift from the store. A
+  lockfile that differs from the commit's, a link that resolves back into
+  the working tree, or any refusal removes every directory cloned for that
+  unit, says why, and installs instead. **What reuse cannot see** is a
+  package whose files were edited in place without a version change —
+  pnpm does not check installed content — which is why it is not the
+  default. **npm is never reused:** `npm ls` answers whether the dependency
+  graph is valid, not whether the tree is the one the lockfile describes,
+  and a real graph with peer-range conflicts `npm ci` installs happily
+  fails it on a fresh install — so it can vouch for nothing, and an npm
+  unit installs under `reuse` too, saying so.
+- **`off`** prepares nothing.
+
+Every unit is prepared, whether or not the push touches it: amont cannot
+know which directories a gate will read. A repository holding many small
+side projects with lockfiles of their own (spikes, examples) pays an install
+for each; `amont.snapshotPrepare` — which owns the dependencies when set —
+is the way to install only what the gates need.
+
+A failed install is the snapshot's failure; see `amont.snapshotPrepare`
+below for what each caller then does. Nothing is needed for a Rust crate
+(cargo resolves from the shared registry; the build is cold, which is the
+cost the `testPushedTree` section describes).
+
+## `amont.snapshotCarry` — untracked files a snapshot needs
+
+```sh
+git config amont.snapshotCarry ".env .npmrc"
+```
+
+or committed, `set snapshotCarry .env` in `amont.conf`. The files a suite
+reads and git does not track — a `.env`, an `.npmrc` with a registry token —
+are copied from the working tree into the snapshot, **before** the
+dependencies, so an install can use them. Only untracked content may be
+carried: an entry that is tracked, holds tracked files or sits under a
+tracked path would put your uncommitted copy where the commit's belongs, and
+the stamp would vouch for a tree nobody committed. Refused too: absolute
+paths, `.`, `..` and `.git` components, and a symlink anywhere on the way —
+in the working tree, the snapshot, or inside a carried directory. Every
+refusal is listed in one message and fails the preparation; an entry that is
+simply absent (no `.env` in CI) is skipped and said.
+
+## `amont.snapshotPrepare` — the escape hatch
+
+```sh
+git config amont.snapshotPrepare "pnpm prisma generate"
+```
+
+Or committed, so every clone has it:
 
 ```
-set snapshotPrepare pnpm install --offline --frozen-lockfile
+set snapshotPrepare pnpm prisma generate
 ```
 
 in `amont.conf` (see [custom checks](custom-checks.md)). A local `git
 config` still outranks the committed value.
 
-A worktree git just created is a checkout, not a workspace: a pnpm monorepo
-has no `node_modules` there, and a suite started in it fails on `Cannot find
-module` having tested nothing. This command runs, through the shell, inside
-every snapshot before any suite does — the background rehearsal's and
-`amont.testPushedTree`'s alike — with `$AMONT_SOURCE_WORKTREE` naming the
-working tree the snapshot came from. A repository whose lockfile has not
-changed can clone that tree's installed dependencies instead of installing
-(`cp -cR` on APFS, `cp --reflink` on btrfs: instant, no extra disk). Nothing is needed for a Rust crate (cargo
-resolves from the shared registry; the build is cold, which is the cost the
-`testPushedTree` section describes). A preparation that fails is the
-snapshot's failure: the gate falls back to the working tree, says so, and
-stamps nothing for that tip — the suite that then passes never saw the
-content the stamp would have vouched for.
+For what amont cannot know — a code generator, a database client, a build
+step. It runs through the shell inside the snapshot after the carry, with
+`$AMONT_SOURCE_WORKTREE` naming the working tree the snapshot came from.
+When it is set it **owns the dependencies**: `amont.snapshotDeps` stands
+down, so a repository whose command already installs does not install twice.
+
+A preparation that fails — carry, install or this command — is the
+snapshot's failure, and each caller says so. At push time
+(`testPushedTree`) the gate falls back to the working tree and stamps
+nothing for that tip: the suite that then passes never saw the content the
+stamp would have vouched for. In a rehearsal the worker records the failure
+with its reason (`amont rehearse --status` shows it), exits 2, and the next
+push treats it as a failed rehearsal.
 
 ## `amont.autoRebase` — whether pre-push may sync a behind branch for you
 

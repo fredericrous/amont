@@ -41,33 +41,27 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, "amont.testPushedTree", false)
 }
 
-/// A command to run inside a fresh snapshot before any suite does.
+/// The escape hatch: a command to run inside a fresh snapshot before any
+/// suite does, after amont's own preparation (see [`crate::snapshot_prep`]:
+/// `amont.snapshotCarry`, then the JavaScript dependencies).
 ///
-/// A checkout is not a workspace: a pnpm monorepo has no `node_modules` in
-/// a worktree git just created, and a suite started there fails on
-/// `Cannot find module` having tested nothing. What makes it a workspace is
-/// per-repository knowledge — `pnpm install --offline --frozen-lockfile`,
-/// `npm ci`, nothing at all for a Rust crate — so it is a git-config value,
-/// set once per clone by the person who knows:
+/// A checkout is not a workspace, and most of what makes one is now
+/// amont's: `npm ci` / `pnpm install --frozen-lockfile` per lockfile, and
+/// the untracked files the repository names. What is left is per-repository
+/// knowledge amont cannot have — a code generator, a database client, a
+/// build step:
 ///
 /// ```sh
-/// git config amont.snapshotPrepare "pnpm install --offline --frozen-lockfile"
+/// git config amont.snapshotPrepare "pnpm prisma generate"
 /// ```
 ///
+/// When it is set it OWNS the dependencies — amont's own install step stands
+/// down, so a repository that already installs here does not install twice.
 /// Runs through the shell, in the snapshot, before the gate, and a failure
 /// is the snapshot's failure: no suite runs on a tree that was never made
 /// runnable. Used by both snapshot consumers — `amont.testPushedTree` at
-/// push time and the background rehearsal — so the two cannot drift.
-///
-/// The command gets `AMONT_SOURCE_WORKTREE`: the working tree the snapshot
-/// was taken from. Installing from scratch on every rehearsal is minutes of
-/// network and disk; a workspace is usually already installed right there,
-/// and a prepare step that knows where can reuse it — copy-on-write clone
-/// `node_modules` when the lockfile matches, install only when it does not:
-///
-/// ```sh
-/// git config amont.snapshotPrepare 'sh scripts/amont-snapshot-prepare.sh'
-/// ```
+/// push time and the background rehearsal — so the two cannot drift. It gets
+/// `AMONT_SOURCE_WORKTREE`: the working tree the snapshot was taken from.
 const PREPARE: &str = "amont.snapshotPrepare";
 
 /// The environment variable naming the source working tree (see PREPARE).
@@ -89,13 +83,33 @@ impl PushedTree {
     /// Takes the repository explicitly rather than relying on the working
     /// directory: `set_current_dir` is process-global, so a test that changed
     /// it would race every other test in the binary.
+    ///
+    /// Checkout AND preparation, for the push-time caller: a snapshot that
+    /// could not be prepared is no snapshot, said once, here.
     pub fn create(
         settings: &crate::config::Settings,
         repo: &Path,
         tip: &str,
     ) -> Option<PushedTree> {
+        let tree = Self::checkout(repo, tip)?;
+        match tree.prepare(settings) {
+            Ok(()) => Some(tree),
+            Err(why) => {
+                // `Drop` removes the worktree; the caller hears `None` and
+                // says what it is doing instead.
+                println!("{} could not prepare the snapshot: {why}", warning_sign());
+                None
+            }
+        }
+    }
+
+    /// The checkout alone. The rehearsal registers itself between this and
+    /// [`PushedTree::prepare`], so an install that takes minutes is visible —
+    /// to `--status`, to a push that would otherwise start over, and to a
+    /// newer commit that must cancel it.
+    pub fn checkout(repo: &Path, tip: &str) -> Option<PushedTree> {
         let base = std::env::temp_dir().join(unique_name("amont-push"));
-        Self::create_at(settings, base, repo, tip)
+        Self::checkout_at(base, repo, tip)
     }
 
     /// The actual work, over an explicit path — split out so a test can hand
@@ -110,12 +124,7 @@ impl PushedTree {
     /// instead of removing it, and git's own `worktree add` is content to
     /// receive a directory that already exists as long as it is empty —
     /// which this one, having just been created, provably is.
-    fn create_at(
-        settings: &crate::config::Settings,
-        base: PathBuf,
-        repo: &Path,
-        tip: &str,
-    ) -> Option<PushedTree> {
+    fn checkout_at(base: PathBuf, repo: &Path, tip: &str) -> Option<PushedTree> {
         std::fs::create_dir(&base).ok()?;
         let ok = crate::git::succeeds(&[
             "-C",
@@ -133,23 +142,19 @@ impl PushedTree {
             let _ = std::fs::remove_dir_all(&base);
             return None;
         }
-        let tree = PushedTree {
+        Some(PushedTree {
             path: base,
             repo: repo.to_path_buf(),
-        };
-        if !tree.prepare(settings) {
-            // `Drop` removes the worktree; the caller hears `None` and says
-            // what it is doing instead.
-            return None;
-        }
-        Some(tree)
+        })
     }
 
-    /// Run `amont.snapshotPrepare`, if set, inside the checkout. True when
-    /// there was nothing to run or it exited 0.
-    fn prepare(&self, settings: &crate::config::Settings) -> bool {
-        let Some(script) = prepare_command(settings) else {
-            return true;
+    /// Make the checkout runnable: carry, dependencies, then
+    /// `amont.snapshotPrepare`. `Err` says why, in one line.
+    pub fn prepare(&self, settings: &crate::config::Settings) -> Result<(), String> {
+        let script = prepare_command(settings);
+        crate::snapshot_prep::run(settings, &self.repo, &self.path, script.is_some())?;
+        let Some(script) = script else {
+            return Ok(());
         };
         println!("preparing the snapshot: {script}");
         #[cfg(unix)]
@@ -170,14 +175,11 @@ impl PushedTree {
         // the working tree the snapshot was taken FROM — where an installed
         // workspace already lives (see PREPARE)
         cmd.env(SOURCE_WORKTREE_ENV, &self.repo);
-        let ok = crate::hooks::common::bounded_success(settings, &mut cmd, PREPARE);
-        if !ok {
-            println!(
-                "{} {PREPARE} failed in the snapshot — nothing can be tested there",
-                warning_sign()
-            );
+        if crate::hooks::common::bounded_success(settings, &mut cmd, PREPARE) {
+            Ok(())
+        } else {
+            Err(format!("{PREPARE} failed in the snapshot"))
         }
-        ok
     }
 
     pub fn path(&self) -> &Path {
@@ -377,12 +379,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("sentinel.txt"), "do not delete me").unwrap();
 
-        let got = PushedTree::create_at(
-            &test_settings(),
-            base.clone(),
-            Path::new("/does/not/matter"),
-            "HEAD",
-        );
+        let got = PushedTree::checkout_at(base.clone(), Path::new("/does/not/matter"), "HEAD");
         assert!(
             got.is_none(),
             "must refuse rather than reuse a path it did not create"

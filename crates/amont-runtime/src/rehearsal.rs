@@ -185,6 +185,13 @@ pub struct State {
     pub started: u64,
     pub snapshot: PathBuf,
     pub phase: Phase,
+    /// What a running worker is doing — `preparing` the snapshot or
+    /// `testing` it. A key rather than a phase value: an older amont reading
+    /// this file ignores a key it does not know, where an unknown phase would
+    /// read as no rehearsal at all.
+    pub step: Option<String>,
+    /// Why a rehearsal failed without the gate ever running.
+    pub reason: Option<String>,
 }
 
 impl State {
@@ -197,7 +204,10 @@ impl State {
             self.started,
             self.snapshot.display(),
             self.phase.as_str(),
-        )
+        ) + &[("step", &self.step), ("reason", &self.reason)]
+            .iter()
+            .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}={}\n", one_line(v))))
+            .collect::<String>()
     }
 
     /// `None` for anything this version did not write — including a file
@@ -209,6 +219,7 @@ impl State {
         }
         let (mut pid, mut commit, mut tree, mut started, mut snapshot, mut phase) =
             (None, None, None, None, None, None);
+        let (mut step, mut reason) = (None, None);
         for line in lines {
             let (k, v) = line.split_once('=')?;
             match k {
@@ -218,6 +229,8 @@ impl State {
                 "started" => started = v.parse().ok(),
                 "snapshot" => snapshot = Some(PathBuf::from(v)),
                 "phase" => phase = Phase::parse(v),
+                "step" => step = Some(v.to_string()),
+                "reason" => reason = Some(v.to_string()),
                 _ => {}
             }
         }
@@ -228,6 +241,8 @@ impl State {
             started: started?,
             snapshot: snapshot?,
             phase: phase?,
+            step,
+            reason,
         })
     }
 
@@ -245,6 +260,11 @@ impl State {
     fn short(&self) -> &str {
         self.commit.get(..8).unwrap_or(&self.commit)
     }
+}
+
+/// A value the one-line-per-key state file can hold.
+fn one_line(v: &str) -> String {
+    v.replace(['\n', '\r'], " ")
 }
 
 fn now() -> u64 {
@@ -512,16 +532,33 @@ pub fn worker() -> Result<Outcome, String> {
             remove_snapshot(repo, &prev.snapshot);
         }
     }
-    let snapshot = crate::pushed_tree::PushedTree::create(&settings, repo, &head)
+    let snapshot = crate::pushed_tree::PushedTree::checkout(repo, &head)
         .ok_or("could not check out HEAD into a snapshot worktree")?;
-    let me = State {
+    // Registered BEFORE preparing: an install can take minutes, and in that
+    // time `--status`, a push looking for this tree, and a newer commit that
+    // must cancel it all need to know it exists.
+    let mut me = State {
         pid: std::process::id(),
         commit: head.clone(),
         tree,
         started: now(),
         snapshot: snapshot.path().to_path_buf(),
         phase: Phase::Running,
+        step: Some("preparing".to_string()),
+        reason: None,
     };
+    write(&me);
+    if let Err(why) = snapshot.prepare(&settings) {
+        write(&State {
+            phase: Phase::Failed,
+            step: None,
+            reason: Some(format!("could not prepare the snapshot: {why}")),
+            ..me
+        });
+        drop(snapshot);
+        return Err(format!("could not prepare the snapshot: {why}"));
+    }
+    me.step = Some("testing".to_string());
     write(&me);
     println!(
         "rehearsing {} for {} in {}",
@@ -556,6 +593,7 @@ pub fn worker() -> Result<Outcome, String> {
     .map_err(|e| format!("could not run the push gate in the snapshot: {e}"))?;
     let done = State {
         phase: if passed { Phase::Passed } else { Phase::Failed },
+        step: None,
         ..me
     };
     write(&done);
@@ -603,9 +641,14 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
         Phase::Passed => None, // the stamps say it all
         Phase::Failed => {
             crate::say!(
-                "{} the background rehearsal of this tree failed {} ago{log} — {then}",
+                "{} the background rehearsal of this tree failed {} ago{}{log} — {then}",
                 warning_sign(),
                 human_secs(state.age_secs()),
+                state
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default(),
             );
             None
         }
@@ -678,7 +721,15 @@ fn follow(state: &State, budget: Option<Duration>) -> Option<(Phase, State)> {
                 let verb = if phase == Phase::Passed {
                     format!("{} rehearsal passed", valid_sign())
                 } else {
-                    format!("{} rehearsal failed", warning_sign())
+                    format!(
+                        "{} rehearsal failed{}",
+                        warning_sign(),
+                        now_state
+                            .reason
+                            .as_deref()
+                            .map(|r| format!(" ({r})"))
+                            .unwrap_or_default()
+                    )
                 };
                 crate::say!("{verb} after {}", human_secs(now_state.age_secs()));
                 return Some((phase, now_state));
@@ -819,15 +870,27 @@ fn status() -> i32 {
     let line = match state.phase {
         Phase::Running if state.alive() => {
             format!(
-                "rehearsal of {which}: running for {age} (pid {})",
-                state.pid
+                "rehearsal of {which}: running for {age} (pid {}{})",
+                state.pid,
+                state
+                    .step
+                    .as_deref()
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default()
             )
         }
         Phase::Running => {
             format!("rehearsal of {which}: died without a verdict, started {age} ago")
         }
         Phase::Passed => format!("rehearsal of {which}: passed, started {age} ago"),
-        Phase::Failed => format!("rehearsal of {which}: FAILED, started {age} ago"),
+        Phase::Failed => format!(
+            "rehearsal of {which}: FAILED, started {age} ago{}",
+            state
+                .reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
     };
     println!("{line}");
     if let Some(log) = log_path().filter(|p| p.exists()) {
@@ -867,6 +930,8 @@ mod tests {
             started: 1_700_000_000,
             snapshot: PathBuf::from("/tmp/amont-push-1-2"),
             phase: Phase::Running,
+            step: Some("preparing".to_string()),
+            reason: None,
         }
     }
 
@@ -876,9 +941,17 @@ mod tests {
         assert_eq!(State::parse(&s.render()), Some(s));
         let done = State {
             phase: Phase::Failed,
+            step: None,
+            reason: Some("could not prepare the snapshot: npm ci failed\nin web/".to_string()),
             ..sample()
         };
-        assert_eq!(State::parse(&done.render()), Some(done));
+        let back = State::parse(&done.render()).expect("parses");
+        assert_eq!(
+            back.reason.as_deref(),
+            Some("could not prepare the snapshot: npm ci failed in web/"),
+            "a reason is kept on one line"
+        );
+        assert_eq!(back.phase, Phase::Failed);
     }
 
     /// The failure direction: anything this version did not write reads as
