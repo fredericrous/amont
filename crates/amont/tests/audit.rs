@@ -316,7 +316,7 @@ fn an_audit_whose_lockfile_the_repository_lacks_is_silent_not_could_not_run() {
     r.commit("chore: rust only");
     // Every tool present and vulnerable-by-default: if any of the three
     // foreign audits ran, it would say so loudly.
-    for tool in ["govulncheck", "npm", "pip-audit"] {
+    for tool in ["govulncheck", "npm", "pnpm", "pip-audit"] {
         shim(
             &r,
             tool,
@@ -400,4 +400,102 @@ esac"#,
     let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("could not complete"), "{out}");
+}
+
+/// A pnpm workspace has no package-lock.json, so audit-js — which only knew
+/// npm — never audited it and said nothing: one such tree carried 28
+/// vulnerable versions, two critical, release after release. pnpm audits
+/// its own lockfile; its summary decides, both ways.
+#[test]
+fn audit_js_audits_a_pnpm_workspace() {
+    let r = bare_repo();
+    r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.commit("chore: a pnpm workspace");
+    // npm must not be asked: there is no package-lock.json.
+    shim(&r, "npm", "echo 'npm must not run here' >&2; exit 1");
+    shim(
+        &r,
+        "pnpm",
+        "echo '107 vulnerabilities found'\necho 'Severity: 6 low | 45 moderate | 54 high | 2 critical'\nexit 1",
+    );
+
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/heads/feat/x");
+    assert_eq!(code, 0, "a branch push must not block: {out}");
+    assert!(out.contains("will BLOCK a v* tag push"), "{out}");
+    assert!(
+        out.contains(".: 107 vulnerabilities found (6 low | 45 moderate | 54 high | 2 critical)"),
+        "{out}"
+    );
+    assert!(!out.contains("npm must not run"), "{out}");
+
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "a release does not ship with these: {out}");
+
+    shim(&r, "pnpm", "echo 'No known vulnerabilities found'\nexit 0");
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("no known vulnerabilities"), "{out}");
+}
+
+/// Both package managers in one repository: each lockfile's directory is
+/// audited by its own tool, and a finding in either decides.
+#[test]
+fn audit_js_audits_npm_and_pnpm_projects_side_by_side() {
+    let r = bare_repo();
+    r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.stage("spike/package-lock.json", "{}\n");
+    r.commit("chore: a pnpm workspace with an npm spike");
+    shim(&r, "pnpm", "echo 'No known vulnerabilities found'\nexit 0");
+    shim(
+        &r,
+        "npm",
+        r#"case "$PWD" in
+  */spike) echo '1 vulnerability (1 high)'; exit 1 ;;
+  *) echo 'npm error code ENOLOCK' >&2; exit 1 ;;
+esac"#,
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "the npm spike's finding still decides: {out}");
+    assert!(out.contains("spike: 1 vulnerability (1 high)"), "{out}");
+}
+
+/// pnpm answers for the workspace it finds above a directory: a standalone
+/// project with its own pnpm-lock.yaml inside a workspace (a spike) was
+/// reported with the WORKSPACE ROOT's findings under its own name. Such a
+/// project is audited with --ignore-workspace; the workspace root — which
+/// tracks pnpm-workspace.yaml — is audited as the workspace, members and all.
+#[test]
+fn a_nested_pnpm_project_is_audited_on_its_own_lockfile() {
+    let r = bare_repo();
+    r.stage("pnpm-workspace.yaml", "packages:\n  - apps/*\n");
+    r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.stage("spikes/s3/pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.commit("chore: a workspace with a standalone spike");
+    // The fake pnpm answers like the real one: without --ignore-workspace it
+    // reports the workspace, wherever it runs.
+    shim(
+        &r,
+        "pnpm",
+        r#"case "$*" in
+  *--ignore-workspace*) case "$PWD" in
+      */spikes/s3) echo '1 vulnerabilities found'; echo 'Severity: 1 moderate'; exit 1 ;;
+      *) echo 'root audited with --ignore-workspace' >&2; exit 2 ;;
+    esac ;;
+  *) echo '107 vulnerabilities found'; echo 'Severity: 2 critical'; exit 1 ;;
+esac"#,
+    );
+    let (_, out) = push_check(&r, "pre-push-audit-js", "refs/heads/feat/x");
+    assert!(
+        out.contains(".: 107 vulnerabilities found (2 critical)"),
+        "the root is audited as the workspace: {out}"
+    );
+    assert!(
+        out.contains("spikes/s3: 1 vulnerabilities found (1 moderate)"),
+        "the spike reads its own lockfile: {out}"
+    );
+    assert!(!out.contains("spikes/s3: 107"), "{out}");
+    assert!(
+        !out.contains("root audited with --ignore-workspace"),
+        "{out}"
+    );
 }

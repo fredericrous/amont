@@ -256,7 +256,8 @@ exists to prevent.
 ### The dependency audits — `audit-rust`, `audit-js`, `audit-python`, `audit-go`
 
 At `pre-push`, one vulnerability audit per ecosystem the repository uses:
-`cargo audit` (opted in by a `Cargo.lock`), `npm audit` (`package-lock.json`),
+`cargo audit` (opted in by a `Cargo.lock`), `npm audit` (`package-lock.json`)
+and `pnpm audit` (`pnpm-lock.yaml`), each in every directory that tracks one,
 `pip-audit` (`requirements.txt`, or a `pyproject.toml` project's virtualenv),
 and `govulncheck ./...` (`go.sum`). No lockfile, no check — an audit without
 a resolved tree audits a guess — and no check means nothing said: an audit

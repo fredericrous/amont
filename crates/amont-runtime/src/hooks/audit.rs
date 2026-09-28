@@ -9,8 +9,8 @@
 //! have it) enforces finally.
 //!
 //! One check per ecosystem amont already speaks — `cargo audit` for Rust,
-//! `npm audit` for JS, `pip-audit` for Python — each opted in by the
-//! lockfile its tool actually audits. No lockfile, no check: an audit
+//! `npm audit` / `pnpm audit` for JS, `pip-audit` for Python — each opted
+//! in by the lockfile its tool actually audits. No lockfile, no check: an audit
 //! without a resolved tree audits a guess.
 //!
 //! Three verdicts, learned the hard way in ci.yaml's advisory job and kept
@@ -224,6 +224,43 @@ fn read_npm_audit(exit_ok: bool, out: &str) -> Report {
     match summary {
         Some(l) if l.starts_with("found 0 ") || l.starts_with("0 ") => Report::Clean,
         Some(l) => Report::Vulnerabilities(vec![l.to_string()]),
+        None if exit_ok => Report::Clean,
+        None => Report::CouldNotCheck,
+    }
+}
+
+/// `pnpm audit`: the summary line decides. A clean tree is `No known
+/// vulnerabilities found`; a finding is `N vulnerabilities found` followed by
+/// `Severity: a low | b moderate | …`, which is carried along so the warning
+/// says how bad. No recognisable summary plus a refusal to exit clean is a
+/// tool that never answered (`ERR_PNPM_AUDIT_BAD_RESPONSE`, no network).
+fn read_pnpm_audit(exit_ok: bool, out: &str) -> Report {
+    let lines: Vec<&str> = out.lines().map(str::trim).collect();
+    if lines
+        .iter()
+        .any(|l| l.starts_with("No known vulnerabilities found"))
+    {
+        return Report::Clean;
+    }
+    let found = lines.iter().enumerate().rev().find(|(_, l)| {
+        let mut w = l.split_whitespace();
+        w.next()
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            && w.next().is_some_and(|v| v.starts_with("vulnerabilit"))
+            && w.next() == Some("found")
+    });
+    match found {
+        Some((_, l)) if l.starts_with("0 ") => Report::Clean,
+        Some((i, l)) => {
+            let severity = lines
+                .get(i + 1)
+                .and_then(|n| n.strip_prefix("Severity:"))
+                .map(str::trim);
+            Report::Vulnerabilities(vec![match severity {
+                Some(sev) => format!("{l} ({sev})"),
+                None => l.to_string(),
+            }])
+        }
         None if exit_ok => Report::Clean,
         None => Report::CouldNotCheck,
     }
@@ -458,49 +495,104 @@ fn lockfile_dirs(lockfile: &str) -> Vec<String> {
     dirs
 }
 
-/// `npm audit` in every directory that tracks a `package-lock.json`.
+/// One JS package manager `audit-js` knows how to ask: the lockfile that
+/// opts a directory in, the tool that reads it, and how to read its answer.
+struct JsAuditor {
+    lockfile: &'static str,
+    tool: &'static str,
+    read: fn(bool, &str) -> Report,
+    /// Extra arguments for a project in `dir`.
+    args: fn(&str) -> Vec<String>,
+}
+
+/// pnpm answers for the WORKSPACE it finds above a directory, not for the
+/// directory: a standalone project with its own pnpm-lock.yaml inside a
+/// workspace (a spike, an example) was reported with the workspace root's
+/// findings, all of them, under its own name. `--ignore-workspace` makes it
+/// read the lockfile it stands next to — except at a workspace's own root,
+/// where the workspace IS the project and every member must be audited.
+fn pnpm_args(dir: &str) -> Vec<String> {
+    let manifest = if dir.is_empty() {
+        "pnpm-workspace.yaml".to_string()
+    } else {
+        format!("{dir}/pnpm-workspace.yaml")
+    };
+    if crate::tracked_paths().contains(&manifest) {
+        vec![]
+    } else {
+        vec!["--ignore-workspace".into()]
+    }
+}
+
+const JS_AUDITORS: [JsAuditor; 2] = [
+    JsAuditor {
+        lockfile: "package-lock.json",
+        tool: "npm",
+        read: read_npm_audit,
+        args: |_| vec![],
+    },
+    JsAuditor {
+        lockfile: "pnpm-lock.yaml",
+        tool: "pnpm",
+        read: read_pnpm_audit,
+        args: pnpm_args,
+    },
+];
+
+/// `npm audit` in every directory that tracks a `package-lock.json`, and
+/// `pnpm audit` in every directory that tracks a `pnpm-lock.yaml`.
 ///
 /// It used to run once at the repository root, where a repository whose
 /// packages live in subdirectories has no lockfile: npm answered ENOLOCK,
 /// the check said "could not complete", and a tree with 17 known
 /// vulnerabilities (9 high) went unaudited release after release. Each
 /// project is audited on its own; any finding counts, labelled with its
-/// directory, and a project npm could not answer for keeps the whole
+/// directory, and a project the tool could not answer for keeps the whole
 /// result from reading clean.
+///
+/// And it only ever knew npm: a pnpm workspace has no `package-lock.json`,
+/// so its whole tree — 28 vulnerable versions, two critical, in one
+/// repository — was never audited and nothing said so. pnpm audits its own
+/// lockfile, from the lockfile alone, the same way.
 pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
-    let dirs = lockfile_dirs("package-lock.json");
-    if dirs.is_empty() {
+    let projects: Vec<(&JsAuditor, String)> = JS_AUDITORS
+        .iter()
+        .flat_map(|a| lockfile_dirs(a.lockfile).into_iter().map(move |d| (a, d)))
+        .collect();
+    if projects.is_empty() {
         return Outcome::Inert;
     }
     let root = std::path::PathBuf::from(common::repo_root());
-    let argv = vec![common::program("npm"), "audit".into()];
     let mut found = Vec::new();
     let mut unchecked = Vec::new();
     let mut full = String::new();
-    for dir in &dirs {
+    for (auditor, dir) in &projects {
         let label = if dir.is_empty() {
             ".".to_string()
         } else {
             dir.clone()
         };
+        let mut argv = vec![common::program(auditor.tool), "audit".into()];
+        argv.extend((auditor.args)(dir));
         let Some((exit_ok, out)) = audited_in(settings, &argv, &root.join(dir)) else {
             common::warn(&format!(
-                "audit-js: npm could not run in {label} — the audit did NOT run"
+                "audit-js: {} could not run in {label} — the audit did NOT run",
+                auditor.tool
             ));
             return Outcome::Unavailable;
         };
-        match read_npm_audit(exit_ok, &out) {
+        match (auditor.read)(exit_ok, &out) {
             Report::Vulnerabilities(what) => {
                 found.extend(what.into_iter().map(|w| format!("{label}: {w}")));
-                full.push_str(&format!("── npm audit in {label}\n{out}\n"));
+                full.push_str(&format!("── {} audit in {label}\n{out}\n", auditor.tool));
             }
-            Report::CouldNotCheck => unchecked.push(label),
+            Report::CouldNotCheck => unchecked.push(format!("{label} ({})", auditor.tool)),
             Report::Clean | Report::Advisories(_) => {}
         }
     }
     if !unchecked.is_empty() {
         common::warn(&format!(
-            "audit-js: npm audit could not answer in {} — those projects were NOT checked",
+            "audit-js: the audit could not answer in {} — those projects were NOT checked",
             unchecked.join(", ")
         ));
     }
@@ -852,6 +944,39 @@ mod tests {
         );
         assert_eq!(
             read_npm_audit(false, "npm ERR! network ENOTFOUND\n"),
+            Report::CouldNotCheck
+        );
+    }
+
+    #[test]
+    fn pnpm_audit_summary_decides() {
+        assert_eq!(
+            read_pnpm_audit(true, "No known vulnerabilities found\n"),
+            Report::Clean
+        );
+        // What pnpm prints after its table: the count, then the severities,
+        // which the finding carries so the warning says how bad.
+        assert_eq!(
+            read_pnpm_audit(
+                false,
+                "│ More info │ https://github.com/advisories/GHSA-395f │\n\
+                 └───────────┴──────────────────────────────────────────┘\n\
+                 107 vulnerabilities found\n\
+                 Severity: 6 low | 45 moderate | 54 high | 2 critical\n"
+            ),
+            Report::Vulnerabilities(vec![
+                "107 vulnerabilities found (6 low | 45 moderate | 54 high | 2 critical)".into()
+            ])
+        );
+        assert_eq!(
+            read_pnpm_audit(false, "1 vulnerabilities found\n"),
+            Report::Vulnerabilities(vec!["1 vulnerabilities found".into()])
+        );
+        assert_eq!(
+            read_pnpm_audit(
+                false,
+                " ERR_PNPM_AUDIT_BAD_RESPONSE  The audit endpoint responded with 503\n"
+            ),
             Report::CouldNotCheck
         );
     }

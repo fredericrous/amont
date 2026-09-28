@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.40.2
+
+### Fixed
+
+- **`pre-push-audit-js` audits pnpm projects.** It only ever ran `npm
+  audit`, and only opted in on a `package-lock.json` — so a pnpm workspace
+  was never audited and nothing said so: `amont list` did not even show the
+  check. Measured 2026-09-28, website-builder's workspace carried 28
+  vulnerable versions (107 advisory findings, 2 critical) through every
+  push. The check now opts in on `pnpm-lock.yaml` too and runs `pnpm audit`
+  in each directory that tracks one; the summary (`107 vulnerabilities
+  found`, with its `Severity:` line) decides, labelled with its directory,
+  exactly as npm's does. A standalone pnpm project nested inside a workspace
+  (a spike, an example) is audited on its OWN lockfile (`--ignore-workspace`)
+  — without that, pnpm reported the workspace root's findings under its
+  name — while a directory that tracks `pnpm-workspace.yaml` is audited as
+  the workspace, members and all.
+
 ## v1.40.1
 
 ### Fixed
