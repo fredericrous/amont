@@ -243,6 +243,13 @@ pub const SETTABLE: &[&str] = &[
     // A local `git config` still outranks it (see `policy`'s ladder), so a
     // developer can override without touching the file.
     "snapshotPrepare",
+    // The two halves of making a snapshot runnable that amont does itself.
+    // `snapshotDeps` picks how dependencies arrive (`install`, `reuse`,
+    // `off`); `snapshotCarry` names untracked files copied in from the
+    // working tree — never over tracked content, which is refused. Both are
+    // properties of the project, and trust-gated like `snapshotPrepare`.
+    "snapshotDeps",
+    "snapshotCarry",
     // Ordering only. `amont.order evidence` permutes the push gates a
     // repository already runs, using that machine's own record of them; it
     // adds nothing, removes nothing and skips nothing, so it grants a

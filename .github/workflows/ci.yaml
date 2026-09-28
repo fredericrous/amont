@@ -740,8 +740,12 @@ jobs:
       # in a repo with no config. The tool was present and unexercised, which is
       # the more expensive half of the same mistake as a tool that is absent and
       # silently skipped. linters.rs now has the two cases that need it.
+      #
+      # pnpm: snapshot_deps.rs runs the REAL pnpm on an offline fixture to
+      # prove a clone is accepted and a manifest/lockfile mismatch refused —
+      # the stub tier cannot say what pnpm itself does.
       - name: Install the tools the hooks drive
-        run: npm i -g eslint prettier pyright
+        run: npm i -g eslint prettier pyright pnpm
 
       # kube-linter and kubeconform are Severity::Block checks that had never
       # RUN their tool in any test environment: every k8s case asserted

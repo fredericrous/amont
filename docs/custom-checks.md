@@ -210,26 +210,28 @@ repository still beats the policy.
 Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.gitmoji`, `commit.subjectMax`, `commit.descriptionMax`,
 `commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`,
-`snapshotPrepare`, and `minVersion` — the last being the team's version
+`snapshotPrepare`, `snapshotDeps`, `snapshotCarry`, `order`, and
+`minVersion` — the last being the team's version
 floor: a binary older than `set minVersion 1.11.0` says so once per stage,
 warn-only, instead of silently lacking the checks the team added since.
 
-`snapshotPrepare` is the one whose value is a whole command, and it is
-there because `testPushedTree` was settable and it was not: a repository
-could say "run the gate on a checkout of the commit" and then had no way
-to say how to make that checkout runnable. For a pnpm or npm workspace
-that means an install, and the repository is what knows which — requiring
-every clone to discover the config key by hand made the declarable half
-useless. It runs in the snapshot, through the shell, before any suite, and
-consent covers it exactly as it covers a declared check's command: policy
-binds only on a trusted manifest, the trust prompt prints the command, and
-editing the line revokes the trust.
+The three `snapshot*` keys say how a checkout of the commit becomes
+runnable, which the repository knows and every clone would otherwise have
+to discover by hand: `snapshotDeps` how dependencies arrive (`install`,
+`reuse`, `off`), `snapshotCarry` which untracked files are copied in, and
+`snapshotPrepare` anything else. `snapshotPrepare` is the one whose value
+is a whole command. It runs in the snapshot, through the shell, before any
+suite, and consent covers it exactly as it covers a declared check's
+command: policy binds only on a trusted manifest, the trust prompt prints
+the command, and editing the line revokes the trust. See
+[configuration](configuration.md#amontsnapshotdeps--how-a-snapshot-gets-its-javascript-dependencies).
 
 A `set` value runs to the end of the line, so a command with spaces and
 flags is written plainly:
 
 ```
-set snapshotPrepare pnpm install --offline --frozen-lockfile
+set snapshotPrepare pnpm prisma generate
+set snapshotCarry .env
 ```
 
 Any other
