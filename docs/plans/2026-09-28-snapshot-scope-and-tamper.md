@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/snapshot-scope
 repos: [amont]
 adrs: []
@@ -37,10 +37,10 @@ weakening what a stamp means.
   - The reason names the first newer file.
 
 ## Phases
-- [ ] Phase 1: scope to touched units (range from the rehearsal's push ref,
+- [x] Phase 1: scope to touched units (range from the rehearsal's push ref,
   or from `@{upstream}` at push time)
-- [ ] Phase 2: newer-than-install-record check in `reuse`
-- [ ] Phase 3: docs + CHANGELOG v1.43.0, release on request
+- [x] Phase 2: newer-than-install-record check in `reuse`
+- [x] Phase 3: docs + CHANGELOG v1.43.0, release on request
 
 ## Decision log
 - 2026-09-28 — mtime rather than content hashing: 92,695 files are walked
@@ -49,6 +49,10 @@ weakening what a stamp means.
 - 2026-09-28 — skipping untouched units fails loudly (a gate that reaches
   into one finds no deps) rather than passing falsely. `snapshotPrepare`
   stays the override.
+- 2026-09-28 — the range is `merge-base(tip, @{upstream})..tip` for both
+  callers, rather than the rehearsal's push ref. This keeps one code path in
+  `PushedTree::prepare` and needs no new parameter through `where_to_run`'s
+  five callers. With no upstream, everything is prepared.
 
 ## Verification
 - Phase 1: rehearse a website-builder commit that touches only root
@@ -58,4 +62,27 @@ weakening what a stamp means.
   install → accepted.
 - Every guard is broken on purpose once to prove its test catches it.
 
+### Record (2026-09-28)
+- **Phase 1:** website-builder, in a scratch worktree at the live HEAD, with
+  a probe commit to `packages/blob-store`. Expected: the spikes are
+  skipped. Actual: `snapshot: not preparing spikes/S1/, spikes/S1/vite-app/,
+  spikes/S2/, spikes/S3/, spikes/S5/, spikes/S6/, spikes/S7/ — the push
+  changes nothing there`, and the rehearsal passed.
+- **Phase 2a:** the same scratch worktree, holding a `cp -cRp` clone of the
+  live `node_modules` (including the edited `@duro-app/ui` Grid.tsx and
+  styles.css.ts). Expected: reuse rejected, naming the file. Actual:
+  `not reusing … @duro-app/ui/… changed after the install`, then
+  `pnpm install --frozen-lockfile` ran, and the rehearsal passed.
+- **Phase 2b:** after `pnpm install --force` in the scratch worktree.
+  Expected: accepted. Actual: `node_modules in the root reused from the
+  working tree — pnpm accepted it against the lockfile`, and the rehearsal
+  passed.
+- **Tests:** snapshot_deps.rs has 27 cases, plus unit tests. Mutations:
+  scope disabled, outer unit claiming nested files, tamper check off, and
+  `.bin` not skipped were all caught.
+
 ## Outcome
+Shipped as v1.43.0. website-builder's snapshots go from eight installs
+(root plus seven spikes) to one verified clone. A surprise: the tamper
+check's first real run found two hand-edited `@duro-app/ui` files in the
+live checkout.

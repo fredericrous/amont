@@ -571,6 +571,46 @@ fn link_into(dir: &Path, sources: &[PathBuf]) -> std::io::Result<Option<PathBuf>
     Ok(None)
 }
 
+/// The first regular file under `nm` modified after `record`, pnpm's
+/// install record (`.modules.yaml`, rewritten as an install finishes).
+///
+/// Skipped, because an install or the tools legitimately write them after
+/// the record: every `.bin/` (pnpm relinks it last), `.cache/` and
+/// `.vite*/` (tool caches), and pnpm's own `.pnpm/lock.yaml`,
+/// `.pnpm-workspace-state*` and `.modules.yaml`. Symlinks are not followed —
+/// a top-level package is a link into `.pnpm`, which is walked itself.
+fn newer_than(nm: &Path, record: std::time::SystemTime) -> std::io::Result<Option<PathBuf>> {
+    if !nm.is_dir() {
+        return Ok(None);
+    }
+    let mut stack = vec![nm.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                if name == ".bin" || name == ".cache" || name.starts_with(".vite") {
+                    continue;
+                }
+                stack.push(entry.path());
+            } else if kind.is_file() {
+                if name == ".modules.yaml"
+                    || name.starts_with(".pnpm-workspace-state")
+                    || (name == "lock.yaml" && at.file_name().is_some_and(|d| d == ".pnpm"))
+                {
+                    continue;
+                }
+                if entry.metadata()?.modified()? > record {
+                    return Ok(Some(entry.path()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Workspace members of a pnpm unit, as pnpm lists them, relative to the
 /// unit dir. Asked in the SNAPSHOT: the committed manifests decide.
 fn members(settings: &crate::config::Settings, u: &Unit, at: &Path) -> Result<Vec<String>, String> {
@@ -684,6 +724,25 @@ fn reuse(
             set.push(m);
         }
     }
+    // Checked on the SOURCE, before anything is copied: a file changed
+    // since pnpm finished installing is an edit pnpm's own check will not
+    // see, and a clone would carry it into a stamped snapshot.
+    let record = std::fs::metadata(src_dir.join("node_modules/.modules.yaml"))
+        .and_then(|m| m.modified())
+        .map_err(|_| "no pnpm install record (node_modules/.modules.yaml)".to_string())?;
+    for m in &set {
+        match newer_than(&src_dir.join(m).join("node_modules"), record) {
+            Ok(None) => {}
+            Ok(Some(f)) => {
+                let shown = f.strip_prefix(source).unwrap_or(&f);
+                return Err(format!(
+                    "{} changed after the install — an in-place edit pnpm does not check",
+                    shown.display()
+                ));
+            }
+            Err(e) => return Err(format!("could not inspect the working tree's install: {e}")),
+        }
+    }
     let mut cloned: Vec<PathBuf> = Vec::new();
     let rollback = |cloned: &[PathBuf]| {
         for d in cloned {
@@ -747,19 +806,79 @@ fn reuse(
     Ok(())
 }
 
-/// Prepare every unit's dependencies in `snapshot`.
+/// The files `tip` changes relative to where it forked from its upstream —
+/// what the push is about. `None` when git cannot say (no upstream, a tip
+/// it does not know): the caller then prepares everything.
+pub fn changed_since_upstream(source: &Path, tip: &str) -> Option<Vec<String>> {
+    let git = |args: &[&str]| -> Option<Vec<u8>> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(source)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        crate::hooks::common::strip_git_env(&mut cmd);
+        let out = cmd.output().ok()?;
+        out.status.success().then_some(out.stdout)
+    };
+    let base = git(&["merge-base", tip, "@{upstream}"])?;
+    let base = String::from_utf8_lossy(&base).trim().to_string();
+    if base.is_empty() {
+        return None;
+    }
+    let raw = git(&["diff", "--name-only", "-z", &base, tip])?;
+    Some(crate::git::split_nul_paths(&raw))
+}
+
+/// Which units a snapshot needs: the root one, and every unit that is the
+/// NEAREST enclosing unit of a changed file. A unit the push does not touch
+/// cannot hold a failure the push introduced — and nothing the gates run for
+/// this push reads it — so installing it is pure cost (website-builder: seven
+/// spikes, an install each, on every snapshot). `changed` is `None` when the
+/// range is unknown, and then every unit is kept.
+///
+/// Returns `(kept, skipped)`.
+pub fn select_units(units: Vec<Unit>, changed: Option<&[String]>) -> (Vec<Unit>, Vec<Unit>) {
+    let Some(changed) = changed else {
+        return (units, Vec::new());
+    };
+    let nearest = |f: &str| -> Option<&str> {
+        units
+            .iter()
+            .map(|u| u.dir.as_str())
+            .filter(|d| d.is_empty() || f.starts_with(&format!("{d}/")))
+            .max_by_key(|d| d.len())
+    };
+    let touched: Vec<&str> = changed.iter().filter_map(|f| nearest(f)).collect();
+    let (kept, skipped): (Vec<Unit>, Vec<Unit>) = units
+        .clone()
+        .into_iter()
+        .partition(|u| u.dir.is_empty() || touched.contains(&u.dir.as_str()));
+    (kept, skipped)
+}
+
+/// Prepare the dependencies of every unit the push needs in `snapshot`.
 pub fn deps(
     settings: &crate::config::Settings,
     mode: DepsMode,
     source: &Path,
     snapshot: &Path,
     files: &[String],
+    changed: Option<&[String]>,
 ) -> Result<(), String> {
     if mode == DepsMode::Off {
         return Ok(());
     }
-    let units = units(files, snapshot)?;
-    let unit_dirs: Vec<String> = units.iter().map(|u| u.dir.clone()).collect();
+    let all = units(files, snapshot)?;
+    let unit_dirs: Vec<String> = all.iter().map(|u| u.dir.clone()).collect();
+    let (units, skipped) = select_units(all, changed);
+    if !skipped.is_empty() {
+        let names: Vec<String> = skipped.iter().map(unit_label).collect();
+        println!(
+            "snapshot: not preparing {} — the push changes nothing there",
+            names.join(", ")
+        );
+    }
     for u in &units {
         let at = snapshot.join(&u.dir);
         let label = unit_label(u);
@@ -805,6 +924,7 @@ pub fn run(
     settings: &crate::config::Settings,
     source: &Path,
     snapshot: &Path,
+    tip: &str,
     command_owns_deps: bool,
 ) -> Result<(), String> {
     let entries = carry_list(settings);
@@ -820,7 +940,12 @@ pub fn run(
     if !entries.is_empty() {
         carry(&entries, source, snapshot, &files)?;
     }
-    deps(settings, mode, source, snapshot, &files).map_err(|e| {
+    let changed = if mode == DepsMode::Off {
+        None
+    } else {
+        changed_since_upstream(source, tip)
+    };
+    deps(settings, mode, source, snapshot, &files, changed.as_deref()).map_err(|e| {
         println!("{} {e}", warning_sign());
         e
     })
@@ -897,6 +1022,64 @@ mod tests {
             None,
             "two answers is no answer"
         );
+    }
+
+    fn unit(dir: &str) -> Unit {
+        Unit {
+            dir: dir.to_string(),
+            manager: Manager::Pnpm,
+            standalone: !dir.is_empty(),
+        }
+    }
+
+    #[test]
+    fn only_the_root_and_the_touched_units_are_kept() {
+        let all = vec![unit(""), unit("spikes/a"), unit("spikes/b"), unit("tools")];
+        let changed = s(&["src/x.ts", "spikes/b/index.ts", "spikes/bb/y.ts"]);
+        let (kept, skipped) = select_units(all.clone(), Some(&changed));
+        let dirs = |v: &[Unit]| v.iter().map(|u| u.dir.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            dirs(&kept),
+            s(&["", "spikes/b"]),
+            "spikes/bb is not spikes/b"
+        );
+        assert_eq!(dirs(&skipped), s(&["spikes/a", "tools"]));
+        let (kept, skipped) = select_units(all.clone(), None);
+        assert_eq!(kept.len(), 4, "an unknown range keeps everything");
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_nested_unit_claims_its_files_from_the_outer_one() {
+        let all = vec![unit("web"), unit("web/nested")];
+        let changed = s(&["web/nested/a.ts"]);
+        let (kept, _) = select_units(all, Some(&changed));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].dir, "web/nested");
+    }
+
+    #[test]
+    fn a_file_newer_than_the_install_record_is_found() {
+        let d = std::env::temp_dir().join(format!("newer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let pkg = d.join(".pnpm/a@1/node_modules/a");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::create_dir_all(d.join(".bin")).unwrap();
+        std::fs::create_dir_all(d.join(".cache")).unwrap();
+        std::fs::write(pkg.join("index.js"), "old").unwrap();
+        let record = std::time::SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for skipped in [".bin/tsc", ".cache/x", ".pnpm/lock.yaml", ".modules.yaml"] {
+            std::fs::write(d.join(skipped), "new").unwrap();
+        }
+        assert_eq!(
+            newer_than(&d, record).unwrap(),
+            None,
+            "the install's own writes"
+        );
+        std::fs::write(pkg.join("index.js"), "edited").unwrap();
+        assert_eq!(newer_than(&d, record).unwrap(), Some(pkg.join("index.js")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

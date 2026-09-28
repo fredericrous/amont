@@ -428,6 +428,17 @@ fn pnpm_installed(r: &Repo, dir: &str) {
     }
 }
 
+/// pnpm writes its install record LAST; a fixture that wrote a member after
+/// it would look like an in-place edit.
+fn pnpm_record(r: &Repo) {
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(
+        r.dir.join("node_modules/.modules.yaml"),
+        "nodeLinker: isolated\n",
+    )
+    .unwrap();
+}
+
 fn reuse_repo() -> (Repo, String) {
     let (r, base) = js_repo(|r| {
         pnpm_root(r);
@@ -435,6 +446,7 @@ fn reuse_repo() -> (Repo, String) {
     });
     pnpm_installed(&r, "");
     pnpm_installed(&r, "packages/m");
+    pnpm_record(&r);
     r.git(&["config", "amont.snapshotDeps", "reuse"]);
     set(&r, "members.out", "packages/m\n");
     (r, base)
@@ -596,6 +608,32 @@ fn a_manifest_the_lockfile_does_not_satisfy_fails_preparation() {
     assert!(!logged(&r, "STALE"));
 }
 
+/// An edit made in the installed tree after pnpm finished is invisible to
+/// pnpm's own check; the install record's mtime is not.
+#[test]
+fn a_file_edited_after_the_install_rejects_the_clone() {
+    if missing("node") {
+        return;
+    }
+    let (r, _) = reuse_repo();
+    std::thread::sleep(Duration::from_millis(20));
+    let edited = r
+        .dir
+        .join("node_modules/.pnpm/a@1.0.0/node_modules/a/package.json");
+    std::fs::write(&edited, "{\"name\":\"a\",\"patched\":true}").unwrap();
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("changed after the install"), "{out}");
+    assert!(out.contains("a/package.json"), "the file is named: {out}");
+    assert!(
+        !logged(&r, "--offline"),
+        "never cloned or verified: {}",
+        stub_log(&r)
+    );
+    assert!(logged(&r, PNPM_INSTALL));
+    assert!(!logged(&r, "STALE"), "{}", stub_log(&r));
+}
+
 /// A clone still reading the working tree through a link is not isolated.
 #[test]
 fn a_link_back_into_the_working_tree_rejects_the_clone() {
@@ -626,6 +664,7 @@ fn a_nested_lockfile_is_its_own_unit() {
     });
     pnpm_installed(&r, "");
     pnpm_installed(&r, "tools");
+    pnpm_record(&r);
     // tools' working-tree lockfile is not the commit's: it must install.
     r.write("tools/pnpm-lock.yaml", "tools lock, edited\n");
     r.git(&["config", "amont.snapshotDeps", "reuse"]);
@@ -642,6 +681,50 @@ fn a_nested_lockfile_is_its_own_unit() {
         stub_log(&r)
     );
     assert!(!logged(&r, "STALE"), "{}", stub_log(&r));
+}
+
+/// Only the units the push touches are prepared: with an upstream, a unit
+/// holding none of the changed files is named and skipped — and prepared as
+/// soon as a push touches it.
+#[test]
+fn an_untouched_unit_is_not_prepared() {
+    if missing("node") {
+        return;
+    }
+    let (r, _) = js_repo(|r| {
+        npm_root(r);
+        r.stage("spikes/s/package.json", "{\"name\":\"s\"}\n");
+        r.stage("spikes/s/package-lock.json", "spike lock\n");
+    });
+    // An upstream to measure the push against: the local `main`.
+    r.git(&["config", "branch.feat/x.remote", "."]);
+    r.git(&["config", "branch.feat/x.merge", "refs/heads/main"]);
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}\n{}", stub_log(&r));
+    assert!(out.contains("not preparing spikes/s/"), "{out}");
+    assert!(
+        !stub_log(&r).lines().any(|l| l.ends_with("/spikes/s")),
+        "{}",
+        stub_log(&r)
+    );
+    assert!(
+        logged(&r, "npm ci"),
+        "the root is always prepared: {}",
+        stub_log(&r)
+    );
+
+    r.stage("spikes/s/notes.txt", "touched\n");
+    r.commit("feat: touch the spike");
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("not preparing"), "{out}");
+    assert!(
+        stub_log(&r)
+            .lines()
+            .any(|l| l.starts_with("npm ci") && l.ends_with("/spikes/s")),
+        "{}",
+        stub_log(&r)
+    );
 }
 
 /// Both lockfiles: `packageManager` decides, or preparation is refused.

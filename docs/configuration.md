@@ -414,9 +414,12 @@ settled by `package.json`'s `packageManager`, or refused.
   the lockfile does not satisfy, and relinks small drift from the store. A
   lockfile that differs from the commit's, a link that resolves back into
   the working tree, or any refusal removes every directory cloned for that
-  unit, says why, and installs instead. **What reuse cannot see** is a
-  package whose files were edited in place without a version change —
-  pnpm does not check installed content — which is why it is not the
+  unit, says why, and installs instead. So does a file edited in place:
+  pnpm does not check installed content, so amont refuses a tree holding
+  any file newer than pnpm's install record (`node_modules/.modules.yaml`,
+  rewritten as every install finishes), naming it — `.bin/`, `.cache/` and
+  `.vite*/` aside, which installs and tools write afterwards. That rests on
+  file timestamps, not content, which is why `reuse` is still not the
   default. **npm is never reused:** `npm ls` answers whether the dependency
   graph is valid, not whether the tree is the one the lockfile describes,
   and a real graph with peer-range conflicts `npm ci` installs happily
@@ -424,11 +427,15 @@ settled by `package.json`'s `packageManager`, or refused.
   unit installs under `reuse` too, saying so.
 - **`off`** prepares nothing.
 
-Every unit is prepared, whether or not the push touches it: amont cannot
-know which directories a gate will read. A repository holding many small
-side projects with lockfiles of their own (spikes, examples) pays an install
-for each; `amont.snapshotPrepare` — which owns the dependencies when set —
-is the way to install only what the gates need.
+Only the units the push touches are prepared: the root one, and each unit
+that is the nearest enclosing unit of a file changed between the tip and
+where it forked from its upstream. The rest are named in one line and
+skipped — a repository with side projects of their own (spikes, examples)
+no longer pays an install for each on every snapshot. A unit the push does
+not touch cannot hold a failure the push introduced; a gate that reaches
+into one anyway finds no dependencies and fails loudly, never falsely
+passes, and `amont.snapshotPrepare` is the override. With no upstream to
+measure against, every unit is prepared.
 
 A failed install is the snapshot's failure; see `amont.snapshotPrepare`
 below for what each caller then does. Nothing is needed for a Rust crate
