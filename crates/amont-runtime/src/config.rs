@@ -203,6 +203,7 @@ pub struct Settings {
     /// than to the process, so a second one cannot inherit the first's answers.
     pub(crate) timeout: OnceLock<u64>,
     pub(crate) idle: OnceLock<u64>,
+    pub(crate) idle_cpu: OnceLock<bool>,
     pub(crate) quiet: OnceLock<bool>,
     pub(crate) progress: OnceLock<bool>,
     pub(crate) declared_mode: OnceLock<bool>,

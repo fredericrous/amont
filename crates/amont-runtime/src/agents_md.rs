@@ -68,8 +68,9 @@ Where `amont.rehearseOnCommit` is on, every commit already starts that\n\
 rehearsal in the background and `--wait` only follows it. Give both commands the\n\
 longest timeout your tooling allows, never its default: here a check is\n\
 killed only after {idle} of silence or {ceiling} in total\n\
-(`amont.idleTimeout` / `amont.timeout`), and a test suite may legitimately\n\
-run for most of that. If your tooling caps a foreground command below it,\n\
+(`amont.idleTimeout` / `amont.timeout`) — and on Linux and macOS a silent\n\
+check whose processes are busy on CPU is not \"silent\": it can run to the\n\
+{ceiling} ceiling. A test suite may legitimately run for most of that. If your tooling caps a foreground command below it,\n\
 run the command in the background and read its result when it exits —\n\
 while it runs, a line a minute on stderr says which check is alive and\n\
 when it last printed. A push killed mid-suite pushed nothing; a commit\n\

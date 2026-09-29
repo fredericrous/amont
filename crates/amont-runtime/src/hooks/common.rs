@@ -363,7 +363,10 @@ pub fn check_timeout(settings: &crate::config::Settings) -> u64 {
 /// byte before it is judged stuck, in seconds.
 ///
 /// `amont.idleTimeout`, default 120. A hang is silent; a slow test suite
-/// talks — `cargo test` prints a line per test. Killing on silence catches
+/// talks — `cargo test` prints a line per test. Not every one does (vitest
+/// without a terminal prints only its summary), so where CPU can be measured
+/// the budget counts silence AND an idle process tree — see [`Activity`] and
+/// ADR-0008. Killing on silence catches
 /// the captive portal, the deadlocked lock file and the tool waiting on a
 /// prompt nobody will answer FASTER than a ten-minute wall clock did, while
 /// letting a chatty twenty-five-minute suite finish. Only applies where the
@@ -375,6 +378,16 @@ pub fn idle_timeout(settings: &crate::config::Settings) -> u64 {
     })
 }
 
+/// Whether a silent check that is measurably working on CPU is kept alive
+/// past the silence budget — `amont.idleCpuCredit`, default true (ADR-0008,
+/// `hooks.liveness`). `false` restores the silence-only rule everywhere.
+/// Read once per `Settings`, like the two clocks.
+pub fn idle_cpu_credit(settings: &crate::config::Settings) -> bool {
+    *settings
+        .idle_cpu
+        .get_or_init(|| crate::config::boolean_or(settings, "amont.idleCpuCredit", true))
+}
+
 /// `secs` as people read it: `12s`, `8m12s`, `1h02m`.
 pub fn human_secs(secs: u64) -> String {
     match secs {
@@ -384,27 +397,197 @@ pub fn human_secs(secs: u64) -> String {
     }
 }
 
-/// When a spawned command last wrote a byte, shared between the reader
-/// threads that see the bytes and the wait loop that judges the silence.
+/// A work window of at least this many thousandths of one core counts as the
+/// tree doing something (ADR-0008): 0.1 core. A hang — a prompt, a lock, a
+/// dead network — sits near zero; a test suite runs at whole cores.
+pub const BUSY_MILLI_CORES: u32 = 100;
+
+/// What the CPU side of [`Activity`] knows. Stored as a `u8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuState {
+    /// Not sampled: `amont.idleCpuCredit false`, no silence budget, or a
+    /// platform that cannot measure. The silence-only rule applies.
+    Off = 0,
+    /// Sampling, but nothing measured yet (the check has not been quiet
+    /// long enough, or it has only a baseline).
+    Waiting = 1,
+    /// Consecutive complete snapshots are being compared.
+    Measuring = 2,
+    /// The last snapshot was incomplete; the next complete one re-baselines.
+    Unavailable = 3,
+}
+
+/// What a spawned command has been doing, shared between the reader threads
+/// that see its bytes, the CPU sampler, the wait loop that judges it, and the
+/// progress displays. Every field is an atomic offset from `base`, so the
+/// 80 ms repaint and the 25 ms wait loop read it without a lock.
+///
+/// Two clocks, kept apart on purpose: `last_out` is when it last WROTE (what
+/// the messages report as "last output"), `last_busy` is the start of the
+/// last window in which its process tree did measurable CPU work. The kill
+/// decision uses the later of the two ([`Activity::still_for`]).
 pub struct Activity {
-    last: std::sync::Mutex<std::time::Instant>,
+    base: std::time::Instant,
+    last_out: std::sync::atomic::AtomicU64,
+    last_busy: std::sync::atomic::AtomicU64,
+    /// Offset + 1 of the start of the current unbroken run of complete
+    /// measurements; 0 when there is none.
+    measured_since: std::sync::atomic::AtomicU64,
+    /// Offset + 1 of the end of the last complete window; 0 when none.
+    last_measured: std::sync::atomic::AtomicU64,
+    rate_milli: std::sync::atomic::AtomicU32,
+    interval_ms: std::sync::atomic::AtomicU32,
+    cpu: std::sync::atomic::AtomicU8,
 }
 
 impl Activity {
     pub fn new() -> std::sync::Arc<Activity> {
         std::sync::Arc::new(Activity {
-            last: std::sync::Mutex::new(std::time::Instant::now()),
+            base: std::time::Instant::now(),
+            last_out: Default::default(),
+            last_busy: Default::default(),
+            measured_since: Default::default(),
+            last_measured: Default::default(),
+            rate_milli: Default::default(),
+            interval_ms: Default::default(),
+            cpu: std::sync::atomic::AtomicU8::new(CpuState::Off as u8),
         })
     }
+    fn offset(&self, at: std::time::Instant) -> u64 {
+        u64::try_from(at.saturating_duration_since(self.base).as_nanos()).unwrap_or(u64::MAX)
+    }
+    fn now(&self) -> u64 {
+        self.offset(std::time::Instant::now())
+    }
+    fn since(&self, offset: u64) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.now().saturating_sub(offset))
+    }
+    /// It wrote something.
     pub fn touch(&self) {
-        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = std::time::Instant::now();
+        self.last_out
+            .fetch_max(self.now(), std::sync::atomic::Ordering::Relaxed);
     }
+    /// How long since it last wrote a byte.
     pub fn quiet_for(&self) -> std::time::Duration {
-        self.last
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .elapsed()
+        self.since(self.last_out.load(std::sync::atomic::Ordering::Relaxed))
     }
+    /// How long it has been BOTH silent and idle on CPU — the number the
+    /// silence budget is judged against. Equals [`Activity::quiet_for`]
+    /// whenever CPU is not sampled.
+    pub fn still_for(&self) -> std::time::Duration {
+        let busy = self.last_busy.load(std::sync::atomic::Ordering::Relaxed);
+        self.quiet_for().min(self.since(busy))
+    }
+    pub fn cpu_state(&self) -> CpuState {
+        match self.cpu.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => CpuState::Waiting,
+            2 => CpuState::Measuring,
+            3 => CpuState::Unavailable,
+            _ => CpuState::Off,
+        }
+    }
+    fn set_cpu_state(&self, s: CpuState) {
+        self.cpu
+            .store(s as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// The last measured rate in thousandths of a core, while it is fresh:
+    /// `None` once two sampling intervals have passed without a complete
+    /// window, so a display never keeps showing "busy" on stale data.
+    pub fn fresh_rate(&self) -> Option<u32> {
+        if self.cpu_state() != CpuState::Measuring {
+            return None;
+        }
+        let end = self
+            .last_measured
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if end == 0 {
+            return None;
+        }
+        let every = u64::from(self.interval_ms.load(std::sync::atomic::Ordering::Relaxed));
+        let stale = std::time::Duration::from_millis(2 * every.max(1));
+        (self.since(end - 1) <= stale)
+            .then(|| self.rate_milli.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    /// What the CPU side can honestly say at a kill. "Measured idle" names
+    /// the unbroken span of complete measurements it rests on — sampling
+    /// starts only after a stretch of silence, so that span is always shorter
+    /// than the silence itself, and nothing is claimed about the rest.
+    pub fn verdict(&self) -> CpuVerdict {
+        match self.cpu_state() {
+            CpuState::Off => return CpuVerdict::NotSampled,
+            CpuState::Waiting | CpuState::Unavailable => return CpuVerdict::Unmeasured,
+            CpuState::Measuring => {}
+        }
+        if let Some(rate) = self.fresh_rate().filter(|r| *r >= BUSY_MILLI_CORES) {
+            return CpuVerdict::BusyAtKill(rate);
+        }
+        let since = self
+            .measured_since
+            .load(std::sync::atomic::Ordering::Relaxed);
+        match (since, self.fresh_rate()) {
+            (s, Some(_)) if s != 0 => CpuVerdict::MeasuredIdle(self.since(s - 1).as_secs()),
+            _ => CpuVerdict::Unmeasured,
+        }
+    }
+    /// Feed one sampler observation in. `interval` is the sampling period,
+    /// kept so displays can tell a fresh rate from a stale one.
+    pub fn record(
+        &self,
+        obs: crate::proctree::Observation,
+        at: std::time::Instant,
+        interval: std::time::Duration,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.interval_ms.store(
+            u32::try_from(interval.as_millis()).unwrap_or(u32::MAX),
+            Relaxed,
+        );
+        match obs {
+            crate::proctree::Observation::Baseline => {
+                self.measured_since.store(self.offset(at) + 1, Relaxed);
+                self.set_cpu_state(CpuState::Waiting);
+            }
+            crate::proctree::Observation::Window(w) => {
+                let milli = w.milli_cores();
+                self.rate_milli.store(milli, Relaxed);
+                self.last_measured.store(self.offset(w.end) + 1, Relaxed);
+                if milli >= BUSY_MILLI_CORES {
+                    // The window's START: a burst buys one window, not a
+                    // whole new budget.
+                    self.last_busy.fetch_max(self.offset(w.start), Relaxed);
+                }
+                self.set_cpu_state(CpuState::Measuring);
+            }
+            crate::proctree::Observation::Unmeasured => {
+                self.measured_since.store(0, Relaxed);
+                self.set_cpu_state(CpuState::Unavailable);
+            }
+        }
+    }
+    /// Sampling is on for this command.
+    pub fn enable_cpu(&self) {
+        self.set_cpu_state(CpuState::Waiting);
+    }
+}
+
+/// What the CPU sampler could say when a command was killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuVerdict {
+    /// Not sampled here (knob off, no budget, platform): silence alone.
+    NotSampled,
+    /// An unbroken run of complete measurements, this many seconds long and
+    /// ending at the kill, all under [`BUSY_MILLI_CORES`].
+    MeasuredIdle(u64),
+    /// Sampling was on but could not measure the whole budget.
+    Unmeasured,
+    /// Its tree was measurably busy at the kill, at this many thousandths
+    /// of a core.
+    BusyAtKill(u32),
+}
+
+/// `milli` thousandths of a core as people read it: `~3.9 cores`.
+pub fn cores(milli: u32) -> String {
+    format!("~{}.{} cores", milli / 1000, (milli % 1000) / 100)
 }
 
 /// The deadline for a network PROBE — an `ls-remote` asked before the real
@@ -440,6 +623,12 @@ pub struct Killed {
     /// How long since its last output; `None` when the output was not ours
     /// to observe (inherited stdio).
     pub quiet_secs: Option<u64>,
+    /// What its CPU was doing, as far as it was measured.
+    pub cpu: CpuVerdict,
+    /// The silence budget it ran under, in seconds (0 = off). With
+    /// `quiet_secs` it says whether CPU work is what kept a silent command
+    /// alive past that budget.
+    pub idle_secs: u64,
 }
 
 /// What became of a command run under the deadline.
@@ -526,16 +715,147 @@ fn run_observed(
             }
         }));
     }
-    let ran = wait_within(
-        &mut child,
-        check_timeout(settings),
-        idle_timeout(settings),
-        Some(&activity),
-    );
+    // The displays read the same clocks the kill decision does.
+    let _attached = crate::live::current_sink()
+        .map(|(stage, idx)| stage.attach(idx, std::sync::Arc::clone(&activity)));
+    let idle = idle_timeout(settings);
+    let sampler = (idle > 0 && idle_cpu_credit(settings) && crate::proctree::SUPPORTED)
+        .then(|| CpuSampler::start(child.id(), std::sync::Arc::clone(&activity), idle));
+    let ran = wait_within(&mut child, check_timeout(settings), idle, Some(&activity));
+    if let Some(s) = sampler {
+        s.stop();
+    }
     for r in readers {
         let _ = r.join();
     }
     ran
+}
+
+/// The CPU half of the silence budget (ADR-0008): a thread that, while the
+/// command is silent, snapshots its process tree and records whether it is
+/// doing measurable work. It runs BESIDE the wait loop, never inside it —
+/// the loop only reads what this publishes — so nothing a snapshot does can
+/// delay the ceiling.
+struct CpuSampler {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl CpuSampler {
+    fn start(pid: u32, activity: std::sync::Arc<Activity>, idle_secs: u64) -> CpuSampler {
+        activity.enable_cpu();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("amont-cpu".into())
+            .spawn(move || sample_loop(pid, &activity, idle_secs, &flag))
+            .expect("spawn the CPU sampler thread");
+        CpuSampler { stop, handle }
+    }
+
+    /// Ask it to stop and wait a bounded second for it. A snapshot is itself
+    /// bounded, so it always stops sooner; if it somehow did not, it is left
+    /// to finish on its own rather than holding the check.
+    fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !self.handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if self.handle.is_finished() {
+            let _ = self.handle.join();
+        }
+    }
+}
+
+/// When sampling starts and how often it repeats, from the silence budget:
+/// quiet for `max(250 ms, min(30 s, budget/3))`, then every
+/// `clamp(budget/4, 250 ms, 10 s)` — so even a one-second budget is sampled
+/// several times before it runs out.
+pub fn sampling_schedule(idle_secs: u64) -> (std::time::Duration, std::time::Duration) {
+    let ms = std::time::Duration::from_millis;
+    let budget = std::time::Duration::from_secs(idle_secs);
+    let first = (budget / 3)
+        .min(std::time::Duration::from_secs(30))
+        .max(ms(250));
+    let every = (budget / 4).clamp(ms(250), std::time::Duration::from_secs(10));
+    (first, every)
+}
+
+fn sample_loop(
+    pid: u32,
+    activity: &Activity,
+    idle_secs: u64,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (first, every) = sampling_schedule(idle_secs);
+    let limits = crate::proctree::Limits::default();
+    let trace = std::env::var_os("AMONT_CPU_TRACE");
+    let mut tracker = crate::proctree::Tracker::default();
+    let nap = |d: std::time::Duration| {
+        let until = std::time::Instant::now() + d;
+        while !stop.load(Relaxed) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    while !stop.load(Relaxed) {
+        if activity.quiet_for() < first {
+            // Talking: nothing to prove, and the next quiet stretch starts
+            // from a fresh baseline rather than a stale one.
+            tracker = crate::proctree::Tracker::default();
+            nap(std::time::Duration::from_millis(100));
+            continue;
+        }
+        let snap = crate::proctree::snapshot(pid, &tracker.seen(), &limits);
+        let at = std::time::Instant::now();
+        let traced = trace.as_ref().map(|_| match &snap {
+            crate::proctree::Snapshot::Complete(procs) => procs.clone(),
+            _ => Vec::new(),
+        });
+        let obs = tracker.observe(at, snap);
+        if let (Some(path), Some(procs)) = (&trace, traced) {
+            trace_sample(path, pid, &procs, &obs);
+        }
+        activity.record(obs, at, every);
+        nap(every);
+    }
+}
+
+/// `AMONT_CPU_TRACE=<file>`: append what each sample saw — one
+/// `pid start ppid cpu_ns` line per process of a complete snapshot, then a
+/// `# root <pid> <observation>` line. A diagnostic, and the seam the timing
+/// tests use to know a worker was seen before they orphan it (they match
+/// the leading pid).
+fn trace_sample(
+    path: &std::ffi::OsStr,
+    root: u32,
+    procs: &[crate::proctree::Proc],
+    obs: &crate::proctree::Observation,
+) {
+    use std::io::Write;
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let mut text = String::new();
+    for p in procs {
+        text.push_str(&format!(
+            "{} {} {} {}\n",
+            p.id.pid, p.id.start, p.ppid, p.cpu_ns
+        ));
+    }
+    let obs = match obs {
+        crate::proctree::Observation::Window(w) => {
+            format!("window {} milli-cores", w.milli_cores())
+        }
+        other => format!("{other:?}").to_lowercase(),
+    };
+    text.push_str(&format!("# root {root} {obs}\n"));
+    let _ = f.write_all(text.as_bytes());
 }
 
 /// [`status_within`], with the child's stdout and stderr CAPTURED into the
@@ -613,7 +933,9 @@ pub(crate) fn wait_within(
             return Ok(Ran::Status(status));
         }
         let now = std::time::Instant::now();
-        let quiet = activity.map(|a| a.quiet_for());
+        // Judged on "silent AND idle on CPU"; equal to plain silence when CPU
+        // is not sampled.
+        let quiet = activity.map(|a| a.still_for());
         let why = judge(
             now.duration_since(started),
             quiet,
@@ -626,7 +948,11 @@ pub(crate) fn wait_within(
             return Ok(Ran::TimedOut(Killed {
                 why,
                 ran_secs: now.duration_since(started).as_secs(),
-                quiet_secs: quiet.map(|q| q.as_secs()),
+                // The true OUTPUT silence, for the message — not the
+                // still-time the verdict was judged on.
+                quiet_secs: activity.map(|a| a.quiet_for().as_secs()),
+                cpu: activity.map_or(CpuVerdict::NotSampled, Activity::verdict),
+                idle_secs,
             }));
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -667,22 +993,50 @@ pub fn judge(
 /// the ceiling with recent output means slow — raise the ceiling.
 pub fn say_timed_out(what: &str, k: Killed) {
     match k.why {
-        Why::Silence(budget) => fail(&format!(
-            "{} printed nothing for {} and was killed after {} — a tool this quiet is \
-             usually stuck, not slow. {} raises the silence budget (0 disables)",
-            hl(what),
-            human_secs(budget),
-            human_secs(k.ran_secs),
-            hl("git config amont.idleTimeout <secs>")
-        )),
+        Why::Silence(budget) => {
+            fail(&match k.cpu {
+                CpuVerdict::MeasuredIdle(covered) => format!(
+                    "{} printed nothing for {} and did no measurable CPU work (< 0.1 core) in \
+                     the last {} of it; killed after {} — a tool this idle is stuck, not slow. \
+                     {} raises the silence budget (0 disables)",
+                    hl(what),
+                    human_secs(budget),
+                    human_secs(covered.max(1)),
+                    human_secs(k.ran_secs),
+                    hl("git config amont.idleTimeout <secs>")
+                ),
+                _ => {
+                    format!(
+                "{} printed nothing for {}{} and was killed after {} — a tool this quiet is \
+                 usually stuck, not slow. {} raises the silence budget (0 disables)",
+                hl(what),
+                human_secs(budget),
+                if k.cpu == CpuVerdict::Unmeasured { " (CPU not measured)" } else { "" },
+                human_secs(k.ran_secs),
+                hl("git config amont.idleTimeout <secs>")
+            )
+                }
+            })
+        }
         Why::Ceiling(budget) => {
-            let verdict = match k.quiet_secs {
-                Some(q) if q < 30 => format!(
+            let verdict = match (k.quiet_secs, k.cpu) {
+                (Some(q), CpuVerdict::BusyAtKill(m)) if k.idle_secs > 0 && q >= k.idle_secs => {
+                    format!(
+                        " It printed nothing for the last {} but kept its CPU busy ({}), so the \
+                     silence budget did not stop it: a busy loop, or a tool that prints only \
+                     at the end (give it a per-file reporter). {} kills quiet runs at the \
+                     silence budget whatever their CPU.",
+                        human_secs(q),
+                        cores(m),
+                        hl("git config amont.idleCpuCredit false")
+                    )
+                }
+                (Some(q), _) if q < 30 => format!(
                     " It was still printing ({} since its last line): slow, not stuck.",
                     human_secs(q)
                 ),
-                Some(q) => format!(" Its last output was {} ago.", human_secs(q)),
-                None => String::new(),
+                (Some(q), _) => format!(" Its last output was {} ago.", human_secs(q)),
+                (None, _) => String::new(),
             };
             fail(&format!(
                 "{} timed out: ran for {} and was killed at the ceiling. {} raises it \
@@ -886,6 +1240,127 @@ pub fn hl(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A window of `milli` thousandths of a core between `start` and `end`
+    /// (a zero-length window still reports `milli`: `milli_cores` floors the
+    /// wall time at 1 ns).
+    fn window(
+        start: std::time::Instant,
+        end: std::time::Instant,
+        milli: u64,
+    ) -> crate::proctree::Observation {
+        let wall = u64::try_from(end.duration_since(start).as_nanos())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let gain = wall * milli / 1000;
+        crate::proctree::Observation::Window(crate::proctree::Window {
+            start,
+            end,
+            gain_ns: gain,
+        })
+    }
+
+    /// Even the shortest budget is sampled several times before it runs out,
+    /// and the default one starts at 30 s and repeats every 10 s.
+    #[test]
+    fn the_sampling_schedule_follows_the_budget_within_floors() {
+        use super::sampling_schedule;
+        let ms = std::time::Duration::from_millis;
+        let third = |secs: u64| std::time::Duration::from_secs(secs) / 3;
+        assert_eq!(sampling_schedule(1), (third(1), ms(250)));
+        assert_eq!(sampling_schedule(2), (third(2), ms(500)));
+        assert_eq!(sampling_schedule(120), (ms(30_000), ms(10_000)));
+        assert_eq!(sampling_schedule(0), (ms(250), ms(250)));
+    }
+
+    /// Without CPU data the still-time IS the silence; a busy window pulls it
+    /// back to the window's start, and the output clock is left alone.
+    #[test]
+    fn busy_work_resets_the_still_time_but_not_the_output_silence() {
+        use super::Activity;
+        let a = Activity::new();
+        a.touch();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let quiet = a.quiet_for();
+        assert!(a.still_for() >= quiet.saturating_sub(std::time::Duration::from_millis(5)));
+        a.enable_cpu();
+        let now = std::time::Instant::now();
+        a.record(
+            window(now - std::time::Duration::from_millis(10), now, 2000),
+            now,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(a.still_for() < std::time::Duration::from_millis(40));
+        assert!(a.quiet_for() >= std::time::Duration::from_millis(60));
+    }
+
+    /// What the kill message may claim. "Measured idle" names the unbroken
+    /// span of complete measurements behind it; a broken run is unmeasured;
+    /// a fresh busy window is reported as busy; no sampling says nothing.
+    #[test]
+    fn the_cpu_verdict_claims_only_what_was_measured() {
+        use super::{Activity, CpuVerdict};
+        use crate::proctree::Observation;
+        let s = std::time::Duration::from_secs;
+        let every = s(10);
+
+        let off = Activity::new();
+        assert_eq!(off.verdict(), CpuVerdict::NotSampled);
+
+        let waiting = Activity::new();
+        waiting.enable_cpu();
+        assert_eq!(waiting.verdict(), CpuVerdict::Unmeasured);
+
+        let now = std::time::Instant::now();
+        let before = now - s(1);
+        // A real second of complete, idle measurement: the claim names it.
+        let idle = Activity::new();
+        idle.enable_cpu();
+        let t0 = std::time::Instant::now();
+        idle.record(Observation::Baseline, t0, every);
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        let t1 = std::time::Instant::now();
+        idle.record(window(t0, t1, 20), t1, every);
+        assert_eq!(idle.verdict(), CpuVerdict::MeasuredIdle(1));
+
+        let busy = Activity::new();
+        busy.enable_cpu();
+        busy.record(Observation::Baseline, before, every);
+        busy.record(window(before, now, 3900), now, every);
+        assert_eq!(busy.verdict(), CpuVerdict::BusyAtKill(3900));
+
+        let broken = Activity::new();
+        broken.enable_cpu();
+        broken.record(Observation::Baseline, before, every);
+        broken.record(window(before, now, 20), now, every);
+        broken.record(Observation::Unmeasured, now, every);
+        assert_eq!(broken.verdict(), CpuVerdict::Unmeasured);
+    }
+
+    /// A rate older than two sampling intervals is not shown, and cannot
+    /// back a "busy" or "idle" claim.
+    #[test]
+    fn a_stale_rate_expires() {
+        use super::{Activity, CpuVerdict};
+        use crate::proctree::Observation;
+        let a = Activity::new();
+        a.enable_cpu();
+        let then = std::time::Instant::now();
+        let tick = std::time::Duration::from_millis(5);
+        let earlier = then - std::time::Duration::from_secs(1);
+        a.record(Observation::Baseline, earlier, tick);
+        a.record(window(earlier, then, 3000), then, tick);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert_eq!(a.fresh_rate(), None);
+        assert_eq!(a.verdict(), CpuVerdict::Unmeasured);
+    }
+
+    #[test]
+    fn cores_read_as_one_decimal() {
+        assert_eq!(super::cores(3900), "~3.9 cores");
+        assert_eq!(super::cores(420), "~0.4 cores");
+        assert_eq!(super::cores(100), "~0.1 cores");
+    }
 
     /// The two clocks, decided to the second. A chatty command outlives any
     /// silence budget however long it runs; a silent one dies at the budget

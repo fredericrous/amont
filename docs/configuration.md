@@ -526,6 +526,33 @@ check runs its tools that way by default. With `amont.progress false` the
 tool inherits your terminal, nobody sees the bytes, and only the ceiling
 below applies.
 
+### Busy is not stuck
+
+Not every slow tool talks: vitest without a terminal prints its summary and
+nothing before it, and a passing suite used to be killed as a hang. So on
+Linux and macOS, once a check has been silent for a while (a third of this
+budget, at most 30 seconds), amont also measures the CPU its process tree is
+using — the command, its descendants, and the work of every child they have
+already reaped. A check keeps its budget as long as that tree does at least
+0.1 of a core of work; it is killed only when it has been **silent and idle**
+for the whole budget. A quiet suite then runs on to `amont.timeout`, and the
+progress line says it is busy (`· quiet 2m10s · ~3.9 cores`).
+
+The trade-off is written down in ADR-0008: a silent tool that *spins* — a
+busy loop, a polling watcher — now answers to the ceiling rather than this
+budget, and the ceiling message says so. Work done by a daemon outside the
+tree (a build daemon, a container engine) is not counted. On Windows, or when
+a measurement is incomplete, silence alone counts, and the messages say CPU
+was not measured rather than claiming it was idle.
+
+```sh
+git config amont.idleCpuCredit false  # silence alone, everywhere
+```
+
+`AMONT_CPU_TRACE=<file>` appends the processes each measurement saw — a
+diagnostic for when a check was kept alive, or killed, and you want to know
+what amont was looking at.
+
 ## `amont.timeout` — the ceiling one check's command may run for
 
 ```sh
@@ -542,11 +569,14 @@ The kill reaches the command itself; a grandchild it detached may survive,
 orphaned, but the commit is no longer hostage to it.
 
 While a stage runs, a terminal shows a live line per check with its elapsed
-time, a `· quiet 45s/2m` note once a check has been silent for half a minute,
-and `· 50m/1h` once it is within 80% of the ceiling — the cliff, shown before
-the fall. Piped (an agent, CI), the same information arrives as one plain
-line a minute per running check: elapsed, time since its last output, and,
-the first time, both budgets.
+time, a `· quiet 45s/2m` note once a check has been silent for half a minute
+(`· quiet 2m10s · ~3.9 cores` instead while its CPU is busy, and
+`· idle 40s/2m` counting what the budget counts once busy work has pushed it
+back), and `· 50m/1h` once it is within 80% of the ceiling — the cliff, shown
+before the fall. Piped (an agent, CI), the same information arrives as one
+plain line a minute per running check: elapsed, time since its last output,
+what its CPU is doing (`busy ~3.9 cores`, `CPU idle 40s`, `CPU unmeasured`),
+and, the first time, both budgets.
 
 The same clock bounds the push path's own network verbs: `pull-rebase`'s
 sync runs under the full budget, and the reachability *probes*

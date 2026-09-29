@@ -70,6 +70,10 @@ struct Slot {
     /// Entered and not yet finished — the region shows exactly these.
     running: bool,
     done: bool,
+    /// The command this check is waiting on, while it runs: its output
+    /// clock and what its CPU is doing — the same object the kill decision
+    /// reads, so the displays can never disagree with it (ADR-0008).
+    activity: Option<Arc<crate::hooks::common::Activity>>,
 }
 
 /// A running stage: the slots, and the one lock every terminal write inside
@@ -118,6 +122,7 @@ impl Stage {
                         buf: Vec::new(),
                         running: false,
                         done: false,
+                        activity: None,
                     })
                     .collect(),
             ),
@@ -167,6 +172,24 @@ impl Stage {
         }
         SINK.with(|s| *s.borrow_mut() = Some((Arc::clone(self), idx)));
         SinkGuard
+    }
+
+    /// Show slot `idx`'s spawned command in the displays while the returned
+    /// guard lives. A check that runs several commands in turn attaches each
+    /// one; between them the slot falls back to its own output clock.
+    pub fn attach(
+        self: &Arc<Stage>,
+        idx: usize,
+        activity: Arc<crate::hooks::common::Activity>,
+    ) -> AttachGuard {
+        let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = slots.get_mut(idx) {
+            slot.activity = Some(activity);
+        }
+        AttachGuard {
+            stage: Arc::clone(self),
+            idx,
+        }
     }
 
     /// Append raw bytes (a captured child's output) to slot `idx`.
@@ -239,11 +262,7 @@ impl Stage {
             slots
                 .iter()
                 .filter(|s| s.running && !s.done)
-                .map(|s| Row {
-                    name: s.name.clone(),
-                    elapsed: now.duration_since(s.started).as_secs_f64(),
-                    quiet: now.duration_since(s.last_output).as_secs_f64(),
-                })
+                .map(|s| row_of(s, now, now.duration_since(s.started).as_secs_f64()))
                 .collect()
         };
         let text = region(&entries, term_width(), budgets(settings));
@@ -307,6 +326,58 @@ pub struct Row {
     pub elapsed: f64,
     /// Seconds since it last wrote anything.
     pub quiet: f64,
+    /// Seconds it has been silent AND idle on CPU — what the silence budget
+    /// is judged against. Equal to `quiet` when CPU is not sampled.
+    pub still: f64,
+    pub cpu: RowCpu,
+}
+
+/// What a running check's CPU is doing, as far as the displays may say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowCpu {
+    /// No spawned command is attached (an in-process check, or between two
+    /// commands): nothing to say.
+    None,
+    /// A command is attached but its CPU is not sampled here
+    /// (`amont.idleCpuCredit false`, no silence budget, or the platform):
+    /// silence alone counts.
+    NotSampled,
+    /// Sampled, but nothing fresh to report (not quiet long enough yet, or
+    /// the last snapshot was incomplete).
+    Unmeasured,
+    /// Measurably working, at this many thousandths of a core.
+    Busy(u32),
+    /// Measured under the busy threshold.
+    Idle,
+}
+
+/// A slot as a [`Row`], reading its attached command's clocks when there is
+/// one. The quiet figure is the more recent of the slot's own lines and the
+/// command's bytes (a captured command writes to one and not the other).
+fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
+    use crate::hooks::common::{CpuState, BUSY_MILLI_CORES};
+    let slot_quiet = now.duration_since(s.last_output).as_secs_f64();
+    let (quiet, still, cpu) = match &s.activity {
+        None => (slot_quiet, slot_quiet, RowCpu::None),
+        Some(a) => {
+            let quiet = slot_quiet.min(a.quiet_for().as_secs_f64());
+            let still = quiet.min(a.still_for().as_secs_f64());
+            let cpu = match (a.cpu_state(), a.fresh_rate()) {
+                (CpuState::Off, _) => RowCpu::NotSampled,
+                (_, Some(r)) if r >= BUSY_MILLI_CORES => RowCpu::Busy(r),
+                (_, Some(_)) => RowCpu::Idle,
+                (_, None) => RowCpu::Unmeasured,
+            };
+            (quiet, still, cpu)
+        }
+    };
+    Row {
+        name: s.name.clone(),
+        elapsed,
+        quiet,
+        still,
+        cpu,
+    }
 }
 
 /// The two clocks, as the region annotates them: `(idle, ceiling)` in
@@ -368,13 +439,27 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
         let mut line = format!("{frame} {name:<pad$} {}", elapsed_column(row.elapsed));
         if row.quiet >= QUIET_NOTE_SECS {
             let quiet = crate::hooks::common::human_secs(row.quiet as u64);
-            if budgets.idle > 0 {
-                line.push_str(&format!(
+            match row.cpu {
+                // Working: no countdown — no kill is coming — just how hard.
+                RowCpu::Busy(m) => line.push_str(&format!(
+                    " · quiet {quiet} · {}",
+                    crate::hooks::common::cores(m)
+                )),
+                _ if budgets.idle == 0 => line.push_str(&format!(" · quiet {quiet}")),
+                // The countdown counts what the kill decision counts: the
+                // still-time, which only differs from the silence once CPU
+                // work has pushed it back.
+                RowCpu::Idle | RowCpu::Unmeasured if row.quiet - row.still >= 1.0 => {
+                    line.push_str(&format!(
+                        " · quiet {quiet} · idle {}/{}",
+                        crate::hooks::common::human_secs(row.still as u64),
+                        crate::hooks::common::human_secs(budgets.idle)
+                    ))
+                }
+                _ => line.push_str(&format!(
                     " · quiet {quiet}/{}",
                     crate::hooks::common::human_secs(budgets.idle)
-                ));
-            } else {
-                line.push_str(&format!(" · quiet {quiet}"));
+                )),
             }
         }
         if budgets.ceiling > 0 && row.elapsed >= 0.8 * budgets.ceiling as f64 {
@@ -423,14 +508,7 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
                 if elapsed >= s.next_beat {
                     let first = s.next_beat == HEARTBEAT_SECS;
                     s.next_beat += HEARTBEAT_SECS;
-                    due.push((
-                        Row {
-                            name: s.name.clone(),
-                            elapsed: elapsed as f64,
-                            quiet: now.duration_since(s.last_output).as_secs_f64(),
-                        },
-                        first,
-                    ));
+                    due.push((row_of(s, now, elapsed as f64), first));
                 }
             }
             due
@@ -473,12 +551,20 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
 /// minute, which is the population at risk — no threshold to invent.
 fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String {
     use crate::hooks::common::human_secs;
+    // The prefix is byte-for-byte what it always was: log readers grep it.
+    // What CPU sampling adds goes after it.
     let mut line = format!(
         "  … {} still running: {}, last output {} ago",
         row.name,
         human_secs(row.elapsed as u64),
         human_secs(row.quiet as u64)
     );
+    match row.cpu {
+        RowCpu::Busy(m) => line.push_str(&format!(", busy {}", crate::hooks::common::cores(m))),
+        RowCpu::Idle => line.push_str(&format!(", CPU idle {}", human_secs(row.still as u64))),
+        RowCpu::Unmeasured => line.push_str(", CPU unmeasured"),
+        RowCpu::None | RowCpu::NotSampled => {}
+    }
     if first {
         let idle = match budgets.idle {
             0 => "off".to_string(),
@@ -488,9 +574,20 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             0 => "off".to_string(),
             s => human_secs(s),
         };
-        line.push_str(&format!(
-            " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
-        ));
+        match row.cpu {
+            RowCpu::Busy(_) | RowCpu::Idle | RowCpu::Unmeasured if budgets.idle > 0 => {
+                line.push_str(&format!(
+                    " (killed after {idle} with no output and under 0.1 core of CPU, or \
+                     {ceiling} in total — amont.idleTimeout / amont.timeout)"
+                ))
+            }
+            _ => line.push_str(&format!(
+                " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
+            )),
+        }
+        if row.cpu == RowCpu::NotSampled && budgets.idle > 0 {
+            line.push_str("; CPU not sampled here, silence alone counts");
+        }
         if on_push {
             // `concat!`, not a `\`-continued literal: a continuation keeps
             // the next line's indentation, which turns the message into runs
@@ -511,8 +608,10 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
     line
 }
 
-/// `$COLUMNS` when it is exported and sane, else a conservative 100 — the
-/// region's lines are short and an ioctl is not worth its portability.
+/// `$COLUMNS` when it is exported and sane, else a conservative 80 — the
+/// region's lines are short and an ioctl is not worth its portability. 80,
+/// not wider: shells rarely export `COLUMNS`, and a region line longer than
+/// the real terminal wraps, which breaks the erase arithmetic.
 ///
 /// `pub` is now wider than it needs to be — the out-of-crate caller that
 /// justified it, `amont-agent`, is its own project and carries its own copy.
@@ -522,7 +621,7 @@ pub fn term_width() -> usize {
         .ok()
         .and_then(|c| c.parse::<usize>().ok())
         .filter(|w| *w >= 20)
-        .unwrap_or(100)
+        .unwrap_or(80)
 }
 
 /// Emits slot `idx`'s block when dropped — however the check's closure
@@ -562,6 +661,22 @@ pub struct SinkGuard;
 impl Drop for SinkGuard {
     fn drop(&mut self) {
         SINK.with(|s| *s.borrow_mut() = None);
+    }
+}
+
+/// Detaches a command from its slot's displays when dropped. See
+/// [`Stage::attach`].
+pub struct AttachGuard {
+    stage: Arc<Stage>,
+    idx: usize,
+}
+
+impl Drop for AttachGuard {
+    fn drop(&mut self) {
+        let mut slots = self.stage.slots.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = slots.get_mut(self.idx) {
+            slot.activity = None;
+        }
     }
 }
 
@@ -775,6 +890,8 @@ mod tests {
             name: name.into(),
             elapsed,
             quiet: 0.0,
+            still: 0.0,
+            cpu: RowCpu::None,
         }
     }
 
@@ -846,6 +963,82 @@ mod tests {
         assert!(
             text.contains("quiet 45s") && !text.contains('/'),
             "{text:?}"
+        );
+    }
+
+    /// A silent check that is working shows how hard, with no countdown —
+    /// no kill is coming; one whose CPU work pushed the still-time back
+    /// counts down the still-time, which is what the kill decision uses.
+    /// Both fit an 80-column terminal with a longish name.
+    #[test]
+    fn a_quiet_busy_check_shows_cores_and_an_idle_one_counts_down_the_still_time() {
+        let mut r = row("vitest-workspace", 240.0);
+        r.quiet = 130.0;
+        r.still = 130.0;
+        r.cpu = RowCpu::Busy(3900);
+        let busy = region(&[r.clone()], 80, B);
+        assert!(busy.contains("· quiet 2m10s · ~3.9 cores"), "{busy:?}");
+        assert!(
+            !busy.contains("/2m00s"),
+            "no countdown while busy: {busy:?}"
+        );
+
+        r.cpu = RowCpu::Idle;
+        r.still = 40.0;
+        let idle = region(&[r.clone()], 80, B);
+        assert!(idle.contains("· quiet 2m10s · idle 40s/2m00s"), "{idle:?}");
+
+        r.cpu = RowCpu::Unmeasured;
+        r.still = 130.0;
+        let plain = region(&[r], 80, B);
+        assert!(plain.contains("· quiet 2m10s/2m00s"), "{plain:?}");
+
+        for text in [busy, idle, plain] {
+            assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
+        }
+    }
+
+    /// The heartbeat's prefix is unchanged — log readers grep it — and the
+    /// CPU state rides after it.
+    #[test]
+    fn a_heartbeat_appends_the_cpu_state_after_an_unchanged_prefix() {
+        let mut r = row("vitest", 240.0);
+        r.quiet = 130.0;
+        r.still = 40.0;
+        let prefix = "  … vitest still running: 4m00s, last output 2m10s ago";
+        for (cpu, suffix) in [
+            (RowCpu::Busy(3900), ", busy ~3.9 cores\n"),
+            (RowCpu::Idle, ", CPU idle 40s\n"),
+            (RowCpu::Unmeasured, ", CPU unmeasured\n"),
+            (RowCpu::None, "\n"),
+            (RowCpu::NotSampled, "\n"),
+        ] {
+            r.cpu = cpu;
+            assert_eq!(beat_line(&r, false, B, false), format!("{prefix}{suffix}"));
+        }
+    }
+
+    /// The first beat states the rule that actually applies to this check.
+    #[test]
+    fn the_first_beat_states_the_rule_in_force() {
+        let mut r = row("vitest", 60.0);
+        r.cpu = RowCpu::Unmeasured;
+        let sampled = beat_line(&r, true, B, false);
+        assert!(
+            flat(&sampled).contains(
+                "killed after 2m00s with no output and under 0.1 core of CPU, or 1h00m in total"
+            ),
+            "{sampled:?}"
+        );
+        r.cpu = RowCpu::NotSampled;
+        let not = beat_line(&r, true, B, false);
+        assert!(
+            not.contains("2m00s of silence or 1h00m in total"),
+            "{not:?}"
+        );
+        assert!(
+            not.contains("CPU not sampled here, silence alone counts"),
+            "{not:?}"
         );
     }
 
