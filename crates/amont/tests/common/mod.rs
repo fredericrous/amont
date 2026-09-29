@@ -174,6 +174,80 @@ impl Repo {
         }
     }
 
+    /// Run a hook under a WATCHDOG that does not trust amont to return.
+    ///
+    /// For the fixtures that leave descendants behind on purpose (busy
+    /// workers, orphans): amont kills only its direct child, and a surviving
+    /// worker holding a pipe would make [`Repo::hook`]'s `output()` wait on
+    /// it for as long as it lives. So amont runs in a process group of its
+    /// own, its output goes to FILES (a worker holding one cannot block
+    /// anything), and a separate clock SIGKILLs the whole group and fails the
+    /// test at `limit`. The group is killed again afterwards either way, so
+    /// nothing a fixture started outlives the test.
+    ///
+    /// Returns the run and how long it took.
+    #[cfg(unix)]
+    pub fn hook_watched(
+        &self,
+        name: &str,
+        env: &[(&str, &std::ffi::OsStr)],
+        limit: std::time::Duration,
+    ) -> (HookRun, std::time::Duration) {
+        use std::os::unix::process::CommandExt;
+        // Outside the repo: a pre-commit hold may park untracked files.
+        let tmp = std::env::temp_dir();
+        let out_path = tmp.join(format!("{}.out", unique()));
+        let err_path = tmp.join(format!("{}.err", unique()));
+        let mut cmd = Command::new(bin());
+        cmd.arg("--hooks-dir")
+            .arg(self.dir.join(".git/hooks"))
+            .arg(name)
+            .current_dir(&self.dir)
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).expect("stdout file"))
+            .stderr(std::fs::File::create(&err_path).expect("stderr file"))
+            .process_group(0);
+        Self::strip_git_env_impl(&mut cmd);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let started = std::time::Instant::now();
+        let mut child = cmd.spawn().expect("spawn amont");
+        let group = child.id();
+        let kill_group = || {
+            let _ = Command::new("kill")
+                .args(["-KILL", "--", &format!("-{group}")])
+                .stderr(Stdio::null())
+                .status();
+        };
+        let status = loop {
+            if let Some(s) = child.try_wait().expect("wait amont") {
+                break Some(s);
+            }
+            if started.elapsed() >= limit {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let took = started.elapsed();
+        kill_group();
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+        let run = HookRun {
+            code: status.and_then(|s| s.code()).unwrap_or(-1),
+            stdout: read(&out_path),
+            stderr: read(&err_path),
+        };
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&out_path);
+        let _ = std::fs::remove_file(&err_path);
+        assert!(
+            status.is_some(),
+            "the watchdog fired: amont had not returned after {limit:?}:\n{}",
+            run.output()
+        );
+        (run, took)
+    }
+
     /// A linked worktree of this repo, on its own branch. Its `.git` is a
     /// FILE pointing at a private admin directory under this repo's
     /// `.git/worktrees` — distinct from the common `.git` the hooks and
