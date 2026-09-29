@@ -894,19 +894,24 @@ mod tests {
             Snapshot::Complete(v) => v.iter().find(|p| p.id.pid == me).unwrap().cpu_ns,
             s => panic!("{s:?}"),
         };
-        // A shell loop burning ~0.5 s of CPU, then exiting; we reap it.
-        let status = Command::new("sh")
-            .args(["-c", "i=0; end=$(( $(date +%s) + 1 )); while [ $(date +%s) -lt $end ]; do i=$((i+1)); done"])
-            .status()
+        // `yes` into /dev/null is pure CPU: one second of it is ~one core-
+        // second. (A shell loop that forks `date` to watch the clock spends
+        // most of its wall time creating processes, and on a fast Apple
+        // Silicon runner read as barely 0.2 s — too weak to test with.)
+        let mut hog = Command::new("yes")
+            .stdout(std::process::Stdio::null())
+            .spawn()
             .unwrap();
-        assert!(status.success());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let _ = hog.kill();
+        let _ = hog.wait(); // reaped: its CPU is now in our children's time
         let after = match snapshot(me, &[], &Limits::default()) {
             Snapshot::Complete(v) => v.iter().find(|p| p.id.pid == me).unwrap().cpu_ns,
             s => panic!("{s:?}"),
         };
         let reaped = after.saturating_sub(before);
         assert!(
-            reaped >= 300 * MS,
+            reaped >= 500 * MS,
             "reaped child CPU only {} ms",
             reaped / MS
         );
