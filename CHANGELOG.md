@@ -6,6 +6,29 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.44.0
+
+### Changed
+
+- **A silent check that is busy on CPU is no longer killed as stuck.**
+  `amont.idleTimeout` used to kill any check that printed nothing for two
+  minutes; a test runner that prints only its summary (vitest without a
+  terminal) was killed with every test passing. On Linux and macOS amont now
+  also measures the CPU of the check's process tree — descendants included,
+  and the work of children they already reaped — and kills only when the
+  check is silent **and** under 0.1 of a core for the whole budget. A quiet,
+  working suite runs on to `amont.timeout`. The progress line says so
+  (`· quiet 2m10s · ~3.9 cores`, `busy ~3.9 cores` in piped runs), and kill
+  messages claim only what was measured. `amont.idleCpuCredit false` restores
+  the silence-only rule; Windows keeps it. A silent *spinning* hang now
+  answers to the ceiling instead — the trade-off is recorded in ADR-0008.
+- The live region assumes 80 columns when `COLUMNS` is unset (was 100).
+
+### Added
+
+- `AMONT_CPU_TRACE=<file>` logs what each CPU sample saw, for when a check
+  was kept alive or killed and you want to know why.
+
 ## v1.43.0
 
 ### Changed
