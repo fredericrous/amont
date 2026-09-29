@@ -119,24 +119,24 @@ sampling.
    and pre-discovery orphans are not counted; figures are approximate.
 
 ## Phases
-- [ ] Phase 1 — plan commit; ADR `adr/00NN-busy-is-not-stuck.md`, key
+- [x] Phase 1 — plan commit; ADR `adr/00NN-busy-is-not-stuck.md`, key
   `hooks.liveness` (scope `hook-binary`), citing `platform.windows-parity`
   and decisions:ADR-0020; `aval heads --write`, `aval check`.
-- [ ] Phase 2 — `src/proctree.rs`: `Proc { pid, ppid, start, cpu_ns }`,
+- [x] Phase 2 — `src/proctree.rs`: `Proc { pid, ppid, start, cpu_ns }`,
   `parse_proc_stat(&[u8], tick_ns)`, `trait ProcSource { fn snapshot(&mut
   self, root, seen, limits) -> Snapshot }` (real linux/macos impls; test fake),
   `Tracker` (seen set, parents, last totals) with pure `observe(now,
   Snapshot) -> Option<Window { start, milli }>` implementing baseline,
   compensation and resets; FFI in `mod macos`/`mod linux` (`staged_only.rs`
   style, size assert). Pure parts uncfg'd, tested on every OS.
-- [ ] Phase 3 — lock-free `Activity`; sampler thread lifecycle in
+- [x] Phase 3 — lock-free `Activity`; sampler thread lifecycle in
   `run_observed`; `CpuVerdict`/`Killed`; `say_timed_out`;
   `Settings.idle_cpu: OnceLock<bool>` (`amont.idleCpuCredit`, `boolean_or`).
-- [ ] Phase 4 — slot attach guard (detach on drop); region/heartbeat,
+- [x] Phase 4 — slot attach guard (detach on drop); region/heartbeat,
   freshness; docs/configuration.md 511-556; `agents_md.rs` (+ `amont
   agents-md`; changes every consumer's generated block on regeneration);
   `idle_timeout` doc comment.
-- [ ] Phase 5 — CI: clippy `-D warnings` for `aarch64-apple-darwin` and
+- [x] Phase 5 — CI: clippy `-D warnings` for `aarch64-apple-darwin` and
   `x86_64-pc-windows-gnu` targets (and at MSRV); FFI smoke on an arm64 macOS
   runner (`macos-14`).
 - [ ] Phase 6 — verify → rehearse → PR → merge-when-green.
@@ -193,5 +193,25 @@ sampling.
   and measured-vs-unmeasured verdicts; orphan guarantee limited to seen
   descendants, test synchronized via `AMONT_CPU_TRACE`; timing fixtures get a
   persistent root, bounded workers, cleanup and an external watchdog.
+
+- 2026-09-29 — Implementation deviations, each forced by what the code
+  showed:
+  - "Measured idle" cannot cover the whole budget: sampling starts only
+    after `min(30 s, budget/3)` of silence, so the claim was unreachable as
+    specified. `CpuVerdict::MeasuredIdle(secs)` names the unbroken measured
+    span ("did no measurable CPU work in the last 1m30s of it") and claims
+    nothing about the rest.
+  - The ceiling message's busy explanation is keyed to "output silence ≥ the
+    idle budget" (`Killed.idle_secs`), not "≥ 30 s": the old rule told a
+    busy check that never printed that it was "still printing".
+  - The region's width default is 80 (was 100) when `COLUMNS` is unset.
+- 2026-09-29 — Found while hardening the timing fixtures: macOS can hold a
+  freshly written executable in execve for several seconds (under 1 ms of
+  CPU, no children, first line never run) — worst right after a test run has
+  written hundreds of files. It failed the busy fixtures intermittently in
+  full workspace runs. Such a process is genuinely idle, so the rule is
+  right; the fixtures now run `sh ./x.sh` so the fresh file is read, not
+  exec'd, and a failing busy fixture prints the `AMONT_CPU_TRACE` it ran
+  under (the trace now records ppid and CPU per process and each window).
 
 ## Outcome
