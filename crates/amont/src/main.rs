@@ -51,7 +51,7 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  [--force] replaces a hook that is not ours
   init           wire up THIS repository only — the verb a package manager
                  calls from `prepare`; never copies a binary, never prompts
-  uninstall      remove OUR five shims and nothing else [--binary: the binary too]
+  uninstall      remove OUR six shims and nothing else [--binary: the binary too]
   setup          the commit-style questions, current values as defaults
                  [--local|--global] [--dry-run]
   trust          show what amont.conf declares, and accept it

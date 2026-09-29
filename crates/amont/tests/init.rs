@@ -84,7 +84,7 @@ const DISPATCHERS: [&str; 6] = [
 ];
 
 #[test]
-fn init_writes_the_five_shims_and_bakes_the_running_binary() {
+fn init_writes_the_six_shims_and_bakes_the_running_binary() {
     let s = Sandbox::new("basic");
     let repo = s.path("repo");
     init_repo(&repo);
