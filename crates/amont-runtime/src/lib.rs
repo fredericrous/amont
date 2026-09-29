@@ -59,6 +59,7 @@ pub mod live;
 pub mod manifest;
 pub mod pack;
 pub mod policy;
+pub mod proctree;
 pub mod pushed_tree;
 pub mod pushrefs;
 pub mod registry;
