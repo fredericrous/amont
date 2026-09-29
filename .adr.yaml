@@ -74,6 +74,9 @@ keys:
   hooks.failure-collection:
     description: Whether a stage reports every failure or stops at the first
     scopes: [pre-commit, prepare-commit-msg, commit-msg, post-commit, pre-push]
+  hooks.liveness:
+    description: When a silent check is judged stuck rather than slow
+    scopes: [hook-binary]
 
   # --- The command line ------------------------------------------------------
   cli.all-files-semantics:
