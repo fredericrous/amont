@@ -81,6 +81,19 @@ lint:
 	@cargo fmt --check
 	@cargo clippy --all-targets -- -D warnings
 
+# Clippy for the platforms this machine does not build: the CPU sampler
+# (src/proctree.rs) has a Linux module, a macOS module and a stub for the
+# rest, and each only compiles on its own target. CI's `rust` job runs this
+# target on Linux, so the macOS and Windows code is linted too. `check` and
+# `clippy` need only each target's std, not a linker:
+#     rustup target add aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+CROSS_TARGETS ?= aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+lint-cross:
+	@for t in $(CROSS_TARGETS); do \
+		echo "clippy --target $$t"; \
+		cargo clippy --target $$t -p amont-runtime --all-targets -- -D warnings || exit 1; \
+	done
+
 # The full local gate: everything CI's `rust` job and `hooks` job assert.
 # `test` stays lint-free so the inner loop is a `cargo test` and nothing else.
 check: lint test
@@ -132,4 +145,4 @@ propagate:
 deps:
 	@./scripts/check-no-deps.sh
 
-.PHONY: all chmodx build test lint check install install-fleet propagate deps
+.PHONY: all chmodx build test lint lint-cross check install install-fleet propagate deps

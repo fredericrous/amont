@@ -137,6 +137,11 @@ jobs:
       # repo's own pre-commit hook runs.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # The CPU sampler's macOS and Windows code never compiles on this runner;
+      # `make lint-cross` lints it anyway (std only, no linker). The Linux
+      # target is this runner's own and costs one more pass.
+      - run: rustup target add aarch64-apple-darwin x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
+      - run: make lint-cross
 
   # The floor `rust-version` claims, compiled against.
   #
@@ -173,6 +178,14 @@ jobs:
           # The checkout is disposable; nothing is committed back.
           rm -f Cargo.lock
           cargo "+$MSRV" check -p amont -p amont-runtime
+      # The CPU sampler's macOS FFI only compiles for a macOS target; check it
+      # at the floor too (std only, no linker).
+      - name: cargo +MSRV check --target aarch64-apple-darwin (amont-runtime)
+        run: |
+          set -euo pipefail
+          rustup target add --toolchain "$MSRV" aarch64-apple-darwin
+          rm -f Cargo.lock
+          cargo "+$MSRV" check --target aarch64-apple-darwin -p amont-runtime
 
   # The workspace's one dependency tree, watched.
   #
@@ -784,6 +797,15 @@ jobs:
       # tee, not a second run: the skip check below reads this output rather
       # than paying for the whole suite twice. Depends on the workflow-level
       # `shell: bash` above for pipefail — see the comment there.
+      # The CPU sampler's smoke test (proctree::tests::the_platform_sees_a_
+      # burning_child_and_its_reaped_time) is the only test that catches reading
+      # macOS mach ticks as nanoseconds — and ticks EQUAL nanoseconds on Intel,
+      # so it only means something on Apple Silicon. Fail loudly if the macOS
+      # leg ever stops being arm64 rather than let that test pass vacuously.
+      - name: The macOS leg is Apple Silicon (mach ticks are not ns there)
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+
       - name: make test
         run: make test 2>&1 | tee /tmp/hooks-test.log
 
