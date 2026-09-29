@@ -252,17 +252,27 @@ Across many repositories at once:
 amont-fleet install --root ~/Developer
 amont-fleet                              # report the fleet
 amont-fleet tui                          # the dashboard
+amont-fleet fix --root ~/Developer       # what drifted (dry run)
 ```
 
-`amont-fleet` is installed separately and on purpose: it pulls ratatui,
-crossterm and serde, and keeping the two installs apart is what stops "I wanted
-the dashboard" from becoming "every commit now depends on a TUI library".
+![the amont-fleet dashboard scanning a fleet of repositories](assets/fleet-demo.gif)
+
+It answers the questions a directory full of repositories accumulates: which
+repos are covered, which shims went stale after an upgrade, and which
+repository is quietly carrying a `hook.skip` somebody forgot. Design record:
+[the fleet dashboard](fleet-dashboard.md).
+
+`amont-fleet` is a separate binary on purpose: it pulls ratatui, crossterm and
+serde, and keeping the two apart is what stops "I wanted the dashboard" from
+becoming "every commit now depends on a TUI library". The one-line installers
+put both binaries in place; from crates.io it is its own
+`cargo install amont-fleet`.
 
 ### When another tool already owns the hooks
 
 `core.hooksPath` redirects hook dispatch, and `husky` sets it. In a repository
 that runs husky, git reads `.husky/_` and never looks at `.git/hooks` at all —
-so an install that wrote there would produce five files git never runs, and one
+so an install that wrote there would produce six files git never runs, and one
 that wrote to `.husky/_` would hand them to a directory husky's own `prepare`
 regenerates on the next `npm install`.
 
@@ -366,7 +376,7 @@ amont uninstall --binary     # …and remove the binary from ~/.local/bin
 amont-fleet uninstall --root ~/Developer
 ```
 
-Uninstall removes **our five shims and nothing else**. A hook you wrote
+Uninstall removes **our six shims and nothing else**. A hook you wrote
 yourself is left alone and named in the output, whatever it is — a hook it
 cannot even read is named too, rather than passed over in silence. `hook.skip`
 and `amont.severity` are never touched, because those are your statements
@@ -398,7 +408,7 @@ source and belong to the checkout.
 This is also why the documentation never tells you to run
 `rm $(git rev-parse --git-dir)/hooks/*`. That glob deletes every hook in the
 directory — including ones other tools installed and ones you wrote — in order
-to remove five files that belong to us. `amont uninstall` exists precisely
+to remove six files that belong to us. `amont uninstall` exists precisely
 so that removing our hooks never means removing yours.
 
 For bypassing a single commit, or disabling one check without uninstalling

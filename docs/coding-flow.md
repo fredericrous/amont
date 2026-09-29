@@ -14,9 +14,9 @@ because that is the one that gets stopped.
 
 ## `pre-commit`
 
-Git runs it before the commit exists. All fifteen built-in checks fan out
-**concurrently**, each reporting its own line, and a panic in one is isolated so
-the other fourteen still report.
+Git runs it before the commit exists. Every pre-commit check that applies here
+fans out **concurrently**, each reporting its own line, and a panic in one is
+isolated so the others still report.
 
 On an interactive terminal you watch this happen: a live region shows one
 spinner line per check still running (`⠹ clippy   2.3s`), shrinking as they
@@ -57,7 +57,7 @@ goes (nowhere, by default).
 
 ## `git push`
 
-`pre-push` runs its five checks **in sequence**, cheapest and most decisive
+`pre-push` runs its checks **in sequence**, cheapest and most decisive
 first — refuse a forbidden push before validating a branch name, and validate
 everything structural before paying for a test suite.
 
@@ -91,6 +91,24 @@ Those two questions differ on purpose. `--all-files` on a dirty tree reports on
 content that is not committed and may never be — which is exactly what you want
 when adopting a check into an existing repository, where `git add .` is not an
 acceptable way to measure the mess.
+
+`amont rehearse --wait` asks the push question early: it runs the push gate on
+a snapshot of `HEAD` before git opens a connection and stamps the tree, so the
+`git push` that follows skips the suite. `amont restore` brings back unstaged
+work a killed hook left parked.
+
+## For coding agents
+
+`amont list --json` is the same answer as `amont list`, machine-readable:
+declared and effective severity, whether each check fires here and why not,
+and the command if it is a declared external. `--stage` filters to one
+trigger, `--pushed` scopes to what your next push would carry. The contract is
+described in [the checks](checks.md#--json-the-machine-contract).
+
+`amont agents-md` writes that guidance into a generated block in `AGENTS.md`,
+plus a `CLAUDE.md` signpost pointing at it; `amont agents-md --check` reports
+drift only, and the `pre-commit-agents-md` check warns when the block is behind
+the binary that would generate it now.
 
 ## Before you type `git commit` at all
 

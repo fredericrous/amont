@@ -24,7 +24,7 @@ That is why `amont list` leads with what actually runs and gives the rest a
 line:
 
 ```text
-  12 active here.  22 inert (Go, JavaScript, Kubernetes, Python) — amont list --all
+  15 active here.  23 inert (Go, JavaScript, Kubernetes, Python, Rust) — amont list --all
 ```
 
 Even in a repository amont serves well, about half the checks are inert; in one

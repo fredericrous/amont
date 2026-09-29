@@ -401,12 +401,11 @@ amont list
 
 ```
 pre-commit
-  ● pre-commit-merge-conflict
-  ○ pre-commit-clippy               inert here — needs .rs + Cargo.toml
+  ● merge-conflict
   ● lint-shell (declared)
-  ✗ oops (declared)                 amont.conf line 3: severity "LOUD" …
+  ✗ oops (declared)            amont.conf line 3: severity "LOUD" …
 pre-push
-  ● pre-push-branch-protect
+  ● branch-protect
   ● smoke (declared)
 
   ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable
