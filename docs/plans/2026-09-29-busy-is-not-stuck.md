@@ -182,6 +182,21 @@ sampling.
 - `cargo test --workspace`, clippy (3 targets), fmt, MSRV, `check-no-deps.sh`,
   windows job.
 
+### Observed (2026-09-29)
+- Unit: 491 lib tests (proctree 24, common 11, live 19 incl. new) pass;
+  clippy `-D warnings` clean on macOS and via `make lint-cross` for
+  aarch64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu;
+  `cargo +1.74.0 check` for macOS and Linux targets.
+- Timing fixtures green 3× standalone and inside the full workspace gate.
+  Falsified: without `seen` the orphan fixture is killed at 2 s; without
+  reaped-children time the fork-per-file fixture is killed at 2 s.
+- Pilot (release build of this branch, duro-app `8d328e4`, DEFAULT budgets,
+  `AMONT_CPU_TRACE`): `amont rehearse --wait` passed, 1553/1553 tests. The
+  heartbeat read `last output 2m45s ago, busy ~3.0 cores` past the 2m00s
+  budget (was killed twice at 2m on 2026-09-29); 18 complete windows, min 2.4,
+  median 4.5, max 5.6 cores. The real `git push` of the throwaway branch
+  skipped the suite on the stamp and landed; the branch was deleted.
+
 ## Decision log
 - 2026-09-29 — Signal = process-tree CPU incl. reaped children, no spawn, no
   crate; `ps` sums rejected (non-monotonic under fork-per-file; spawn could
