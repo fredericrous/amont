@@ -18,6 +18,7 @@
 //! could not start.
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -61,6 +62,24 @@ extern "C" {
     fn libc_setpriority(which: i32, who: u32, prio: i32) -> i32;
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+    #[link_name = "pipe"]
+    fn libc_pipe(fds: *mut i32) -> i32;
+}
+
+/// One pipe for BOTH stdout and stderr, as `2>&1` would: the tool's lines
+/// arrive in the order it wrote them, so "the last line" means something.
+#[cfg(unix)]
+fn merged_pipe() -> Option<(File, Stdio, Stdio)> {
+    use std::os::unix::io::FromRawFd;
+    let mut fds = [0i32; 2];
+    // SAFETY: `fds` is two writable ints, which is all `pipe` writes.
+    if unsafe { libc_pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: both fds were just created and are owned by nobody else.
+    let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+    let write2 = write.try_clone().ok()?;
+    Some((read, Stdio::from(write), Stdio::from(write2)))
 }
 
 #[cfg(unix)]
@@ -113,7 +132,10 @@ fn kill_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn drain(stream: impl Read + Send + 'static, tail: Arc<Mutex<VecDeque<String>>>) {
+fn drain(
+    stream: impl Read + Send + 'static,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
             if let Ok(mut t) = tail.lock() {
@@ -123,7 +145,7 @@ fn drain(stream: impl Read + Send + 'static, tail: Arc<Mutex<VecDeque<String>>>)
                 t.push_back(line);
             }
         }
-    });
+    })
 }
 
 fn summary(tail: &Mutex<VecDeque<String>>) -> String {
@@ -145,11 +167,21 @@ pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) 
         return TreeRun::Spawn("empty command".into());
     };
     let mut cmd = Command::new(program);
-    cmd.args(rest)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(rest).current_dir(cwd).stdin(Stdio::null());
+    #[cfg(unix)]
+    let merged = merged_pipe();
+    #[cfg(not(unix))]
+    let merged: Option<(File, Stdio, Stdio)> = None;
+    let reader = match merged {
+        Some((read, out, err)) => {
+            cmd.stdout(out).stderr(err);
+            Some(read)
+        }
+        None => {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            None
+        }
+    };
     crate::hooks::common::strip_git_env(&mut cmd);
     #[cfg(unix)]
     {
@@ -168,18 +200,29 @@ pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) 
         Ok(c) => c,
         Err(e) => return TreeRun::Spawn(format!("{program}: {e}")),
     };
+    // The parent's copies of the write end went into `cmd` and die with it,
+    // so the reader sees EOF once every process holding the pipe has exited.
+    drop(cmd);
     let tail = Arc::new(Mutex::new(VecDeque::with_capacity(TAIL)));
+    let mut drains = Vec::new();
+    if let Some(read) = reader {
+        drains.push(drain(read, Arc::clone(&tail)));
+    }
     if let Some(out) = child.stdout.take() {
-        drain(out, Arc::clone(&tail));
+        drains.push(drain(out, Arc::clone(&tail)));
     }
     if let Some(err) = child.stderr.take() {
-        drain(err, Arc::clone(&tail));
+        drains.push(drain(err, Arc::clone(&tail)));
     }
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // The drains may still be flushing the last lines.
-                std::thread::sleep(POLL);
+                // Read to EOF before summarising — bounded, because a
+                // grandchild the tool left behind may still hold the pipe.
+                let until = Instant::now() + GRACE;
+                while Instant::now() < until && drains.iter().any(|d| !d.is_finished()) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 return if status.success() {
                     TreeRun::Passed
                 } else {

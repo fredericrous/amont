@@ -403,6 +403,13 @@ pub const SETTABLE: &[&str] = &[
     // (the four-minute suite, the five-second audit), so the project is the
     // right place to be able to say it; a local `git config` still wins.
     "order",
+    // Tree gates (ADR-0024). Whether they run, how long they may add to a
+    // commit after its checks, and which ignored paths are the repository's
+    // reproducible outputs rather than inputs a linter could import. None of
+    // them decides a commit; they only decide whether a stamp is earned.
+    "treeLint",
+    "treeLintSlack",
+    "snapshotPrepareOutputs",
 ];
 
 impl PolicyLine {

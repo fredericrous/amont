@@ -370,10 +370,28 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     let in_progress = crate::git_states_in_progress();
     let checks = selected_during(ctx.settings, Stage::PreCommit, &in_progress, ctx.manifest);
 
+    // Tree gates (ADR-0024): judged BEFORE the hold, which is the only moment
+    // unstaged edits are visible; started AFTER it, so they lint the commit's
+    // tree. They never decide the commit.
+    let tree_gates = if ctx.manifest.tree.is_empty() || !crate::tree_lint::enabled(settings) {
+        None
+    } else {
+        match crate::tree_lint::guard(settings) {
+            Some(why) => {
+                crate::hooks::common::say(&format!("  tree lint not proven: {why} — CI will lint"));
+                None
+            }
+            None => Some(&ctx.manifest.tree),
+        }
+    };
+
     let held = match hold_unstaged() {
         Ok(guard) => guard,
         Err(verdict) => return verdict,
     };
+
+    let root = crate::hooks::common::repo_root();
+    let side_car = tree_gates.and_then(|g| crate::tree_lint::start(std::path::Path::new(&root), g));
 
     let severities = Overrides::read(settings);
     let (verdict, outcomes) = run_stage_traced(settings, &checks, ctx, &severities);
@@ -410,6 +428,13 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .map(|d| d.script)
             .collect()
     };
+    // A rewrite means the tree the gates linted is not the one committed.
+    let stampable =
+        !matches!(verdict, Verdict::Block) && !outcomes.iter().any(|o| matches!(o, Outcome::Fixed));
+    let mut ran = ran;
+    if let Some(car) = side_car {
+        ran.extend(crate::tree_lint::finish(settings, car, stampable));
+    }
     let ran: Vec<&str> = ran.iter().map(String::as_str).collect();
     crate::gate_stamp::record(&ran);
 
