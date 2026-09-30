@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/attest-mirror
 repos: [amont, attest]
 adrs: []
@@ -9,7 +9,7 @@ adrs: []
 ## Review panel
 
 👉 **Decide:** none — approve if amont's `covered` may delete a local notes ref that origin no longer has, and judge nothing when origin cannot answer.
-📍 amont + attest · planned, code drafted in ../amont-wt-attest-mirror (28 attest tests green, fingerprints identical to attest v1.4.0 on its own tree) · next: land plan, commit, PR. Panel: backend, language:rust, tui, unix.
+📍 amont + attest · done: amont 1.45.0 (#285, #286), attest 1.4.1 (#21, #22). Panel: backend, language:rust, tui, unix.
 **Changed by review:** attest joins the plan (stale lock + askpass also hit 1.4.0); fetch into a throwaway ref with CAS, judged on a failed swap only if it equals the fetched oid; every non-answer says why, copyable undo lines.
 📄 Full reviews: [2026-09-30-amont-attest-parity.reviews.md](2026-09-30-amont-attest-parity.reviews.md)
 **Verdicts:** round 1 — 4 approve-with-changes (merged); round 2 — backend approve after two re-binds. Carried: `kill` under LC_ALL=C and gone only on "no such process" (done in code); the origin-unchanged stale-lock test also covers the concurrent-writer branch.
@@ -206,6 +206,8 @@ including `../attest-ref-v1.4.0`.
 | `leftover_sync_refs_are_swept` | dead-PID ref gone | as expected |
 | `an_absent_optional_path_is_bound_by_its_absence` | fp == hand-built hash; changes when path appears | as expected |
 | cross-implementation, attest v1.4.0 tree, 5 gates | identical `input` lines | identical: ci-fmt 68fd66be…, ci-clippy 58f0ee64…, ci-shellcheck 41d8c14e…, pre-push-cargo-test 58f0ee64…, ci-conformance 7f27d2fe… (throwaway `#[ignore]` test vs `sign.sh --no-push`, not committed) |
-| CI, release | green, channels verified | pending |
+| PR #285 CI | green on every platform | failed on Windows first (fixture identity, sweep test); fixed; then success incl. windows |
+| release 1.45.0 (#286, tag on e171676) | every job, every channel | release run success; GitHub 7 assets, crates.io, tap 1.45.0, npm `latest` 1.45.0 (after registry lag); local brew upgraded |
+| attest 1.4.1 (change 4: #21, #22) | green, released | CI success on all legs; release success, 6 binaries + SHA256SUMS, `v1` → 1.4.1, binary verified |
 
 <!-- panel: repos=amont,attest reviewers=backend,language:rust,tui,unix body-sha=ccb097b53ce4 -->
