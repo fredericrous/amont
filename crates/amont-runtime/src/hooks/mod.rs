@@ -28,5 +28,6 @@ pub mod run_tests;
 pub mod rust_tools;
 pub mod secrets;
 pub mod shellcheck;
+pub mod tree_parity;
 pub mod usual_name;
 pub mod yamllint;

@@ -87,6 +87,10 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
+  tree-parity    compare each `tree` gate in amont.conf with the workflow
+                 steps skipped on it; exits 1 on any drift (CI runs it,
+                 never skipped)
+
   add            vendor a pack's declarations into amont.conf — a pack is a
                  git repository carrying an `amont.pack` of amont.conf rows.
                  Resolves the revision to a commit id, refuses anything that
@@ -120,6 +124,7 @@ enum Sub {
     Check,
     Add,
     Rehearse,
+    TreeParity,
 }
 
 impl Sub {
@@ -151,6 +156,7 @@ impl Sub {
             Sub::Check => 11,
             Sub::Add => 12,
             Sub::Rehearse => 13,
+            Sub::TreeParity => 14,
         }
     }
 }
@@ -160,7 +166,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 14] = [
+const SUBCOMMANDS: [(&str, Sub); 15] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -175,6 +181,7 @@ const SUBCOMMANDS: [(&str, Sub); 14] = [
     ("check", Sub::Check),
     ("add", Sub::Add),
     ("rehearse", Sub::Rehearse),
+    ("tree-parity", Sub::TreeParity),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -357,6 +364,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
         Sub::Add => (&["--dry-run"], &[]),
         Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
+        Sub::TreeParity => (&[], &[]),
     }
 }
 
@@ -472,6 +480,17 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // background. The verb the post-commit hook spawns (`--worker`) and
         // the one a person or agent types to start, follow or stop it.
         Sub::Rehearse => amont_runtime::rehearsal::command(args),
+        // Text against text: no manifest trust needed, nothing executed.
+        // Prints each problem as `file:line: what`, exits 1 if any.
+        Sub::TreeParity => {
+            let root = amont_runtime::hooks::common::repo_root();
+            let problems =
+                amont_runtime::hooks::tree_parity::check_repo(std::path::Path::new(&root));
+            for p in &problems {
+                println!("{}", amont_runtime::ui::sanitize(&p.to_string()));
+            }
+            i32::from(!problems.is_empty())
+        }
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one

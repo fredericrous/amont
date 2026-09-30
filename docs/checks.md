@@ -1,7 +1,7 @@
 # The checks
 
 Six git hooks are installed — `pre-commit`, `commit-msg`,
-`prepare-commit-msg`, `post-commit`, `post-rewrite`, `pre-push` — and behind them thirty-eight
+`prepare-commit-msg`, `post-commit`, `post-rewrite`, `pre-push` — and behind them thirty-nine
 named checks, plus
 any your repository declares in [`amont.conf`](custom-checks.md).
 
@@ -164,6 +164,7 @@ other twenty-one still report.
 | `pre-commit-prettier` | a prettier config is present | Format check. **fixes** |
 | `pre-commit-pyright` | `.py` `.pyi` + `pyrightconfig.json`/`.jsonc`/`pyproject.toml` | Type check. |
 | `pre-commit-ruff` | `.py` `.pyi` + `ruff.toml`/`.ruff.toml`/`pyproject.toml` | Lint and format. **fixes** |
+| `pre-commit-tree-parity` | `amont.conf`, `*.yml`, `*.yaml` (repositories with `amont.conf`) | Every `tree` gate must be matched by the workflow step skipped on it: the step's `run:` equals the gate's normalized command. Fails closed on what it cannot read with certainty. See [the CI backstop](ci.md#skipping-lint-tree-gates). |
 | `pre-commit-usual-name` | always | Warns the first time you commit under a given name/email, so a misconfigured `user.name` is noticed at commit one rather than commit twenty. **Never blocks.** |
 | `pre-commit-hadolint` | `Dockerfile` | Dockerfile lint. Matches that basename **exactly** — `Dockerfile.dev` and `Dockerfile.prod` do not, because scope name tokens are exact basenames. |
 | `pre-commit-helm-lint` | `.yaml` `.yml` `.tpl` + `Chart.yaml` | `helm lint`, once per chart directory the commit touched — resolved by walking up to the nearest `Chart.yaml`, not once per file. |

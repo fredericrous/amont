@@ -4,7 +4,7 @@
 one command.**
 
 One Rust binary, no runtime, no config file to write. Install it, run
-`amont install` in a repository, and your next commit is checked by thirty-eight
+`amont install` in a repository, and your next commit is checked by thirty-nine
 language-aware checks that already know when to stay out of the way.
 
 ![amont catching a commit and letting the fixed one through](assets/amont-demo.gif)
@@ -12,7 +12,7 @@ language-aware checks that already know when to stay out of the way.
 ## Why this one
 
 - **Useful in the first minute.** Other hook managers install empty and wait
-  for you to write YAML. amont ships thirty-eight checks — commit-message
+  for you to write YAML. amont ships thirty-nine checks — commit-message
   conventions, merge-conflict markers, linters and formatters for the languages
   your repository actually uses, branch rules, your test suite — and each one
   fires only where the repository has opted into its tool. `amont list`
@@ -97,7 +97,7 @@ deliberately does not:
 1. **[Installing and activating](install.md)** — get the binary, turn hooks on
    in one repository (or every repository you ever clone), and turn them off
    again.
-2. **[The checks](checks.md)** — what the thirty-eight built-ins do, and what each
+2. **[The checks](checks.md)** — what the thirty-nine built-ins do, and what each
    one needs before it fires.
 3. **[Opting out](opting-out.md)** — skip one check, downgrade a whole trigger,
    bypass a single commit, or remove the hooks entirely.
