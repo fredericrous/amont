@@ -199,9 +199,26 @@ fn valid_gate(name: &str) -> bool {
     name.len() <= 64 && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
+/// One declared path. `?build.rs` in the spec is `optional` (attest 1.4.0):
+/// it may be absent, and its absence is then part of the fingerprint. The
+/// marker is stripped here, once, so nothing downstream can hand `?x` to git
+/// — where it would match nothing and silently drop out of the listing.
+#[derive(Debug, Clone, PartialEq)]
+struct PathTok {
+    path: String,
+    optional: bool,
+}
+
 /// A path token that is not a literal, root-relative file or directory.
-/// `git ls-tree` does not glob, so a wildcard would fingerprint nothing.
+/// `git ls-tree` does not glob, so a wildcard would fingerprint nothing. One
+/// leading `?` is the optional marker, not a wildcard; the rest obeys every
+/// rule, so `??x` and `?/x` are bad, and so is a lone `?`.
 fn bad_path(tok: &str) -> bool {
+    let tok = match tok.strip_prefix('?') {
+        Some("") => return true,
+        Some(rest) => rest,
+        None => tok,
+    };
     tok.starts_with(':')
         || tok.starts_with('/')
         || tok.starts_with("./")
@@ -216,7 +233,7 @@ fn bad_path(tok: &str) -> bool {
 }
 
 /// The spec, byte-strict; any violation invalidates the WHOLE spec.
-fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
+fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<PathTok>)>> {
     if bytes.len() > MAX_SPEC_BYTES
         || bytes
             .iter()
@@ -225,7 +242,7 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
         return None;
     }
     let text = std::str::from_utf8(bytes).ok()?;
-    let mut gates: Vec<(String, Vec<String>)> = Vec::new();
+    let mut gates: Vec<(String, Vec<PathTok>)> = Vec::new();
     for line in text.split('\n') {
         let mut toks = line.split([' ', '\t']).filter(|t| !t.is_empty());
         let Some(gate) = toks.next() else { continue };
@@ -239,6 +256,19 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
         if paths.is_empty() || paths.len() > MAX_SPEC_PATHS || paths.iter().any(|p| bad_path(p)) {
             return None;
         }
+        let paths = paths
+            .into_iter()
+            .map(|p| match p.strip_prefix('?') {
+                Some(rest) => PathTok {
+                    path: rest.to_string(),
+                    optional: true,
+                },
+                None => PathTok {
+                    path: p,
+                    optional: false,
+                },
+            })
+            .collect();
         gates.push((gate.to_string(), paths));
         if gates.len() > MAX_SPEC_GATES {
             return None;
@@ -250,7 +280,7 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
 /// The spec at `tree`, read from the tree (never the working copy). `None`
 /// when there is none, when both locations exist, or when it is invalid —
 /// the hook then attests by tree alone, as before.
-fn spec_at(tree: &str) -> Option<Vec<(String, Vec<String>)>> {
+fn spec_at(tree: &str) -> Option<Vec<(String, Vec<PathTok>)>> {
     let present: Vec<&str> = SPEC_PATHS
         .iter()
         .copied()
@@ -295,14 +325,25 @@ fn is_oid(s: &str) -> bool {
 
 /// The fingerprint of `gate` on `tree`: `git hash-object` over the
 /// `ls-tree -r -z --full-tree` listing of the implicit paths and the gate's
-/// declared ones. `None` when a declared path does not resolve on that tree,
-/// when git fails at any step, or when the listing is empty.
-fn fingerprint(tree: &str, paths: &[String]) -> Option<String> {
-    let names: String = paths.iter().map(|p| format!("{tree}:{p}\n")).collect();
-    let answers = crate::git::stdout_piped(&["cat-file", "--batch-check"], &names)?;
-    if answers.lines().count() != paths.len() || answers.lines().any(|l| l.ends_with(" missing")) {
-        return None;
+/// declared ones. `None` when a REQUIRED declared path does not resolve on
+/// that tree, when git fails at any step, or when the listing is empty. An
+/// optional path is listed when it exists and bound by its absence when not.
+fn fingerprint(tree: &str, toks: &[PathTok]) -> Option<String> {
+    let required: Vec<&str> = toks
+        .iter()
+        .filter(|t| !t.optional)
+        .map(|t| t.path.as_str())
+        .collect();
+    if !required.is_empty() {
+        let names: String = required.iter().map(|p| format!("{tree}:{p}\n")).collect();
+        let answers = crate::git::stdout_piped(&["cat-file", "--batch-check"], &names)?;
+        if answers.lines().count() != required.len()
+            || answers.lines().any(|l| l.ends_with(" missing"))
+        {
+            return None;
+        }
     }
+    let paths: Vec<String> = toks.iter().map(|t| t.path.clone()).collect();
     let mut args: Vec<String> = vec![
         "ls-tree".into(),
         "-r".into(),
@@ -311,7 +352,7 @@ fn fingerprint(tree: &str, paths: &[String]) -> Option<String> {
         tree.to_string(),
         "--".into(),
     ];
-    args.extend(implicit_inputs(paths));
+    args.extend(implicit_inputs(&paths));
     args.extend(paths.iter().cloned());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let listing = crate::git::stdout_raw(&argv)?;
@@ -1715,5 +1756,85 @@ mod tests {
             );
         });
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // --- attest 1.4.0 parity: optional paths --------------------------------
+
+    #[test]
+    fn optional_paths_are_marked_once_and_stripped() {
+        let spec = parse_spec(b"g src ?build.rs ?a/b/c\n").expect("valid");
+        assert_eq!(
+            spec[0].1,
+            [
+                PathTok {
+                    path: "src".into(),
+                    optional: false
+                },
+                PathTok {
+                    path: "build.rs".into(),
+                    optional: true
+                },
+                PathTok {
+                    path: "a/b/c".into(),
+                    optional: true
+                },
+            ]
+        );
+        assert!(
+            parse_spec(b"g ?nope\n").is_some(),
+            "an all-optional gate is a gate"
+        );
+        for bad in [
+            "?", "??x", "?/x", "?./x", "?x/", "?:x", "x?", "?a//b", "?a/../b",
+        ] {
+            assert!(
+                parse_spec(format!("g {bad}\n").as_bytes()).is_none(),
+                "{bad} should be invalid"
+            );
+        }
+    }
+
+    /// The fingerprint of `g src ?nope` equals the hash of a listing built BY
+    /// HAND from attest's SPEC — the optional path is absent, so the listing
+    /// is the spec and `src` — and changes the moment the path appears.
+    #[test]
+    fn an_absent_optional_path_is_bound_by_its_absence() {
+        let work = repo("optional-fp");
+        std::fs::create_dir_all(work.join("src")).unwrap();
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(work.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(work.join(".github/attest-inputs"), "g src ?nope\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-qm", "chore: spec"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let spec_oid = git(
+            &work,
+            &["rev-parse", &format!("{tree}:.github/attest-inputs")],
+        );
+        let main_oid = git(&work, &["rev-parse", &format!("{tree}:src/main.rs")]);
+        let listing = format!(
+            "100644 blob {spec_oid}\t.github/attest-inputs\x00100644 blob {main_oid}\tsrc/main.rs\x00"
+        );
+        let hand =
+            crate::git::stdout_piped_in(&work, &["hash-object", "--stdin"], listing.as_bytes())
+                .unwrap();
+        let before = in_repo(&work, || {
+            let spec = spec_at(&tree).expect("the spec parses");
+            fingerprint(&tree, &spec[0].1)
+        });
+        assert_eq!(before.as_deref(), Some(hand.as_str()));
+        std::fs::write(work.join("nope"), "now it exists\n").unwrap();
+        git(&work, &["add", "nope"]);
+        git(&work, &["commit", "-qm", "chore: nope"]);
+        let tree2 = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let after = in_repo(&work, || {
+            let spec = spec_at(&tree2).expect("the spec parses");
+            fingerprint(&tree2, &spec[0].1)
+        });
+        assert!(
+            after.is_some() && after != before,
+            "its appearance changes the fingerprint"
+        );
+        let _ = std::fs::remove_dir_all(&work);
     }
 }
