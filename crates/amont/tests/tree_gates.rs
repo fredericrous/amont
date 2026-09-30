@@ -563,6 +563,16 @@ fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
         vec!["slow"],
         "{out}"
     );
+
+    // Regression: the docs commit's instant "pass" of the unscoped suite must
+    // not overwrite its real duration — the next covered commit is proven.
+    r.stage("c.txt", "c\n");
+    let (ok, out) = commit(&r, "feat: c");
+    assert!(ok, "{out}");
+    assert!(
+        stamped(&r, "HEAD").contains("tree:slowish"),
+        "still covered: {out}"
+    );
 }
 
 /// Regression: the version probe ran in the hook's main thread, unbounded,

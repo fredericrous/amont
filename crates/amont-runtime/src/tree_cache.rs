@@ -295,9 +295,23 @@ pub fn record_durations(measured: &[(String, u64)]) {
     }
 }
 
-/// How long this gate's last commit-time run took in `ns_dir` (a cancelled
-/// run records its elapsed time: a lower bound, which is what matters).
-pub fn last_ms(ns_dir: &Path) -> Option<u64> {
+/// How long this gate's last commit-time run took, kept in the gate's
+/// directory (not a namespace), so the fit test can run FIRST — before the
+/// version probe, the skew check and the namespace — and a gate that cannot
+/// fit costs the commit nothing. A cancelled run records its elapsed time: a
+/// lower bound, which is what matters.
+pub fn gate_last_ms(gate: &TreeGate) -> Option<u64> {
+    last_ms(&gate_dir(gate)?)
+}
+
+pub fn record_gate_last_ms(gate_name: &str, ms: u64) {
+    if let Some(dir) = git_dir().map(|d| d.join("amont-cache").join(gate_name)) {
+        let _ = std::fs::create_dir_all(&dir);
+        record_last_ms(&dir, ms);
+    }
+}
+
+fn last_ms(ns_dir: &Path) -> Option<u64> {
     std::fs::read_to_string(ns_dir.join(LAST_MS))
         .ok()?
         .trim()
@@ -305,7 +319,7 @@ pub fn last_ms(ns_dir: &Path) -> Option<u64> {
         .ok()
 }
 
-pub fn record_last_ms(ns_dir: &Path, ms: u64) {
+fn record_last_ms(ns_dir: &Path, ms: u64) {
     let tmp = ns_dir.join(format!("{LAST_MS}.tmp.{}", std::process::id()));
     if std::fs::write(&tmp, ms.to_string()).is_ok() {
         let _ = std::fs::rename(&tmp, ns_dir.join(LAST_MS));

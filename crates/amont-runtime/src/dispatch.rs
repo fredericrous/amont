@@ -396,8 +396,14 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     // cover a tree gate can hide behind — from their last measured runs.
     let decls =
         crate::hooks::run_tests::blocking_commit_decls(ctx.settings, &ctx.manifest.externals);
+    // Only declarations whose scope this commit touches RUN; the others
+    // return at once, and their duration says nothing about cover.
+    let staged = if ctx.manifest.tree.is_empty() {
+        Vec::new()
+    } else {
+        crate::hooks::common::staged_files(&[])
+    };
     let cover_ms = if tree_gates.is_some() {
-        let staged = crate::hooks::common::staged_files(&[]);
         decls
             .iter()
             .filter(|d| d.scope.touches(&staged))
@@ -427,7 +433,9 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .zip(outcomes.iter().zip(&durations))
             .filter(|(c, (o, _))| {
                 matches!(o, Outcome::Passed | Outcome::Failed)
-                    && decls.iter().any(|d| d.id == c.name())
+                    && decls
+                        .iter()
+                        .any(|d| d.id == c.name() && d.scope.touches(&staged))
             })
             .map(|(c, (_, ms))| (c.name().to_string(), *ms))
             .collect();

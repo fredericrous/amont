@@ -199,8 +199,8 @@ pub fn argv(gate: &TreeGate, cache_flags: &str) -> Vec<String> {
 
 /// What one gate's thread decided, and did.
 enum Decision {
-    /// It ran: how it ended, how long it took, and in which namespace.
-    Ran(TreeRun, u64, PathBuf),
+    /// It ran: how it ended, and how long it took.
+    Ran(TreeRun, u64),
     /// The tool it would run is not the one CI resolves.
     Skew(String),
     /// Its version could not be read before the deadline or the cancel.
@@ -314,6 +314,12 @@ fn decide_and_run(
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Decision {
+    // Would it fit? Its last run against this commit's cover plus the slack,
+    // asked FIRST so a gate that cannot fit costs nothing. Unknown runs once,
+    // to learn.
+    if let Some(ms) = crate::tree_cache::gate_last_ms(g).filter(|ms| *ms > budget_ms) {
+        return Decision::Slow(ms);
+    }
     let Some(version) = crate::tree_cache::tool_version(cwd, g, deadline, cancel) else {
         return Decision::NoVersion;
     };
@@ -328,11 +334,6 @@ fn decide_and_run(
     let Some(ns_dir) = crate::tree_cache::gate_dir(g).map(|d| d.join(&ns)) else {
         return Decision::Cold;
     };
-    // Would it fit? Its last run against the cover plus the slack. Unknown
-    // runs once, to learn.
-    if let Some(ms) = crate::tree_cache::last_ms(&ns_dir).filter(|ms| *ms > budget_ms) {
-        return Decision::Slow(ms);
-    }
     let Some(lock) = crate::tree_cache::try_lock(g) else {
         return Decision::Busy;
     };
@@ -343,7 +344,7 @@ fn decide_and_run(
     // Only now: the runner killed the whole group before returning, so
     // nothing that could still write the cache is alive.
     drop(lock);
-    Decision::Ran(run, ms, ns_dir)
+    Decision::Ran(run, ms)
 }
 
 /// Which declared tree gates every pushed tip's TREE proves, as note gate
@@ -608,17 +609,15 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
     let mut busy = Vec::new();
     let mut slow = Vec::new();
     for (name, handle) in car.running {
-        let decision = handle.join().unwrap_or(Decision::Ran(
-            TreeRun::Spawn("thread died".into()),
-            0,
-            PathBuf::new(),
-        ));
+        let decision = handle
+            .join()
+            .unwrap_or(Decision::Ran(TreeRun::Spawn("thread died".into()), 0));
         match decision {
-            Decision::Ran(run, ms, ns_dir) => {
+            Decision::Ran(run, ms) => {
                 // A completed run's time, or a cancelled one's lower bound:
                 // what the next commit's fit test reads.
                 if !matches!(run, TreeRun::Spawn(_)) {
-                    crate::tree_cache::record_last_ms(&ns_dir, ms);
+                    crate::tree_cache::record_gate_last_ms(&name, ms);
                 }
                 match run {
                     TreeRun::Passed if stampable => {
