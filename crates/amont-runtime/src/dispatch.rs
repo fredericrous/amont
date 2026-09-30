@@ -403,11 +403,14 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     } else {
         crate::hooks::common::staged_files(&[])
     };
+    // A declaration in scope that was never measured is UNKNOWN cover, and
+    // unknown means run: the run teaches both numbers, exactly as an unknown
+    // gate time does. Guessing 0 would skip the one commit that could learn.
     let cover_ms = if tree_gates.is_some() {
         decls
             .iter()
             .filter(|d| d.scope.touches(&staged))
-            .filter_map(|d| crate::tree_cache::duration_of(&d.id))
+            .map(|d| crate::tree_cache::duration_of(&d.id).unwrap_or(u64::MAX))
             .max()
             .unwrap_or(0)
     } else {

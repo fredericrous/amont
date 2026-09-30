@@ -100,3 +100,18 @@ verification list. Implementation decisions taken here are logged below.
   tests now use a 300 s gate against a 200 s bound, which only a commit that
   waited for the gate can exceed. The lock test allows eventual release: a
   concurrent fork holds the lock's description until its exec.
+- 2026-09-30 — **Re-pilots (application-landscape clone, this branch).**
+  - **Fit rule, first run:** code commits 2/2 proven (eslint measured
+    4–5 s behind a ~6 min test run). Docs commits were skipped but still paid
+    ~1 s of preparation. It also exposed that a docs commit's instant "pass"
+    of the unscoped test run (41 ms) overwrote the run's real 340 s. Fixed
+    in `ee4c49a`: the fit test runs first, and durations are recorded only
+    for declarations in scope.
+  - **Interleaved run:** a skipped docs commit costs **1.3 s, the
+    baseline**. The first docs commit learns the gate's time (ran, was
+    cancelled once), and the code commit after it is **proven**. A fresh
+    start skipped one code commit because the covering test run had never
+    been measured. Fixed next: **unknown cover counts as run**, which
+    teaches both numbers. Two other docs commits took 3–4.8 s while a 20-min
+    test gate ran on the same machine: load, not the gate (they were
+    `slow`-skipped at once).

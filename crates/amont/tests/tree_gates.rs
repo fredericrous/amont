@@ -515,6 +515,36 @@ fn every_tree_outcome_is_recorded_as_evidence_on_the_tree() {
     );
 }
 
+/// Fresh start: the gate's time is known (it outlasts the slack), the
+/// covering check's is not. Unknown cover means run — and learn — never skip.
+#[test]
+fn an_unmeasured_covering_check_counts_as_cover() {
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        "pre-commit  suite  *.txt  block  sleep 3\ntree slowish ruff * attest sleep 2\n",
+    );
+    r.stage(
+        ".forgejo/workflows/ci.yaml",
+        &workflow(&[("slowish", "sleep 2")]),
+    );
+    r.commit("chore: gates");
+    trust_and_install(&r);
+    r.git(&["config", "amont.treeLint", "true"]);
+    r.git(&["config", "amont.treeLintSlack", "1"]);
+    warm(&r);
+    // Teach the gate its time on a docs commit (no cover): it runs, and is
+    // cancelled at the slack.
+    r.stage("notes.md", "n\n");
+    let (ok, out) = commit(&r, "docs: n");
+    assert!(ok, "{out}");
+    // Now a covered commit, the suite never measured before.
+    r.stage("a.txt", "a\n");
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    assert!(stamped(&r, "HEAD").contains("tree:slowish"), "{out}");
+}
+
 #[test]
 fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
     // A declared commit check that takes 3 s on *.txt — the cover — and a
