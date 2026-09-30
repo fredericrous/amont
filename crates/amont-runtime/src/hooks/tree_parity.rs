@@ -20,7 +20,11 @@
 //! - a step-level `env:` or `shell:`, or a `working-directory:` the gate does
 //!   not declare as `cwd=`;
 //! - any `env:` or `defaults:` a gated step would inherit from its job or its
-//!   workflow.
+//!   workflow — with one exception: an inherited `defaults: run: shell: bash`
+//!   is accepted when the gated command has no pipe, list, redirection or
+//!   substitution, because bash's `-e` and `pipefail` cannot change the verdict
+//!   of a simple command (a decision of the person, 2026-09-30: the fleet sets
+//!   it workflow-wide on purpose).
 //!
 //! A gate that needs one of these does not attest.
 
@@ -63,17 +67,26 @@ struct Step {
     text: String,
 }
 
+/// What a job or a workflow hands down to its steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Inherited {
+    /// `defaults:` holding exactly `run:` → `shell: bash`.
+    ShellBash,
+    /// Any `env:`, or any other `defaults:`.
+    Other,
+}
+
 #[derive(Debug, Default)]
 struct Job {
-    /// `env:` or `defaults:` at the job's own level.
-    inherits: Option<usize>,
+    /// `env:` or `defaults:` at the job's own level, with their lines.
+    inherits: Vec<(usize, Inherited)>,
     steps: Vec<Step>,
 }
 
 #[derive(Debug, Default)]
 struct Workflow {
     /// `env:` or `defaults:` at the top level.
-    inherits: Option<usize>,
+    inherits: Vec<(usize, Inherited)>,
     jobs: Vec<Job>,
     /// `tree-` references on lines that belong to no step.
     stray: Vec<usize>,
@@ -96,7 +109,37 @@ fn mentions_tree(line: &str) -> bool {
     line.contains("'tree-") || line.contains("\"tree-")
 }
 
+/// What the `env:`/`defaults:` key on line `idx` (0-based) hands down.
+/// `defaults:` whose body is exactly `run:` → `shell: bash` is the one shape
+/// that may be accepted; everything else is `Other`.
+fn classify(lines: &[&str], idx: usize) -> Inherited {
+    let key_line = lines[idx];
+    if key_of(key_line.trim()).map(|(k, _)| k) != Some("defaults") {
+        return Inherited::Other;
+    }
+    let level = indent_of(key_line);
+    let body: Vec<&str> = lines[idx + 1..]
+        .iter()
+        .map(|l| (indent_of(l), l.trim()))
+        .filter(|(_, t)| !t.is_empty() && !t.starts_with('#'))
+        .take_while(|(ind, _)| *ind > level)
+        .map(|(_, t)| t)
+        .collect();
+    let bash = ["shell: bash", "shell: 'bash'", "shell: \"bash\""];
+    match body.as_slice() {
+        ["run:", shell] if bash.contains(shell) => Inherited::ShellBash,
+        _ => Inherited::Other,
+    }
+}
+
+/// Whether bash's `-e`/`pipefail` could change this command's verdict: a
+/// pipe, a list, a redirection, a substitution or a subshell.
+fn is_simple(command: &str) -> bool {
+    !command.contains(['|', ';', '&', '>', '<', '`', '(', ')']) && !command.contains("$(")
+}
+
 fn read_workflow(text: &str) -> Workflow {
+    let all: Vec<&str> = text.lines().collect();
     let mut wf = Workflow::default();
     let mut in_jobs = false;
     let mut job_indent: Option<usize> = None;
@@ -120,7 +163,7 @@ fn read_workflow(text: &str) -> Workflow {
                 if k == "jobs" {
                     in_jobs = true;
                 } else if k == "env" || k == "defaults" {
-                    wf.inherits.get_or_insert(lineno);
+                    wf.inherits.push((lineno, classify(&all, i)));
                 }
             }
             if mentions_tree(raw) {
@@ -161,7 +204,7 @@ fn read_workflow(text: &str) -> Workflow {
                 if k == "steps" {
                     steps_indent = Some(ind);
                 } else if k == "env" || k == "defaults" {
-                    job.inherits.get_or_insert(lineno);
+                    job.inherits.push((lineno, classify(&all, i)));
                 }
             }
             if mentions_tree(raw) {
@@ -306,10 +349,12 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
                     continue;
                 };
                 seen.push(&gate.name);
-                if let Some(l) = job.inherits.or(wf.inherits) {
+                let inherited: Vec<(usize, Inherited)> =
+                    wf.inherits.iter().chain(&job.inherits).copied().collect();
+                if let Some((l, _)) = inherited.iter().find(|(_, k)| *k == Inherited::Other) {
                     problems.push(Problem {
                         file: file.clone(),
-                        line: l,
+                        line: *l,
                         what: format!(
                             "`tree-{name}` is skipped in a job that inherits `env:` or \
                              `defaults:` — they change what `run:` does; move them onto \
@@ -317,6 +362,20 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
                         ),
                     });
                     continue;
+                }
+                if let Some((l, _)) = inherited.first() {
+                    if !is_simple(&gate.normalized()) {
+                        problems.push(Problem {
+                            file: file.clone(),
+                            line: *l,
+                            what: format!(
+                                "`tree-{name}` inherits `shell: bash`, which is accepted only \
+                                 for a simple command — this one has a pipe, list, \
+                                 redirection or substitution"
+                            ),
+                        });
+                        continue;
+                    }
                 }
                 let mut run = None;
                 let mut bad = None;
@@ -582,11 +641,58 @@ mod tests {
     }
 
     #[test]
-    fn parity_workflow_defaults_rejected() {
+    fn parity_workflow_shell_bash_accepted_for_a_simple_command() {
         let w = wf("run: npm run lint")
             .replace("jobs:\n", "defaults:\n  run:\n    shell: bash\njobs:\n");
+        assert_eq!(check(ESLINT, &w), vec![]);
+    }
+
+    #[test]
+    fn parity_job_shell_bash_accepted_for_a_simple_command() {
+        let w = wf("run: npm run lint").replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash\n",
+        );
+        assert_eq!(check(ESLINT, &w), vec![]);
+    }
+
+    #[test]
+    fn parity_shell_bash_rejected_for_a_pipeline() {
+        let w = wf("run: npm run lint | tee lint.log")
+            .replace("jobs:\n", "defaults:\n  run:\n    shell: bash\njobs:\n");
+        let p = check(
+            "tree eslint eslint * attest npm run lint | tee lint.log",
+            &w,
+        );
+        assert!(p[0].what.contains("simple command"), "{p:?}");
+    }
+
+    #[test]
+    fn parity_other_shell_rejected() {
+        let w =
+            wf("run: npm run lint").replace("jobs:\n", "defaults:\n  run:\n    shell: sh\njobs:\n");
         let p = check(ESLINT, &w);
-        assert!(p[0].what.contains("inherits"), "{p:?}");
+        assert!(p[0].what.contains("inherits `env:` or"), "{p:?}");
+    }
+
+    #[test]
+    fn parity_shell_bash_plus_working_directory_rejected() {
+        let w = wf("run: npm run lint").replace(
+            "jobs:\n",
+            "defaults:\n  run:\n    shell: bash\n    working-directory: web\njobs:\n",
+        );
+        let p = check(ESLINT, &w);
+        assert!(p[0].what.contains("inherits `env:` or"), "{p:?}");
+    }
+
+    #[test]
+    fn parity_workflow_env_still_rejected_beside_shell_bash() {
+        let w = wf("run: npm run lint").replace(
+            "jobs:\n",
+            "defaults:\n  run:\n    shell: bash\nenv:\n  CI: '1'\njobs:\n",
+        );
+        let p = check(ESLINT, &w);
+        assert!(p[0].what.contains("inherits `env:` or"), "{p:?}");
     }
 
     #[test]

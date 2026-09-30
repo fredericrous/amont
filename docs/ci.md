@@ -270,3 +270,18 @@ it. So the CI step must run **exactly** the gate's normalized declaration:
 same tool. One gate proves one command: two CI steps (`ruff check` and
 `ruff format --check`) are two gates.
 
+`amont tree-parity` (and the `pre-commit-tree-parity` check) enforce this. It
+fails closed on a gated step it cannot read with certainty:
+
+- a block scalar, an anchor or alias, a quoted form with escapes, or
+  `${{ }}` in `run:`;
+- a step-level `env:` or `shell:`, or a `working-directory:` the gate does not
+  declare as `cwd=`;
+- any `env:` or `defaults:` the job or workflow hands down.
+
+The one inherited setting it accepts is `defaults: run: shell: bash`, and only
+for a simple command: no pipe, list, redirection or substitution. There,
+bash's `-e` and `pipefail` cannot change the verdict. Run
+`amont tree-parity` as an ungated CI step, so a drift committed with
+`--no-verify` still fails.
+

@@ -18,3 +18,18 @@ Read the canonical plan for the design, the review panel and the
 verification list. Implementation decisions taken here are logged below.
 
 ## Decision log
+
+- 2026-09-30 — **Options grammar:** options after `attest` are lowercase
+  `key=value` tokens. An uppercase `NAME=value` begins the command, so an
+  env-prefixed command stays expressible.
+- 2026-09-30 — **Inherited `shell: bash` accepted for a simple command**
+  (the person's decision). The pilots' workflows set
+  `defaults: run: shell: bash` workflow-wide for `pipefail`, and the reviewed
+  fail-closed rule rejected every inherited default. tree-parity now accepts
+  exactly that block when the gated command has no pipe, list, redirection or
+  substitution. Inherited `env:`, `working-directory` and any other shell stay
+  rejected. Checked on both pilots' real workflows: all gated steps pass, and
+  a drifted `run:` is caught with its line.
+- 2026-09-30 — **tree-parity is `Reach::Convention`, not Safety.** It fires
+  only in a repository that declares tree gates. The safety net stays the
+  low-false-positive set.
