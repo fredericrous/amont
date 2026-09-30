@@ -133,7 +133,7 @@ fn a_failing_tree_gate_never_blocks_and_never_stamps() {
         "the commit is judged by its checks, not by a tree gate: {out}"
     );
     assert!(
-        out.contains("tree lint not proven: bad — 3 problems — CI will lint"),
+        out.contains("tree lint not proven — CI will lint:\n    bad — 3 problems"),
         "warm said: {warmed}\ncommit said: {out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:bad"), "{out}");
@@ -478,10 +478,7 @@ fn a_pinned_tool_at_another_version_withholds_without_blocking() {
     r.stage("b.txt", "b\n");
     let (ok, out) = commit(&r, "feat: b");
     assert!(ok, "skew never blocks a commit: {out}");
-    assert!(
-        out.contains("tree lint not proven: ok — ruff is pinned to 99.99.99"),
-        "{out}"
-    );
+    assert!(out.contains("    ok — ruff is pinned to 99.99.99"), "{out}");
     assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
 }
 
@@ -594,7 +591,7 @@ fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
     let started = Instant::now();
     let (ok, out) = commit(&r, "docs: n");
     assert!(ok, "{out}");
-    assert!(out.contains("tree lint skipped: slowish (~2."), "{out}");
+    assert!(out.contains("    slowish — skipped: needs ~2."), "{out}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "a skipped gate cost time: {:?}",
@@ -720,4 +717,106 @@ fn a_tree_that_moves_during_the_run_is_withheld() {
     assert!(ok, "{out}");
     assert!(out.contains("mover — the tree moved while it ran"), "{out}");
     assert!(!stamped(&r, "HEAD").contains("tree:mover"), "{out}");
+}
+
+/// The push waits for a same-tree lint rehearsal at most `amont.treeLintWait`,
+/// ONE deadline from pre-push start, then says lint is not attested.
+#[test]
+fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
+    let r = unproven_branch("sleepy", "ruff", "sleep 120");
+    attesting(&r);
+    r.git(&["config", "amont.treeLintWait", "3"]);
+    // Start the rehearsal in the background, and wait until it is linting.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    cmd.arg("rehearse").current_dir(&r.dir).stdin(Stdio::null());
+    Repo::strip_git_env_impl(&mut cmd);
+    cmd.env("GIT_CONFIG_GLOBAL", r.dir.join("fake-gitconfig"));
+    assert!(cmd.output().expect("amont rehearse").status.success());
+    let until = Instant::now() + Duration::from_secs(30);
+    let linting = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_amont"));
+        c.args(["rehearse", "--status"])
+            .current_dir(&r.dir)
+            .stdin(Stdio::null());
+        Repo::strip_git_env_impl(&mut c);
+        String::from_utf8_lossy(&c.output().unwrap().stdout).contains("tree lint")
+    };
+    while !linting() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(linting(), "the rehearsal never reached its tree-lint step");
+    let started = Instant::now();
+    let pushed = push(&r);
+    assert!(
+        started.elapsed() < Duration::from_secs(100),
+        "the push waited past amont.treeLintWait: {:?}\n{pushed}",
+        started.elapsed()
+    );
+    // Semantic, not the clock alone: the general test-gate wait never ran.
+    assert!(!pushed.contains("waiting up to"), "{pushed}");
+    assert!(
+        pushed.contains("lint not attested (cold or changed tree): sleepy"),
+        "{pushed}"
+    );
+}
+
+/// `amont.unstampedPush refuse` governs push CHECKS; tree gates are not
+/// push checks, so an unproven one never blocks a push.
+#[test]
+fn unstamped_push_refuse_never_blocks_on_a_tree_gate() {
+    let r = unproven_branch("ok", "ruff", "true");
+    attesting(&r);
+    r.git(&["config", "amont.unstampedPush", "refuse"]);
+    let pushed = push(&r);
+    assert!(
+        pushed.contains("lint not attested (cold or changed tree): ok"),
+        "{pushed}"
+    );
+}
+
+/// What the tree gates say fits 80 columns, colours off.
+#[test]
+fn tree_lint_lines_fit_eighty_columns() {
+    let r = repo_with("eslint", "ruff", "sh fail.sh");
+    r.stage(
+        "fail.sh",
+        "#!/bin/sh\necho '12 problems (12 errors, 0 warnings)'\nexit 1\n",
+    );
+    let mut lines = Vec::new();
+    for (i, prepare) in ["cold", "warm"].iter().enumerate() {
+        if *prepare == "warm" {
+            warm(&r);
+        }
+        r.stage(&format!("f{i}.txt"), "x\n");
+        let mut cmd = Command::new("git");
+        cmd.args(["commit", "-q", "-m", "feat: x"])
+            .current_dir(&r.dir)
+            .stdin(Stdio::null())
+            .env("NO_COLOR", "1");
+        Repo::strip_git_env_impl(&mut cmd);
+        let out = cmd.output().expect("git commit");
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{said}");
+        lines.extend(
+            said.lines()
+                .filter(|l| l.contains("tree lint"))
+                .map(str::to_string),
+        );
+    }
+    assert!(
+        lines.len() >= 2,
+        "expected a cold and a failed line: {lines:?}"
+    );
+    for l in &lines {
+        assert!(!l.contains('\u{1b}'), "colour with NO_COLOR: {l:?}");
+        assert!(
+            l.chars().count() <= 80,
+            "{} columns: {l}",
+            l.chars().count()
+        );
+    }
 }

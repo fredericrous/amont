@@ -60,6 +60,21 @@ missing here.
   `slow`. That
   gives the hit rate, and why it missed.
 
+### Fixed
+
+- **A background warm-up no longer remembers eslint as untyped from an
+  unstaged config.** The cache namespace is keyed on the staged tree. When
+  any config-like file differs from the index, the typed-eslint answer
+  describes another namespace, so it now reads typed and records nothing
+  (#290).
+- **A push no longer waits `amont.rehearsalWait` for a rehearsal that only
+  proves tree lint.** The general wait applies only when the push has test
+  gates for the rehearsal to vouch for. Lint waits under its own
+  `amont.treeLintWait`.
+- **Tree-lint messages fit 80 columns:** one header naming the
+  consequence, then one line per gate, with a tool's own summary cut to
+  fit. The warm-up log path is shown relative to the repository.
+
 ## v1.45.0
 
 ### Changed

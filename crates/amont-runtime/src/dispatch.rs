@@ -378,7 +378,8 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     } else {
         match crate::tree_lint::guard(settings) {
             Some(why) => {
-                crate::hooks::common::say(&format!("  tree lint not proven: {why} — CI will lint"));
+                crate::hooks::common::say("  tree lint not proven — CI will lint:");
+                crate::hooks::common::say(&crate::tree_lint::fit_line("    ", &why, ""));
                 crate::tree_lint::note_withheld(&ctx.manifest.tree);
                 None
             }
@@ -957,8 +958,15 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // A background rehearsal of one of these tips may be mid-suite right
     // now. Waiting for it is strictly less work than starting over, and
     // its stamp — read AFTER the wait, below — is the hand-off.
+    // Only when this push has test gates for the rehearsal to vouch for: a
+    // rehearsal that is only proving tree lint is waited for by the tree
+    // verdict alone, under its own `amont.treeLintWait` (ADR-0024), never
+    // under `amont.rehearsalWait`.
     if reuse_stamps && !tips.is_empty() {
-        crate::rehearsal::await_for(settings, &tips);
+        let changed = crate::pushrefs::changed_files(ctx.push.get());
+        if !scoped_push_gates(settings, ctx.manifest, &changed).is_empty() {
+            crate::rehearsal::await_for(settings, &tips);
+        }
     }
     let push_stamps = if reuse_stamps && !tips.is_empty() {
         crate::gate_stamp::stamps_for(&tips)
@@ -1215,9 +1223,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             (Vec::new(), Vec::new())
         };
     if !tree_unproven.is_empty() {
-        crate::hooks::common::say(&format!(
-            "  lint not attested (cold or changed tree): {} — CI will lint",
-            tree_unproven.join(" ")
+        crate::hooks::common::say(&crate::tree_lint::fit_line(
+            "  lint not attested (cold or changed tree): ",
+            &tree_unproven.join(" "),
+            " — CI will lint",
         ));
     }
     if (!passed.is_empty() || !tree_proven.is_empty()) && crate::attest::enabled(settings) {

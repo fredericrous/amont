@@ -204,3 +204,21 @@ verification list. Implementation decisions taken here are logged below.
       time is safe (the guard plus the hold). Filed as https://github.com/fredericrous/amont/issues/290.
   - **Review cost:** round 1 83k tokens / 102 s; delta 46k / 49 s; three
     bind passes ~31k each.
+- 2026-09-30 — **Gaps closed after merge (#291)** (the person asked).
+  - **#290:** typed-eslint reads typed and records nothing when a
+    config-like file differs from the index. The filename-scoped test now
+    asserts TYPED is written.
+  - **Deferred items, now tested:**
+    - the uv version probe leaves `.venv` untouched and writes no lock (a
+      real uv project with a dependency);
+    - `unstampedPush refuse` never blocks on a tree gate;
+    - `treeLintWait` bounds the push while a lint rehearsal runs;
+    - tree-lint lines fit 80 columns with `NO_COLOR`.
+  - **Two defects the new tests found:**
+    - the general rehearsal wait (`amont.rehearsalWait`, up to 5 min) also
+      waited on a lint-only rehearsal, so a push took 41 s against a 3 s
+      `treeLintWait`. It now waits only when the push has test gates.
+    - a tool's summary made lines 83+ columns. Messages are now a header
+      plus one fitted line per gate.
+  - **Still deferred:** SIGTERM of a warm-up (atomic marker by design,
+    group kill tested).
