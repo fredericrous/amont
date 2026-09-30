@@ -6,6 +6,60 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **Tree gates: lint that CI can skip because it was proven on the exact
+  tree** (ADR-0024 in the fleet's decisions). A `tree` line in `amont.conf`
+  declares a whole-tree lint or format command, the one CI runs:
+
+  ```text
+  tree  eslint  eslint  *  attest  npm run lint -- {cache}
+  ```
+
+  It runs beside the pre-commit checks and **never decides the commit**.
+  When it passes on exactly the committed tree, the commit and its tree are
+  stamped `tree:eslint`. The push attests `tree-eslint`, and CI's step
+  skips on it. See `docs/custom-checks.md` ("Whole-tree gates") and
+  `docs/ci.md` ("Skipping lint: tree gates").
+  - **Signed only when warm.** A gate starts at commit only when its cache
+    already completed a full run in its current namespace. The namespace
+    hashes the command, the tool version, every lockfile and config-like
+    file, and `inputs=`. Otherwise `amont warm --worker` warms it in the
+    background, and the next commit can prove it. A gate gets at most
+    `amont.treeLintSlack` (default 2 s) after the commit's own checks, then
+    it is cancelled, its whole process group with it. A gate whose last run
+    would not fit this commit's expected check time plus the slack is not
+    started at all. On a docs-only commit with no test run in scope, lint
+    costs nothing and CI lints.
+  - **Proof or nothing.** No stamp, and no gate starts, when:
+    - tracked files have unstaged edits;
+    - an untracked file is present;
+    - an ignored file is present outside `snapshotPrepareOutputs` (tool
+      caches are allowed by default);
+    - an operation is in progress.
+
+    A tool pin that disagrees with the version the gate runs, an npm or
+    pnpm install that differs from its lock (yarn and bun cannot be
+    verified), or a drifted uv environment withholds too. None of it ever
+    blocks a commit.
+  - **Rebases.** The rehearsal (`amont.rehearseOnCommit`) re-proves a
+    rewritten tree in its snapshot. A push waits for that at most
+    `amont.treeLintWait` (default 30 s). `snapshotPrepare` cannot forge the
+    tree: tracked content must be unchanged, with nothing untracked and
+    nothing ignored outside the allow-list.
+- **`pre-commit-tree-parity` and `amont tree-parity`.** Every tree gate's
+  CI step must run exactly the gate's normalized command. The reader fails
+  closed on anything it cannot read with certainty: block scalars, anchors,
+  `${{ }}`, and step or inherited `env:`/`defaults:`. The one exception is
+  an inherited `shell: bash` for a simple command.
+- **`amont warm`** fills cold tree-gate caches in the foreground.
+- **Evidence:** `gate_evidence` records each tree gate's outcome per tree:
+  `pass`, `fail`, `cold`, `busy`, `skew`, `withheld`, `cancelled` or
+  `slow`. That
+  gives the hit rate, and why it missed.
+
 ## v1.45.0
 
 ### Changed

@@ -370,13 +370,80 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     let in_progress = crate::git_states_in_progress();
     let checks = selected_during(ctx.settings, Stage::PreCommit, &in_progress, ctx.manifest);
 
+    // Tree gates (ADR-0024): judged BEFORE the hold, which is the only moment
+    // unstaged edits are visible; started AFTER it, so they lint the commit's
+    // tree. They never decide the commit.
+    let tree_gates = if ctx.manifest.tree.is_empty() || !crate::tree_lint::enabled(settings) {
+        None
+    } else {
+        match crate::tree_lint::guard(settings) {
+            Some(why) => {
+                crate::hooks::common::say(&format!("  tree lint not proven: {why} — CI will lint"));
+                crate::tree_lint::note_withheld(&ctx.manifest.tree);
+                None
+            }
+            None => Some(&ctx.manifest.tree),
+        }
+    };
+
     let held = match hold_unstaged() {
         Ok(guard) => guard,
         Err(verdict) => return verdict,
     };
 
+    let root = crate::hooks::common::repo_root();
+    // How long this commit's own declared checks are expected to run — the
+    // cover a tree gate can hide behind — from their last measured runs.
+    let decls =
+        crate::hooks::run_tests::blocking_commit_decls(ctx.settings, &ctx.manifest.externals);
+    // Only declarations whose scope this commit touches RUN; the others
+    // return at once, and their duration says nothing about cover.
+    let staged = if ctx.manifest.tree.is_empty() {
+        Vec::new()
+    } else {
+        crate::hooks::common::staged_files(&[])
+    };
+    // A declaration in scope that was never measured is UNKNOWN cover, and
+    // unknown means run: the run teaches both numbers, exactly as an unknown
+    // gate time does. Guessing 0 would skip the one commit that could learn.
+    let cover_ms = if tree_gates.is_some() {
+        decls
+            .iter()
+            .filter(|d| d.scope.touches(&staged))
+            .map(|d| crate::tree_cache::duration_of(&d.id).unwrap_or(u64::MAX))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let side_car = tree_gates.and_then(|g| {
+        crate::tree_lint::start(
+            settings,
+            std::path::Path::new(&root),
+            g,
+            &ctx.manifest.pins,
+            cover_ms,
+        )
+    });
+
     let severities = Overrides::read(settings);
-    let (verdict, outcomes) = run_stage_traced(settings, &checks, ctx, &severities);
+    let (verdict, outcomes, durations) = run_stage_traced(settings, &checks, ctx, &severities);
+    // Remember how long the declared checks that judged something took, for
+    // the next commit's cover estimate.
+    if !ctx.manifest.tree.is_empty() {
+        let measured: Vec<(String, u64)> = checks
+            .iter()
+            .zip(outcomes.iter().zip(&durations))
+            .filter(|(c, (o, _))| {
+                matches!(o, Outcome::Passed | Outcome::Failed)
+                    && decls
+                        .iter()
+                        .any(|d| d.id == c.name() && d.scope.touches(&staged))
+            })
+            .map(|(c, (_, ms))| (c.name().to_string(), *ms))
+            .collect();
+        crate::tree_cache::record_durations(&measured);
+    }
 
     // The shadow-mode ledger. Silent, best-effort, and never consulted by any
     // verdict — see `crate::downgrade`.
@@ -410,8 +477,21 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .map(|d| d.script)
             .collect()
     };
+    // A rewrite means the tree the gates linted is not the one committed.
+    let stampable =
+        !matches!(verdict, Verdict::Block) && !outcomes.iter().any(|o| matches!(o, Outcome::Fixed));
+    let mut ran = ran;
+    if let Some(car) = side_car {
+        ran.extend(crate::tree_lint::finish(settings, car, stampable));
+    }
     let ran: Vec<&str> = ran.iter().map(String::as_str).collect();
     crate::gate_stamp::record(&ran);
+    // Under the hold, the index IS the commit's tree: its evidence goes there.
+    if !ctx.manifest.tree.is_empty() {
+        if let Some(tree) = crate::git::stdout(&["write-tree"]) {
+            crate::tree_lint::flush_evidence(&tree);
+        }
+    }
 
     drop(held);
     verdict
@@ -483,9 +563,9 @@ fn run_stage_traced(
     checks: &[&dyn Check],
     ctx: &Ctx,
     severities: &Overrides,
-) -> (Verdict, Vec<Outcome>) {
+) -> (Verdict, Vec<Outcome>, Vec<u64>) {
     if checks.is_empty() {
-        return (Verdict::Proceed, Vec::new());
+        return (Verdict::Proceed, Vec::new(), Vec::new());
     }
     // One slot per check: everything a check says lands in its own buffer
     // and reaches stdout as ONE block when it finishes — see `live`. Off
@@ -496,9 +576,10 @@ fn run_stage_traced(
         crate::live::Stage::begin(settings, &names)
     });
     let items: Vec<(usize, &&dyn Check)> = checks.iter().enumerate().collect();
-    let outcomes = run_concurrently(
+    let timed = run_concurrently(
         &items,
         |(idx, check)| {
+            let started = std::time::Instant::now();
             let _sink = stage.as_ref().map(|s| s.enter(*idx));
             // The block is emitted however the check leaves — a panicking
             // check's partial output still reaches the reader, above the
@@ -514,17 +595,20 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
             };
-            check.run(&sub)
+            let outcome = check.run(&sub);
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            (outcome, ms)
         },
         // A check whose thread died has not passed. Stated here, where the slot
         // is filled, rather than hidden in a `Default` impl that every future
         // `#[derive(Default)]` would silently inherit.
-        Outcome::Failed,
+        (Outcome::Failed, 0),
     );
+    let (outcomes, durations): (Vec<Outcome>, Vec<u64>) = timed.into_iter().unzip();
 
     let report = classify(checks, &outcomes, severities);
     announce(settings, &report);
-    (report.verdict(), outcomes)
+    (report.verdict(), outcomes, durations)
 }
 
 /// What a stage concluded, before anything is printed or exited.
@@ -796,6 +880,9 @@ pub enum Named {
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
     let settings = ctx.settings;
+    // `amont.treeLintWait` counts from HERE, so no earlier wait (a test
+    // rehearsal's `amont.rehearsalWait`) can extend it.
+    let push_started = std::time::Instant::now();
     // The notes push `attest` makes re-enters this hook; its ref list is only
     // ever the attest ref, so there is nothing to prove — and proving it
     // would recurse.
@@ -1117,14 +1204,31 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
     // `ctx.push` may consume stdin, and a disabled repo should leave stdin
     // exactly as it found it.
-    if !passed.is_empty() && crate::attest::enabled(settings) {
+    // Tree gates (ADR-0024) are not push checks: nothing runs here. Each is
+    // attested only when the TREE of every pushed tip carries its commit-time
+    // proof; a whole-tree proof needs no changed-files scope. Fail-closed:
+    // anything else is simply not attested, and CI lints.
+    let (tree_proven, tree_unproven) =
+        if !ctx.manifest.tree.is_empty() && crate::attest::enabled(settings) {
+            crate::tree_lint::await_verdict(settings, &ctx.manifest.tree, &tips, push_started)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    if !tree_unproven.is_empty() {
+        crate::hooks::common::say(&format!(
+            "  lint not attested (cold or changed tree): {} — CI will lint",
+            tree_unproven.join(" ")
+        ));
+    }
+    if (!passed.is_empty() || !tree_proven.is_empty()) && crate::attest::enabled(settings) {
         let remote = ctx
             .args
             .first()
             .map(|a| a.to_string_lossy().into_owned())
             .unwrap_or_default();
         let changed = crate::pushrefs::changed_files(ctx.push.get());
-        let vouched = attestable(&pre_push_checks, &passed, &changed);
+        let mut vouched = attestable(&pre_push_checks, &passed, &changed);
+        vouched.extend(tree_proven);
         crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }
     crate::downgrade::note(settings, &downgraded);

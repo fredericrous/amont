@@ -133,6 +133,22 @@ pub enum RunOutcome {
     Fixed,
     Unavailable,
     Inert,
+    // Tree gates (ADR-0024): why a commit's tree was NOT proven. None is a
+    // verdict about the content; together they are the hit rate's misses.
+    /// No completion marker in the current cache namespace.
+    Cold,
+    /// Another run held the gate's cache lock.
+    Busy,
+    /// The tool the gate would run is not the one CI resolves.
+    Skew,
+    /// The tree was not exactly the commit's (unstaged, untracked, ignored
+    /// outside the allow-list, or an operation in progress).
+    Withheld,
+    /// Still running when the commit was ready, or past its deadline.
+    Cancelled,
+    /// Not started: its last run would not fit in this commit's cover plus
+    /// the slack.
+    Slow,
 }
 
 impl RunOutcome {
@@ -144,6 +160,12 @@ impl RunOutcome {
             RunOutcome::Fixed => "fixed",
             RunOutcome::Unavailable => "unavailable",
             RunOutcome::Inert => "inert",
+            RunOutcome::Cold => "cold",
+            RunOutcome::Busy => "busy",
+            RunOutcome::Skew => "skew",
+            RunOutcome::Withheld => "withheld",
+            RunOutcome::Cancelled => "cancelled",
+            RunOutcome::Slow => "slow",
         }
     }
 
@@ -158,6 +180,12 @@ impl RunOutcome {
             "fixed" => RunOutcome::Fixed,
             "unavailable" => RunOutcome::Unavailable,
             "inert" => RunOutcome::Inert,
+            "cold" => RunOutcome::Cold,
+            "busy" => RunOutcome::Busy,
+            "skew" => RunOutcome::Skew,
+            "withheld" => RunOutcome::Withheld,
+            "cancelled" => RunOutcome::Cancelled,
+            "slow" => RunOutcome::Slow,
             _ => return None,
         })
     }
@@ -284,6 +312,22 @@ fn note_at(key: &str) -> Note {
     crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key])
         .map(|body| Note::parse(&body))
         .unwrap_or_default()
+}
+
+/// The stamp tokens on `tree` (a tree object id). Tree gates are read here
+/// and only here (ADR-0024): `tree:<name>` on the pushed tree proves the gate
+/// on exactly that content, whichever commit carried it.
+pub fn tree_tokens(tree: &str) -> Vec<String> {
+    note_at(tree).tokens
+}
+
+/// Add `tokens` to the gate note on `tree` — how a rehearsal records tree
+/// gates it proved in its snapshot of exactly that tree. Merged, never
+/// rendered from the tokens alone, so evidence already on the note survives.
+pub fn stamp_tree(tree: &str, tokens: &[String]) -> bool {
+    let mut note = note_at(tree);
+    note.add_tokens(tokens);
+    write_note(tree, &note)
 }
 
 /// Write `note` at `key`. Best-effort, like every writer here.

@@ -315,6 +315,27 @@ pub fn describe_source(text: &str) -> String {
             let _ = writeln!(out, "      {}", crate::ui::sanitize(&p));
         }
     }
+    let tree: Vec<String> = rest
+        .iter()
+        .filter_map(|l| match l {
+            crate::manifest::Line::Tree(gate) => Some(format!(
+                "{:<14} {:<10} {}",
+                gate.name,
+                gate.tool.as_str(),
+                gate.command
+            )),
+            _ => None,
+        })
+        .collect();
+    if !tree.is_empty() {
+        let _ = writeln!(
+            out,
+            "    and declares whole-tree gates (run at commit, never decide it):"
+        );
+        for t in tree {
+            let _ = writeln!(out, "      {}", crate::ui::sanitize(&t));
+        }
+    }
     if !pins.is_empty() {
         let _ = writeln!(out, "    and pins tool versions (verified, warn-only):");
         for p in pins {

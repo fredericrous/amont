@@ -350,6 +350,23 @@ pub const CHECKS: &[Builtin] = &[
         reach: Reach::Safety,
         run: |ctx| hooks::secrets::staged(ctx.settings),
     },
+    // A CI step skipped on `tree-<name>` must run exactly that gate's
+    // command (ADR-0024). Text against text — it executes nothing, so it
+    // needs no trust. Blocking: a drifted step is a skip nobody proved.
+    Builtin {
+        name: "pre-commit-tree-parity",
+        stage: Stage::PreCommit,
+        scope: Scope {
+            files: hooks::k8s::EXTS,
+            names: &[crate::manifest::MANIFEST],
+            opt_in: &[crate::manifest::MANIFEST],
+            not_during: MID_OPERATION,
+        },
+        severity: Severity::Block,
+        fix: Fix::None,
+        reach: Reach::Convention,
+        run: |ctx| hooks::tree_parity::run(ctx.settings),
+    },
     Builtin {
         name: "pre-commit-usual-name",
         stage: Stage::PreCommit,
@@ -1178,6 +1195,11 @@ mod tests {
             "pre-push-go-test",
             Consumes::Exts(crate::hooks::go_tools::GO_PATHS),
         ),
+        // Reads every workflow file, and amont.conf (a name, not an ext).
+        (
+            "pre-commit-tree-parity",
+            Consumes::Exts(crate::hooks::k8s::EXTS),
+        ),
     ];
 
     /// A declared scope must never promise more than the check consumes.
@@ -1252,6 +1274,7 @@ mod tests {
         ("pre-commit-prettier", true),
         ("pre-commit-pyright", false),
         ("pre-commit-ruff", true),
+        ("pre-commit-tree-parity", false),
         ("pre-commit-usual-name", false),
         ("pre-commit-yamllint", false),
         ("pre-commit-shellcheck", false),
@@ -1332,7 +1355,7 @@ mod tests {
 
     #[test]
     fn every_check_declares_a_stage_and_a_scope() {
-        assert_eq!(CHECKS.len(), 38);
+        assert_eq!(CHECKS.len(), 39);
         let pre_commit = super::stage_checks(Stage::PreCommit).count();
         let pre_push = super::stage_checks(Stage::PrePush).count();
         assert_eq!(

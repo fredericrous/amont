@@ -234,3 +234,54 @@ mechanism can only ever save a redundant run; it cannot skip a check that
 did not happen. `--no-verify` skips pre-push entirely, mints nothing, and
 CI quietly does the full job — which is the backstop doing exactly what it
 is for.
+
+## Skipping lint: tree gates
+
+Test gates are signed from `pre-push`. Lint and format are different: the
+pre-commit linters see staged files only, so their pass says nothing about
+the whole tree. A **tree gate** (a `tree` line in `amont.conf`) runs the
+whole-tree command at commit, beside the other checks, and its pass is
+attested as `tree-<name>`:
+
+```yaml
+- id: attest
+  uses: fredericrous/attest@v1
+  with:
+    anywhere: tree-eslint     # formatting and lint do not depend on the platform
+
+- name: Lint
+  if: ${{ !contains(fromJSON(steps.attest.outputs.gates || '[]'), 'tree-eslint') }}
+  run: npm run lint
+```
+
+### Command parity
+
+An attestation names a gate, and a gate is worth only the command behind
+it. So the CI step must run **exactly** the gate's normalized declaration:
+
+- the declared command;
+- with `{cache}` removed;
+- then a dangling trailing `--` removed;
+- then whitespace collapsed.
+
+`tree eslint eslint * attest npm run lint -- {cache}` requires
+`run: npm run lint`. Tool resolution is part of the command
+(`uvx ruff@0.16.0`, `uv run`, `npm run`), so CI and the laptop resolve the
+same tool. One gate proves one command: two CI steps (`ruff check` and
+`ruff format --check`) are two gates.
+
+`amont tree-parity` (and the `pre-commit-tree-parity` check) enforce this. It
+fails closed on a gated step it cannot read with certainty:
+
+- a block scalar, an anchor or alias, a quoted form with escapes, or
+  `${{ }}` in `run:`;
+- a step-level `env:` or `shell:`, or a `working-directory:` the gate does not
+  declare as `cwd=`;
+- any `env:` or `defaults:` the job or workflow hands down.
+
+The one inherited setting it accepts is `defaults: run: shell: bash`, and only
+for a simple command: no pipe, list, redirection or substitution. There,
+bash's `-e` and `pipefail` cannot change the verdict. Run
+`amont tree-parity` as an ungated CI step, so a drift committed with
+`--no-verify` still fails.
+

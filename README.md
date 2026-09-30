@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/github/license/fredericrous/amont)](LICENSE)
 
 A single Rust binary that checks `git commit` and `git push`. It ships
-thirty-eight built-in checks — commit-message conventions, conflict markers,
+thirty-nine built-in checks — commit-message conventions, conflict markers,
 secrets, the linters and test suites of the languages your repository actually
 uses — and each one fires only where the repository has opted into its tool, so
 there is no YAML to write before it is useful. The commit path links no

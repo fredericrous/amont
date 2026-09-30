@@ -330,6 +330,96 @@ trust-gated like every declaration — verifying one executes
 `<program> --version` for a name the repository chose, which is exactly the
 consent `amont trust` collects.
 
+## Whole-tree gates — `tree` lines
+
+A `tree` line declares a whole-tree check whose pass may be **attested**, so
+CI skips the step that runs the same command (ADR-0024 in the fleet's
+decisions, `ci.attested-skip`):
+
+```text
+# tree  name         tool     scope  attest  [options]           command
+tree    eslint       eslint   *      attest                      npm run lint -- {cache}
+tree    ruff-check   ruff     *      attest                      uvx ruff@0.16.0 check packages
+tree    ruff-format  ruff     *      attest                      uvx ruff@0.16.0 format --check packages
+tree    pyright      pyright  *      attest  cwd=services/api    uv run pyright
+```
+
+A tree gate **never decides a commit**. It is not a pre-commit or pre-push
+check, so it has no severity column: `attest` stands where the severity
+would be, and says what the line is for. The commit is judged by the checks
+it always was.
+
+- **name** — the gate's token in the attestation note is `tree-<name>`,
+  which is what CI's `if:` names. It matches `[A-Za-z0-9][A-Za-z0-9._-]*`
+  (59 characters at most) and, like every name here, must not start with a
+  trigger.
+- **tool** — one of `eslint`, `prettier`, `ruff`, `pyright`, `gofmt`. It is
+  declared, never guessed from the command: `npm run lint` does not say
+  what it runs, and amont needs to know what `{cache}` expands to and which
+  version the gate really executes.
+- **scope** — the same column as a check's.
+- **options** — lowercase `key=value` tokens directly after `attest`:
+  - `cwd=<dir>`: the directory the command runs in, relative to the
+    repository root;
+  - `inputs=<path>,...`: extra paths that belong to the gate's cache
+    namespace.
+
+  Paths are literal. A glob, an absolute path or a `..` is refused. An
+  uppercase `NAME=value` is not an option; it begins the command, so
+  `NODE_OPTIONS=… npm run lint` is still expressible.
+- **command** — **the exact command the CI step runs.** `{cache}` is the
+  only thing amont may add, and it is allowed once, for `eslint` and
+  `prettier` only. It expands to the tool's cache flags, which never change
+  a verdict.
+
+The command CI must run is the **normalized** declaration: `{cache}`
+removed, then a dangling trailing `--`, then whitespace collapsed.
+`npm run lint -- {cache}` becomes `npm run lint`. See
+[the CI backstop](ci.md#skipping-lint-tree-gates) for how the two are kept
+identical.
+
+A `tree` line is trust-gated like every other line: until you trust the
+manifest, no tree gate runs. A pack may not carry one.
+
+### When a tree gate runs, and what it proves
+
+At commit, a tree gate starts beside the pre-commit checks. It gets at most
+`amont.treeLintSlack` seconds (default 2) after those checks finish. It
+starts only when its cache is **warm**: a full run already completed in the
+gate's current *namespace*. The namespace is a hash of:
+
+- the command;
+- the version of the tool it runs;
+- every lockfile and config-like file (`*.json`, `*.toml`, `*.yaml`,
+  `*config*`, `.*rc*`, `.*ignore`, by basename);
+- the gate's `inputs=`.
+
+A plugin upgrade therefore starts a new, cold namespace, and the old cache is
+deleted. A warm gate also has to *fit*. amont remembers how long each gate's last
+run took, and how long the repository's own declared commit checks took.
+When nothing long is in scope, as on a docs-only commit where no test run
+covers it, a gate that would outlast the slack is **skipped**, not started
+and cancelled: the commit stays fast, and CI lints. It shows up as `slow`
+in the evidence. A cold gate does not slow the commit either: amont starts
+`amont warm --worker` in the background (log: `.git/amont-warm.log`), and the
+next commit can prove it. `amont warm` does the same in the foreground. There
+is no background warm-up on Windows, where tree gates do not run at all.
+
+When it passes on exactly the committed tree, the commit and its tree are
+stamped `tree:<name>`. The push then attests `tree-<name>`, and CI skips its
+step. No gate starts, and nothing is stamped, when:
+
+- tracked files have unstaged edits;
+- an untracked file is present;
+- an ignored file is present outside `snapshotPrepareOutputs`, which admits
+  tool caches (`node_modules/`, `.venv/`, `__pycache__/`, …) by default. Add
+  the repository's own reproducible outputs, the ones CI recreates too, with
+  `set snapshotPrepareOutputs build/ .react-router/`;
+- a merge, rebase, cherry-pick or revert is in progress.
+
+A failing, slow or cancelled gate never blocks: it prints one line, and CI
+lints.
+
 ## Letting a check fix what it finds
 
 Prefix the command with `fix ` and the check may rewrite files, with whatever it
