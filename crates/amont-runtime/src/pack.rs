@@ -269,10 +269,10 @@ pub fn rows(text: &str) -> Result<Vec<String>, String> {
             // docs/custom-checks.md ("What a repository cannot do") keeps those
             // local on purpose — a `set` line reaching `amont.fix` would let a
             // third party turn on rewriting somebody's working tree.
-            Line::Tool(_) | Line::Policy { .. } => {
+            Line::Tool(_) | Line::Policy { .. } | Line::Tree(_) => {
                 return Err(format!(
                     "{PACK_FILE}: `{line}` — a pack may declare checks only, \
-                     not tool pins or policy"
+                     not tool pins, policy or tree gates"
                 ));
             }
         }

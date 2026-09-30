@@ -651,6 +651,16 @@ tree, and only after the signature verifies. The whole contract, including
 what CI must check and why every failure mode falls back to running the
 tests, lives in [the CI backstop](ci.md#skipping-what-pre-push-already-proved).
 
+## Tree gates
+
+Besides the checks above, a repository may declare **tree gates** in
+`amont.conf` (`tree` lines, see [custom checks](custom-checks.md#whole-tree-gates--tree-lines)).
+A tree gate runs a whole-tree lint or format command, the one CI runs, next
+to the pre-commit checks. It never decides the commit. When it passes on
+exactly the tree being committed, amont stamps that tree. The push then
+attests `tree-<name>`, and CI skips its step
+([the CI backstop](ci.md#skipping-lint-tree-gates)).
+
 ## Adding one
 
 A check is a module plus one registry entry in

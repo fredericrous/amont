@@ -85,6 +85,16 @@ pub enum ParseError {
     /// hook must not modify the worktree or index — the pushed commit would
     /// then differ from the tree the developer is looking at.
     FixOnPrePush,
+    /// A `tree` line with the wrong shape; carries what was wrong.
+    BadTreeLine(&'static str),
+    /// A `tree` line naming a tool amont does not know how to attest.
+    BadTreeTool(String),
+    /// A `tree` gate name that cannot become a note's gate token.
+    BadTreeName(String),
+    /// A `tree` option amont does not know, or one whose value is unsafe.
+    BadTreeOption(String),
+    /// `{cache}` on a tool that has no cache, or more than once.
+    BadTreeCache,
 }
 
 impl std::fmt::Display for ParseError {
@@ -116,6 +126,33 @@ impl std::fmt::Display for ParseError {
             ParseError::UnsettableKey(k) => write!(
                 f,
                 "set {k:?} is not a policy-settable key — see docs/custom-checks.md"
+            ),
+            ParseError::BadTreeLine(what) => write!(
+                f,
+                "a tree gate is `tree <name> <tool> <scope> attest [cwd=<dir>] \
+                 [inputs=<path>,...] <command>` — {what}"
+            ),
+            ParseError::BadTreeTool(t) => write!(
+                f,
+                "tree tool {t:?} must be one of: {}",
+                TreeTool::ALL
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ParseError::BadTreeName(n) => write!(
+                f,
+                "tree gate name {n:?} must match [A-Za-z0-9][A-Za-z0-9._-]{{0,58}}"
+            ),
+            ParseError::BadTreeOption(o) => write!(
+                f,
+                "tree option {o:?}: only `cwd=<relative dir>` and \
+                 `inputs=<path>,...` (literal paths, no globs, no `..`)"
+            ),
+            ParseError::BadTreeCache => write!(
+                f,
+                "`{{cache}}` may appear once, and only for eslint or prettier"
             ),
             ParseError::FixOnPrePush => write!(
                 f,
@@ -196,6 +233,113 @@ pub struct ToolPin {
     /// pins a minor, `0.6.3` pins a patch. Substring, not semver: the point
     /// is agreement between machines, not range arithmetic.
     pub want: String,
+}
+
+/// The tools a `tree` gate may name. The tool is declared, never guessed from
+/// the command: `npm run lint` says nothing about what it runs, and amont needs
+/// to know what `{cache}` expands to and how to read the version the gate
+/// actually executes (ADR-0024, `ci.skip-needs-the-same-command`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeTool {
+    Eslint,
+    Prettier,
+    Ruff,
+    Pyright,
+    Gofmt,
+}
+
+impl TreeTool {
+    pub const ALL: &'static [TreeTool] = &[
+        TreeTool::Eslint,
+        TreeTool::Prettier,
+        TreeTool::Ruff,
+        TreeTool::Pyright,
+        TreeTool::Gofmt,
+    ];
+
+    pub fn parse(token: &str) -> Option<TreeTool> {
+        TreeTool::ALL.iter().copied().find(|t| t.as_str() == token)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TreeTool::Eslint => "eslint",
+            TreeTool::Prettier => "prettier",
+            TreeTool::Ruff => "ruff",
+            TreeTool::Pyright => "pyright",
+            TreeTool::Gofmt => "gofmt",
+        }
+    }
+
+    /// Whether the tool has an on-disk cache `{cache}` can point at. Ruff has
+    /// one too, but it manages it itself and a whole-tree run is already
+    /// sub-second; pyright and gofmt have none.
+    pub fn has_cache(self) -> bool {
+        matches!(self, TreeTool::Eslint | TreeTool::Prettier)
+    }
+}
+
+/// `tree <name> <tool> <scope> attest [cwd=<dir>] [inputs=<path>,...] <command>`
+/// — a whole-tree check whose pass may be ATTESTED so CI skips the step that
+/// runs the same command (ADR-0024).
+///
+/// The declaration IS the CI command. `normalized()` is what the workflow
+/// step's `run:` must equal, character for character; `{cache}` is the only
+/// thing amont may add, and it never changes a verdict. A tree gate never
+/// decides a commit: it is not a pre-commit or pre-push check, so it has no
+/// severity column — `attest` stands where the severity would be, saying what
+/// the line is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeGate {
+    pub name: String,
+    pub tool: TreeTool,
+    pub exts: Vec<String>,
+    pub names: Vec<String>,
+    pub opt_in: Vec<String>,
+    /// The directory the command runs in, relative to the repository root.
+    pub cwd: Option<String>,
+    /// Extra paths that belong to the gate's cache namespace.
+    pub inputs: Vec<String>,
+    /// The command as declared, `{cache}` and all.
+    pub command: String,
+    pub lineno: usize,
+}
+
+/// The placeholder a `tree` command may carry for the tool's cache flags.
+pub const CACHE_PLACEHOLDER: &str = "{cache}";
+
+impl TreeGate {
+    /// The gate token in the attestation note — what CI's `if:` names.
+    pub fn id(&self) -> String {
+        format!("tree-{}", self.name)
+    }
+
+    /// The key a tree proof is stamped under. Distinct from every commit-stamp
+    /// token (short names like `cargo-test`) by its `:`, so no per-commit
+    /// reader can mistake a staged-only pass for a whole-tree one.
+    pub fn stamp_key(&self) -> String {
+        format!("tree:{}", self.name)
+    }
+
+    /// The command CI must run: `{cache}` removed, then a dangling trailing
+    /// `--` (left behind by `npm run lint -- {cache}`), then whitespace
+    /// collapsed.
+    pub fn normalized(&self) -> String {
+        normalize_command(&self.command)
+    }
+}
+
+/// See [`TreeGate::normalized`]. Free so `tree-parity` can normalize a
+/// workflow's `run:` the same way.
+pub fn normalize_command(command: &str) -> String {
+    let mut words: Vec<&str> = command
+        .split_whitespace()
+        .filter(|w| *w != CACHE_PLACEHOLDER)
+        .collect();
+    if words.last() == Some(&"--") {
+        words.pop();
+    }
+    words.join(" ")
 }
 
 /// A committed policy statement about a BUILT-IN (or declared) check — the
@@ -286,6 +430,9 @@ pub enum Line {
         what: PolicyLine,
         lineno: usize,
     },
+    /// A whole-tree gate that may be attested — carries no check: it never
+    /// decides a commit or a push (ADR-0024).
+    Tree(TreeGate),
     Broken {
         /// The declared name, or `<file>:<lineno>` when the line has none — a
         /// gap has to be nameable to be reportable.
@@ -311,6 +458,7 @@ impl Line {
                 what: PolicyLine::Set { key, .. },
                 ..
             } => key,
+            Line::Tree(gate) => &gate.name,
             Line::Broken { name, .. } => name,
         }
     }
@@ -329,14 +477,14 @@ impl Line {
             // A pin has no stage; it is verified at both. The value only
             // feeds displays that will not ask a pin for one. Policy lines
             // likewise — `is_check()` keeps both out of anything that would.
-            Line::Tool(_) | Line::Policy { .. } => Stage::PreCommit,
+            Line::Tool(_) | Line::Policy { .. } | Line::Tree(_) => Stage::PreCommit,
             Line::Broken { stage, .. } => *stage,
         }
     }
     /// `Some(reason)` when this line declares a check that cannot run.
     pub fn broken(&self) -> Option<String> {
         match self {
-            Line::Usable(_) | Line::Tool(_) | Line::Policy { .. } => None,
+            Line::Usable(_) | Line::Tool(_) | Line::Policy { .. } | Line::Tree(_) => None,
             Line::Broken { lineno, why, .. } => Some(format!("line {lineno}: {why}")),
         }
     }
@@ -365,6 +513,7 @@ impl Line {
             // recognisable in whatever display it lands in.
             Line::Tool(pin) => Err(format!("tool pin: {} {}", pin.program, pin.want)),
             Line::Policy { what, .. } => Err(format!("policy: {}", what.describe())),
+            Line::Tree(gate) => Err(format!("tree gate: {} {}", gate.name, gate.command)),
             Line::Broken { lineno, why, .. } => Err(format!("line {lineno}: {why}")),
         };
         (name, stage, parsed)
@@ -970,6 +1119,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             ),
         };
     }
+    // `tree` was never a valid stage either. Its own shape: it carries a
+    // command but decides nothing, so it gets no severity column.
+    if line == "tree" || line.starts_with("tree ") || line.starts_with("tree\t") {
+        return parse_tree_line(lineno, line, earlier);
+    }
     if line == "set" || line.starts_with("set ") || line.starts_with("set\t") {
         // The value is the REST of the line, not a third token. Every key
         // settable before this took a single word — `true`, `72`, a version —
@@ -1103,6 +1257,153 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     })
 }
 
+/// The first whitespace-separated token of `s`, and what follows it untouched.
+fn split_token(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    Some((&s[..end], &s[end..]))
+}
+
+/// A gate name the attestation note can carry: the note's token grammar is
+/// `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` and `tree-` spends five of it.
+fn tree_name_valid(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && name.len() <= 59
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// A path a `cwd=` or `inputs=` may name: relative, literal, inside the tree.
+fn tree_path_safe(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains(['*', '?', '[', '\\'])
+        && !path.split('/').any(|seg| seg == "..")
+}
+
+fn parse_tree_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
+    let position = format!("{MANIFEST}:{lineno}");
+    let fail = |name: &str, why| {
+        broken_at(
+            lineno,
+            if name.is_empty() {
+                position.clone()
+            } else {
+                name.to_string()
+            },
+            None,
+            why,
+        )
+    };
+    let rest = &line[4..];
+    let Some((name, rest)) = split_token(rest) else {
+        return fail("", ParseError::BadTreeLine("missing name"));
+    };
+    if !tree_name_valid(name) {
+        return fail(name, ParseError::BadTreeName(name.to_string()));
+    }
+    if name_says_its_trigger(name) {
+        return fail(name, ParseError::TriggerInName(name.to_string()));
+    }
+    if earlier
+        .iter()
+        .any(|l| matches!(l, Line::Tree(g) if g.name == name))
+    {
+        return fail(name, ParseError::Duplicate(name.to_string()));
+    }
+    let Some((tool_tok, rest)) = split_token(rest) else {
+        return fail(name, ParseError::BadTreeLine("missing tool"));
+    };
+    let Some(tool) = TreeTool::parse(tool_tok) else {
+        return fail(name, ParseError::BadTreeTool(tool_tok.to_string()));
+    };
+    let Some((scope_tok, rest)) = split_token(rest) else {
+        return fail(name, ParseError::BadTreeLine("missing scope"));
+    };
+    let (exts, names, opt_in) = match parse_scope(scope_tok) {
+        Ok(s) => s,
+        Err(why) => return fail(name, why),
+    };
+    match split_token(rest) {
+        Some(("attest", _)) => {}
+        _ => {
+            return fail(
+                name,
+                ParseError::BadTreeLine("the fifth column must be `attest`"),
+            )
+        }
+    }
+    let mut rest = split_token(rest).map(|(_, r)| r).unwrap_or("");
+    let mut cwd = None;
+    let mut inputs = Vec::new();
+    // Options are LOWERCASE `key=value` tokens. An uppercase one
+    // (`NODE_OPTIONS=… npm run lint`) is an environment assignment that begins
+    // the command, so an env-prefixed command stays expressible.
+    while let Some((tok, after)) = split_token(rest) {
+        let Some((key, value)) = tok.split_once('=') else {
+            break;
+        };
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_lowercase()) {
+            break;
+        }
+        match key {
+            "cwd" if cwd.is_none() && tree_path_safe(value) => {
+                cwd = Some(value.trim_end_matches('/').to_string());
+            }
+            "inputs" if inputs.is_empty() => {
+                let paths: Vec<String> = value.split(',').map(str::to_string).collect();
+                if !paths.iter().all(|p| tree_path_safe(p)) {
+                    return fail(name, ParseError::BadTreeOption(tok.to_string()));
+                }
+                inputs = paths;
+            }
+            _ => return fail(name, ParseError::BadTreeOption(tok.to_string())),
+        }
+        rest = after;
+    }
+    let command = rest.trim();
+    if command.is_empty() {
+        return fail(name, ParseError::BadTreeLine("missing command"));
+    }
+    let placeholders = command
+        .split_whitespace()
+        .filter(|w| *w == CACHE_PLACEHOLDER)
+        .count();
+    if placeholders > 1 || (placeholders == 1 && !tool.has_cache()) {
+        return fail(name, ParseError::BadTreeCache);
+    }
+    if normalize_command(command).is_empty() {
+        return fail(name, ParseError::BadTreeLine("missing command"));
+    }
+    Line::Tree(TreeGate {
+        name: name.to_string(),
+        tool,
+        exts,
+        names,
+        opt_in,
+        cwd,
+        inputs,
+        command: command.to_string(),
+        lineno,
+    })
+}
+
+/// The usable tree gates a manifest text declares — untrusted, for readers
+/// that execute nothing (`tree-parity` compares text with text). Anything that
+/// RUNS a gate reads [`Manifest::tree`], which is trust-gated.
+pub fn tree_gates(text: &str) -> Vec<TreeGate> {
+    parse_lines(text)
+        .into_iter()
+        .filter_map(|l| match l {
+            Line::Tree(g) => Some(g),
+            _ => None,
+        })
+        .collect()
+}
+
 fn name_or_position(declared: &str, lineno: usize) -> String {
     if declared.is_empty() {
         format!("{MANIFEST}:{lineno}")
@@ -1197,6 +1498,9 @@ pub struct Manifest {
     /// one executes `<program> --version` for a name the repository chose,
     /// which is exactly the consent the trust model exists to collect.
     pub pins: Vec<ToolPin>,
+    /// Tree gates — DROPPED entirely when untrusted, like the pins: running
+    /// one executes a command the repository chose.
+    pub tree: Vec<TreeGate>,
     /// Whether an `amont.conf` EXISTS in this repository — the committed
     /// declaration that this project subscribes to amont's conventions.
     /// Presence, not content: an empty file declares, and declaring executes
@@ -1269,6 +1573,17 @@ pub fn load(root: &Path) -> Manifest {
     } else {
         Vec::new()
     };
+    let tree = if trusted {
+        lines
+            .iter()
+            .filter_map(|l| match l {
+                Line::Tree(gate) => Some(gate.clone()),
+                _ => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let has_policy = lines.iter().any(|l| matches!(l, Line::Policy { .. }));
     let (policy, policy_notes) = if trusted {
         crate::policy::Policy::from_lines(&lines)
@@ -1287,6 +1602,7 @@ pub fn load(root: &Path) -> Manifest {
     Manifest {
         externals,
         pins,
+        tree,
         declared,
         policy,
         policy_withheld,
@@ -1386,6 +1702,7 @@ mod tests {
             Line::Policy { what, .. } => {
                 panic!("{} parsed as policy, not a broken line", what.describe())
             }
+            Line::Tree(g) => panic!("{} parsed as a tree gate, not a broken line", g.name),
         }
     }
 
@@ -1397,7 +1714,145 @@ mod tests {
             Line::Policy { what, .. } => {
                 panic!("{} is policy, not a declaration", what.describe())
             }
+            Line::Tree(g) => panic!("{} is a tree gate, not a declaration", g.name),
         }
+    }
+
+    fn tree(l: &Line) -> &TreeGate {
+        match l {
+            Line::Tree(g) => g,
+            Line::Broken { name, why, .. } => panic!("{name} failed to parse: {why}"),
+            other => panic!("{} is not a tree gate", other.name()),
+        }
+    }
+
+    #[test]
+    fn tree_full_line_parses_with_options() {
+        let l = one("tree  eslint  eslint  *.ts,*.tsx  attest  cwd=web/ inputs=tsconfig.json,.eslintignore  npm run lint -- {cache}");
+        let g = tree(&l);
+        assert_eq!(g.name, "eslint");
+        assert_eq!(g.tool, TreeTool::Eslint);
+        assert_eq!(g.exts, vec![".ts".to_string(), ".tsx".to_string()]);
+        assert_eq!(g.cwd.as_deref(), Some("web"));
+        assert_eq!(
+            g.inputs,
+            vec!["tsconfig.json".to_string(), ".eslintignore".to_string()]
+        );
+        assert_eq!(g.command, "npm run lint -- {cache}");
+        assert_eq!(g.id(), "tree-eslint");
+        assert_eq!(g.stamp_key(), "tree:eslint");
+        assert!(!l.is_check());
+    }
+
+    #[test]
+    fn tree_normalizes_cache_dangling_dashes_and_whitespace() {
+        assert_eq!(normalize_command("npm run lint -- {cache}"), "npm run lint");
+        assert_eq!(normalize_command("npx eslint . {cache}"), "npx eslint .");
+        assert_eq!(
+            normalize_command("uvx ruff@0.16.0   check packages"),
+            "uvx ruff@0.16.0 check packages"
+        );
+        // A `--` that is NOT trailing is the command's own and stays.
+        assert_eq!(
+            normalize_command("npm run lint -- --quiet"),
+            "npm run lint -- --quiet"
+        );
+    }
+
+    #[test]
+    fn tree_env_assignment_begins_the_command() {
+        let l =
+            one("tree eslint eslint * attest NODE_OPTIONS=--max-old-space-size=4096 npm run lint");
+        let g = tree(&l);
+        assert_eq!(g.cwd, None);
+        assert_eq!(
+            g.command,
+            "NODE_OPTIONS=--max-old-space-size=4096 npm run lint"
+        );
+    }
+
+    #[test]
+    fn tree_cache_refused_for_a_tool_without_one() {
+        let l = one("tree ruff-check ruff * attest uvx ruff@0.16.0 check packages {cache}");
+        assert_eq!(why(&l), ParseError::BadTreeCache);
+    }
+
+    #[test]
+    fn tree_cache_twice_refused() {
+        let l = one("tree eslint eslint * attest npx eslint {cache} . {cache}");
+        assert_eq!(why(&l), ParseError::BadTreeCache);
+    }
+
+    #[test]
+    fn tree_bad_tool_refused() {
+        let l = one("tree lint biome * attest npx biome check .");
+        assert_eq!(why(&l), ParseError::BadTreeTool("biome".into()));
+    }
+
+    #[test]
+    fn tree_missing_attest_refused() {
+        let l = one("tree eslint eslint * block npx eslint .");
+        assert!(matches!(why(&l), ParseError::BadTreeLine(_)));
+    }
+
+    #[test]
+    fn tree_absolute_cwd_refused() {
+        let l = one("tree eslint eslint * attest cwd=/etc npx eslint .");
+        assert_eq!(why(&l), ParseError::BadTreeOption("cwd=/etc".into()));
+    }
+
+    #[test]
+    fn tree_parent_dir_in_cwd_refused() {
+        let l = one("tree eslint eslint * attest cwd=web/../.. npx eslint .");
+        assert_eq!(why(&l), ParseError::BadTreeOption("cwd=web/../..".into()));
+    }
+
+    #[test]
+    fn tree_glob_in_inputs_refused() {
+        let l = one("tree eslint eslint * attest inputs=src/*.json npx eslint .");
+        assert_eq!(
+            why(&l),
+            ParseError::BadTreeOption("inputs=src/*.json".into())
+        );
+    }
+
+    #[test]
+    fn tree_unknown_option_refused() {
+        let l = one("tree eslint eslint * attest shell=bash npx eslint .");
+        assert_eq!(why(&l), ParseError::BadTreeOption("shell=bash".into()));
+    }
+
+    #[test]
+    fn tree_duplicate_name_refused() {
+        let v = parse_lines(
+            "tree eslint eslint * attest npx eslint .\ntree eslint eslint * attest npx eslint src",
+        );
+        assert_eq!(v.len(), 2);
+        tree(&v[0]);
+        assert_eq!(why(&v[1]), ParseError::Duplicate("eslint".into()));
+    }
+
+    #[test]
+    fn tree_name_saying_its_trigger_refused() {
+        let l = one("tree pre-commit-lint eslint * attest npx eslint .");
+        assert_eq!(why(&l), ParseError::TriggerInName("pre-commit-lint".into()));
+    }
+
+    #[test]
+    fn tree_bad_name_refused() {
+        let l = one("tree -lint eslint * attest npx eslint .");
+        assert_eq!(why(&l), ParseError::BadTreeName("-lint".into()));
+    }
+
+    #[test]
+    fn tree_gates_are_not_runnable_checks() {
+        let text = "tree eslint eslint * attest npx eslint .\npre-commit smoke * block true";
+        let checks = parse(text);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "pre-commit-smoke");
+        let gates = tree_gates(text);
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].normalized(), "npx eslint .");
     }
 
     /// The scope column's bare tokens are exact filenames — basename-matched,
