@@ -503,14 +503,28 @@ pub fn worker() -> Result<Outcome, String> {
     let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&push_ref));
     let gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
+    // Tree gates this tree has not proven yet (ADR-0024). Resolved BEFORE
+    // the nothing-to-do exit: a push whose only gates are lint must still be
+    // rehearsed, or a rebased branch could never be attested.
+    let proven_here = crate::gate_stamp::tree_tokens(&tree);
+    let tree_todo: Vec<crate::manifest::TreeGate> = if crate::tree_lint::enabled(&settings) {
+        manifest
+            .tree
+            .iter()
+            .filter(|g| !proven_here.contains(&g.stamp_key()))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let short = head.get(..8).unwrap_or(&head);
-    if gates.is_empty() {
+    if gates.is_empty() && tree_todo.is_empty() {
         println!("nothing to rehearse: no test gate has work to do for what {short} would push");
         return Ok(Outcome::NothingToDo);
     }
     let stamped = crate::gate_stamp::stamps_for(std::slice::from_ref(&head));
     let vouched = |g: &String| stamped.get(&head).is_some_and(|s| s.contains(g));
-    if gates.iter().all(vouched) {
+    if gates.iter().all(vouched) && tree_todo.is_empty() {
         println!(
             "{} {} already stamped on this tree — nothing to rehearse",
             valid_sign(),
@@ -565,6 +579,25 @@ pub fn worker() -> Result<Outcome, String> {
         });
         drop(snapshot);
         return Err(format!("could not prepare the snapshot: {why}"));
+    }
+    if !tree_todo.is_empty() {
+        me.step = Some("tree lint".to_string());
+        write(&me);
+        crate::tree_lint::rehearse(&settings, snapshot.path(), &me.tree, &tree_todo);
+    }
+    if gates.is_empty() {
+        // Lint was all there was: the push gate has nothing to run here.
+        write(&State {
+            phase: Phase::Passed,
+            step: None,
+            ..me
+        });
+        drop(snapshot);
+        println!(
+            "{} rehearsal of {short} done (tree lint only)",
+            valid_sign()
+        );
+        return Ok(Outcome::Passed);
     }
     me.step = Some("testing".to_string());
     write(&me);

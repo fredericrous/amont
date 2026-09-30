@@ -293,6 +293,15 @@ pub fn tree_tokens(tree: &str) -> Vec<String> {
     note_at(tree).tokens
 }
 
+/// Add `tokens` to the gate note on `tree` — how a rehearsal records tree
+/// gates it proved in its snapshot of exactly that tree. Merged, never
+/// rendered from the tokens alone, so evidence already on the note survives.
+pub fn stamp_tree(tree: &str, tokens: &[String]) -> bool {
+    let mut note = note_at(tree);
+    note.add_tokens(tokens);
+    write_note(tree, &note)
+}
+
 /// Write `note` at `key`. Best-effort, like every writer here.
 fn write_note(key: &str, note: &Note) -> bool {
     let body = note.render();

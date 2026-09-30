@@ -366,3 +366,88 @@ fn an_unproven_tree_is_not_attested_and_says_so() {
         .to_string();
     assert!(!remote_note(&remote, &head).contains("tree-ok"), "{pushed}");
 }
+
+/// `amont rehearse --wait`, as the rehearsal tests run it.
+fn rehearse_wait(r: &Repo) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    cmd.args(["rehearse", "--wait"])
+        .current_dir(&r.dir)
+        .stdin(Stdio::null());
+    Repo::strip_git_env_impl(&mut cmd);
+    cmd.env("GIT_CONFIG_GLOBAL", r.dir.join("fake-gitconfig"));
+    let out = cmd.output().expect("amont rehearse");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// A feature branch whose tip carries NO commit-time proof (`--no-verify`),
+/// with an upstream the rehearsal can push against.
+fn unproven_branch(name: &str, tool: &str, command: &str) -> Repo {
+    let r = repo_with(name, tool, command);
+    let base = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
+    r.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    let out = r.git(&["commit", "-q", "--no-verify", "-m", "feat: a"]);
+    assert!(out.status.success());
+    r
+}
+
+#[test]
+fn a_rehearsal_proves_a_lint_only_push_on_its_tree() {
+    let r = unproven_branch("ok", "ruff", "true");
+    assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"));
+    let out = rehearse_wait(&r);
+    assert!(out.contains("tree lint proven: ok"), "{out}");
+    assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+}
+
+#[test]
+fn a_prepare_that_writes_an_allowed_output_still_proves() {
+    let r = unproven_branch("ok", "ruff", "true");
+    r.stage(".gitignore", ".venv/\n");
+    let out = r.git(&["commit", "-q", "--no-verify", "-m", "chore: ignore .venv"]);
+    assert!(out.status.success());
+    r.git(&[
+        "config",
+        "amont.snapshotPrepare",
+        "mkdir -p .venv && touch .venv/marker",
+    ]);
+    let out = rehearse_wait(&r);
+    assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+}
+
+#[test]
+fn a_prepare_that_writes_an_ignored_module_cannot_forge_the_tree() {
+    let r = unproven_branch("ok", "ruff", "true");
+    r.stage(".gitignore", "gen/\n");
+    let out = r.git(&["commit", "-q", "--no-verify", "-m", "chore: ignore gen"]);
+    assert!(out.status.success());
+    r.git(&[
+        "config",
+        "amont.snapshotPrepare",
+        "mkdir -p gen && touch gen/m.py",
+    ]);
+    let out = rehearse_wait(&r);
+    assert!(
+        out.contains("tree lint not proven in the snapshot: an ignored file outside"),
+        "{out}"
+    );
+    assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+}
+
+#[test]
+fn a_prepare_that_edits_tracked_content_cannot_forge_the_tree() {
+    let r = unproven_branch("ok", "ruff", "true");
+    r.git(&["config", "amont.snapshotPrepare", "echo changed >> a.txt"]);
+    let out = rehearse_wait(&r);
+    assert!(
+        out.contains("snapshotPrepare changed tracked content"),
+        "{out}"
+    );
+    assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+}

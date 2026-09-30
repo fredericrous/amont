@@ -822,6 +822,9 @@ pub enum Named {
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
     let settings = ctx.settings;
+    // `amont.treeLintWait` counts from HERE, so no earlier wait (a test
+    // rehearsal's `amont.rehearsalWait`) can extend it.
+    let push_started = std::time::Instant::now();
     // The notes push `attest` makes re-enters this hook; its ref list is only
     // ever the attest ref, so there is nothing to prove — and proving it
     // would recurse.
@@ -1149,7 +1152,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // anything else is simply not attested, and CI lints.
     let (tree_proven, tree_unproven) =
         if !ctx.manifest.tree.is_empty() && crate::attest::enabled(settings) {
-            crate::tree_lint::tree_verdict(&ctx.manifest.tree, &tips)
+            crate::tree_lint::await_verdict(settings, &ctx.manifest.tree, &tips, push_started)
         } else {
             (Vec::new(), Vec::new())
         };

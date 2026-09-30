@@ -134,19 +134,29 @@ pub fn guard(settings: &crate::config::Settings) -> Option<String> {
     if !crate::git::succeeds(&["diff", "--quiet"]) {
         return Some("tracked files have unstaged edits (the tree is not the commit's)".into());
     }
-    let untracked =
-        crate::git::stdout(&["ls-files", "--others", "--exclude-standard", "--directory"])
-            .unwrap_or_default();
+    content_guard(Path::new(&crate::hooks::common::repo_root()), settings)
+}
+
+/// Untracked files, and ignored ones outside the allow-list, under `dir`.
+fn content_guard(dir: &Path, settings: &crate::config::Settings) -> Option<String> {
+    let untracked = crate::git::stdout_in(
+        dir,
+        &["ls-files", "--others", "--exclude-standard", "--directory"],
+    )
+    .unwrap_or_default();
     if let Some(first) = untracked.lines().find(|l| !l.trim().is_empty()) {
         return Some(format!("an untracked file is present ({first})"));
     }
-    let ignored = crate::git::stdout(&[
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--directory",
-    ])
+    let ignored = crate::git::stdout_in(
+        dir,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ],
+    )
     .unwrap_or_default();
     let allow = outputs(settings);
     if let Some(first) = ignored
@@ -283,6 +293,95 @@ pub fn tree_verdict(gates: &[TreeGate], tips: &[String]) -> (Vec<String>, Vec<St
         }
     }
     (proven, unproven)
+}
+
+pub const REHEARSAL_TIMEOUT: &str = "amont.treeLintRehearsalTimeout";
+pub const WAIT: &str = "amont.treeLintWait";
+
+/// Whether a snapshot is still exactly its tree once `snapshotPrepare` (and
+/// `snapshotCarry`) ran: tracked content unchanged, nothing untracked, and
+/// nothing ignored outside the allow-list. Prepare runs arbitrary commands,
+/// so this is what keeps it from forging the tree a stamp names.
+pub fn prepare_guard(snapshot: &Path, settings: &crate::config::Settings) -> Option<String> {
+    if !crate::git::succeeds_in(snapshot, &["diff", "--quiet", "HEAD"]) {
+        return Some("snapshotPrepare changed tracked content".into());
+    }
+    content_guard(snapshot, settings)
+}
+
+/// The rehearsal's half (ADR-0024): prove `gates` on the snapshot of `tree`,
+/// uncached (every snapshot sits at a new path) and bounded by
+/// `amont.treeLintRehearsalTimeout`, and stamp the TREE. Runs before the
+/// rehearsal's test gates, so a push waiting on lint does not wait on tests.
+pub fn rehearse(
+    settings: &crate::config::Settings,
+    snapshot: &Path,
+    tree: &str,
+    gates: &[TreeGate],
+) -> Vec<String> {
+    if gates.is_empty() || cfg!(not(unix)) {
+        return Vec::new();
+    }
+    if let Some(why) = prepare_guard(snapshot, settings) {
+        println!("tree lint not proven in the snapshot: {why}");
+        return Vec::new();
+    }
+    let budget = crate::config::integer_or(settings, REHEARSAL_TIMEOUT, 120, 1..=3600);
+    let budget = Duration::from_secs(u64::try_from(budget).unwrap_or(120));
+    let mut tokens = Vec::new();
+    for g in gates {
+        let cwd = cwd_of(snapshot, g);
+        let started = Instant::now();
+        let run = crate::tree_run::run(
+            &argv(g, ""),
+            &cwd,
+            started + budget,
+            &AtomicBool::new(false),
+        );
+        match run {
+            TreeRun::Passed => {
+                println!(
+                    "tree lint proven: {} ({:.1}s)",
+                    g.name,
+                    started.elapsed().as_secs_f32()
+                );
+                tokens.push(g.stamp_key());
+            }
+            other => println!("tree lint not proven: {} — {other:?}", g.name),
+        }
+    }
+    if !tokens.is_empty() && !crate::gate_stamp::stamp_tree(tree, &tokens) {
+        println!("git refused the tree note — nothing stamped");
+        return Vec::new();
+    }
+    tokens
+}
+
+/// [`tree_verdict`], waiting — at most `amont.treeLintWait` counted from
+/// `started` (the start of pre-push), as ONE deadline for every gate — for a
+/// rehearsal running on the tree of one of `tips` to stamp its tree gates.
+/// Independent of `amont.rehearsalWait`: it neither uses nor extends it.
+pub fn await_verdict(
+    settings: &crate::config::Settings,
+    gates: &[TreeGate],
+    tips: &[String],
+    started: Instant,
+) -> (Vec<String>, Vec<String>) {
+    let secs = crate::config::integer_or(settings, WAIT, 30, 0..=3600);
+    let until = started + Duration::from_secs(u64::try_from(secs).unwrap_or(30));
+    let trees: Vec<String> = tips
+        .iter()
+        .filter_map(|t| crate::git::stdout(&["rev-parse", &format!("{t}^{{tree}}")]))
+        .collect();
+    loop {
+        let verdict = tree_verdict(gates, tips);
+        let rehearsing =
+            crate::rehearsal::read().is_some_and(|s| s.alive() && trees.contains(&s.tree));
+        if verdict.1.is_empty() || !rehearsing || Instant::now() >= until {
+            return verdict;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Where the background warm-up writes: its own log, never the rehearsal's.

@@ -33,3 +33,12 @@ verification list. Implementation decisions taken here are logged below.
 - 2026-09-30 — **tree-parity is `Reach::Convention`, not Safety.** It fires
   only in a repository that declares tree gates. The safety net stays the
   low-false-positive set.
+- 2026-09-30 — **`.env` in application-landscape's allow-list** (the
+  person's decision). The live checkout holds a gitignored `.env`, and
+  `snapshotCarry .env` copies it into rehearsal snapshots, so without it no
+  commit or rehearsal there could stamp. The allow-list only decides whether
+  the file's presence withholds a stamp. Nothing reads, hashes or uploads
+  it: the namespace hashes staged files only, and the attestation carries
+  gate names and a tree id. Kept per repository, not a default: a linter
+  whose verdict depended on `.env` would pass here and not in CI, and
+  eslint, prettier and ruff do not read it.

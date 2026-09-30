@@ -409,6 +409,8 @@ pub const SETTABLE: &[&str] = &[
     // them decides a commit; they only decide whether a stamp is earned.
     "treeLint",
     "treeLintSlack",
+    "treeLintWait",
+    "treeLintRehearsalTimeout",
     "snapshotPrepareOutputs",
 ];
 
