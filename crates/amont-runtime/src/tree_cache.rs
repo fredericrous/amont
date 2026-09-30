@@ -342,45 +342,89 @@ pub fn mark_complete(ns_dir: &Path) {
     }
 }
 
-/// Whether eslint here uses type information (`parserOptions.project` or
-/// `projectService`): a per-file cache is stale across files then, so the
-/// gate runs uncached. Asked once per namespace and remembered in it.
-pub fn typed_eslint(cwd: &Path, ns_dir: &Path) -> bool {
+/// Whether an `eslint --print-config` JSON uses type information
+/// (`parserOptions.project` set, or `projectService` true), which makes a
+/// per-file cache stale across files.
+pub fn config_is_typed(config: &crate::json_read::Value) -> bool {
+    let Some(opts) = config
+        .get("languageOptions")
+        .and_then(|l| l.get("parserOptions"))
+        .or_else(|| config.get("parserOptions"))
+    else {
+        return false;
+    };
+    let project = opts.get("project").is_some_and(|p| {
+        !matches!(
+            p,
+            crate::json_read::Value::Null | crate::json_read::Value::Bool(false)
+        )
+    });
+    let service = opts.get("projectService").is_some_and(|v| {
+        !matches!(
+            v,
+            crate::json_read::Value::Null | crate::json_read::Value::Bool(false)
+        )
+    });
+    project || service
+}
+
+/// Whether eslint here uses type information. FAIL-CLOSED: anything but a
+/// definite "untyped" reads as typed, which only costs the cache, where a
+/// wrong "untyped" would let a stale per-file cache prove a typed tree.
+/// Asked through `tree_run` (bounded by `deadline`, cancellable), over up to
+/// ten tracked files until one prints a config (an ignored file prints
+/// `undefined`). Remembered in the namespace only when definite, so a
+/// transient timeout never disables the cache for good.
+pub fn typed_eslint(
+    cwd: &Path,
+    ns_dir: &Path,
+    deadline: std::time::Instant,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> bool {
     if ns_dir.join(TYPED).is_file() {
         return true;
     }
     if ns_dir.join(UNTYPED).is_file() {
         return false;
     }
-    let sample = crate::git::stdout(&["ls-files", "*.ts", "*.tsx", "*.js", "*.mjs"])
-        .and_then(|s| s.lines().next().map(str::to_string));
     let bin = cwd.join("node_modules").join(".bin").join("eslint");
-    let typed = match sample {
-        Some(file) if bin.is_file() => Command::new(&bin)
-            .args(["--print-config", &file])
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .map(|o| {
-                let t = String::from_utf8_lossy(&o.stdout);
-                t.contains("\"projectService\": true")
-                    || (t.contains("\"project\"") && !t.contains("\"project\": null"))
-            })
-            // Could not ask: assume typed, which only costs the cache.
-            .unwrap_or(true),
-        _ => false,
-    };
-    let _ = std::fs::write(ns_dir.join(if typed { TYPED } else { UNTYPED }), b"");
-    typed
+    if !bin.is_file() {
+        return true;
+    }
+    let files = crate::git::stdout(&["ls-files", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs"])
+        .unwrap_or_default();
+    for file in files.lines().take(10) {
+        let argv = vec![
+            bin.display().to_string(),
+            "--print-config".to_string(),
+            file.to_string(),
+        ];
+        match crate::tree_run::run_output(&argv, cwd, deadline, cancel) {
+            Ok(out) => {
+                if let Some(config) = crate::json_read::parse(out.trim()) {
+                    let typed = config_is_typed(&config);
+                    let _ = std::fs::write(ns_dir.join(if typed { TYPED } else { UNTYPED }), b"");
+                    return typed;
+                }
+                // `undefined`: eslint ignores this file; ask about the next.
+            }
+            Err(_) => return true,
+        }
+    }
+    true
 }
 
 /// What `{cache}` expands to for `gate` in `ns_dir`, or `""` for a tool
-/// without a cache, or typed eslint.
-pub fn cache_flags(cwd: &Path, gate: &TreeGate, ns_dir: &Path) -> String {
+/// without a cache, or typed (or undetermined) eslint.
+pub fn cache_flags(
+    cwd: &Path,
+    gate: &TreeGate,
+    ns_dir: &Path,
+    deadline: std::time::Instant,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> String {
     let file = match gate.tool {
-        TreeTool::Eslint if !typed_eslint(cwd, ns_dir) => ".eslintcache",
+        TreeTool::Eslint if !typed_eslint(cwd, ns_dir, deadline, cancel) => ".eslintcache",
         TreeTool::Prettier => ".prettiercache",
         _ => return String::new(),
     };
@@ -434,6 +478,47 @@ mod tests {
         }
         assert!(again.is_some(), "the lock was never released");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tree_cache_typed_configs_are_recognised() {
+        use crate::json_read::parse;
+        let typed = [
+            r#"{"languageOptions":{"parserOptions":{"project":"./tsconfig.json"}}}"#,
+            r#"{"languageOptions":{"parserOptions":{"project":true}}}"#,
+            r#"{"languageOptions":{"parserOptions":{"projectService":true}}}"#,
+            r#"{"languageOptions":{"parserOptions":{"projectService":{"allowDefaultProject":["*.js"]}}}}"#,
+            r#"{"parserOptions":{"project":["a.json"]}}"#,
+        ];
+        for t in typed {
+            assert!(config_is_typed(&parse(t).unwrap()), "{t}");
+        }
+        let untyped = [
+            r#"{"languageOptions":{"parserOptions":{"project":null}}}"#,
+            r#"{"languageOptions":{"parserOptions":{"projectService":false}}}"#,
+            r#"{"languageOptions":{"parserOptions":{}}}"#,
+            r#"{"rules":{}}"#,
+        ];
+        for t in untyped {
+            assert!(!config_is_typed(&parse(t).unwrap()), "{t}");
+        }
+    }
+
+    /// No eslint to ask: typed (no cache), and nothing remembered.
+    #[test]
+    fn tree_cache_undetermined_eslint_reads_typed() {
+        let d = std::env::temp_dir().join(format!("amont-typed-{}", std::process::id()));
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        let typed = typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(typed);
+        assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

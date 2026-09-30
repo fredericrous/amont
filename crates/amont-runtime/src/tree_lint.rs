@@ -143,15 +143,17 @@ pub fn guard(settings: &crate::config::Settings) -> Option<String> {
 
 /// Untracked files, and ignored ones outside the allow-list, under `dir`.
 fn content_guard(dir: &Path, settings: &crate::config::Settings) -> Option<String> {
-    let untracked = crate::git::stdout_in(
+    // A git that cannot answer proves nothing: withhold, never read "none".
+    let Some(untracked) = crate::git::stdout_in(
         dir,
         &["ls-files", "--others", "--exclude-standard", "--directory"],
-    )
-    .unwrap_or_default();
+    ) else {
+        return Some("git could not list untracked files".into());
+    };
     if let Some(first) = untracked.lines().find(|l| !l.trim().is_empty()) {
         return Some(format!("an untracked file is present ({first})"));
     }
-    let ignored = crate::git::stdout_in(
+    let Some(ignored) = crate::git::stdout_in(
         dir,
         &[
             "ls-files",
@@ -160,8 +162,9 @@ fn content_guard(dir: &Path, settings: &crate::config::Settings) -> Option<Strin
             "--exclude-standard",
             "--directory",
         ],
-    )
-    .unwrap_or_default();
+    ) else {
+        return Some("git could not list ignored files".into());
+    };
     let allow = outputs(settings);
     if let Some(first) = ignored
         .lines()
@@ -337,7 +340,10 @@ fn decide_and_run(
     let Some(lock) = crate::tree_cache::try_lock(g) else {
         return Decision::Busy;
     };
-    let argv = argv(g, &crate::tree_cache::cache_flags(cwd, g, &ns_dir));
+    let argv = argv(
+        g,
+        &crate::tree_cache::cache_flags(cwd, g, &ns_dir, deadline, cancel),
+    );
     let began = Instant::now();
     let run = crate::tree_run::run(&argv, cwd, deadline, cancel);
     let ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -457,7 +463,8 @@ pub fn rehearse(
                     TreeRun::TimedOut | TreeRun::Cancelled => {
                         crate::gate_stamp::RunOutcome::Cancelled
                     }
-                    _ => crate::gate_stamp::RunOutcome::Unavailable,
+                    TreeRun::Spawn(_) => crate::gate_stamp::RunOutcome::Unavailable,
+                    TreeRun::Passed => unreachable!("matched above"),
                 };
                 note(&g.name, outcome, ms);
                 println!("tree lint not proven: {} — {other:?}", g.name);
@@ -571,7 +578,16 @@ pub fn warm(root: &Path) -> i32 {
             println!("{}: cannot create the cache directory — skipped", g.name);
             continue;
         };
-        let argv = argv(g, &crate::tree_cache::cache_flags(&cwd, g, &ns_dir));
+        let argv = argv(
+            g,
+            &crate::tree_cache::cache_flags(
+                &cwd,
+                g,
+                &ns_dir,
+                Instant::now() + CEILING,
+                &AtomicBool::new(false),
+            ),
+        );
         let started = Instant::now();
         let run = crate::tree_run::run(&argv, &cwd, started + CEILING, &AtomicBool::new(false));
         let secs = started.elapsed().as_secs_f32();
@@ -660,6 +676,22 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
             Decision::Slow(ms) => {
                 note(&name, RunOutcome::Slow, 0);
                 slow.push(format!("{name} (~{:.1}s)", ms as f64 / 1000.0));
+            }
+        }
+    }
+    // The gates linted the working tree the staged-only hold made the index.
+    // If it moved while they ran (an editor autosave, a gate that writes), the
+    // proof is about another tree: withhold it.
+    if stampable && !proven.is_empty() {
+        let moved = if crate::git::succeeds(&["diff", "--quiet"]) {
+            content_guard(Path::new(&crate::hooks::common::repo_root()), settings)
+        } else {
+            Some("tracked files changed while it ran".into())
+        };
+        if let Some(why) = moved {
+            for name in proven.drain(..) {
+                note(&name, RunOutcome::Withheld, 0);
+                unproven.push(format!("{name} — the tree moved while it ran ({why})"));
             }
         }
     }

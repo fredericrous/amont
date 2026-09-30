@@ -210,6 +210,15 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
         "{out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:slow"), "{out}");
+    // Cancelled means gone: no child of the gate outlives the commit.
+    let left = Command::new("pgrep")
+        .args(["-f", "sleep 300$"])
+        .output()
+        .expect("pgrep");
+    assert!(
+        String::from_utf8_lossy(&left.stdout).trim().is_empty(),
+        "the gate's sleep outlived the commit"
+    );
 }
 
 #[test]
@@ -615,7 +624,7 @@ fn a_hanging_version_probe_never_delays_the_commit() {
     let bin = r.dir.join(".git").join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fake = bin.join("pyright");
-    std::fs::write(&fake, "#!/bin/sh\nsleep 300\necho pyright 1.1.400\n").unwrap();
+    std::fs::write(&fake, "#!/bin/sh\nsleep 301\necho pyright 1.1.400\n").unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
@@ -646,4 +655,66 @@ fn a_hanging_version_probe_never_delays_the_commit() {
         "{said}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:pr"), "{said}");
+}
+
+/// A reword keeps the tree, so the commit-time proof on the tree note still
+/// attests the push.
+#[test]
+fn a_reword_keeps_the_tree_proof() {
+    let r = repo_with("ok", "ruff", "true");
+    let remote = attesting(&r);
+    warm(&r);
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    let out = r.git(&[
+        "commit",
+        "-q",
+        "--amend",
+        "--no-verify",
+        "-m",
+        "feat: reworded",
+    ]);
+    assert!(out.status.success());
+    assert!(
+        !stamped(&r, "HEAD").contains("tree:ok"),
+        "the new commit has no note of its own"
+    );
+    push(&r);
+    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    let note = remote_note(&remote, &head);
+    let gates = note.lines().find(|l| l.starts_with("gates ")).unwrap_or("");
+    assert!(gates.split_whitespace().any(|g| g == "tree-ok"), "{note}");
+}
+
+#[test]
+fn a_prepare_that_writes_an_untracked_module_cannot_forge_the_tree() {
+    let r = unproven_branch("ok", "ruff", "true");
+    r.git(&["config", "amont.snapshotPrepare", "touch generated_mod.py"]);
+    let out = rehearse_wait(&r);
+    assert!(
+        out.contains("tree lint not proven in the snapshot: an untracked file is present"),
+        "{out}"
+    );
+    assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+}
+
+/// The gates lint the working tree the hold made the index; if it moves
+/// while they run, the proof is about another tree.
+#[test]
+fn a_tree_that_moves_during_the_run_is_withheld() {
+    let r = repo_with("mover", "ruff", "sh mover.sh");
+    r.stage(
+        "mover.sh",
+        "#!/bin/sh\n[ -e node_modules/move ] && echo moved >> a.txt\nexit 0\n",
+    );
+    r.stage(".gitignore", "node_modules/\n");
+    warm(&r);
+    r.write("node_modules/move", "");
+    r.stage("b.txt", "b\n");
+    let (ok, out) = commit(&r, "feat: b");
+    assert!(ok, "{out}");
+    assert!(out.contains("mover — the tree moved while it ran"), "{out}");
+    assert!(!stamped(&r, "HEAD").contains("tree:mover"), "{out}");
 }

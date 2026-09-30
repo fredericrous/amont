@@ -115,3 +115,37 @@ verification list. Implementation decisions taken here are logged below.
     teaches both numbers. Two other docs commits took 3–4.8 s while a 20-min
     test gate ran on the same machine: load, not the gate (they were
     `slow`-skipped at once).
+- 2026-09-30 — **Implementation review, round 1: approve-with-changes.**
+  - **Fixed:**
+    - the tree guard withholds when git cannot list files, instead of
+      reading "none";
+    - typed-eslint detection fails closed (bounded `--print-config` via
+      `tree_run`, first file that yields JSON, a marker only when
+      definite, undetermined reads typed);
+    - an exhaustive `TreeRun` match in the rehearsal;
+    - a re-check before stamping: the working tree must still equal the
+      index, with nothing new untracked, so an autosave or a writing gate
+      mid-run withholds.
+  - **Tests added:**
+    - a reword keeps the tree proof through push;
+    - a prepare writing an untracked module cannot forge the tree;
+    - the slow gate's child is gone when the commit returns;
+    - a moving tree is withheld;
+    - typed/untyped config and undetermined → typed.
+  - **Deferred, with reasons:**
+    - *SIGTERM warm-up → next commit cold.* The completion marker is
+      written by temp + rename only after a full clean run, so a killed
+      warm-up leaves no marker, and `tree_run` group-kill is tested.
+    - *uv probe leaves `.venv` mtime unchanged.* The probe is
+      `uv run --frozen --no-sync`; a test needs a uv project fixture, left to
+      the trade-agents pilot.
+    - *`treeLintWait` as one aggregate deadline.* A single `until` computed
+      from pre-push start (`await_verdict`); no rehearsal-timing fixture.
+    - *`unstampedPush refuse` does not block.* Tree gates never enter the
+      push-check loop that rule governs, by construction.
+    - *80 columns with `NO_COLOR`.* The lines are short fixed prefixes plus
+      gate names; no test.
+  - **Wording:** the plan's `… — 3 problems outside this commit; CI will
+    lint` became `… — <the tool's last line> — CI will lint`. amont cannot
+    know which problems are outside the commit; the tool's own summary line
+    is what it has.
