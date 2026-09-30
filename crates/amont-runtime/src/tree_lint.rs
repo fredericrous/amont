@@ -196,7 +196,46 @@ pub fn argv(gate: &TreeGate, cache_flags: &str) -> Vec<String> {
 /// Tree gates in flight.
 pub struct SideCar {
     cancel: Arc<AtomicBool>,
+    started: Instant,
     running: Vec<(String, JoinHandle<TreeRun>)>,
+}
+
+/// This hook run's tree-gate outcomes, for `gate_evidence`: proven, failed,
+/// cold, busy, skew, withheld, cancelled — the hit rate, and why it missed.
+static EVIDENCE: std::sync::Mutex<Vec<crate::gate_stamp::Run>> = std::sync::Mutex::new(Vec::new());
+
+fn note(name: &str, outcome: crate::gate_stamp::RunOutcome, ms: u64) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut e) = EVIDENCE.lock() {
+        e.push(crate::gate_stamp::Run {
+            at,
+            gate: format!("tree-{name}"),
+            outcome,
+            ms,
+        });
+    }
+}
+
+/// Every gate withheld for the same reason (the guard fired).
+pub fn note_withheld(gates: &[TreeGate]) {
+    for g in gates {
+        note(&g.name, crate::gate_stamp::RunOutcome::Withheld, 0);
+    }
+}
+
+/// Write this run's tree-gate evidence against `tree`'s gate note, and
+/// clear it. Best-effort, like every evidence writer.
+pub fn flush_evidence(tree: &str) {
+    let runs = EVIDENCE
+        .lock()
+        .map(|mut e| std::mem::take(&mut *e))
+        .unwrap_or_default();
+    if !runs.is_empty() {
+        crate::gate_stamp::record_runs(tree, &runs);
+    }
 }
 
 fn cwd_of(root: &Path, gate: &TreeGate) -> PathBuf {
@@ -232,6 +271,7 @@ pub fn start(
         let cwd = cwd_of(root, g);
         // The same tool CI resolves, or no proof (ADR-0024).
         if let Some(why) = crate::tree_skew::skew(&cwd, g, pins) {
+            note(&g.name, crate::gate_stamp::RunOutcome::Skew, 0);
             say(&format!(
                 "  tree lint not proven: {} — {} — CI will lint",
                 g.name,
@@ -242,10 +282,12 @@ pub fn start(
         let Some(ns) =
             crate::tree_cache::namespace(&cwd, g).filter(|ns| crate::tree_cache::is_warm(g, ns))
         else {
+            note(&g.name, crate::gate_stamp::RunOutcome::Cold, 0);
             cold.push(g.name.clone());
             continue;
         };
         let Some(lock) = crate::tree_cache::try_lock(g) else {
+            note(&g.name, crate::gate_stamp::RunOutcome::Busy, 0);
             busy.push(g.name.clone());
             continue;
         };
@@ -273,7 +315,11 @@ pub fn start(
     if !cold.is_empty() {
         warm_later(settings, &cold);
     }
-    (!running.is_empty()).then_some(SideCar { cancel, running })
+    (!running.is_empty()).then_some(SideCar {
+        cancel,
+        started: Instant::now(),
+        running,
+    })
 }
 
 /// Which declared tree gates every pushed tip's TREE proves, as note gate
@@ -334,6 +380,8 @@ pub fn rehearse(
     }
     if let Some(why) = prepare_guard(snapshot, settings) {
         println!("tree lint not proven in the snapshot: {why}");
+        note_withheld(gates);
+        flush_evidence(tree);
         return Vec::new();
     }
     let budget = crate::config::integer_or(settings, REHEARSAL_TIMEOUT, 120, 1..=3600);
@@ -343,6 +391,7 @@ pub fn rehearse(
     for g in gates {
         let cwd = cwd_of(snapshot, g);
         if let Some(why) = crate::tree_skew::skew(&cwd, g, &pins) {
+            note(&g.name, crate::gate_stamp::RunOutcome::Skew, 0);
             println!("tree lint not proven: {} — {why}", g.name);
             continue;
         }
@@ -353,8 +402,10 @@ pub fn rehearse(
             started + budget,
             &AtomicBool::new(false),
         );
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match run {
             TreeRun::Passed => {
+                note(&g.name, crate::gate_stamp::RunOutcome::Passed, ms);
                 println!(
                     "tree lint proven: {} ({:.1}s)",
                     g.name,
@@ -362,9 +413,20 @@ pub fn rehearse(
                 );
                 tokens.push(g.stamp_key());
             }
-            other => println!("tree lint not proven: {} — {other:?}", g.name),
+            other => {
+                let outcome = match other {
+                    TreeRun::Failed(_) => crate::gate_stamp::RunOutcome::Failed,
+                    TreeRun::TimedOut | TreeRun::Cancelled => {
+                        crate::gate_stamp::RunOutcome::Cancelled
+                    }
+                    _ => crate::gate_stamp::RunOutcome::Unavailable,
+                };
+                note(&g.name, outcome, ms);
+                println!("tree lint not proven: {} — {other:?}", g.name);
+            }
         }
     }
+    flush_evidence(tree);
     if !tokens.is_empty() && !crate::gate_stamp::stamp_tree(tree, &tokens) {
         println!("git refused the tree note — nothing stamped");
         return Vec::new();
@@ -494,18 +556,30 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
     car.cancel.store(true, Ordering::SeqCst);
     let mut proven = Vec::new();
     let mut unproven = Vec::new();
+    use crate::gate_stamp::RunOutcome;
+    let ms = u64::try_from(car.started.elapsed().as_millis()).unwrap_or(u64::MAX);
     for (name, handle) in car.running {
         match handle
             .join()
             .unwrap_or(TreeRun::Spawn("thread died".into()))
         {
-            TreeRun::Passed if stampable => proven.push(name),
-            TreeRun::Passed => {}
-            TreeRun::Failed(summary) => unproven.push(format!("{name} — {summary}")),
-            TreeRun::TimedOut | TreeRun::Cancelled => {
-                unproven.push(format!("{name} — still running when the commit was ready"))
+            TreeRun::Passed if stampable => {
+                note(&name, RunOutcome::Passed, ms);
+                proven.push(name);
             }
-            TreeRun::Spawn(e) => unproven.push(format!("{name} — could not start ({e})")),
+            TreeRun::Passed => note(&name, RunOutcome::Withheld, ms),
+            TreeRun::Failed(summary) => {
+                note(&name, RunOutcome::Failed, ms);
+                unproven.push(format!("{name} — {summary}"));
+            }
+            TreeRun::TimedOut | TreeRun::Cancelled => {
+                note(&name, RunOutcome::Cancelled, ms);
+                unproven.push(format!("{name} — still running when the commit was ready"));
+            }
+            TreeRun::Spawn(e) => {
+                note(&name, RunOutcome::Unavailable, ms);
+                unproven.push(format!("{name} — could not start ({e})"));
+            }
         }
     }
     if !proven.is_empty() {

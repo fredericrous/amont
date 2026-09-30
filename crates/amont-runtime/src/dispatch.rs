@@ -379,6 +379,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
         match crate::tree_lint::guard(settings) {
             Some(why) => {
                 crate::hooks::common::say(&format!("  tree lint not proven: {why} — CI will lint"));
+                crate::tree_lint::note_withheld(&ctx.manifest.tree);
                 None
             }
             None => Some(&ctx.manifest.tree),
@@ -439,6 +440,12 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     }
     let ran: Vec<&str> = ran.iter().map(String::as_str).collect();
     crate::gate_stamp::record(&ran);
+    // Under the hold, the index IS the commit's tree: its evidence goes there.
+    if !ctx.manifest.tree.is_empty() {
+        if let Some(tree) = crate::git::stdout(&["write-tree"]) {
+            crate::tree_lint::flush_evidence(&tree);
+        }
+    }
 
     drop(held);
     verdict

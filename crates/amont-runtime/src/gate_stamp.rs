@@ -133,6 +133,19 @@ pub enum RunOutcome {
     Fixed,
     Unavailable,
     Inert,
+    // Tree gates (ADR-0024): why a commit's tree was NOT proven. None is a
+    // verdict about the content; together they are the hit rate's misses.
+    /// No completion marker in the current cache namespace.
+    Cold,
+    /// Another run held the gate's cache lock.
+    Busy,
+    /// The tool the gate would run is not the one CI resolves.
+    Skew,
+    /// The tree was not exactly the commit's (unstaged, untracked, ignored
+    /// outside the allow-list, or an operation in progress).
+    Withheld,
+    /// Still running when the commit was ready, or past its deadline.
+    Cancelled,
 }
 
 impl RunOutcome {
@@ -144,6 +157,11 @@ impl RunOutcome {
             RunOutcome::Fixed => "fixed",
             RunOutcome::Unavailable => "unavailable",
             RunOutcome::Inert => "inert",
+            RunOutcome::Cold => "cold",
+            RunOutcome::Busy => "busy",
+            RunOutcome::Skew => "skew",
+            RunOutcome::Withheld => "withheld",
+            RunOutcome::Cancelled => "cancelled",
         }
     }
 
@@ -158,6 +176,11 @@ impl RunOutcome {
             "fixed" => RunOutcome::Fixed,
             "unavailable" => RunOutcome::Unavailable,
             "inert" => RunOutcome::Inert,
+            "cold" => RunOutcome::Cold,
+            "busy" => RunOutcome::Busy,
+            "skew" => RunOutcome::Skew,
+            "withheld" => RunOutcome::Withheld,
+            "cancelled" => RunOutcome::Cancelled,
             _ => return None,
         })
     }

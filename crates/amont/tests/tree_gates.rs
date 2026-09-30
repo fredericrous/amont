@@ -471,3 +471,45 @@ fn a_pinned_tool_at_another_version_withholds_without_blocking() {
     );
     assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
 }
+
+/// The `run` evidence lines for `tree-<gate>` on `rev`'s gate note.
+fn evidence(r: &Repo, rev: &str, gate: &str) -> Vec<String> {
+    stamped(r, rev)
+        .lines()
+        .filter(|l| l.starts_with("run ") && l.split_whitespace().nth(2) == Some(gate))
+        .map(|l| l.split_whitespace().nth(3).unwrap_or("").to_string())
+        .collect()
+}
+
+#[test]
+fn every_tree_outcome_is_recorded_as_evidence_on_the_tree() {
+    let r = repo_with("ok", "ruff", "true");
+    // cold
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    assert_eq!(
+        evidence(&r, "HEAD^{tree}", "tree-ok"),
+        vec!["cold"],
+        "{out}"
+    );
+    // proven
+    warm(&r);
+    r.stage("b.txt", "b\n");
+    let (ok, out) = commit(&r, "feat: b");
+    assert!(ok, "{out}");
+    assert_eq!(
+        evidence(&r, "HEAD^{tree}", "tree-ok"),
+        vec!["pass"],
+        "{out}"
+    );
+    // withheld
+    r.write("stray.py", "x = 1\n");
+    r.stage("c.txt", "c\n");
+    let (ok, out) = commit(&r, "feat: c");
+    assert!(ok, "{out}");
+    assert_eq!(
+        evidence(&r, "HEAD^{tree}", "tree-ok"),
+        vec!["withheld"],
+        "{out}"
+    );
+}
