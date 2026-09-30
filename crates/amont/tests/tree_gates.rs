@@ -191,7 +191,7 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     let r = repo_with("slow", "pyright", "sh slow.sh");
     r.stage(
         "slow.sh",
-        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 300\nexit 0\n",
+        "#!/bin/sh\nif [ -e node_modules/slow ]; then sleep 300 & echo $! > node_modules/slow.pid; wait; fi\nexit 0\n",
     );
     r.git(&["config", "amont.treeLintSlack", "1"]);
     r.stage(".gitignore", "node_modules/\n");
@@ -210,15 +210,18 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
         "{out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:slow"), "{out}");
-    // Cancelled means gone: no child of the gate outlives the commit.
-    let left = Command::new("pgrep")
-        .args(["-f", "sleep 300$"])
-        .output()
-        .expect("pgrep");
-    assert!(
-        String::from_utf8_lossy(&left.stdout).trim().is_empty(),
-        "the gate's sleep outlived the commit"
-    );
+    // Cancelled means gone: THIS gate's child does not outlive the commit.
+    let pid = std::fs::read_to_string(r.dir.join("node_modules/slow.pid"))
+        .expect("the gate recorded its child")
+        .trim()
+        .to_string();
+    let alive = Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(Stdio::null())
+        .status()
+        .expect("kill -0")
+        .success();
+    assert!(!alive, "the gate's child {pid} outlived the commit");
 }
 
 #[test]

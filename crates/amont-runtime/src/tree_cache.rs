@@ -391,8 +391,17 @@ pub fn typed_eslint(
     if !bin.is_file() {
         return true;
     }
-    let files = crate::git::stdout(&["ls-files", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs"])
-        .unwrap_or_default();
+    // Sampled where eslint RUNS (the gate's cwd), and all of them asked: a
+    // flat config can add type information to some files only, so one
+    // untyped answer proves nothing about the rest.
+    let files = crate::git::stdout_in(
+        cwd,
+        &[
+            "ls-files", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs",
+        ],
+    )
+    .unwrap_or_default();
+    let mut answered = 0;
     for file in files.lines().take(10) {
         let argv = vec![
             bin.display().to_string(),
@@ -400,18 +409,23 @@ pub fn typed_eslint(
             file.to_string(),
         ];
         match crate::tree_run::run_output(&argv, cwd, deadline, cancel) {
-            Ok(out) => {
-                if let Some(config) = crate::json_read::parse(out.trim()) {
-                    let typed = config_is_typed(&config);
-                    let _ = std::fs::write(ns_dir.join(if typed { TYPED } else { UNTYPED }), b"");
-                    return typed;
+            Ok(out) => match crate::json_read::parse(out.trim()) {
+                Some(config) if config_is_typed(&config) => {
+                    let _ = std::fs::write(ns_dir.join(TYPED), b"");
+                    return true;
                 }
-                // `undefined`: eslint ignores this file; ask about the next.
-            }
+                Some(_) => answered += 1,
+                // `undefined`: eslint ignores this file.
+                None => {}
+            },
             Err(_) => return true,
         }
     }
-    true
+    if answered == 0 {
+        return true;
+    }
+    let _ = std::fs::write(ns_dir.join(UNTYPED), b"");
+    false
 }
 
 /// What `{cache}` expands to for `gate` in `ns_dir`, or `""` for a tool
@@ -518,6 +532,47 @@ mod tests {
         );
         assert!(typed);
         assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Every sampled file is asked, where eslint runs: one typed file among
+    /// untyped ones makes the whole namespace typed.
+    #[cfg(unix)]
+    #[test]
+    fn tree_cache_one_typed_file_makes_eslint_typed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("amont-typed-mix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let bin = d.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("a.js"), "").unwrap();
+        std::fs::write(d.join("src/b.ts"), "").unwrap();
+        for args in [vec!["init", "-q"], vec!["add", "a.js", "src/b.ts"]] {
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&d)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let eslint = bin.join("eslint");
+        std::fs::write(
+            &eslint,
+            "#!/bin/sh\ncase \"$2\" in\n  src/*) echo '{\"languageOptions\":{\"parserOptions\":{\"projectService\":true}}}' ;;\n  *) echo '{\"languageOptions\":{\"parserOptions\":{}}}' ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        let typed = typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(20),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(typed, "one typed file must make the namespace typed");
+        assert!(ns.join(TYPED).exists());
         let _ = std::fs::remove_dir_all(d);
     }
 

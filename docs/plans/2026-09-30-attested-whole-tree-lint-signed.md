@@ -149,3 +149,22 @@ verification list. Implementation decisions taken here are logged below.
     lint` became `… — <the tool's last line> — CI will lint`. amont cannot
     know which problems are outside the commit; the tool's own summary line
     is what it has.
+- 2026-09-30 — **Implementation review, delta: approve-with-changes.**
+  Round-1 items 1–6 are resolved; 7 (tick Phase 2) happens at merge.
+  - **Fixed:**
+    - typed-eslint samples where eslint runs (the gate's `cwd`) and asks
+      about every sampled file: typed if any is, or if none answered;
+      untyped only when some answered and all were untyped. Tested with a
+      fake eslint typed under `src/` only;
+    - the slow-gate test checks its own child's pid, not a machine-wide
+      `pgrep`.
+  - **By-hand items answered:**
+    - *re-check → stamp window.* The stamp names the INDEX tree (`git
+      write-tree` under the hold). An autosave changes the working tree,
+      never the index, and the re-check proves the gates ran on exactly
+      the index's content.
+    - *rehearsal re-check.* The snapshot is a private worktree, and
+      `snapshotPrepare` has finished (and been guarded) before any gate
+      starts; nothing else writes to it.
+    - *`unstampedPush refuse`.* Left to the first pilot push, as deferred
+      above.
