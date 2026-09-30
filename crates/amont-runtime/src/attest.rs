@@ -783,6 +783,12 @@ fn sync_mirror(budget: u64) -> Sync {
             budget,
         ) {
             crate::git::Probe::Exit(2) => drop_mirror(old.as_deref()),
+            crate::git::Probe::Exit(0) => {
+                say_skip(&format!(
+                    "origin has {NOTES_FULL_REF} but fetching it failed; local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
             crate::git::Probe::Exit(code) => {
                 say_skip(&format!(
                     "cannot fetch {NOTES_FULL_REF} from origin (exit {code}; no credentials? persist-credentials: false?); local mirror not judged, running everything"
@@ -816,10 +822,12 @@ fn drop_mirror(old: Option<&str>) -> Sync {
         return Sync::Skip; // never attested here: nothing to delete, nothing to say
     };
     if crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF, oid]) {
-        eprintln!("amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})");
-        eprintln!(
+        say(format!(
+            "amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})"
+        ));
+        say(format!(
             "amont:   undo locally: git update-ref {NOTES_FULL_REF} {oid}   (undo the revocation: git push origin {oid}:{NOTES_FULL_REF})"
-        );
+        ));
     } else {
         say_skip(&format!(
             "origin has no {NOTES_FULL_REF} but the local mirror could not be deleted (read-only .git?); local mirror not judged"
@@ -893,7 +901,23 @@ fn report_stale_lock() {
 
 /// Why nothing is covered, on stderr. Stdout stays the gates or nothing.
 fn say_skip(why: &str) {
-    eprintln!("amont: {why}");
+    say(format!("amont: {why}"));
+}
+
+thread_local! {
+    /// Lines `covered` wrote to stderr, recorded when a test asks — so the
+    /// exact wording, and the undo command, are asserted rather than trusted.
+    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One line on stderr (and into [`CAPTURE`] when a test is recording).
+fn say(line: String) {
+    CAPTURE.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            v.push(line.clone());
+        }
+    });
+    eprintln!("{line}");
 }
 
 /// [`covered`] with the per-call budget as a parameter, for tests.
@@ -2084,7 +2108,17 @@ mod tests {
     }
 
     fn covers(clone: &Path, signers: &Path, budget: u64) -> Option<String> {
-        in_repo(clone, || covered_within(signers, "t@t.test", None, budget))
+        covers_logged(clone, signers, budget).0
+    }
+
+    /// [`covers`], with the stderr lines it wrote.
+    fn covers_logged(clone: &Path, signers: &Path, budget: u64) -> (Option<String>, Vec<String>) {
+        in_repo(clone, || {
+            CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
+            let got = covered_within(signers, "t@t.test", None, budget);
+            let lines = CAPTURE.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            (got, lines)
+        })
     }
 
     #[test]
@@ -2096,7 +2130,12 @@ mod tests {
         );
         let oid = git(&clone, &["rev-parse", NOTES_FULL_REF]);
         git(&remote, &["update-ref", "-d", NOTES_FULL_REF]);
-        assert_eq!(covers(&clone, &signers, 15), None, "revoked on origin");
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "revoked on origin");
+        assert_eq!(
+            lines[0],
+            format!("amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})")
+        );
         assert!(
             in_repo(&clone, || crate::git::stdout(&[
                 "rev-parse",
@@ -2107,8 +2146,13 @@ mod tests {
             .is_none(),
             "the local mirror was deleted"
         );
-        // The printed undo command works.
-        git(&clone, &["update-ref", NOTES_FULL_REF, &oid]);
+        // The undo command, run exactly as printed.
+        let undo = lines[1]
+            .split("undo locally: git ")
+            .nth(1)
+            .and_then(|r| r.split("   (").next())
+            .expect("an undo command");
+        git(&clone, &undo.split(' ').collect::<Vec<_>>());
         assert_eq!(git(&clone, &["rev-parse", NOTES_FULL_REF]), oid);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -2129,10 +2173,13 @@ mod tests {
                 "file:///nonexistent/amont-origin.git",
             ],
         );
-        assert_eq!(
-            covers(&clone, &signers, 15),
-            None,
-            "a stale mirror is not judged"
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "a stale mirror is not judged");
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!(
+                "amont: cannot fetch {NOTES_FULL_REF} from origin (exit "
+            ))),
+            "the reason is on stderr: {lines:?}"
         );
         assert!(
             !git(&clone, &["rev-parse", NOTES_FULL_REF]).is_empty(),
@@ -2246,10 +2293,13 @@ mod tests {
                 &main,
             ],
         );
-        assert_eq!(
-            covers(&clone, &signers, 15),
-            None,
-            "a pinned stale copy is never judged"
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "a pinned stale copy is never judged");
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "left a lock on {NOTES_FULL_REF}; if no git is running: rm "
+            ))),
+            "the lock is reported with its rm: {lines:?}"
         );
         std::fs::remove_file(&lock).unwrap();
         assert_eq!(
@@ -2278,7 +2328,7 @@ mod tests {
 
     #[test]
     fn the_remote_environment_never_prompts() {
-        let (args, env) = crate::git::remote_env(false);
+        let (args, env) = crate::git::remote_env(crate::git::Ssh::Batch);
         assert_eq!(
             args,
             [
@@ -2300,7 +2350,7 @@ mod tests {
             "GIT_SSH_COMMAND",
             "ssh -o BatchMode=yes -o ConnectTimeout=10"
         )));
-        let (_, env) = crate::git::remote_env(true);
+        let (_, env) = crate::git::remote_env(crate::git::Ssh::User);
         assert!(
             !env.iter().any(|(k, _)| *k == "GIT_SSH_COMMAND"),
             "the user's own ssh command is left alone"
@@ -2349,14 +2399,17 @@ mod tests {
             !marker.exists(),
             "an askpass ran through the remote environment"
         );
-        in_repo(&work, || {
-            let a = askpass.to_str().unwrap();
-            let _ = crate::git::probe_env(
-                &["ls-remote", &url],
-                10,
-                &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_ASKPASS", a)],
-            );
-        });
+        // Plain git, prompts off, the ambient askpass variables removed: the
+        // repo's core.askPass is then what git runs — the very thing the
+        // remote environment must stop.
+        let _ = std::process::Command::new("git")
+            .current_dir(&work)
+            .args(["ls-remote", &url])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS")
+            .stdin(std::process::Stdio::null())
+            .output();
         assert!(
             marker.exists(),
             "negative control: without it the askpass does run"

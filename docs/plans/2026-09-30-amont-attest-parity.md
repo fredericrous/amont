@@ -173,4 +173,33 @@ from a worktree at that commit, verify every channel). attest: worktree →
 PR → merge when green → release PR 1.4.1 → tag → verify. Remove worktrees,
 including `../attest-ref-v1.4.0`.
 
+## Decision log
+
+- 2026-09-30 — The silent-origin test allows < 6 s, timed inside the shared
+  working-directory lock, not < 4 s: process spawn and the 50 ms kill poll
+  under the parallel suite measured up to ~4.5 s for a 2 s budget; 6 s still
+  proves the bound against the 60 s the remote would take.
+- 2026-09-30 — stderr lines go through `say`, which a test can capture, so
+  the exact wording and the printed undo command are asserted and run.
+- 2026-09-30 — A fetch that fails while `ls-remote` exits 0 (origin has the
+  ref) gets its own reason instead of "exit 0; no credentials?".
+- 2026-09-30 — `remote_env` takes `Ssh::{User, Batch}`, not a bool.
+- 2026-09-30 — implementation-review → approve-with-changes; its findings are
+  the commit "fix(attest): assert what covered says".
+
+## Verification record (amont; input → expected → actual)
+
+| check | expected | actual |
+|---|---|---|
+| `cargo test -p amont-runtime` (gate) | green | 501 passed |
+| `a_ref_revoked_on_origin_stops_covering_and_the_mirror_goes` | None, mirror gone, exact line, printed undo restores | as expected |
+| `an_unreachable_origin_covers_nothing_and_keeps_the_mirror` | None, "cannot fetch … (exit" line, mirror kept | as expected |
+| `a_silent_origin_is_cut_off_and_leaves_nothing_behind` | None within budget, no lock, next fetch works | as expected (< 6 s) |
+| `a_stale_lock_on_the_mirror_means_nothing_is_judged` | unchanged origin judged; rewritten → None + `rm` line | as expected |
+| `no_askpass_runs_against_an_origin_that_wants_credentials` | marker absent; plain git creates it | as expected |
+| `leftover_sync_refs_are_swept` | dead-PID ref gone | as expected |
+| `an_absent_optional_path_is_bound_by_its_absence` | fp == hand-built hash; changes when path appears | as expected |
+| cross-implementation, attest v1.4.0 tree, 5 gates | identical `input` lines | identical: ci-fmt 68fd66be…, ci-clippy 58f0ee64…, ci-shellcheck 41d8c14e…, pre-push-cargo-test 58f0ee64…, ci-conformance 7f27d2fe… (throwaway `#[ignore]` test vs `sign.sh --no-push`, not committed) |
+| CI, release | green, channels verified | pending |
+
 <!-- panel: repos=amont,attest reviewers=backend,language:rust,tui,unix body-sha=ccb097b53ce4 -->
