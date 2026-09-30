@@ -186,12 +186,18 @@ including `../attest-ref-v1.4.0`.
 - 2026-09-30 — `remote_env` takes `Ssh::{User, Batch}`, not a bool.
 - 2026-09-30 — implementation-review → approve-with-changes; its findings are
   the commit "fix(attest): assert what covered says".
+- 2026-09-30 — Two body lines are superseded by what was built: the silent
+  origin's bound is < 6 s (entry above), and the askpass negative control is
+  a plain `git ls-remote` with `GIT_ASKPASS`/`SSH_ASKPASS` removed rather
+  than `probe`, so the repo's `core.askPass` itself is what would run.
+  Delta implementation-review (tree 68d8342) → approve-with-changes, low
+  items only: these two and naming the gate row's commit (c5229b9).
 
 ## Verification record (amont; input → expected → actual)
 
 | check | expected | actual |
 |---|---|---|
-| `cargo test -p amont-runtime` (gate) | green | 501 passed |
+| `cargo test -p amont-runtime`, gate on c5229b9 | green | 501 passed |
 | `a_ref_revoked_on_origin_stops_covering_and_the_mirror_goes` | None, mirror gone, exact line, printed undo restores | as expected |
 | `an_unreachable_origin_covers_nothing_and_keeps_the_mirror` | None, "cannot fetch … (exit" line, mirror kept | as expected |
 | `a_silent_origin_is_cut_off_and_leaves_nothing_behind` | None within budget, no lock, next fetch works | as expected (< 6 s) |
