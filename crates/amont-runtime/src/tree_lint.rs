@@ -214,6 +214,7 @@ pub fn start(
     settings: &crate::config::Settings,
     root: &Path,
     gates: &[TreeGate],
+    pins: &[crate::manifest::ToolPin],
 ) -> Option<SideCar> {
     if gates.is_empty() {
         return None;
@@ -229,6 +230,15 @@ pub fn start(
     let mut busy = Vec::new();
     for g in gates {
         let cwd = cwd_of(root, g);
+        // The same tool CI resolves, or no proof (ADR-0024).
+        if let Some(why) = crate::tree_skew::skew(&cwd, g, pins) {
+            say(&format!(
+                "  tree lint not proven: {} — {} — CI will lint",
+                g.name,
+                crate::ui::sanitize(&why)
+            ));
+            continue;
+        }
         let Some(ns) =
             crate::tree_cache::namespace(&cwd, g).filter(|ns| crate::tree_cache::is_warm(g, ns))
         else {
@@ -329,8 +339,13 @@ pub fn rehearse(
     let budget = crate::config::integer_or(settings, REHEARSAL_TIMEOUT, 120, 1..=3600);
     let budget = Duration::from_secs(u64::try_from(budget).unwrap_or(120));
     let mut tokens = Vec::new();
+    let pins = crate::manifest::load(snapshot).pins;
     for g in gates {
         let cwd = cwd_of(snapshot, g);
+        if let Some(why) = crate::tree_skew::skew(&cwd, g, &pins) {
+            println!("tree lint not proven: {} — {why}", g.name);
+            continue;
+        }
         let started = Instant::now();
         let run = crate::tree_run::run(
             &argv(g, ""),

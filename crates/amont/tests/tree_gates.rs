@@ -451,3 +451,23 @@ fn a_prepare_that_edits_tracked_content_cannot_forge_the_tree() {
     );
     assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
 }
+
+#[test]
+fn a_pinned_tool_at_another_version_withholds_without_blocking() {
+    let r = repo_with("ok", "ruff", "true");
+    // A pin nothing installed here satisfies.
+    let conf = std::fs::read_to_string(r.dir.join("amont.conf")).unwrap();
+    r.stage("amont.conf", &format!("{conf}tool ruff 99.99.99\n"));
+    let out = r.git(&["commit", "-q", "--no-verify", "-m", "chore: pin"]);
+    assert!(out.status.success());
+    trust_and_install(&r);
+    warm(&r);
+    r.stage("b.txt", "b\n");
+    let (ok, out) = commit(&r, "feat: b");
+    assert!(ok, "skew never blocks a commit: {out}");
+    assert!(
+        out.contains("tree lint not proven: ok — ruff is pinned to 99.99.99"),
+        "{out}"
+    );
+    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
+}
