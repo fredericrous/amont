@@ -507,6 +507,7 @@ pub fn await_verdict(
 }
 
 /// Where the background warm-up writes: its own log, never the rehearsal's.
+#[cfg(unix)]
 fn warm_log() -> Option<PathBuf> {
     crate::git::stdout(&["rev-parse", "--absolute-git-dir"])
         .map(|d| PathBuf::from(d).join("amont-warm.log"))

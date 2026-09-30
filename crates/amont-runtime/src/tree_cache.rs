@@ -533,6 +533,9 @@ mod tests {
     }
 
     /// A held lock is not waited for: the second taker reads it as busy.
+    /// Unix only: there is no `flock` elsewhere, and tree gates do not run
+    /// there either.
+    #[cfg(unix)]
     #[test]
     fn tree_cache_a_held_lock_is_busy_not_awaited() {
         let dir = std::env::temp_dir().join(format!("amont-lock-test-{}", std::process::id()));
@@ -634,6 +637,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    #[cfg(unix)]
     fn git_repo(d: &Path, paths: &[String]) {
         assert!(std::process::Command::new("git")
             .args(["init", "-q"])
