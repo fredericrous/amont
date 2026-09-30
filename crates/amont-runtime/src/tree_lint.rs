@@ -538,19 +538,11 @@ fn warm_later(settings: &crate::config::Settings, cold: &[String]) {
             return;
         }
         match started {
-            Ok(_) => {
-                // Relative to the repository when the log lives in it, so
-                // the line stays readable at 80 columns.
-                let root = crate::hooks::common::repo_root();
-                let shown = log
-                    .strip_prefix(&root)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| log.display().to_string());
-                say(&format!(
-                    "  tree lint cold: {} — warming in background ({shown})",
-                    cold.join(" ")
-                ))
-            }
+            Ok(_) => say(&fit_line(
+                "  tree lint cold: ",
+                &cold.join(" "),
+                " — warming ($GIT_DIR/amont-warm.log)",
+            )),
             Err(e) => say(&format!(
                 "  tree lint cold: {} — could not start the warm-up ({e}); run {}",
                 cold.join(" "),
@@ -645,7 +637,7 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
     car.cancel.store(true, Ordering::SeqCst);
     let mut proven = Vec::new();
     // (gate, why): every gate this commit did not prove, one reason each.
-    let mut unproven: Vec<(String, String)> = Vec::new();
+    let mut unproven: Vec<(String, String, bool)> = Vec::new();
     let mut cold = Vec::new();
     for (name, handle) in car.running {
         let decision = handle
@@ -666,25 +658,33 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
                     TreeRun::Passed => note(&name, RunOutcome::Withheld, ms),
                     TreeRun::Failed(summary) => {
                         note(&name, RunOutcome::Failed, ms);
-                        unproven.push((name, summary));
+                        unproven.push((name, summary, false));
                     }
                     TreeRun::TimedOut | TreeRun::Cancelled => {
                         note(&name, RunOutcome::Cancelled, ms);
-                        unproven.push((name, "still running when the commit was ready".into()));
+                        unproven.push((
+                            name,
+                            "still running when the commit was ready".into(),
+                            false,
+                        ));
                     }
                     TreeRun::Spawn(e) => {
                         note(&name, RunOutcome::Unavailable, ms);
-                        unproven.push((name, format!("could not start ({e})")));
+                        unproven.push((name, format!("could not start ({e})"), false));
                     }
                 }
             }
             Decision::Skew(why) => {
                 note(&name, RunOutcome::Skew, 0);
-                unproven.push((name, why));
+                unproven.push((name, why, false));
             }
             Decision::NoVersion => {
                 note(&name, RunOutcome::Skew, 0);
-                unproven.push((name, "its tool's version could not be read in time".into()));
+                unproven.push((
+                    name,
+                    "its tool's version could not be read in time".into(),
+                    false,
+                ));
             }
             Decision::Cold => {
                 note(&name, RunOutcome::Cold, 0);
@@ -692,7 +692,7 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
             }
             Decision::Busy => {
                 note(&name, RunOutcome::Busy, 0);
-                unproven.push((name, "a warm-up holds its cache".into()));
+                unproven.push((name, "a warm-up holds its cache".into(), false));
             }
             Decision::Slow(ms) => {
                 note(&name, RunOutcome::Slow, 0);
@@ -702,6 +702,7 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
                         "skipped: needs ~{:.1}s, more than this commit leaves",
                         ms as f64 / 1000.0
                     ),
+                    true,
                 ));
             }
         }
@@ -718,7 +719,7 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
         if let Some(why) = moved {
             for name in proven.drain(..) {
                 note(&name, RunOutcome::Withheld, 0);
-                unproven.push((name, format!("the tree moved while it ran ({why})")));
+                unproven.push((name, format!("the tree moved while it ran ({why})"), false));
             }
         }
     }
@@ -728,13 +729,13 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
     // One header naming the consequence once, then one line per gate, each
     // fitted to 80 columns (a tool's own summary is unbounded).
     let quiet = crate::live::quiet(settings);
-    let unproven: Vec<(String, String)> = unproven
+    let unproven: Vec<(String, String, bool)> = unproven
         .into_iter()
-        .filter(|(_, why)| !(quiet && why.starts_with("skipped:")))
+        .filter(|(_, _, skipped)| !(quiet && *skipped))
         .collect();
     if stampable && !unproven.is_empty() {
         say("  tree lint not proven — CI will lint:");
-        for (name, why) in &unproven {
+        for (name, why, _) in &unproven {
             say(&fit_line(
                 &format!("    {} — ", crate::ui::sanitize(name)),
                 &crate::ui::sanitize(why),

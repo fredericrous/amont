@@ -222,3 +222,14 @@ verification list. Implementation decisions taken here are logged below.
       plus one fitted line per gate.
   - **Still deferred:** SIGTERM of a warm-up (atomic marker by design,
     group kill tested).
+- 2026-09-30 — **Gap-fix implementation review: approve-with-changes.**
+  - **Fixed:**
+    - the cold line shows `$GIT_DIR/amont-warm.log`, never a linked
+      worktree's absolute path, and fits the cold list to 80 columns;
+    - the 80-column test now checks every per-gate line (with a tool
+      summary far past 80) and the push's line;
+    - quiet-mode suppression uses an outcome flag, never the text;
+    - the push-wait test stops its rehearsal.
+  - **Known limits of the uv test:** it is vacuous where uv is missing
+    (it skips), and offline, where a sync could not resolve its dependency
+    either. On a machine with uv and network it fails if the probe syncs.

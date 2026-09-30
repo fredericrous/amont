@@ -230,7 +230,7 @@ fn a_cold_commit_warms_in_the_background_and_the_next_one_is_proven() {
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
     assert!(
-        out.contains("tree lint cold: ok — warming in background"),
+        out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
         "{out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
@@ -758,6 +758,13 @@ fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
         pushed.contains("lint not attested (cold or changed tree): sleepy"),
         "{pushed}"
     );
+    // Leave nothing behind: stop the rehearsal and its sleeping gate.
+    let mut stop = Command::new(env!("CARGO_BIN_EXE_amont"));
+    stop.args(["rehearse", "--stop"])
+        .current_dir(&r.dir)
+        .stdin(Stdio::null());
+    Repo::strip_git_env_impl(&mut stop);
+    let _ = stop.output();
 }
 
 /// `amont.unstampedPush refuse` governs push CHECKS; tree gates are not
@@ -774,42 +781,72 @@ fn unstamped_push_refuse_never_blocks_on_a_tree_gate() {
     );
 }
 
-/// What the tree gates say fits 80 columns, colours off.
+/// What the tree gates say fits 80 columns, colours off: the cold line, the
+/// header and every per-gate line (with a tool summary far past 80), and the
+/// push's line.
 #[test]
 fn tree_lint_lines_fit_eighty_columns() {
     let r = repo_with("eslint", "ruff", "sh fail.sh");
     r.stage(
         "fail.sh",
-        "#!/bin/sh\necho '12 problems (12 errors, 0 warnings)'\nexit 1\n",
+        "#!/bin/sh\necho '12 problems (12 errors, 0 warnings) in app/routes/very/long/path/to/a/component/that/goes/on.tsx'\nexit 1\n",
     );
-    let mut lines = Vec::new();
-    for (i, prepare) in ["cold", "warm"].iter().enumerate() {
-        if *prepare == "warm" {
-            warm(&r);
-        }
-        r.stage(&format!("f{i}.txt"), "x\n");
+    attesting(&r);
+    let no_color = |args: &[&str]| {
         let mut cmd = Command::new("git");
-        cmd.args(["commit", "-q", "-m", "feat: x"])
+        cmd.args(args)
             .current_dir(&r.dir)
             .stdin(Stdio::null())
             .env("NO_COLOR", "1");
         Repo::strip_git_env_impl(&mut cmd);
-        let out = cmd.output().expect("git commit");
+        let out = cmd.output().expect("git");
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(out.status.success(), "{said}");
-        lines.extend(
-            said.lines()
-                .filter(|l| l.contains("tree lint"))
-                .map(str::to_string),
-        );
-    }
+        said
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut keep = |said: &str| {
+        let mut after_header = false;
+        for l in said.lines() {
+            if l.contains("tree lint") || l.contains("lint not attested") {
+                lines.push(l.to_string());
+                after_header = l.ends_with("CI will lint:");
+            } else if after_header && l.starts_with("    ") {
+                lines.push(l.to_string());
+            } else {
+                after_header = false;
+            }
+        }
+    };
+    // Cold, then warm and failing.
+    r.stage("f0.txt", "x\n");
+    keep(&no_color(&["commit", "-q", "-m", "feat: cold"]));
+    warm(&r);
+    r.stage("f1.txt", "x\n");
+    keep(&no_color(&["commit", "-q", "-m", "feat: failing"]));
+    keep(&no_color(&[
+        "push",
+        "-q",
+        "origin",
+        "HEAD:refs/heads/feat/tree",
+    ]));
     assert!(
-        lines.len() >= 2,
-        "expected a cold and a failed line: {lines:?}"
+        lines.iter().any(|l| l.contains("tree lint cold")),
+        "no cold line: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("    eslint — 12 problems")),
+        "no per-gate line: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("lint not attested")),
+        "no push line: {lines:?}"
     );
     for l in &lines {
         assert!(!l.contains('\u{1b}'), "colour with NO_COLOR: {l:?}");
