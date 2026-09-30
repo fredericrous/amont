@@ -1143,14 +1143,31 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
     // `ctx.push` may consume stdin, and a disabled repo should leave stdin
     // exactly as it found it.
-    if !passed.is_empty() && crate::attest::enabled(settings) {
+    // Tree gates (ADR-0024) are not push checks: nothing runs here. Each is
+    // attested only when the TREE of every pushed tip carries its commit-time
+    // proof; a whole-tree proof needs no changed-files scope. Fail-closed:
+    // anything else is simply not attested, and CI lints.
+    let (tree_proven, tree_unproven) =
+        if !ctx.manifest.tree.is_empty() && crate::attest::enabled(settings) {
+            crate::tree_lint::tree_verdict(&ctx.manifest.tree, &tips)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    if !tree_unproven.is_empty() {
+        crate::hooks::common::say(&format!(
+            "  lint not attested (cold or changed tree): {} — CI will lint",
+            tree_unproven.join(" ")
+        ));
+    }
+    if (!passed.is_empty() || !tree_proven.is_empty()) && crate::attest::enabled(settings) {
         let remote = ctx
             .args
             .first()
             .map(|a| a.to_string_lossy().into_owned())
             .unwrap_or_default();
         let changed = crate::pushrefs::changed_files(ctx.push.get());
-        let vouched = attestable(&pre_push_checks, &passed, &changed);
+        let mut vouched = attestable(&pre_push_checks, &passed, &changed);
+        vouched.extend(tree_proven);
         crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }
     crate::downgrade::note(settings, &downgraded);

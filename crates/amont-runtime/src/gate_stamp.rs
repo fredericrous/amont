@@ -286,6 +286,13 @@ fn note_at(key: &str) -> Note {
         .unwrap_or_default()
 }
 
+/// The stamp tokens on `tree` (a tree object id). Tree gates are read here
+/// and only here (ADR-0024): `tree:<name>` on the pushed tree proves the gate
+/// on exactly that content, whichever commit carried it.
+pub fn tree_tokens(tree: &str) -> Vec<String> {
+    note_at(tree).tokens
+}
+
 /// Write `note` at `key`. Best-effort, like every writer here.
 fn write_note(key: &str, note: &Note) -> bool {
     let body = note.render();

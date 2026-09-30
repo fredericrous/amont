@@ -184,11 +184,13 @@ fn an_ignored_module_outside_the_allow_list_withholds_the_proof() {
 #[test]
 fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     // Fast while warming, slow at commit: the switch is an ignored file under
-    // node_modules/, which the allow-list admits by default.
+    // node_modules/, which the allow-list admits by default. The gate would
+    // sleep 120 s; a commit well under that was not made to wait for it (the
+    // bound is loose because a loaded machine slows every hook, not this one).
     let r = repo_with("slow", "pyright", "sh slow.sh");
     r.stage(
         "slow.sh",
-        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 30\nexit 0\n",
+        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 120\nexit 0\n",
     );
     r.git(&["config", "amont.treeLintSlack", "1"]);
     r.stage(".gitignore", "node_modules/\n");
@@ -198,7 +200,7 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
     assert!(
-        started.elapsed() < Duration::from_secs(15),
+        started.elapsed() < Duration::from_secs(60),
         "the commit waited for the tree gate: {:?}",
         started.elapsed()
     );
@@ -272,4 +274,95 @@ fn tree_lint_off_runs_nothing() {
     assert!(ok, "{out}");
     assert!(!out.contains("tree lint"), "{out}");
     assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
+}
+
+/// A bare remote, a signing key, and `amont.attest` on. Returns the remote.
+fn attesting(r: &Repo) -> std::path::PathBuf {
+    let remote = r.dir.join("..").join(format!(
+        "{}-remote.git",
+        r.dir.file_name().unwrap().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&remote);
+    let ok = Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&remote)
+        .status()
+        .expect("git init")
+        .success();
+    assert!(ok);
+    let key = r.dir.join(".git").join("attest-key");
+    let ok = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@example.org", "-f"])
+        .arg(&key)
+        .status()
+        .expect("ssh-keygen")
+        .success();
+    assert!(ok);
+    r.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    r.git(&["config", "amont.attest", "true"]);
+    r.git(&["config", "amont.attestKey", key.to_str().unwrap()]);
+    remote
+}
+
+/// Push HEAD to a feature branch; what the hooks said.
+fn push(r: &Repo) -> String {
+    let out = r.git(&["push", "-q", "origin", "HEAD:refs/heads/feat/tree"]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+fn remote_note(remote: &std::path::Path, commit: &str) -> String {
+    let out = Command::new("git")
+        .arg("--git-dir")
+        .arg(remote)
+        .args(["notes", "--ref", "amont-attest", "show", commit])
+        .output()
+        .expect("git notes");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn a_proven_tree_is_attested_on_push() {
+    let r = repo_with("ok", "ruff", "true");
+    let remote = attesting(&r);
+    warm(&r);
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    let pushed = push(&r);
+    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    let note = remote_note(&remote, &head);
+    let gates = note.lines().find(|l| l.starts_with("gates ")).unwrap_or("");
+    assert!(
+        gates.split_whitespace().any(|g| g == "tree-ok"),
+        "note: {note}\npush said: {pushed}"
+    );
+}
+
+#[test]
+fn an_unproven_tree_is_not_attested_and_says_so() {
+    let r = repo_with("ok", "ruff", "true");
+    let remote = attesting(&r);
+    // --no-verify: no hook ran, so no tree gate proved anything.
+    let out = r.git(&["commit", "-q", "--no-verify", "-m", "feat: a"]);
+    assert!(out.status.success());
+    let pushed = push(&r);
+    assert!(
+        pushed.contains("lint not attested (cold or changed tree): ok — CI will lint"),
+        "{pushed}"
+    );
+    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    assert!(!remote_note(&remote, &head).contains("tree-ok"), "{pushed}");
 }

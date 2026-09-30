@@ -256,6 +256,35 @@ pub fn start(
     (!running.is_empty()).then_some(SideCar { cancel, running })
 }
 
+/// Which declared tree gates every pushed tip's TREE proves, as note gate
+/// ids (`tree-<name>`), and which it does not, by name. A tip whose tree git
+/// cannot name proves nothing.
+pub fn tree_verdict(gates: &[TreeGate], tips: &[String]) -> (Vec<String>, Vec<String>) {
+    let trees: Vec<Option<String>> = tips
+        .iter()
+        .map(|t| crate::git::stdout(&["rev-parse", &format!("{t}^{{tree}}")]))
+        .collect();
+    let tokens: Vec<Vec<String>> = trees
+        .iter()
+        .map(|t| {
+            t.as_deref()
+                .map(crate::gate_stamp::tree_tokens)
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut proven = Vec::new();
+    let mut unproven = Vec::new();
+    for g in gates {
+        let key = g.stamp_key();
+        if !tips.is_empty() && tokens.iter().all(|toks| toks.iter().any(|t| t == &key)) {
+            proven.push(g.id());
+        } else {
+            unproven.push(g.name.clone());
+        }
+    }
+    (proven, unproven)
+}
+
 /// Where the background warm-up writes: its own log, never the rehearsal's.
 fn warm_log() -> Option<PathBuf> {
     crate::git::stdout(&["rev-parse", "--absolute-git-dir"])
