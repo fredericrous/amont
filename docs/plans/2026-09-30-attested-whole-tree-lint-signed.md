@@ -233,3 +233,12 @@ verification list. Implementation decisions taken here are logged below.
   - **Known limits of the uv test:** it is vacuous where uv is missing
     (it skips), and offline, where a sync could not resolve its dependency
     either. On a machine with uv and network it fails if the probe syncs.
+- 2026-09-30 — **Gap-fix review, delta: approve-with-changes.** Round-1
+  items 1–5 are resolved. Two new lows are named deliberate, kept for a
+  later touch of that code so the reviewed tree stays bound:
+  - `deliberate: the cold line's error branch (warm-up could not spawn) is
+    not fitted to 80 columns. It is a rare error path, and printing the OS
+    error in full matters more than its width.`
+  - `deliberate: the push-wait test's rehearsal cleanup is best-effort, runs
+    only when the test passes, and ignores the stop's status. That is test
+    hygiene only; the rehearsal ends on its own 120 s gate.`
