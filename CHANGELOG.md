@@ -6,6 +6,31 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- **`amont attest covered` follows origin, as attest 1.4.0's verifier does.**
+  The local `refs/notes/amont-attest` is origin's mirror: fetched through a
+  throwaway ref and swapped in, **deleted** when origin no longer has it (so
+  revoking an attestation on origin finally reaches persistent clones — the
+  deletion is announced with the command that undoes it), and **not judged**
+  when origin does not answer or its copy cannot be written. Before, a
+  best-effort fetch was ignored and whatever the local ref held was judged.
+- **Remote calls never prompt and are bounded**: no terminal prompt, no
+  askpass (`GIT_ASKPASS` set empty, which also skips `core.askPass`), no
+  interactive credential manager, ssh in batch mode unless you configured
+  your own, curl's low-speed limit, and a 15 s deadline per call. Every
+  "nothing covered" now says why on stderr.
+
+### Added
+
+- **Optional paths in the attest input spec.** A leading `?` marks a path
+  that may be absent and whose appearance must re-run the gate (`?build.rs`,
+  `?clippy.toml`), as attest 1.4.0 specifies. amont rejected the marker as a
+  wildcard, so on a spec using it (attest's own) pre-push wrote no input
+  fingerprints at all; it now writes the same fingerprints attest computes.
+
 ## v1.44.0
 
 ### Changed

@@ -213,6 +213,14 @@ shell script — [`verify.sh`](https://github.com/fredericrous/attest/blob/main/
 neither GitHub nor Forgejo. Both answer to the format in
 [`SPEC.md`](https://github.com/fredericrous/attest/blob/main/SPEC.md).
 
+Origin is the source of truth. `amont attest covered` treats the local
+`refs/notes/amont-attest` as a mirror of origin's: deleting that ref on
+origin revokes every attestation it held — the next `covered` in any clone
+deletes its copy and prints how to undo that — and an origin that cannot be
+reached covers nothing, with the reason on stderr. The spec in
+`.github/attest-inputs` may mark a path with a leading `?` (`?build.rs`): it
+may be absent, and the gate re-runs the day it appears.
+
 What signs is the machine that ran the tests, so the trust statement is
 exactly "whoever holds `amont.attestKey` vouches for this tree" — the same
 trust you extend by pushing at all when you are the only committer. On a
