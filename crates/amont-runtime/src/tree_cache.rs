@@ -347,6 +347,20 @@ pub fn mark_complete(ns_dir: &Path) {
     }
 }
 
+/// Whether every config-like file under `cwd` is exactly as staged: no
+/// unstaged edit and no untracked one. A git that cannot answer reads "no".
+pub fn config_matches_index(cwd: &Path) -> bool {
+    let Some(changed) = crate::git::stdout_in(cwd, &["diff", "--name-only", "--relative"]) else {
+        return false;
+    };
+    let Some(untracked) =
+        crate::git::stdout_in(cwd, &["ls-files", "--others", "--exclude-standard"])
+    else {
+        return false;
+    };
+    !changed.lines().chain(untracked.lines()).any(config_like)
+}
+
 /// Whether any tracked eslint config under `cwd` names type information in
 /// its text. A heuristic that can only err towards typed.
 pub fn config_text_is_typed(cwd: &Path) -> bool {
@@ -421,6 +435,14 @@ pub fn typed_eslint(
     }
     if ns_dir.join(UNTYPED).is_file() {
         return false;
+    }
+    // Both looks below read config from the WORKING tree, while the namespace
+    // is keyed on the STAGED one. When they differ (a background warm-up
+    // running beside unstaged config edits), the answer describes another
+    // namespace: typed, nothing remembered. At commit the staged-only hold
+    // makes them equal, so this never fires there.
+    if !config_matches_index(cwd) {
+        return true;
     }
     let bin = cwd.join("node_modules").join(".bin").join("eslint");
     if !bin.is_file() {
@@ -683,6 +705,104 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(20),
             &std::sync::atomic::AtomicBool::new(false),
         ));
+        assert!(ns.join(TYPED).exists(), "the text check remembers typed");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #290: an unstaged edit to an eslint config means the working tree is
+    /// not the namespace's tree — typed, nothing remembered, even though the
+    /// on-disk config is untyped.
+    #[cfg(unix)]
+    #[test]
+    fn tree_cache_unstaged_config_is_never_remembered() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("amont-typed-dirty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
+        std::fs::write(d.join("a.js"), "").unwrap();
+        std::fs::write(
+            d.join("eslint.config.mjs"),
+            "export default [{ languageOptions: { parserOptions: { projectService: true } } }];\n",
+        )
+        .unwrap();
+        git_repo(&d, &["a.js".into(), "eslint.config.mjs".into()]);
+        // Unstaged: the typed block is removed on disk only.
+        std::fs::write(d.join("eslint.config.mjs"), "export default [];\n").unwrap();
+        let eslint = d.join("node_modules/.bin/eslint");
+        std::fs::write(&eslint, "#!/bin/sh\necho '{\"rules\":{}}'\n").unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        assert!(typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(20),
+            &std::sync::atomic::AtomicBool::new(false),
+        ));
+        assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// The uv version probe never syncs: `.venv` is untouched and no lock
+    /// is written, whatever the probe answers.
+    #[test]
+    fn tree_cache_the_uv_probe_never_syncs() {
+        if std::process::Command::new("uv")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("uv unavailable — skipping");
+            return;
+        }
+        let d = std::env::temp_dir().join(format!("amont-uv-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("pyproject.toml"),
+            "[project]\nname = \"probe\"\nversion = \"0.0.0\"\nrequires-python = \">=3.9\"\ndependencies = [\"six\"]\n",
+        )
+        .unwrap();
+        let made = std::process::Command::new("uv")
+            .args(["venv", "-q", ".venv"])
+            .current_dir(&d)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("uv venv failed — skipping");
+            let _ = std::fs::remove_dir_all(d);
+            return;
+        }
+        let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let venv = d.join(".venv");
+        let before = (mtime(&venv), mtime(&venv.join("pyvenv.cfg")));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let gate =
+            crate::manifest::tree_gates("tree pr pyright * attest uv run pyright .").remove(0);
+        let _ = tool_version(
+            &d,
+            &gate,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert_eq!(
+            before,
+            (mtime(&venv), mtime(&venv.join("pyvenv.cfg"))),
+            ".venv changed"
+        );
+        assert!(!d.join("uv.lock").exists(), "the probe wrote a lock");
+        fn holds(dir: &Path, name: &str) -> bool {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|e| {
+                    e.file_name().to_string_lossy().starts_with(name)
+                        || (e.path().is_dir() && holds(&e.path(), name))
+                })
+        }
+        assert!(!holds(&venv, "six"), "the probe installed a dependency");
         let _ = std::fs::remove_dir_all(d);
     }
 

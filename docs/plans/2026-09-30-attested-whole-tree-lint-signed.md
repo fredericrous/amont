@@ -204,3 +204,41 @@ verification list. Implementation decisions taken here are logged below.
       time is safe (the guard plus the hold). Filed as https://github.com/fredericrous/amont/issues/290.
   - **Review cost:** round 1 83k tokens / 102 s; delta 46k / 49 s; three
     bind passes ~31k each.
+- 2026-09-30 — **Gaps closed after merge (#291)** (the person asked).
+  - **#290:** typed-eslint reads typed and records nothing when a
+    config-like file differs from the index. The filename-scoped test now
+    asserts TYPED is written.
+  - **Deferred items, now tested:**
+    - the uv version probe leaves `.venv` untouched and writes no lock (a
+      real uv project with a dependency);
+    - `unstampedPush refuse` never blocks on a tree gate;
+    - `treeLintWait` bounds the push while a lint rehearsal runs;
+    - tree-lint lines fit 80 columns with `NO_COLOR`.
+  - **Two defects the new tests found:**
+    - the general rehearsal wait (`amont.rehearsalWait`, up to 5 min) also
+      waited on a lint-only rehearsal, so a push took 41 s against a 3 s
+      `treeLintWait`. It now waits only when the push has test gates.
+    - a tool's summary made lines 83+ columns. Messages are now a header
+      plus one fitted line per gate.
+  - **Still deferred:** SIGTERM of a warm-up (atomic marker by design,
+    group kill tested).
+- 2026-09-30 — **Gap-fix implementation review: approve-with-changes.**
+  - **Fixed:**
+    - the cold line shows `$GIT_DIR/amont-warm.log`, never a linked
+      worktree's absolute path, and fits the cold list to 80 columns;
+    - the 80-column test now checks every per-gate line (with a tool
+      summary far past 80) and the push's line;
+    - quiet-mode suppression uses an outcome flag, never the text;
+    - the push-wait test stops its rehearsal.
+  - **Known limits of the uv test:** it is vacuous where uv is missing
+    (it skips), and offline, where a sync could not resolve its dependency
+    either. On a machine with uv and network it fails if the probe syncs.
+- 2026-09-30 — **Gap-fix review, delta: approve-with-changes.** Round-1
+  items 1–5 are resolved. Two new lows are named deliberate, kept for a
+  later touch of that code so the reviewed tree stays bound:
+  - `deliberate: the cold line's error branch (warm-up could not spawn) is
+    not fitted to 80 columns. It is a rare error path, and printing the OS
+    error in full matters more than its width.`
+  - `deliberate: the push-wait test's rehearsal cleanup is best-effort, runs
+    only when the test passes, and ignores the stop's status. That is test
+    hygiene only; the rehearsal ends on its own 120 s gate.`
