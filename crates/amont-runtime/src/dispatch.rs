@@ -391,7 +391,8 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     };
 
     let root = crate::hooks::common::repo_root();
-    let side_car = tree_gates.and_then(|g| crate::tree_lint::start(std::path::Path::new(&root), g));
+    let side_car =
+        tree_gates.and_then(|g| crate::tree_lint::start(settings, std::path::Path::new(&root), g));
 
     let severities = Overrides::read(settings);
     let (verdict, outcomes) = run_stage_traced(settings, &checks, ctx, &severities);

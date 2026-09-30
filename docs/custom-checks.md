@@ -381,6 +381,40 @@ identical.
 A `tree` line is trust-gated like every other line: until you trust the
 manifest, no tree gate runs. A pack may not carry one.
 
+### When a tree gate runs, and what it proves
+
+At commit, a tree gate starts beside the pre-commit checks. It gets at most
+`amont.treeLintSlack` seconds (default 2) after those checks finish. It
+starts only when its cache is **warm**: a full run already completed in the
+gate's current *namespace*. The namespace is a hash of:
+
+- the command;
+- the version of the tool it runs;
+- every lockfile and config-like file (`*.json`, `*.toml`, `*.yaml`,
+  `*config*`, `.*rc*`, `.*ignore`, by basename);
+- the gate's `inputs=`.
+
+A plugin upgrade therefore starts a new, cold namespace, and the old cache is
+deleted. A cold gate does not slow the commit: amont starts
+`amont warm --worker` in the background (log: `.git/amont-warm.log`), and the
+next commit can prove it. `amont warm` does the same in the foreground. There
+is no background warm-up on Windows, where tree gates do not run at all.
+
+When it passes on exactly the committed tree, the commit and its tree are
+stamped `tree:<name>`. The push then attests `tree-<name>`, and CI skips its
+step. No gate starts, and nothing is stamped, when:
+
+- tracked files have unstaged edits;
+- an untracked file is present;
+- an ignored file is present outside `snapshotPrepareOutputs`, which admits
+  tool caches (`node_modules/`, `.venv/`, `__pycache__/`, …) by default. Add
+  the repository's own reproducible outputs, the ones CI recreates too, with
+  `set snapshotPrepareOutputs build/ .react-router/`;
+- a merge, rebase, cherry-pick or revert is in progress.
+
+A failing, slow or cancelled gate never blocks: it prints one line, and CI
+lints.
+
 ## Letting a check fix what it finds
 
 Prefix the command with `fix ` and the check may rewrite files, with whatever it

@@ -444,17 +444,25 @@ pub fn spawn_detached() -> Result<u32, String> {
 
 #[cfg(unix)]
 pub fn spawn_detached() -> Result<u32, String> {
+    let log = log_path().ok_or("not inside a git repository")?;
+    spawn_amont(&["rehearse", "--worker"], &log)
+}
+
+/// Start `amont <args…>` in the background: its own process group, stdin
+/// closed, stdout and stderr on `log` (truncated). Every detached worker —
+/// the rehearsal, the tree-gate warm-up — goes through here, each with its
+/// OWN log, so one never truncates another's.
+#[cfg(unix)]
+pub fn spawn_amont(args: &[&str], log: &std::path::Path) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate amont: {e}"))?;
-    let log = log_path().ok_or("not inside a git repository")?;
     let file =
-        std::fs::File::create(&log).map_err(|e| format!("cannot open {}: {e}", log.display()))?;
+        std::fs::File::create(log).map_err(|e| format!("cannot open {}: {e}", log.display()))?;
     let err = file
         .try_clone()
         .map_err(|e| format!("cannot open {}: {e}", log.display()))?;
     let mut cmd = Command::new(exe);
-    cmd.arg("rehearse")
-        .arg("--worker")
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err));
@@ -462,7 +470,7 @@ pub fn spawn_detached() -> Result<u32, String> {
     cmd.process_group(0);
     let child = cmd
         .spawn()
-        .map_err(|e| format!("cannot start the rehearsal: {e}"))?;
+        .map_err(|e| format!("cannot start amont {}: {e}", args.join(" ")))?;
     Ok(child.id())
 }
 

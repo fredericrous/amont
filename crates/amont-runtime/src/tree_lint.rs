@@ -189,29 +189,149 @@ pub struct SideCar {
     running: Vec<(String, JoinHandle<TreeRun>)>,
 }
 
-/// Start `gates` against the working tree, which the staged-only hold has
-/// made the commit's tree. Returns `None` when nothing starts.
-pub fn start(root: &Path, gates: &[TreeGate]) -> Option<SideCar> {
-    if gates.is_empty() || cfg!(not(unix)) {
+fn cwd_of(root: &Path, gate: &TreeGate) -> PathBuf {
+    match &gate.cwd {
+        Some(dir) => root.join(dir),
+        None => root.to_path_buf(),
+    }
+}
+
+/// Start the WARM `gates` against the working tree, which the staged-only
+/// hold has made the commit's tree; send the cold ones to a background
+/// warm-up. A gate whose cache another run holds is skipped, never waited
+/// for. Returns `None` when nothing starts.
+pub fn start(
+    settings: &crate::config::Settings,
+    root: &Path,
+    gates: &[TreeGate],
+) -> Option<SideCar> {
+    if gates.is_empty() {
+        return None;
+    }
+    if cfg!(not(unix)) {
+        say("  tree gates need a Unix shell and do not run here — CI will lint");
         return None;
     }
     let cancel = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + CEILING;
-    let running = gates
-        .iter()
-        .map(|g| {
-            let argv = argv(g, "");
-            let cwd: PathBuf = match &g.cwd {
-                Some(dir) => root.join(dir),
-                None => root.to_path_buf(),
-            };
-            let flag = Arc::clone(&cancel);
-            let handle =
-                std::thread::spawn(move || crate::tree_run::run(&argv, &cwd, deadline, &flag));
-            (g.name.clone(), handle)
-        })
-        .collect();
-    Some(SideCar { cancel, running })
+    let mut running = Vec::new();
+    let mut cold = Vec::new();
+    let mut busy = Vec::new();
+    for g in gates {
+        let cwd = cwd_of(root, g);
+        let Some(ns) =
+            crate::tree_cache::namespace(&cwd, g).filter(|ns| crate::tree_cache::is_warm(g, ns))
+        else {
+            cold.push(g.name.clone());
+            continue;
+        };
+        let Some(lock) = crate::tree_cache::try_lock(g) else {
+            busy.push(g.name.clone());
+            continue;
+        };
+        let Some(ns_dir) = crate::tree_cache::gate_dir(g).map(|d| d.join(&ns)) else {
+            cold.push(g.name.clone());
+            continue;
+        };
+        let argv = argv(g, &crate::tree_cache::cache_flags(&cwd, g, &ns_dir));
+        let flag = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || {
+            let run = crate::tree_run::run(&argv, &cwd, deadline, &flag);
+            // Only now: the runner killed the whole group before returning,
+            // so nothing that could still write the cache is alive.
+            drop(lock);
+            run
+        });
+        running.push((g.name.clone(), handle));
+    }
+    if !busy.is_empty() {
+        say(&format!(
+            "  tree lint not proven: {} — a warm-up holds the cache; CI will lint",
+            busy.join(" ")
+        ));
+    }
+    if !cold.is_empty() {
+        warm_later(settings, &cold);
+    }
+    (!running.is_empty()).then_some(SideCar { cancel, running })
+}
+
+/// Where the background warm-up writes: its own log, never the rehearsal's.
+fn warm_log() -> Option<PathBuf> {
+    crate::git::stdout(&["rev-parse", "--absolute-git-dir"])
+        .map(|d| PathBuf::from(d).join("amont-warm.log"))
+}
+
+/// Start the background warm-up for the cold gates, and say so once.
+fn warm_later(settings: &crate::config::Settings, cold: &[String]) {
+    #[cfg(unix)]
+    {
+        let Some(log) = warm_log() else { return };
+        let started = crate::rehearsal::spawn_amont(&["warm", "--worker"], &log);
+        if crate::live::quiet(settings) {
+            return;
+        }
+        match started {
+            Ok(_) => say(&format!(
+                "  tree lint cold: {} — warming in background (log: {})",
+                cold.join(" "),
+                log.display()
+            )),
+            Err(e) => say(&format!(
+                "  tree lint cold: {} — could not start the warm-up ({e}); run {}",
+                cold.join(" "),
+                hl("amont warm")
+            )),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (settings, cold);
+    }
+}
+
+/// `amont warm` — fill every cold tree gate's cache in its current
+/// namespace: a full run with `{cache}`, then the completion marker. Old
+/// namespaces are deleted first, under the gate's lock. A gate whose lock is
+/// held is left to whoever holds it. Exit 0 whatever the lint found: a
+/// warm-up proves nothing, it only makes the next commit's run cheap.
+pub fn warm(root: &Path) -> i32 {
+    let manifest = crate::manifest::load(root);
+    if manifest.tree.is_empty() {
+        println!("amont warm: no trusted tree gate here");
+        return 0;
+    }
+    for g in &manifest.tree {
+        let cwd = cwd_of(root, g);
+        let Some(ns) = crate::tree_cache::namespace(&cwd, g) else {
+            println!("{}: git could not name the namespace — skipped", g.name);
+            continue;
+        };
+        if crate::tree_cache::is_warm(g, &ns) {
+            println!("{}: already warm", g.name);
+            continue;
+        }
+        let Some(_lock) = crate::tree_cache::try_lock(g) else {
+            println!("{}: another run holds the cache — skipped", g.name);
+            continue;
+        };
+        let Some(ns_dir) = crate::tree_cache::enter_namespace(g, &ns) else {
+            println!("{}: cannot create the cache directory — skipped", g.name);
+            continue;
+        };
+        let argv = argv(g, &crate::tree_cache::cache_flags(&cwd, g, &ns_dir));
+        let started = Instant::now();
+        let run = crate::tree_run::run(&argv, &cwd, started + CEILING, &AtomicBool::new(false));
+        let secs = started.elapsed().as_secs_f32();
+        match run {
+            TreeRun::Passed | TreeRun::Failed(_) => {
+                crate::tree_cache::mark_complete(&ns_dir);
+                println!("{}: warm ({secs:.1}s)", g.name);
+            }
+            other => println!("{}: not warmed — {other:?}", g.name),
+        }
+    }
+    0
 }
 
 /// Wait at most `amont.treeLintSlack` for the gates still running, cancel the

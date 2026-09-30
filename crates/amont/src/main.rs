@@ -87,6 +87,9 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
+  warm           fill the cache of every cold `tree` gate, so the next commit
+                 can prove it within its slack (after a cold commit this
+                 runs in the background by itself) [--worker]
   tree-parity    compare each `tree` gate in amont.conf with the workflow
                  steps skipped on it; exits 1 on any drift (CI runs it,
                  never skipped)
@@ -125,6 +128,7 @@ enum Sub {
     Add,
     Rehearse,
     TreeParity,
+    Warm,
 }
 
 impl Sub {
@@ -157,6 +161,7 @@ impl Sub {
             Sub::Add => 12,
             Sub::Rehearse => 13,
             Sub::TreeParity => 14,
+            Sub::Warm => 15,
         }
     }
 }
@@ -166,7 +171,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 15] = [
+const SUBCOMMANDS: [(&str, Sub); 16] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -182,6 +187,7 @@ const SUBCOMMANDS: [(&str, Sub); 15] = [
     ("add", Sub::Add),
     ("rehearse", Sub::Rehearse),
     ("tree-parity", Sub::TreeParity),
+    ("warm", Sub::Warm),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -365,6 +371,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Add => (&["--dry-run"], &[]),
         Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
         Sub::TreeParity => (&[], &[]),
+        Sub::Warm => (&["--worker"], &[]),
     }
 }
 
@@ -490,6 +497,12 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 println!("{}", amont_runtime::ui::sanitize(&p.to_string()));
             }
             i32::from(!problems.is_empty())
+        }
+        // `--worker` is how a cold commit starts it in the background; the
+        // work is the same either way.
+        Sub::Warm => {
+            let root = amont_runtime::hooks::common::repo_root();
+            amont_runtime::tree_lint::warm(std::path::Path::new(&root))
         }
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared

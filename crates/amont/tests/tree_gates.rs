@@ -44,6 +44,37 @@ fn stamped(r: &Repo, rev: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+/// `amont warm`, in the foreground: fills every cold gate's cache.
+fn warm(r: &Repo) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("warm")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont warm");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// The namespace directories of `gate` under `$GIT_DIR/amont-cache`.
+fn namespaces(r: &Repo, gate: &str) -> Vec<String> {
+    let dir = r.dir.join(".git").join("amont-cache").join(gate);
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .map(|es| {
+            es.filter_map(Result::ok)
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
 /// A workflow with one step per `(name, command)`, each skipped on its gate —
 /// what `pre-commit-tree-parity` requires before any tree gate may attest.
 fn workflow(gates: &[(&str, &str)]) -> String {
@@ -78,6 +109,7 @@ fn repo_with(name: &str, tool: &str, command: &str) -> Repo {
 #[test]
 fn a_passing_tree_gate_stamps_the_commit_and_its_tree() {
     let r = repo_with("ok", "ruff", "true");
+    warm(&r);
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
     assert!(stamped(&r, "HEAD").contains("tree:ok"), "{out}");
@@ -94,6 +126,7 @@ fn a_failing_tree_gate_never_blocks_and_never_stamps() {
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
+    let warmed = warm(&r);
     let (ok, out) = commit(&r, "feat: a");
     assert!(
         ok,
@@ -101,7 +134,7 @@ fn a_failing_tree_gate_never_blocks_and_never_stamps() {
     );
     assert!(
         out.contains("tree lint not proven: bad — 3 problems — CI will lint"),
-        "{out}"
+        "warm said: {warmed}\ncommit said: {out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:bad"), "{out}");
 }
@@ -141,6 +174,7 @@ fn an_ignored_module_outside_the_allow_list_withholds_the_proof() {
 
     // Declared as a reproducible output, it no longer stands in the way.
     r.git(&["config", "amont.snapshotPrepareOutputs", "gen/"]);
+    warm(&r);
     r.stage("b.txt", "b\n");
     let (ok, out) = commit(&r, "feat: b");
     assert!(ok, "{out}");
@@ -149,8 +183,17 @@ fn an_ignored_module_outside_the_allow_list_withholds_the_proof() {
 
 #[test]
 fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
-    let r = repo_with("slow", "pyright", "sleep 30");
+    // Fast while warming, slow at commit: the switch is an ignored file under
+    // node_modules/, which the allow-list admits by default.
+    let r = repo_with("slow", "pyright", "sh slow.sh");
+    r.stage(
+        "slow.sh",
+        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 30\nexit 0\n",
+    );
     r.git(&["config", "amont.treeLintSlack", "1"]);
+    r.stage(".gitignore", "node_modules/\n");
+    warm(&r);
+    r.write("node_modules/slow", "");
     let started = Instant::now();
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
@@ -164,6 +207,61 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
         "{out}"
     );
     assert!(!stamped(&r, "HEAD").contains("tree:slow"), "{out}");
+}
+
+#[test]
+fn a_cold_commit_warms_in_the_background_and_the_next_one_is_proven() {
+    let r = repo_with("ok", "ruff", "true");
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("tree lint cold: ok — warming in background"),
+        "{out}"
+    );
+    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
+    let until = Instant::now() + Duration::from_secs(20);
+    let marker = || {
+        namespaces(&r, "ok").iter().any(|ns| {
+            r.dir
+                .join(".git/amont-cache/ok")
+                .join(ns)
+                .join(".complete")
+                .is_file()
+        })
+    };
+    while !marker() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(marker(), "the background warm-up never completed");
+    r.stage("b.txt", "b\n");
+    let (ok, out) = commit(&r, "feat: b");
+    assert!(ok, "{out}");
+    assert!(stamped(&r, "HEAD").contains("tree:ok"), "{out}");
+}
+
+#[test]
+fn a_lockfile_change_moves_the_namespace_and_drops_the_old_cache() {
+    let r = repo_with("ok", "ruff", "true");
+    warm(&r);
+    let before = namespaces(&r, "ok");
+    assert_eq!(before.len(), 1, "{before:?}");
+    // A plugin upgrade: same config, a different lockfile.
+    r.stage("uv.lock", "version = 1\n");
+    let (ok, out) = commit(&r, "chore: upgrade");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("tree lint cold: ok"),
+        "a new namespace starts cold: {out}"
+    );
+    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
+    warm(&r);
+    let after = namespaces(&r, "ok");
+    assert_eq!(
+        after.len(),
+        1,
+        "the old namespace was not deleted: {after:?}"
+    );
+    assert_ne!(after, before);
 }
 
 #[test]
