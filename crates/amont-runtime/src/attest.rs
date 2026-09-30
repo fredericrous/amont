@@ -199,9 +199,26 @@ fn valid_gate(name: &str) -> bool {
     name.len() <= 64 && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
+/// One declared path. `?build.rs` in the spec is `optional` (attest 1.4.0):
+/// it may be absent, and its absence is then part of the fingerprint. The
+/// marker is stripped here, once, so nothing downstream can hand `?x` to git
+/// — where it would match nothing and silently drop out of the listing.
+#[derive(Debug, Clone, PartialEq)]
+struct PathTok {
+    path: String,
+    optional: bool,
+}
+
 /// A path token that is not a literal, root-relative file or directory.
-/// `git ls-tree` does not glob, so a wildcard would fingerprint nothing.
+/// `git ls-tree` does not glob, so a wildcard would fingerprint nothing. One
+/// leading `?` is the optional marker, not a wildcard; the rest obeys every
+/// rule, so `??x` and `?/x` are bad, and so is a lone `?`.
 fn bad_path(tok: &str) -> bool {
+    let tok = match tok.strip_prefix('?') {
+        Some("") => return true,
+        Some(rest) => rest,
+        None => tok,
+    };
     tok.starts_with(':')
         || tok.starts_with('/')
         || tok.starts_with("./")
@@ -216,7 +233,7 @@ fn bad_path(tok: &str) -> bool {
 }
 
 /// The spec, byte-strict; any violation invalidates the WHOLE spec.
-fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
+fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<PathTok>)>> {
     if bytes.len() > MAX_SPEC_BYTES
         || bytes
             .iter()
@@ -225,7 +242,7 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
         return None;
     }
     let text = std::str::from_utf8(bytes).ok()?;
-    let mut gates: Vec<(String, Vec<String>)> = Vec::new();
+    let mut gates: Vec<(String, Vec<PathTok>)> = Vec::new();
     for line in text.split('\n') {
         let mut toks = line.split([' ', '\t']).filter(|t| !t.is_empty());
         let Some(gate) = toks.next() else { continue };
@@ -239,6 +256,19 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
         if paths.is_empty() || paths.len() > MAX_SPEC_PATHS || paths.iter().any(|p| bad_path(p)) {
             return None;
         }
+        let paths = paths
+            .into_iter()
+            .map(|p| match p.strip_prefix('?') {
+                Some(rest) => PathTok {
+                    path: rest.to_string(),
+                    optional: true,
+                },
+                None => PathTok {
+                    path: p,
+                    optional: false,
+                },
+            })
+            .collect();
         gates.push((gate.to_string(), paths));
         if gates.len() > MAX_SPEC_GATES {
             return None;
@@ -250,7 +280,7 @@ fn parse_spec(bytes: &[u8]) -> Option<Vec<(String, Vec<String>)>> {
 /// The spec at `tree`, read from the tree (never the working copy). `None`
 /// when there is none, when both locations exist, or when it is invalid —
 /// the hook then attests by tree alone, as before.
-fn spec_at(tree: &str) -> Option<Vec<(String, Vec<String>)>> {
+fn spec_at(tree: &str) -> Option<Vec<(String, Vec<PathTok>)>> {
     let present: Vec<&str> = SPEC_PATHS
         .iter()
         .copied()
@@ -295,14 +325,25 @@ fn is_oid(s: &str) -> bool {
 
 /// The fingerprint of `gate` on `tree`: `git hash-object` over the
 /// `ls-tree -r -z --full-tree` listing of the implicit paths and the gate's
-/// declared ones. `None` when a declared path does not resolve on that tree,
-/// when git fails at any step, or when the listing is empty.
-fn fingerprint(tree: &str, paths: &[String]) -> Option<String> {
-    let names: String = paths.iter().map(|p| format!("{tree}:{p}\n")).collect();
-    let answers = crate::git::stdout_piped(&["cat-file", "--batch-check"], &names)?;
-    if answers.lines().count() != paths.len() || answers.lines().any(|l| l.ends_with(" missing")) {
-        return None;
+/// declared ones. `None` when a REQUIRED declared path does not resolve on
+/// that tree, when git fails at any step, or when the listing is empty. An
+/// optional path is listed when it exists and bound by its absence when not.
+fn fingerprint(tree: &str, toks: &[PathTok]) -> Option<String> {
+    let required: Vec<&str> = toks
+        .iter()
+        .filter(|t| !t.optional)
+        .map(|t| t.path.as_str())
+        .collect();
+    if !required.is_empty() {
+        let names: String = required.iter().map(|p| format!("{tree}:{p}\n")).collect();
+        let answers = crate::git::stdout_piped(&["cat-file", "--batch-check"], &names)?;
+        if answers.lines().count() != required.len()
+            || answers.lines().any(|l| l.ends_with(" missing"))
+        {
+            return None;
+        }
     }
+    let paths: Vec<String> = toks.iter().map(|t| t.path.clone()).collect();
     let mut args: Vec<String> = vec![
         "ls-tree".into(),
         "-r".into(),
@@ -311,7 +352,7 @@ fn fingerprint(tree: &str, paths: &[String]) -> Option<String> {
         tree.to_string(),
         "--".into(),
     ];
-    args.extend(implicit_inputs(paths));
+    args.extend(implicit_inputs(&paths));
     args.extend(paths.iter().cloned());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let listing = crate::git::stdout_raw(&argv)?;
@@ -648,8 +689,247 @@ pub fn covered(
     principal: &str,
     require_platform: Option<&str>,
 ) -> Option<String> {
-    let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
-    let _ = crate::git::succeeds(&["fetch", "origin", &refspec]);
+    covered_within(signers, principal, require_platform, REMOTE_BUDGET_SECS)
+}
+
+/// Seconds each remote call of `covered` may take, as attest's verifier.
+const REMOTE_BUDGET_SECS: u64 = 15;
+
+/// What syncing the local notes ref with origin allows.
+#[derive(Debug, PartialEq)]
+enum Sync {
+    /// Judge the local ref: it is origin's, or there is no origin at all.
+    Judge,
+    /// Judge nothing, for the reason given (already reported on stderr).
+    Skip,
+}
+
+/// The local `refs/notes/amont-attest` as ORIGIN'S MIRROR (attest 1.4.0,
+/// SPEC.md "Which refs are read"). Origin is the only place an attestation
+/// can be revoked, so a ref origin no longer has is deleted here, and a copy
+/// nobody could refresh is not judged: a stale mirror on a persistent runner
+/// must not outlive a revocation.
+///
+/// The fetch lands in a THROWAWAY ref and the main ref moves by a local
+/// compare-and-swap: the deadline kills git with SIGKILL, and a fetch killed
+/// while writing the main ref leaves `amont-attest.lock`, which would fail
+/// every later fetch and delete — coverage lost for good, silently. The
+/// throwaway lives outside `refs/notes/`, so no notes push or pruning fetch
+/// ever touches it.
+fn sync_mirror(budget: u64) -> Sync {
+    if !crate::git::succeeds(&["remote", "get-url", "origin"]) {
+        // For fixtures and local use; CI always has an origin.
+        return Sync::Judge;
+    }
+    sweep_sync_refs();
+    let old = crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
+    let tmp = format!("{SYNC_NAMESPACE}{}/amont-attest", std::process::id());
+    let fetched = crate::git::probe_remote(
+        &[
+            "fetch",
+            "--quiet",
+            "origin",
+            &format!("+{NOTES_FULL_REF}:{tmp}"),
+        ],
+        budget,
+    );
+    let verdict = match fetched {
+        crate::git::Probe::Exit(0) => {
+            let new = crate::git::stdout(&["rev-parse", "--verify", "--quiet", &tmp]);
+            // Compare-and-swap against what was there before the fetch: a
+            // producer that published meanwhile is not overwritten.
+            let expected = old.clone().unwrap_or_default();
+            match new {
+                None => {
+                    // The throwaway vanished under us: nothing was fetched.
+                    say_skip(&format!(
+                        "the fetch of {NOTES_FULL_REF} left nothing to read; local mirror not judged"
+                    ));
+                    Sync::Skip
+                }
+                Some(new)
+                    if crate::git::succeeds(&["update-ref", NOTES_FULL_REF, &new, &expected]) =>
+                {
+                    Sync::Judge
+                }
+                Some(new) => {
+                    // The swap failed. Judge only if the ref now holds EXACTLY
+                    // what origin just gave us (a concurrent fetch or publish
+                    // got there first); anything else — a stale lock, a ref
+                    // nobody refreshed — is not origin's, and judging it would
+                    // honour a revoked attestation.
+                    let now =
+                        crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
+                    if now.as_deref() == Some(new.as_str()) {
+                        Sync::Judge
+                    } else {
+                        say_skip(&format!(
+                            "cannot update {NOTES_FULL_REF} to origin's copy; local mirror not judged"
+                        ));
+                        Sync::Skip
+                    }
+                }
+            }
+        }
+        crate::git::Probe::TimedOut(secs) => {
+            // Origin did not answer; asking it again would only double the wait.
+            say_skip(&format!(
+                "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
+            ));
+            Sync::Skip
+        }
+        _ => match crate::git::probe_remote(
+            &["ls-remote", "--exit-code", "origin", NOTES_FULL_REF],
+            budget,
+        ) {
+            crate::git::Probe::Exit(2) => drop_mirror(old.as_deref()),
+            crate::git::Probe::Exit(0) => {
+                say_skip(&format!(
+                    "origin has {NOTES_FULL_REF} but fetching it failed; local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+            crate::git::Probe::Exit(code) => {
+                say_skip(&format!(
+                    "cannot fetch {NOTES_FULL_REF} from origin (exit {code}; no credentials? persist-credentials: false?); local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+            crate::git::Probe::TimedOut(secs) => {
+                say_skip(&format!(
+                    "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+            crate::git::Probe::Failed => {
+                say_skip(&format!(
+                    "cannot fetch {NOTES_FULL_REF} from origin (git did not run); local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+        },
+    };
+    let _ = crate::git::succeeds(&["update-ref", "-d", &tmp]);
+    report_stale_lock();
+    verdict
+}
+
+/// Origin answered and has no such ref: delete the mirror, if there is one,
+/// and say how to undo it. Compare-and-delete against the oid read before
+/// the fetch, so a ref a concurrent publish just wrote is left alone.
+fn drop_mirror(old: Option<&str>) -> Sync {
+    let Some(oid) = old else {
+        return Sync::Skip; // never attested here: nothing to delete, nothing to say
+    };
+    if crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF, oid]) {
+        say(format!(
+            "amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})"
+        ));
+        say(format!(
+            "amont:   undo locally: git update-ref {NOTES_FULL_REF} {oid}   (undo the revocation: git push origin {oid}:{NOTES_FULL_REF})"
+        ));
+    } else {
+        say_skip(&format!(
+            "origin has no {NOTES_FULL_REF} but the local mirror could not be deleted (read-only .git?); local mirror not judged"
+        ));
+    }
+    Sync::Skip
+}
+
+/// Where the throwaway sync refs live: one per process id.
+const SYNC_NAMESPACE: &str = "refs/amont-tmp/";
+
+/// Remove the throwaways of runs that were killed before their cleanup —
+/// only those whose process is gone, so a concurrent run in the same clone
+/// keeps its own. Where liveness cannot be asked (no `kill`), nothing is
+/// swept: a leftover outside `refs/notes/` is inert, never pushed or read.
+fn sweep_sync_refs() {
+    let Some(refs) = crate::git::stdout(&["for-each-ref", "--format=%(refname)", SYNC_NAMESPACE])
+    else {
+        return;
+    };
+    for r in refs.lines() {
+        let Some(pid) = r
+            .strip_prefix(SYNC_NAMESPACE)
+            .and_then(|rest| rest.split('/').next())
+            .filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        else {
+            continue;
+        };
+        if pid == std::process::id().to_string() || process_alive(pid) != Some(false) {
+            continue;
+        }
+        let _ = crate::git::succeeds(&["update-ref", "-d", r]);
+    }
+}
+
+/// `Some(false)` only when the system says no such process exists.
+fn process_alive(pid: &str) -> Option<bool> {
+    if !cfg!(unix) {
+        return None;
+    }
+    // LC_ALL=C: the answer is read from kill's English message below.
+    let out = Command::new("kill")
+        .args(["-0", pid])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        return Some(true);
+    }
+    // Gone only on a positive "no such process"; anything else (EPERM: it
+    // exists, we may not signal it) counts as alive, so nothing live is swept.
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    Some(!err.contains("no such process"))
+}
+
+/// A lock a killed git left on the MAIN ref fails every later fetch and
+/// delete; say so, with the command, rather than lose coverage in silence.
+fn report_stale_lock() {
+    let lock = format!("{NOTES_FULL_REF}.lock");
+    if let Some(path) = crate::git::stdout(&["rev-parse", "--git-path", &lock]) {
+        if std::path::Path::new(&path).exists() {
+            say_skip(&format!(
+                "a git that was killed left a lock on {NOTES_FULL_REF}; if no git is running: rm {path}"
+            ));
+        }
+    }
+}
+
+/// Why nothing is covered, on stderr. Stdout stays the gates or nothing.
+fn say_skip(why: &str) {
+    say(format!("amont: {why}"));
+}
+
+thread_local! {
+    /// Lines `covered` wrote to stderr, recorded when a test asks — so the
+    /// exact wording, and the undo command, are asserted rather than trusted.
+    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One line on stderr (and into [`CAPTURE`] when a test is recording).
+fn say(line: String) {
+    CAPTURE.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            v.push(line.clone());
+        }
+    });
+    eprintln!("{line}");
+}
+
+/// [`covered`] with the per-call budget as a parameter, for tests.
+fn covered_within(
+    signers: &std::path::Path,
+    principal: &str,
+    require_platform: Option<&str>,
+    budget: u64,
+) -> Option<String> {
+    if sync_mirror(budget) == Sync::Skip {
+        return None;
+    }
     let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])?;
     // HEAD first: a push event's checkout IS the attested commit. HEAD^2
     // second: a PR checkout is a merge commit git made a moment ago, whose
@@ -1715,5 +1995,433 @@ mod tests {
             );
         });
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // --- attest 1.4.0 parity: optional paths --------------------------------
+
+    #[test]
+    fn optional_paths_are_marked_once_and_stripped() {
+        let spec = parse_spec(b"g src ?build.rs ?a/b/c\n").expect("valid");
+        assert_eq!(
+            spec[0].1,
+            [
+                PathTok {
+                    path: "src".into(),
+                    optional: false
+                },
+                PathTok {
+                    path: "build.rs".into(),
+                    optional: true
+                },
+                PathTok {
+                    path: "a/b/c".into(),
+                    optional: true
+                },
+            ]
+        );
+        assert!(
+            parse_spec(b"g ?nope\n").is_some(),
+            "an all-optional gate is a gate"
+        );
+        for bad in [
+            "?", "??x", "?/x", "?./x", "?x/", "?:x", "x?", "?a//b", "?a/../b",
+        ] {
+            assert!(
+                parse_spec(format!("g {bad}\n").as_bytes()).is_none(),
+                "{bad} should be invalid"
+            );
+        }
+    }
+
+    /// The fingerprint of `g src ?nope` equals the hash of a listing built BY
+    /// HAND from attest's SPEC — the optional path is absent, so the listing
+    /// is the spec and `src` — and changes the moment the path appears.
+    #[test]
+    fn an_absent_optional_path_is_bound_by_its_absence() {
+        let work = repo("optional-fp");
+        std::fs::create_dir_all(work.join("src")).unwrap();
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(work.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(work.join(".github/attest-inputs"), "g src ?nope\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-qm", "chore: spec"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let spec_oid = git(
+            &work,
+            &["rev-parse", &format!("{tree}:.github/attest-inputs")],
+        );
+        let main_oid = git(&work, &["rev-parse", &format!("{tree}:src/main.rs")]);
+        let listing = format!(
+            "100644 blob {spec_oid}\t.github/attest-inputs\x00100644 blob {main_oid}\tsrc/main.rs\x00"
+        );
+        let hand =
+            crate::git::stdout_piped_in(&work, &["hash-object", "--stdin"], listing.as_bytes())
+                .unwrap();
+        let before = in_repo(&work, || {
+            let spec = spec_at(&tree).expect("the spec parses");
+            fingerprint(&tree, &spec[0].1)
+        });
+        assert_eq!(before.as_deref(), Some(hand.as_str()));
+        std::fs::write(work.join("nope"), "now it exists\n").unwrap();
+        git(&work, &["add", "nope"]);
+        git(&work, &["commit", "-qm", "chore: nope"]);
+        let tree2 = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let after = in_repo(&work, || {
+            let spec = spec_at(&tree2).expect("the spec parses");
+            fingerprint(&tree2, &spec[0].1)
+        });
+        assert!(
+            after.is_some() && after != before,
+            "its appearance changes the fingerprint"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    // --- attest 1.4.0 parity: the notes ref is origin's mirror --------------
+
+    /// A work repo that pushed an attestation, and a fresh clone of its remote
+    /// that `covered` answers for.
+    fn attested_clone(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (d, work, remote, signers) = remote_and_work(name);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-pytest".into()],
+            );
+        });
+        let clone = d.join("ci-checkout");
+        git(
+            &d,
+            &[
+                "clone",
+                "-q",
+                "--template=",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        (d, remote, clone, signers)
+    }
+
+    fn covers(clone: &Path, signers: &Path, budget: u64) -> Option<String> {
+        covers_logged(clone, signers, budget).0
+    }
+
+    /// [`covers`], with the stderr lines it wrote.
+    fn covers_logged(clone: &Path, signers: &Path, budget: u64) -> (Option<String>, Vec<String>) {
+        in_repo(clone, || {
+            CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
+            let got = covered_within(signers, "t@t.test", None, budget);
+            let lines = CAPTURE.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            (got, lines)
+        })
+    }
+
+    #[test]
+    fn a_ref_revoked_on_origin_stops_covering_and_the_mirror_goes() {
+        let (d, remote, clone, signers) = attested_clone("revoked");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let oid = git(&clone, &["rev-parse", NOTES_FULL_REF]);
+        git(&remote, &["update-ref", "-d", NOTES_FULL_REF]);
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "revoked on origin");
+        assert_eq!(
+            lines[0],
+            format!("amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})")
+        );
+        assert!(
+            in_repo(&clone, || crate::git::stdout(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                NOTES_FULL_REF
+            ]))
+            .is_none(),
+            "the local mirror was deleted"
+        );
+        // The undo command, run exactly as printed.
+        let undo = lines[1]
+            .split("undo locally: git ")
+            .nth(1)
+            .and_then(|r| r.split("   (").next())
+            .expect("an undo command");
+        git(&clone, &undo.split(' ').collect::<Vec<_>>());
+        assert_eq!(git(&clone, &["rev-parse", NOTES_FULL_REF]), oid);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_unreachable_origin_covers_nothing_and_keeps_the_mirror() {
+        let (d, _remote, clone, signers) = attested_clone("unreachable");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        git(
+            &clone,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "file:///nonexistent/amont-origin.git",
+            ],
+        );
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "a stale mirror is not judged");
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!(
+                "amont: cannot fetch {NOTES_FULL_REF} from origin (exit "
+            ))),
+            "the reason is on stderr: {lines:?}"
+        );
+        assert!(
+            !git(&clone, &["rev-parse", NOTES_FULL_REF]).is_empty(),
+            "and it is kept"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A guard, not a reproduction: without an origin the local ref was
+    /// always judged, and still is — fixtures and local use rely on it.
+    #[test]
+    fn without_an_origin_the_local_ref_is_judged() {
+        let (d, _remote, clone, signers) = attested_clone("no-origin");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        git(&clone, &["remote", "remove", "origin"]);
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A remote that never answers is cut off by the deadline, leaves no lock
+    /// on the main ref, and does not stop the next good fetch.
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_origin_is_cut_off_and_leaves_nothing_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, remote, clone, signers) = attested_clone("silent");
+        let hang = d.join("hang-ssh");
+        std::fs::write(&hang, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The user's own ssh command is honoured, which is how this one hangs.
+        git(
+            &clone,
+            &["config", "core.sshCommand", hang.to_str().unwrap()],
+        );
+        git(
+            &clone,
+            &["remote", "set-url", "origin", "ssh://example.invalid/x.git"],
+        );
+        // Timed INSIDE the working-directory lock these tests share, so the
+        // wait for other tests is not counted.
+        let (got, took) = in_repo(&clone, || {
+            let t0 = std::time::Instant::now();
+            let got = covered_within(&signers, "t@t.test", None, 2);
+            (got, t0.elapsed())
+        });
+        assert_eq!(got, None);
+        // The 2 s budget plus process overhead — far from the remote's 60 s.
+        assert!(took.as_secs() < 6, "took {took:?}");
+        let lock = in_repo(&clone, || {
+            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
+        })
+        .unwrap();
+        assert!(
+            !clone.join(&lock).exists() && !Path::new(&lock).exists(),
+            "no lock left"
+        );
+        git(&clone, &["config", "--unset", "core.sshCommand"]);
+        git(
+            &clone,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_stale_lock_on_the_mirror_means_nothing_is_judged() {
+        let (d, remote, clone, signers) = attested_clone("stale-lock");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let lock = in_repo(&clone, || {
+            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
+        })
+        .unwrap();
+        let lock = if Path::new(&lock).is_absolute() {
+            PathBuf::from(lock)
+        } else {
+            clone.join(lock)
+        };
+        std::fs::write(&lock, "").unwrap();
+        // Origin unchanged: the locked copy IS origin's, so it may be judged.
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest"),
+            "an unchanged origin: the copy is origin's"
+        );
+        // The case that matters: origin moved on (a new attestation, or a
+        // revocation rewrite) while the lock pins the stale copy.
+        let main = git(&remote, &["rev-parse", "main"]);
+        // A bare remote has no committer identity on a fresh runner.
+        git(
+            &remote,
+            &[
+                "-c",
+                "user.email=t@t.test",
+                "-c",
+                "user.name=t",
+                "notes",
+                "--ref",
+                NOTES_REF,
+                "add",
+                "-f",
+                "-m",
+                "rewritten",
+                &main,
+            ],
+        );
+        let (got, lines) = covers_logged(&clone, &signers, 15);
+        assert_eq!(got, None, "a pinned stale copy is never judged");
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "left a lock on {NOTES_FULL_REF}; if no git is running: rm "
+            ))),
+            "the lock is reported with its rm: {lines:?}"
+        );
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Unix only: elsewhere liveness cannot be asked, so nothing is swept —
+    /// by design, since a leftover outside `refs/notes/` is inert.
+    #[cfg(unix)]
+    #[test]
+    fn leftover_sync_refs_are_swept() {
+        let (d, _remote, clone, signers) = attested_clone("sweep");
+        let head = git(&clone, &["rev-parse", "HEAD"]);
+        git(
+            &clone,
+            // A pid no process has: 2^22 + 1 exceeds pid_max on Linux and macOS.
+            &["update-ref", "refs/amont-tmp/4194305/amont-attest", &head],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        assert_eq!(git(&clone, &["for-each-ref", "refs/amont-tmp/"]), "");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_remote_environment_never_prompts() {
+        let (args, env) = crate::git::remote_env(crate::git::Ssh::Batch);
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "http.lowSpeedLimit=1",
+                "-c",
+                "http.lowSpeedTime=10",
+                "-c",
+                "credential.interactive=never"
+            ]
+        );
+        assert!(env.contains(&("GIT_TERMINAL_PROMPT", "0")));
+        assert!(
+            env.contains(&("GIT_ASKPASS", "")),
+            "present and EMPTY disables every askpass"
+        );
+        assert!(env.contains(&("GCM_INTERACTIVE", "never")));
+        assert!(env.contains(&(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10"
+        )));
+        let (_, env) = crate::git::remote_env(crate::git::Ssh::User);
+        assert!(
+            !env.iter().any(|(k, _)| *k == "GIT_SSH_COMMAND"),
+            "the user's own ssh command is left alone"
+        );
+    }
+
+    /// An http origin that demands credentials: through the remote
+    /// environment no askpass runs; without it the same askpass does — the
+    /// negative control that keeps this test from passing vacuously.
+    #[cfg(unix)]
+    #[test]
+    fn no_askpass_runs_against_an_origin_that_wants_credentials() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let work = repo("askpass");
+        let marker = work.join("asked");
+        let askpass = work.join("askpass.sh");
+        std::fs::write(
+            &askpass,
+            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            &work,
+            &["config", "core.askPass", askpass.to_str().unwrap()],
+        );
+        git(&work, &["config", "credential.helper", ""]);
+        let url = format!("http://127.0.0.1:{port}/x.git");
+        in_repo(&work, || {
+            let _ = crate::git::probe_remote(&["ls-remote", &url], 10);
+        });
+        assert!(
+            !marker.exists(),
+            "an askpass ran through the remote environment"
+        );
+        // Plain git, prompts off, the ambient askpass variables removed: the
+        // repo's core.askPass is then what git runs — the very thing the
+        // remote environment must stop.
+        let _ = std::process::Command::new("git")
+            .current_dir(&work)
+            .args(["ls-remote", &url])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS")
+            .stdin(std::process::Stdio::null())
+            .output();
+        assert!(
+            marker.exists(),
+            "negative control: without it the askpass does run"
+        );
+        let _ = std::fs::remove_dir_all(&work);
     }
 }

@@ -207,8 +207,78 @@ pub enum Probe {
 /// `budget_secs == 0` means no deadline (the same opt-out `amont.timeout`
 /// honours). Output is discarded — network callers decide on exit codes.
 pub fn probe(args: &[&str], budget_secs: u64) -> Probe {
+    probe_env(args, budget_secs, &[])
+}
+
+/// Whose ssh a remote call uses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ssh {
+    /// The user configured their own (`GIT_SSH_COMMAND`, `GIT_SSH` or
+    /// `core.sshCommand`); it is left alone — replacing it could drop the
+    /// key selection it exists for. It may prompt; the deadline bounds that.
+    User,
+    /// Ours: batch mode, no prompt, a 10 s connect timeout.
+    Batch,
+}
+
+/// The configuration and environment every call that talks to a REMOTE for a
+/// verifier runs with, as data so both branches are testable without
+/// touching the process environment.
+///
+/// Never a prompt: `GIT_TERMINAL_PROMPT=0` alone is not enough, because git
+/// runs `GIT_ASKPASS` / `core.askPass` / `SSH_ASKPASS` BEFORE consulting it;
+/// a `GIT_ASKPASS` that is present and EMPTY makes git run none of them.
+/// `GCM_INTERACTIVE` and `credential.interactive` tell credential managers
+/// the same; the helpers themselves stay, so stored credentials still work.
+/// Never a stall: curl gives up after 10 s under 1 byte/s, ssh after a 10 s
+/// connect — and the caller's own deadline covers the rest.
+pub fn remote_env(ssh: Ssh) -> (Vec<&'static str>, Vec<(&'static str, &'static str)>) {
+    let args = vec![
+        "-c",
+        "http.lowSpeedLimit=1",
+        "-c",
+        "http.lowSpeedTime=10",
+        "-c",
+        "credential.interactive=never",
+    ];
+    let mut env = vec![
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_ASKPASS", ""),
+        ("GCM_INTERACTIVE", "never"),
+    ];
+    if ssh == Ssh::Batch {
+        env.push((
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10",
+        ));
+    }
+    (args, env)
+}
+
+/// Whose ssh this environment configures.
+pub fn configured_ssh() -> Ssh {
+    let set = |v: &str| std::env::var_os(v).is_some_and(|v| !v.is_empty());
+    if set("GIT_SSH_COMMAND") || set("GIT_SSH") || succeeds(&["config", "--get", "core.sshCommand"])
+    {
+        Ssh::User
+    } else {
+        Ssh::Batch
+    }
+}
+
+/// `git <args>` against a remote, with [`remote_env`] and a deadline.
+pub fn probe_remote(args: &[&str], budget_secs: u64) -> Probe {
+    let (pre, env) = remote_env(configured_ssh());
+    let mut all: Vec<&str> = pre;
+    all.extend_from_slice(args);
+    probe_env(&all, budget_secs, &env)
+}
+
+/// [`probe`], with extra environment for the child.
+pub fn probe_env(args: &[&str], budget_secs: u64, env: &[(&str, &str)]) -> Probe {
     let mut cmd = Command::new("git");
     cmd.args(args)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
