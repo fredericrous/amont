@@ -2280,9 +2280,14 @@ mod tests {
         // The case that matters: origin moved on (a new attestation, or a
         // revocation rewrite) while the lock pins the stale copy.
         let main = git(&remote, &["rev-parse", "main"]);
+        // A bare remote has no committer identity on a fresh runner.
         git(
             &remote,
             &[
+                "-c",
+                "user.email=t@t.test",
+                "-c",
+                "user.name=t",
                 "notes",
                 "--ref",
                 NOTES_REF,
@@ -2309,6 +2314,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Unix only: elsewhere liveness cannot be asked, so nothing is swept —
+    /// by design, since a leftover outside `refs/notes/` is inert.
+    #[cfg(unix)]
     #[test]
     fn leftover_sync_refs_are_swept() {
         let (d, _remote, clone, signers) = attested_clone("sweep");
