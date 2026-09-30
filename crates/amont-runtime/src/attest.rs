@@ -689,8 +689,223 @@ pub fn covered(
     principal: &str,
     require_platform: Option<&str>,
 ) -> Option<String> {
-    let refspec = format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}");
-    let _ = crate::git::succeeds(&["fetch", "origin", &refspec]);
+    covered_within(signers, principal, require_platform, REMOTE_BUDGET_SECS)
+}
+
+/// Seconds each remote call of `covered` may take, as attest's verifier.
+const REMOTE_BUDGET_SECS: u64 = 15;
+
+/// What syncing the local notes ref with origin allows.
+#[derive(Debug, PartialEq)]
+enum Sync {
+    /// Judge the local ref: it is origin's, or there is no origin at all.
+    Judge,
+    /// Judge nothing, for the reason given (already reported on stderr).
+    Skip,
+}
+
+/// The local `refs/notes/amont-attest` as ORIGIN'S MIRROR (attest 1.4.0,
+/// SPEC.md "Which refs are read"). Origin is the only place an attestation
+/// can be revoked, so a ref origin no longer has is deleted here, and a copy
+/// nobody could refresh is not judged: a stale mirror on a persistent runner
+/// must not outlive a revocation.
+///
+/// The fetch lands in a THROWAWAY ref and the main ref moves by a local
+/// compare-and-swap: the deadline kills git with SIGKILL, and a fetch killed
+/// while writing the main ref leaves `amont-attest.lock`, which would fail
+/// every later fetch and delete — coverage lost for good, silently. The
+/// throwaway lives outside `refs/notes/`, so no notes push or pruning fetch
+/// ever touches it.
+fn sync_mirror(budget: u64) -> Sync {
+    if !crate::git::succeeds(&["remote", "get-url", "origin"]) {
+        // For fixtures and local use; CI always has an origin.
+        return Sync::Judge;
+    }
+    sweep_sync_refs();
+    let old = crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
+    let tmp = format!("{SYNC_NAMESPACE}{}/amont-attest", std::process::id());
+    let fetched = crate::git::probe_remote(
+        &[
+            "fetch",
+            "--quiet",
+            "origin",
+            &format!("+{NOTES_FULL_REF}:{tmp}"),
+        ],
+        budget,
+    );
+    let verdict = match fetched {
+        crate::git::Probe::Exit(0) => {
+            let new = crate::git::stdout(&["rev-parse", "--verify", "--quiet", &tmp]);
+            // Compare-and-swap against what was there before the fetch: a
+            // producer that published meanwhile is not overwritten.
+            let expected = old.clone().unwrap_or_default();
+            match new {
+                None => {
+                    // The throwaway vanished under us: nothing was fetched.
+                    say_skip(&format!(
+                        "the fetch of {NOTES_FULL_REF} left nothing to read; local mirror not judged"
+                    ));
+                    Sync::Skip
+                }
+                Some(new)
+                    if crate::git::succeeds(&["update-ref", NOTES_FULL_REF, &new, &expected]) =>
+                {
+                    Sync::Judge
+                }
+                Some(new) => {
+                    // The swap failed. Judge only if the ref now holds EXACTLY
+                    // what origin just gave us (a concurrent fetch or publish
+                    // got there first); anything else — a stale lock, a ref
+                    // nobody refreshed — is not origin's, and judging it would
+                    // honour a revoked attestation.
+                    let now =
+                        crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
+                    if now.as_deref() == Some(new.as_str()) {
+                        Sync::Judge
+                    } else {
+                        say_skip(&format!(
+                            "cannot update {NOTES_FULL_REF} to origin's copy; local mirror not judged"
+                        ));
+                        Sync::Skip
+                    }
+                }
+            }
+        }
+        crate::git::Probe::TimedOut(secs) => {
+            // Origin did not answer; asking it again would only double the wait.
+            say_skip(&format!(
+                "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
+            ));
+            Sync::Skip
+        }
+        _ => match crate::git::probe_remote(
+            &["ls-remote", "--exit-code", "origin", NOTES_FULL_REF],
+            budget,
+        ) {
+            crate::git::Probe::Exit(2) => drop_mirror(old.as_deref()),
+            crate::git::Probe::Exit(code) => {
+                say_skip(&format!(
+                    "cannot fetch {NOTES_FULL_REF} from origin (exit {code}; no credentials? persist-credentials: false?); local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+            crate::git::Probe::TimedOut(secs) => {
+                say_skip(&format!(
+                    "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+            crate::git::Probe::Failed => {
+                say_skip(&format!(
+                    "cannot fetch {NOTES_FULL_REF} from origin (git did not run); local mirror not judged, running everything"
+                ));
+                Sync::Skip
+            }
+        },
+    };
+    let _ = crate::git::succeeds(&["update-ref", "-d", &tmp]);
+    report_stale_lock();
+    verdict
+}
+
+/// Origin answered and has no such ref: delete the mirror, if there is one,
+/// and say how to undo it. Compare-and-delete against the oid read before
+/// the fetch, so a ref a concurrent publish just wrote is left alone.
+fn drop_mirror(old: Option<&str>) -> Sync {
+    let Some(oid) = old else {
+        return Sync::Skip; // never attested here: nothing to delete, nothing to say
+    };
+    if crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF, oid]) {
+        eprintln!("amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})");
+        eprintln!(
+            "amont:   undo locally: git update-ref {NOTES_FULL_REF} {oid}   (undo the revocation: git push origin {oid}:{NOTES_FULL_REF})"
+        );
+    } else {
+        say_skip(&format!(
+            "origin has no {NOTES_FULL_REF} but the local mirror could not be deleted (read-only .git?); local mirror not judged"
+        ));
+    }
+    Sync::Skip
+}
+
+/// Where the throwaway sync refs live: one per process id.
+const SYNC_NAMESPACE: &str = "refs/amont-tmp/";
+
+/// Remove the throwaways of runs that were killed before their cleanup —
+/// only those whose process is gone, so a concurrent run in the same clone
+/// keeps its own. Where liveness cannot be asked (no `kill`), nothing is
+/// swept: a leftover outside `refs/notes/` is inert, never pushed or read.
+fn sweep_sync_refs() {
+    let Some(refs) = crate::git::stdout(&["for-each-ref", "--format=%(refname)", SYNC_NAMESPACE])
+    else {
+        return;
+    };
+    for r in refs.lines() {
+        let Some(pid) = r
+            .strip_prefix(SYNC_NAMESPACE)
+            .and_then(|rest| rest.split('/').next())
+            .filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        else {
+            continue;
+        };
+        if pid == std::process::id().to_string() || process_alive(pid) != Some(false) {
+            continue;
+        }
+        let _ = crate::git::succeeds(&["update-ref", "-d", r]);
+    }
+}
+
+/// `Some(false)` only when the system says no such process exists.
+fn process_alive(pid: &str) -> Option<bool> {
+    if !cfg!(unix) {
+        return None;
+    }
+    // LC_ALL=C: the answer is read from kill's English message below.
+    let out = Command::new("kill")
+        .args(["-0", pid])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        return Some(true);
+    }
+    // Gone only on a positive "no such process"; anything else (EPERM: it
+    // exists, we may not signal it) counts as alive, so nothing live is swept.
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    Some(!err.contains("no such process"))
+}
+
+/// A lock a killed git left on the MAIN ref fails every later fetch and
+/// delete; say so, with the command, rather than lose coverage in silence.
+fn report_stale_lock() {
+    let lock = format!("{NOTES_FULL_REF}.lock");
+    if let Some(path) = crate::git::stdout(&["rev-parse", "--git-path", &lock]) {
+        if std::path::Path::new(&path).exists() {
+            say_skip(&format!(
+                "a git that was killed left a lock on {NOTES_FULL_REF}; if no git is running: rm {path}"
+            ));
+        }
+    }
+}
+
+/// Why nothing is covered, on stderr. Stdout stays the gates or nothing.
+fn say_skip(why: &str) {
+    eprintln!("amont: {why}");
+}
+
+/// [`covered`] with the per-call budget as a parameter, for tests.
+fn covered_within(
+    signers: &std::path::Path,
+    principal: &str,
+    require_platform: Option<&str>,
+    budget: u64,
+) -> Option<String> {
+    if sync_mirror(budget) == Sync::Skip {
+        return None;
+    }
     let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])?;
     // HEAD first: a push event's checkout IS the attested commit. HEAD^2
     // second: a PR checkout is a merge commit git made a moment ago, whose
@@ -1834,6 +2049,317 @@ mod tests {
         assert!(
             after.is_some() && after != before,
             "its appearance changes the fingerprint"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    // --- attest 1.4.0 parity: the notes ref is origin's mirror --------------
+
+    /// A work repo that pushed an attestation, and a fresh clone of its remote
+    /// that `covered` answers for.
+    fn attested_clone(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (d, work, remote, signers) = remote_and_work(name);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-pytest".into()],
+            );
+        });
+        let clone = d.join("ci-checkout");
+        git(
+            &d,
+            &[
+                "clone",
+                "-q",
+                "--template=",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        (d, remote, clone, signers)
+    }
+
+    fn covers(clone: &Path, signers: &Path, budget: u64) -> Option<String> {
+        in_repo(clone, || covered_within(signers, "t@t.test", None, budget))
+    }
+
+    #[test]
+    fn a_ref_revoked_on_origin_stops_covering_and_the_mirror_goes() {
+        let (d, remote, clone, signers) = attested_clone("revoked");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let oid = git(&clone, &["rev-parse", NOTES_FULL_REF]);
+        git(&remote, &["update-ref", "-d", NOTES_FULL_REF]);
+        assert_eq!(covers(&clone, &signers, 15), None, "revoked on origin");
+        assert!(
+            in_repo(&clone, || crate::git::stdout(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                NOTES_FULL_REF
+            ]))
+            .is_none(),
+            "the local mirror was deleted"
+        );
+        // The printed undo command works.
+        git(&clone, &["update-ref", NOTES_FULL_REF, &oid]);
+        assert_eq!(git(&clone, &["rev-parse", NOTES_FULL_REF]), oid);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_unreachable_origin_covers_nothing_and_keeps_the_mirror() {
+        let (d, _remote, clone, signers) = attested_clone("unreachable");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        git(
+            &clone,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "file:///nonexistent/amont-origin.git",
+            ],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15),
+            None,
+            "a stale mirror is not judged"
+        );
+        assert!(
+            !git(&clone, &["rev-parse", NOTES_FULL_REF]).is_empty(),
+            "and it is kept"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A guard, not a reproduction: without an origin the local ref was
+    /// always judged, and still is — fixtures and local use rely on it.
+    #[test]
+    fn without_an_origin_the_local_ref_is_judged() {
+        let (d, _remote, clone, signers) = attested_clone("no-origin");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        git(&clone, &["remote", "remove", "origin"]);
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A remote that never answers is cut off by the deadline, leaves no lock
+    /// on the main ref, and does not stop the next good fetch.
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_origin_is_cut_off_and_leaves_nothing_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, remote, clone, signers) = attested_clone("silent");
+        let hang = d.join("hang-ssh");
+        std::fs::write(&hang, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The user's own ssh command is honoured, which is how this one hangs.
+        git(
+            &clone,
+            &["config", "core.sshCommand", hang.to_str().unwrap()],
+        );
+        git(
+            &clone,
+            &["remote", "set-url", "origin", "ssh://example.invalid/x.git"],
+        );
+        // Timed INSIDE the working-directory lock these tests share, so the
+        // wait for other tests is not counted.
+        let (got, took) = in_repo(&clone, || {
+            let t0 = std::time::Instant::now();
+            let got = covered_within(&signers, "t@t.test", None, 2);
+            (got, t0.elapsed())
+        });
+        assert_eq!(got, None);
+        // The 2 s budget plus process overhead — far from the remote's 60 s.
+        assert!(took.as_secs() < 6, "took {took:?}");
+        let lock = in_repo(&clone, || {
+            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
+        })
+        .unwrap();
+        assert!(
+            !clone.join(&lock).exists() && !Path::new(&lock).exists(),
+            "no lock left"
+        );
+        git(&clone, &["config", "--unset", "core.sshCommand"]);
+        git(
+            &clone,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_stale_lock_on_the_mirror_means_nothing_is_judged() {
+        let (d, remote, clone, signers) = attested_clone("stale-lock");
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let lock = in_repo(&clone, || {
+            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
+        })
+        .unwrap();
+        let lock = if Path::new(&lock).is_absolute() {
+            PathBuf::from(lock)
+        } else {
+            clone.join(lock)
+        };
+        std::fs::write(&lock, "").unwrap();
+        // Origin unchanged: the locked copy IS origin's, so it may be judged.
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest"),
+            "an unchanged origin: the copy is origin's"
+        );
+        // The case that matters: origin moved on (a new attestation, or a
+        // revocation rewrite) while the lock pins the stale copy.
+        let main = git(&remote, &["rev-parse", "main"]);
+        git(
+            &remote,
+            &[
+                "notes",
+                "--ref",
+                NOTES_REF,
+                "add",
+                "-f",
+                "-m",
+                "rewritten",
+                &main,
+            ],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15),
+            None,
+            "a pinned stale copy is never judged"
+        );
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn leftover_sync_refs_are_swept() {
+        let (d, _remote, clone, signers) = attested_clone("sweep");
+        let head = git(&clone, &["rev-parse", "HEAD"]);
+        git(
+            &clone,
+            // A pid no process has: 2^22 + 1 exceeds pid_max on Linux and macOS.
+            &["update-ref", "refs/amont-tmp/4194305/amont-attest", &head],
+        );
+        assert_eq!(
+            covers(&clone, &signers, 15).as_deref(),
+            Some("pre-push-pytest")
+        );
+        assert_eq!(git(&clone, &["for-each-ref", "refs/amont-tmp/"]), "");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_remote_environment_never_prompts() {
+        let (args, env) = crate::git::remote_env(false);
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "http.lowSpeedLimit=1",
+                "-c",
+                "http.lowSpeedTime=10",
+                "-c",
+                "credential.interactive=never"
+            ]
+        );
+        assert!(env.contains(&("GIT_TERMINAL_PROMPT", "0")));
+        assert!(
+            env.contains(&("GIT_ASKPASS", "")),
+            "present and EMPTY disables every askpass"
+        );
+        assert!(env.contains(&("GCM_INTERACTIVE", "never")));
+        assert!(env.contains(&(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10"
+        )));
+        let (_, env) = crate::git::remote_env(true);
+        assert!(
+            !env.iter().any(|(k, _)| *k == "GIT_SSH_COMMAND"),
+            "the user's own ssh command is left alone"
+        );
+    }
+
+    /// An http origin that demands credentials: through the remote
+    /// environment no askpass runs; without it the same askpass does — the
+    /// negative control that keeps this test from passing vacuously.
+    #[cfg(unix)]
+    #[test]
+    fn no_askpass_runs_against_an_origin_that_wants_credentials() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let work = repo("askpass");
+        let marker = work.join("asked");
+        let askpass = work.join("askpass.sh");
+        std::fs::write(
+            &askpass,
+            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            &work,
+            &["config", "core.askPass", askpass.to_str().unwrap()],
+        );
+        git(&work, &["config", "credential.helper", ""]);
+        let url = format!("http://127.0.0.1:{port}/x.git");
+        in_repo(&work, || {
+            let _ = crate::git::probe_remote(&["ls-remote", &url], 10);
+        });
+        assert!(
+            !marker.exists(),
+            "an askpass ran through the remote environment"
+        );
+        in_repo(&work, || {
+            let a = askpass.to_str().unwrap();
+            let _ = crate::git::probe_env(
+                &["ls-remote", &url],
+                10,
+                &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_ASKPASS", a)],
+            );
+        });
+        assert!(
+            marker.exists(),
+            "negative control: without it the askpass does run"
         );
         let _ = std::fs::remove_dir_all(&work);
     }
