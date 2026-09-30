@@ -68,6 +68,7 @@ pub mod setup;
 pub mod skew;
 pub mod snapshot_prep;
 pub mod staged_only;
+pub mod tree_run;
 pub mod trust;
 pub mod ui;
 pub mod vocabulary;
