@@ -168,3 +168,13 @@ verification list. Implementation decisions taken here are logged below.
       starts; nothing else writes to it.
     - *`unstampedPush refuse`.* Left to the first pilot push, as deferred
       above.
+- 2026-09-30 — **Implementation review, confirmation pass:
+  approve-with-changes.** A first-10 sample in `ls-files` (alphabetical)
+  order could still read untyped when ten untyped files sort before a typed
+  `src/**`. Fixed: one file per (directory, extension) pair, as flat configs
+  select files. Every pair answered is definite; more pairs than the cap
+  (256) reads typed with no marker. The cap was sized from
+  application-landscape (83 pairs, 778 files): the probe runs once per
+  namespace in the background warm-up, and a commit reads the marker. By
+  hand: an eslint or tsconfig change moves the namespace (config-like by
+  basename), so an old marker is never reused.

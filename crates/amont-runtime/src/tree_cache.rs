@@ -30,6 +30,11 @@ use std::process::{Command, Stdio};
 use crate::manifest::{TreeGate, TreeTool};
 
 const COMPLETE: &str = ".complete";
+/// How many (directory, extension) pairs the typed-eslint probe asks about
+/// before it stops trusting its sample. It runs once per namespace, normally
+/// in the background warm-up (application-landscape: 83 pairs, ~1 min there),
+/// and a commit only reads the recorded answer.
+const MAX_TYPED_SAMPLE: usize = 256;
 const TYPED: &str = ".typed";
 const UNTYPED: &str = ".untyped";
 
@@ -401,8 +406,27 @@ pub fn typed_eslint(
         ],
     )
     .unwrap_or_default();
+    // One file per (directory, extension): flat configs select files by
+    // directory glob and by extension, and `ls-files` is alphabetical, so a
+    // plain first-N sample could see only root and `scripts/` files and miss
+    // a typed `src/**` block entirely. Past the cap the sample is not the
+    // tree: typed, and nothing remembered.
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut sample: Vec<&str> = Vec::new();
+    for file in files.lines() {
+        let (dir, base) = file.rsplit_once('/').unwrap_or(("", file));
+        let ext = base.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        let key = (dir.to_string(), ext.to_string());
+        if !seen.contains(&key) {
+            seen.push(key);
+            sample.push(file);
+        }
+    }
+    if sample.len() > MAX_TYPED_SAMPLE {
+        return true;
+    }
     let mut answered = 0;
-    for file in files.lines().take(10) {
+    for file in sample {
         let argv = vec![
             bin.display().to_string(),
             "--print-config".to_string(),
@@ -573,6 +597,60 @@ mod tests {
         );
         assert!(typed, "one typed file must make the namespace typed");
         assert!(ns.join(TYPED).exists());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Alphabetical order must not hide a typed block: twelve untyped files
+    /// sorting before `src/` and one typed file under it still read typed.
+    #[cfg(unix)]
+    #[test]
+    fn tree_cache_many_untyped_files_before_src_do_not_hide_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("amont-typed-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let bin = d.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(d.join("scripts")).unwrap();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..12 {
+            let p = format!("a{i:02}.config.js");
+            std::fs::write(d.join(&p), "").unwrap();
+            paths.push(p);
+            let p = format!("scripts/s{i:02}.js");
+            std::fs::write(d.join(&p), "").unwrap();
+            paths.push(p);
+        }
+        std::fs::write(d.join("src/z.ts"), "").unwrap();
+        paths.push("src/z.ts".into());
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&d)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("add")
+            .args(&paths)
+            .current_dir(&d)
+            .status()
+            .unwrap()
+            .success());
+        let eslint = bin.join("eslint");
+        std::fs::write(
+            &eslint,
+            "#!/bin/sh\ncase \"$2\" in\n  src/*) echo '{\"languageOptions\":{\"parserOptions\":{\"projectService\":true}}}' ;;\n  *) echo '{\"languageOptions\":{\"parserOptions\":{}}}' ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        assert!(typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &std::sync::atomic::AtomicBool::new(false),
+        ));
         let _ = std::fs::remove_dir_all(d);
     }
 
