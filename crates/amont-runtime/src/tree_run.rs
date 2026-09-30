@@ -163,8 +163,32 @@ fn summary(tail: &Mutex<VecDeque<String>>) -> String {
 
 /// Run `argv` in `cwd` until it exits, `deadline` passes, or `cancel` is set.
 pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) -> TreeRun {
+    run_inner(argv, cwd, deadline, cancel, false).0
+}
+
+/// [`run`], returning the tool's output (its last lines) on success — for a
+/// bounded, cancellable probe such as `<tool> --version`.
+pub fn run_output(
+    argv: &[String],
+    cwd: &Path,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> Result<String, TreeRun> {
+    match run_inner(argv, cwd, deadline, cancel, true) {
+        (TreeRun::Passed, out) => Ok(out),
+        (other, _) => Err(other),
+    }
+}
+
+fn run_inner(
+    argv: &[String],
+    cwd: &Path,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    need_output: bool,
+) -> (TreeRun, String) {
     let Some((program, rest)) = argv.split_first() else {
-        return TreeRun::Spawn("empty command".into());
+        return (TreeRun::Spawn("empty command".into()), String::new());
     };
     let mut cmd = Command::new(program);
     cmd.args(rest).current_dir(cwd).stdin(Stdio::null());
@@ -198,7 +222,7 @@ pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) 
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return TreeRun::Spawn(format!("{program}: {e}")),
+        Err(e) => return (TreeRun::Spawn(format!("{program}: {e}")), String::new()),
     };
     // The parent's copies of the write end went into `cmd` and die with it,
     // so the reader sees EOF once every process holding the pipe has exited.
@@ -218,30 +242,48 @@ pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) 
         match child.try_wait() {
             Ok(Some(status)) => {
                 // Read to EOF before summarising — bounded, because a
-                // grandchild the tool left behind may still hold the pipe.
-                let until = Instant::now() + GRACE;
-                while Instant::now() < until && drains.iter().any(|d| !d.is_finished()) {
+                // grandchild the tool left behind may still hold the pipe. A
+                // caller that needs the OUTPUT (a version probe) waits up to
+                // its own deadline or cancel: on a loaded machine the reader
+                // can lag the exit, and a half-read version would silently
+                // name another cache namespace.
+                let until = if need_output {
+                    deadline
+                } else {
+                    Instant::now() + GRACE
+                };
+                while Instant::now() < until
+                    && !(need_output && cancel.load(Ordering::SeqCst))
+                    && drains.iter().any(|d| !d.is_finished())
+                {
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                if need_output && drains.iter().any(|d| !d.is_finished()) {
+                    return (TreeRun::TimedOut, String::new());
+                }
+                let out = tail
+                    .lock()
+                    .map(|t| t.iter().cloned().collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default();
                 return if status.success() {
-                    TreeRun::Passed
+                    (TreeRun::Passed, out)
                 } else {
-                    TreeRun::Failed(summary(&tail))
+                    (TreeRun::Failed(summary(&tail)), out)
                 };
             }
             Ok(None) => {}
             Err(e) => {
                 kill_tree(&mut child);
-                return TreeRun::Spawn(format!("{program}: {e}"));
+                return (TreeRun::Spawn(format!("{program}: {e}")), String::new());
             }
         }
         if cancel.load(Ordering::SeqCst) {
             kill_tree(&mut child);
-            return TreeRun::Cancelled;
+            return (TreeRun::Cancelled, String::new());
         }
         if Instant::now() >= deadline {
             kill_tree(&mut child);
-            return TreeRun::TimedOut;
+            return (TreeRun::TimedOut, String::new());
         }
         std::thread::sleep(POLL);
     }

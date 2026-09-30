@@ -392,12 +392,47 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     };
 
     let root = crate::hooks::common::repo_root();
+    // How long this commit's own declared checks are expected to run — the
+    // cover a tree gate can hide behind — from their last measured runs.
+    let decls =
+        crate::hooks::run_tests::blocking_commit_decls(ctx.settings, &ctx.manifest.externals);
+    let cover_ms = if tree_gates.is_some() {
+        let staged = crate::hooks::common::staged_files(&[]);
+        decls
+            .iter()
+            .filter(|d| d.scope.touches(&staged))
+            .filter_map(|d| crate::tree_cache::duration_of(&d.id))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let side_car = tree_gates.and_then(|g| {
-        crate::tree_lint::start(settings, std::path::Path::new(&root), g, &ctx.manifest.pins)
+        crate::tree_lint::start(
+            settings,
+            std::path::Path::new(&root),
+            g,
+            &ctx.manifest.pins,
+            cover_ms,
+        )
     });
 
     let severities = Overrides::read(settings);
-    let (verdict, outcomes) = run_stage_traced(settings, &checks, ctx, &severities);
+    let (verdict, outcomes, durations) = run_stage_traced(settings, &checks, ctx, &severities);
+    // Remember how long the declared checks that judged something took, for
+    // the next commit's cover estimate.
+    if !ctx.manifest.tree.is_empty() {
+        let measured: Vec<(String, u64)> = checks
+            .iter()
+            .zip(outcomes.iter().zip(&durations))
+            .filter(|(c, (o, _))| {
+                matches!(o, Outcome::Passed | Outcome::Failed)
+                    && decls.iter().any(|d| d.id == c.name())
+            })
+            .map(|(c, (_, ms))| (c.name().to_string(), *ms))
+            .collect();
+        crate::tree_cache::record_durations(&measured);
+    }
 
     // The shadow-mode ledger. Silent, best-effort, and never consulted by any
     // verdict — see `crate::downgrade`.
@@ -517,9 +552,9 @@ fn run_stage_traced(
     checks: &[&dyn Check],
     ctx: &Ctx,
     severities: &Overrides,
-) -> (Verdict, Vec<Outcome>) {
+) -> (Verdict, Vec<Outcome>, Vec<u64>) {
     if checks.is_empty() {
-        return (Verdict::Proceed, Vec::new());
+        return (Verdict::Proceed, Vec::new(), Vec::new());
     }
     // One slot per check: everything a check says lands in its own buffer
     // and reaches stdout as ONE block when it finishes — see `live`. Off
@@ -530,9 +565,10 @@ fn run_stage_traced(
         crate::live::Stage::begin(settings, &names)
     });
     let items: Vec<(usize, &&dyn Check)> = checks.iter().enumerate().collect();
-    let outcomes = run_concurrently(
+    let timed = run_concurrently(
         &items,
         |(idx, check)| {
+            let started = std::time::Instant::now();
             let _sink = stage.as_ref().map(|s| s.enter(*idx));
             // The block is emitted however the check leaves — a panicking
             // check's partial output still reaches the reader, above the
@@ -548,17 +584,20 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
             };
-            check.run(&sub)
+            let outcome = check.run(&sub);
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            (outcome, ms)
         },
         // A check whose thread died has not passed. Stated here, where the slot
         // is filled, rather than hidden in a `Default` impl that every future
         // `#[derive(Default)]` would silently inherit.
-        Outcome::Failed,
+        (Outcome::Failed, 0),
     );
+    let (outcomes, durations): (Vec<Outcome>, Vec<u64>) = timed.into_iter().unzip();
 
     let report = classify(checks, &outcomes, severities);
     announce(settings, &report);
-    (report.verdict(), outcomes)
+    (report.verdict(), outcomes, durations)
 }
 
 /// What a stage concluded, before anything is printed or exited.

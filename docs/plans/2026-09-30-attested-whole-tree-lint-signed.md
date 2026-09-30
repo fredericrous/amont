@@ -60,3 +60,43 @@ verification list. Implementation decisions taken here are logged below.
   EXACTLY matches the default sync or the `--all-packages` sync (checked
   both ways). `--inexact` was rejected, since it would admit extras a linter
   could resolve locally and CI could not.
+- 2026-09-30 — **Pilot (application-landscape clone, this branch's binary,
+  13 commits).**
+  - **Code commits (`.ts`):** **5/5 proven** (`pass`), hidden behind the
+    commit-time test run (340–565 s).
+  - **Docs-only commits:** **0/5 proven**, each `cancelled` at the 2 s
+    slack. Warm eslint takes ~3.1 s and the commit's own checks ~1.5 s, so
+    each docs commit took 4.1 s against a 1.5 s baseline, for nothing.
+  - **Allow-list:** the pilot also showed that the commit-time tests create
+    `.react-router/`, `build/`, `test-results/` and `*.db*`. eslint ignores
+    all of them (`eslint.config.mjs`), so the pilot's
+    `snapshotPrepareOutputs` lists them with `.env`.
+- 2026-09-30 — **Skip what cannot fit** (the person's decision). A warm gate
+  starts only if its last commit-time run fits this commit's expected cover
+  plus the slack. The cover is the longest last-measured duration among the
+  repository's declared commit checks in scope. Otherwise it is skipped,
+  with one line, and recorded as the evidence outcome `slow`. Measured, not
+  guessed from names: `aval check` is a blocking declaration too, but its
+  0.1 s gives no cover.
+- 2026-09-30 — **Defect found while testing, fixed: the version probe
+  blocked the commit.** The namespace's `<tool> --version` probe ran in the
+  hook's main thread, unbounded, BEFORE the commit's checks started.
+  pyright's wrapper can reach PyPI, so a slow network could stall every
+  commit. Fix: each gate's whole preparation now runs in its own thread,
+  overlapping the checks:
+  - version probe (through `tree_run`: deadline, cancel, process-group kill);
+  - skew check;
+  - namespace;
+  - warm and fit tests;
+  - lock.
+
+  A probe that does not answer in time withholds. A tool that is absent or
+  errors reads `absent`, as before. Regression test: a fake `pyright` whose
+  `--version` sleeps 300 s does not delay the commit.
+- 2026-09-30 — **Timing tests are bounded by what they prove, not by the
+  machine.** Wall-clock bounds of 15–60 s failed under this machine's load
+  (whole-suite time swung between 43 and 184 s). Instrumented runs showed
+  the process-group kill lands every time. The slow-gate and hanging-probe
+  tests now use a 300 s gate against a 200 s bound, which only a commit that
+  waited for the gate can exceed. The lock test allows eventual release: a
+  concurrent fork holds the lock's description until its exec.

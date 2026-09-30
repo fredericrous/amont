@@ -146,6 +146,9 @@ pub enum RunOutcome {
     Withheld,
     /// Still running when the commit was ready, or past its deadline.
     Cancelled,
+    /// Not started: its last run would not fit in this commit's cover plus
+    /// the slack.
+    Slow,
 }
 
 impl RunOutcome {
@@ -162,6 +165,7 @@ impl RunOutcome {
             RunOutcome::Skew => "skew",
             RunOutcome::Withheld => "withheld",
             RunOutcome::Cancelled => "cancelled",
+            RunOutcome::Slow => "slow",
         }
     }
 
@@ -181,6 +185,7 @@ impl RunOutcome {
             "skew" => RunOutcome::Skew,
             "withheld" => RunOutcome::Withheld,
             "cancelled" => RunOutcome::Cancelled,
+            "slow" => RunOutcome::Slow,
             _ => return None,
         })
     }

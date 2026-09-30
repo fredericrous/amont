@@ -395,7 +395,12 @@ gate's current *namespace*. The namespace is a hash of:
 - the gate's `inputs=`.
 
 A plugin upgrade therefore starts a new, cold namespace, and the old cache is
-deleted. A cold gate does not slow the commit: amont starts
+deleted. A warm gate also has to *fit*. amont remembers how long each gate's last
+run took, and how long the repository's own declared commit checks took.
+When nothing long is in scope, as on a docs-only commit where no test run
+covers it, a gate that would outlast the slack is **skipped**, not started
+and cancelled: the commit stays fast, and CI lints. It shows up as `slow`
+in the evidence. A cold gate does not slow the commit either: amont starts
 `amont warm --worker` in the background (log: `.git/amont-warm.log`), and the
 next commit can prove it. `amont warm` does the same in the foreground. There
 is no background warm-up on Windows, where tree gates do not run at all.

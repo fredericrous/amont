@@ -29,9 +29,9 @@ use crate::json_read::{parse, Value};
 use crate::manifest::{ToolPin, TreeGate, TreeTool};
 
 /// Why `gate` may not be proven with the tools installed here, or `None`.
-pub fn skew(cwd: &Path, gate: &TreeGate, pins: &[ToolPin]) -> Option<String> {
+pub fn skew(cwd: &Path, gate: &TreeGate, pins: &[ToolPin], version: &str) -> Option<String> {
     if let Some(pin) = pins.iter().find(|p| p.program == gate.tool.as_str()) {
-        let have = crate::tree_cache::tool_version(cwd, gate);
+        let have = version;
         if have != "pinned-in-command" && !have.contains(&pin.want) {
             return Some(format!(
                 "{} is pinned to {} but the gate runs {have}",

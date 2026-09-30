@@ -185,12 +185,13 @@ fn an_ignored_module_outside_the_allow_list_withholds_the_proof() {
 fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     // Fast while warming, slow at commit: the switch is an ignored file under
     // node_modules/, which the allow-list admits by default. The gate would
-    // sleep 120 s; a commit well under that was not made to wait for it (the
-    // bound is loose because a loaded machine slows every hook, not this one).
+    // sleep 300 s; a commit well under that was not made to wait for it. The
+    // bound is loose on purpose: a loaded machine slows every hook, and only
+    // a commit that waited for the gate can reach 300 s.
     let r = repo_with("slow", "pyright", "sh slow.sh");
     r.stage(
         "slow.sh",
-        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 120\nexit 0\n",
+        "#!/bin/sh\n[ -e node_modules/slow ] && sleep 300\nexit 0\n",
     );
     r.git(&["config", "amont.treeLintSlack", "1"]);
     r.stage(".gitignore", "node_modules/\n");
@@ -200,8 +201,8 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
     assert!(
-        started.elapsed() < Duration::from_secs(60),
-        "the commit waited for the tree gate: {:?}",
+        started.elapsed() < Duration::from_secs(200),
+        "the commit waited for the tree gate: {:?}\n{out}",
         started.elapsed()
     );
     assert!(
@@ -512,4 +513,97 @@ fn every_tree_outcome_is_recorded_as_evidence_on_the_tree() {
         vec!["withheld"],
         "{out}"
     );
+}
+
+#[test]
+fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
+    // A declared commit check that takes 3 s on *.txt — the cover — and a
+    // tree gate that takes ~2 s, with a 1 s slack.
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        "pre-commit  suite  *.txt  block  sleep 3\ntree slowish ruff * attest sleep 2\n",
+    );
+    r.stage(
+        ".forgejo/workflows/ci.yaml",
+        &workflow(&[("slowish", "sleep 2")]),
+    );
+    r.commit("chore: gates");
+    trust_and_install(&r);
+    r.git(&["config", "amont.treeLint", "true"]);
+    r.git(&["config", "amont.treeLintSlack", "1"]);
+    warm(&r);
+
+    // Covered: the suite runs, the gate hides behind it and is proven.
+    r.stage("a.txt", "a\n");
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    assert!(stamped(&r, "HEAD").contains("tree:slowish"), "{out}");
+    r.stage("b.txt", "b\n");
+    let (ok, out) = commit(&r, "feat: b");
+    assert!(ok, "{out}");
+    assert!(
+        stamped(&r, "HEAD").contains("tree:slowish"),
+        "covered again: {out}"
+    );
+
+    // Uncovered: a docs-only commit leaves 1 s; the gate needs ~2 s.
+    r.stage("notes.md", "n\n");
+    let started = Instant::now();
+    let (ok, out) = commit(&r, "docs: n");
+    assert!(ok, "{out}");
+    assert!(out.contains("tree lint skipped: slowish (~2."), "{out}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "a skipped gate cost time: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        evidence(&r, "HEAD^{tree}", "tree-slowish"),
+        vec!["slow"],
+        "{out}"
+    );
+}
+
+/// Regression: the version probe ran in the hook's main thread, unbounded,
+/// before the commit's checks even started — and pyright's wrapper may reach
+/// the network. A probe that hangs must cost the commit nothing.
+#[test]
+fn a_hanging_version_probe_never_delays_the_commit() {
+    let r = repo_with("pr", "pyright", "true");
+    r.git(&["config", "amont.treeLintSlack", "1"]);
+    let bin = r.dir.join(".git").join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("pyright");
+    std::fs::write(&fake, "#!/bin/sh\nsleep 300\necho pyright 1.1.400\n").unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let started = Instant::now();
+    let mut cmd = Command::new("git");
+    cmd.args(["commit", "-q", "-m", "feat: a"])
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .env("PATH", &path);
+    Repo::strip_git_env_impl(&mut cmd);
+    let out = cmd.output().expect("git commit");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{said}");
+    assert!(
+        started.elapsed() < Duration::from_secs(200),
+        "the commit waited for a version probe: {:?}\n{said}",
+        started.elapsed()
+    );
+    assert!(
+        said.contains("its tool's version could not be read in time"),
+        "{said}"
+    );
+    assert!(!stamped(&r, "HEAD").contains("tree:pr"), "{said}");
 }

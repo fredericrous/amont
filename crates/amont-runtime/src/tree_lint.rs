@@ -62,6 +62,10 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, TOGGLE, crate::attest::enabled(settings))
 }
 
+fn slack_ms(settings: &crate::config::Settings) -> u64 {
+    u64::try_from(slack(settings).as_millis()).unwrap_or(u64::MAX)
+}
+
 fn slack(settings: &crate::config::Settings) -> Duration {
     let secs = crate::config::integer_or(settings, SLACK, DEFAULT_SLACK, 0..=600);
     Duration::from_secs(u64::try_from(secs).unwrap_or(0))
@@ -193,11 +197,28 @@ pub fn argv(gate: &TreeGate, cache_flags: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), command.join(" ")]
 }
 
+/// What one gate's thread decided, and did.
+enum Decision {
+    /// It ran: how it ended, how long it took, and in which namespace.
+    Ran(TreeRun, u64, PathBuf),
+    /// The tool it would run is not the one CI resolves.
+    Skew(String),
+    /// Its version could not be read before the deadline or the cancel.
+    NoVersion,
+    /// No completed run in its current namespace.
+    Cold,
+    /// Another run held its cache lock.
+    Busy,
+    /// Its last run (ms) would not fit this commit's cover plus the slack.
+    Slow(u64),
+}
+
+type InFlight = (String, JoinHandle<Decision>);
+
 /// Tree gates in flight.
 pub struct SideCar {
     cancel: Arc<AtomicBool>,
-    started: Instant,
-    running: Vec<(String, JoinHandle<TreeRun>)>,
+    running: Vec<InFlight>,
 }
 
 /// This hook run's tree-gate outcomes, for `gate_evidence`: proven, failed,
@@ -245,15 +266,19 @@ fn cwd_of(root: &Path, gate: &TreeGate) -> PathBuf {
     }
 }
 
-/// Start the WARM `gates` against the working tree, which the staged-only
-/// hold has made the commit's tree; send the cold ones to a background
-/// warm-up. A gate whose cache another run holds is skipped, never waited
-/// for. Returns `None` when nothing starts.
+/// Start one thread per gate against the working tree, which the staged-only
+/// hold has made the commit's tree. EVERYTHING a gate needs to decide runs in
+/// its own thread, so none of it delays the commit's checks: the version
+/// probe (bounded and cancellable — a wrapper may reach the network), the
+/// skew check, the namespace, the warm and fit tests, the lock, the run.
+/// `cover_ms` is how long this commit's own declared checks are expected to
+/// run. Returns `None` when nothing starts.
 pub fn start(
     settings: &crate::config::Settings,
     root: &Path,
     gates: &[TreeGate],
     pins: &[crate::manifest::ToolPin],
+    cover_ms: u64,
 ) -> Option<SideCar> {
     if gates.is_empty() {
         return None;
@@ -264,62 +289,61 @@ pub fn start(
     }
     let cancel = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + CEILING;
-    let mut running = Vec::new();
-    let mut cold = Vec::new();
-    let mut busy = Vec::new();
-    for g in gates {
-        let cwd = cwd_of(root, g);
-        // The same tool CI resolves, or no proof (ADR-0024).
-        if let Some(why) = crate::tree_skew::skew(&cwd, g, pins) {
-            note(&g.name, crate::gate_stamp::RunOutcome::Skew, 0);
-            say(&format!(
-                "  tree lint not proven: {} — {} — CI will lint",
-                g.name,
-                crate::ui::sanitize(&why)
-            ));
-            continue;
-        }
-        let Some(ns) =
-            crate::tree_cache::namespace(&cwd, g).filter(|ns| crate::tree_cache::is_warm(g, ns))
-        else {
-            note(&g.name, crate::gate_stamp::RunOutcome::Cold, 0);
-            cold.push(g.name.clone());
-            continue;
-        };
-        let Some(lock) = crate::tree_cache::try_lock(g) else {
-            note(&g.name, crate::gate_stamp::RunOutcome::Busy, 0);
-            busy.push(g.name.clone());
-            continue;
-        };
-        let Some(ns_dir) = crate::tree_cache::gate_dir(g).map(|d| d.join(&ns)) else {
-            cold.push(g.name.clone());
-            continue;
-        };
-        let argv = argv(g, &crate::tree_cache::cache_flags(&cwd, g, &ns_dir));
-        let flag = Arc::clone(&cancel);
-        let handle = std::thread::spawn(move || {
-            let run = crate::tree_run::run(&argv, &cwd, deadline, &flag);
-            // Only now: the runner killed the whole group before returning,
-            // so nothing that could still write the cache is alive.
-            drop(lock);
-            run
-        });
-        running.push((g.name.clone(), handle));
+    let budget_ms = cover_ms.saturating_add(slack_ms(settings));
+    let running = gates
+        .iter()
+        .map(|g| {
+            let gate = g.clone();
+            let pins = pins.to_vec();
+            let cwd = cwd_of(root, g);
+            let flag = Arc::clone(&cancel);
+            let handle = std::thread::spawn(move || {
+                decide_and_run(&gate, &cwd, &pins, budget_ms, deadline, &flag)
+            });
+            (g.name.clone(), handle)
+        })
+        .collect();
+    Some(SideCar { cancel, running })
+}
+
+fn decide_and_run(
+    g: &TreeGate,
+    cwd: &Path,
+    pins: &[crate::manifest::ToolPin],
+    budget_ms: u64,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> Decision {
+    let Some(version) = crate::tree_cache::tool_version(cwd, g, deadline, cancel) else {
+        return Decision::NoVersion;
+    };
+    if let Some(why) = crate::tree_skew::skew(cwd, g, pins, &version) {
+        return Decision::Skew(why);
     }
-    if !busy.is_empty() {
-        say(&format!(
-            "  tree lint not proven: {} — a warm-up holds the cache; CI will lint",
-            busy.join(" ")
-        ));
+    let Some(ns) =
+        crate::tree_cache::namespace(g, &version).filter(|ns| crate::tree_cache::is_warm(g, ns))
+    else {
+        return Decision::Cold;
+    };
+    let Some(ns_dir) = crate::tree_cache::gate_dir(g).map(|d| d.join(&ns)) else {
+        return Decision::Cold;
+    };
+    // Would it fit? Its last run against the cover plus the slack. Unknown
+    // runs once, to learn.
+    if let Some(ms) = crate::tree_cache::last_ms(&ns_dir).filter(|ms| *ms > budget_ms) {
+        return Decision::Slow(ms);
     }
-    if !cold.is_empty() {
-        warm_later(settings, &cold);
-    }
-    (!running.is_empty()).then_some(SideCar {
-        cancel,
-        started: Instant::now(),
-        running,
-    })
+    let Some(lock) = crate::tree_cache::try_lock(g) else {
+        return Decision::Busy;
+    };
+    let argv = argv(g, &crate::tree_cache::cache_flags(cwd, g, &ns_dir));
+    let began = Instant::now();
+    let run = crate::tree_run::run(&argv, cwd, deadline, cancel);
+    let ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Only now: the runner killed the whole group before returning, so
+    // nothing that could still write the cache is alive.
+    drop(lock);
+    Decision::Ran(run, ms, ns_dir)
 }
 
 /// Which declared tree gates every pushed tip's TREE proves, as note gate
@@ -390,7 +414,20 @@ pub fn rehearse(
     let pins = crate::manifest::load(snapshot).pins;
     for g in gates {
         let cwd = cwd_of(snapshot, g);
-        if let Some(why) = crate::tree_skew::skew(&cwd, g, &pins) {
+        let Some(version) = crate::tree_cache::tool_version(
+            &cwd,
+            g,
+            Instant::now() + budget,
+            &AtomicBool::new(false),
+        ) else {
+            note(&g.name, crate::gate_stamp::RunOutcome::Skew, 0);
+            println!(
+                "tree lint not proven: {} — its tool's version could not be read",
+                g.name
+            );
+            continue;
+        };
+        if let Some(why) = crate::tree_skew::skew(&cwd, g, &pins, &version) {
             note(&g.name, crate::gate_stamp::RunOutcome::Skew, 0);
             println!("tree lint not proven: {} — {why}", g.name);
             continue;
@@ -508,7 +545,16 @@ pub fn warm(root: &Path) -> i32 {
     }
     for g in &manifest.tree {
         let cwd = cwd_of(root, g);
-        let Some(ns) = crate::tree_cache::namespace(&cwd, g) else {
+        let Some(version) = crate::tree_cache::tool_version(
+            &cwd,
+            g,
+            Instant::now() + Duration::from_secs(60),
+            &AtomicBool::new(false),
+        ) else {
+            println!("{}: its tool's version could not be read — skipped", g.name);
+            continue;
+        };
+        let Some(ns) = crate::tree_cache::namespace(g, &version) else {
             println!("{}: git could not name the namespace — skipped", g.name);
             continue;
         };
@@ -542,8 +588,10 @@ pub fn warm(root: &Path) -> i32 {
 /// Wait at most `amont.treeLintSlack` for the gates still running, cancel the
 /// rest, and return the stamp tokens of the gates that proved the tree.
 /// `stampable` is false when the commit is blocked or a check rewrote files:
-/// then nothing is waited for and nothing is stamped.
+/// then nothing is waited for and nothing is stamped. Cold gates go to the
+/// background warm-up.
 pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool) -> Vec<String> {
+    use crate::gate_stamp::RunOutcome;
     let until = Instant::now()
         + if stampable {
             slack(settings)
@@ -556,29 +604,63 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
     car.cancel.store(true, Ordering::SeqCst);
     let mut proven = Vec::new();
     let mut unproven = Vec::new();
-    use crate::gate_stamp::RunOutcome;
-    let ms = u64::try_from(car.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut cold = Vec::new();
+    let mut busy = Vec::new();
+    let mut slow = Vec::new();
     for (name, handle) in car.running {
-        match handle
-            .join()
-            .unwrap_or(TreeRun::Spawn("thread died".into()))
-        {
-            TreeRun::Passed if stampable => {
-                note(&name, RunOutcome::Passed, ms);
-                proven.push(name);
+        let decision = handle.join().unwrap_or(Decision::Ran(
+            TreeRun::Spawn("thread died".into()),
+            0,
+            PathBuf::new(),
+        ));
+        match decision {
+            Decision::Ran(run, ms, ns_dir) => {
+                // A completed run's time, or a cancelled one's lower bound:
+                // what the next commit's fit test reads.
+                if !matches!(run, TreeRun::Spawn(_)) {
+                    crate::tree_cache::record_last_ms(&ns_dir, ms);
+                }
+                match run {
+                    TreeRun::Passed if stampable => {
+                        note(&name, RunOutcome::Passed, ms);
+                        proven.push(name);
+                    }
+                    TreeRun::Passed => note(&name, RunOutcome::Withheld, ms),
+                    TreeRun::Failed(summary) => {
+                        note(&name, RunOutcome::Failed, ms);
+                        unproven.push(format!("{name} — {summary}"));
+                    }
+                    TreeRun::TimedOut | TreeRun::Cancelled => {
+                        note(&name, RunOutcome::Cancelled, ms);
+                        unproven.push(format!("{name} — still running when the commit was ready"));
+                    }
+                    TreeRun::Spawn(e) => {
+                        note(&name, RunOutcome::Unavailable, ms);
+                        unproven.push(format!("{name} — could not start ({e})"));
+                    }
+                }
             }
-            TreeRun::Passed => note(&name, RunOutcome::Withheld, ms),
-            TreeRun::Failed(summary) => {
-                note(&name, RunOutcome::Failed, ms);
-                unproven.push(format!("{name} — {summary}"));
+            Decision::Skew(why) => {
+                note(&name, RunOutcome::Skew, 0);
+                unproven.push(format!("{name} — {why}"));
             }
-            TreeRun::TimedOut | TreeRun::Cancelled => {
-                note(&name, RunOutcome::Cancelled, ms);
-                unproven.push(format!("{name} — still running when the commit was ready"));
+            Decision::NoVersion => {
+                note(&name, RunOutcome::Skew, 0);
+                unproven.push(format!(
+                    "{name} — its tool's version could not be read in time"
+                ));
             }
-            TreeRun::Spawn(e) => {
-                note(&name, RunOutcome::Unavailable, ms);
-                unproven.push(format!("{name} — could not start ({e})"));
+            Decision::Cold => {
+                note(&name, RunOutcome::Cold, 0);
+                cold.push(name);
+            }
+            Decision::Busy => {
+                note(&name, RunOutcome::Busy, 0);
+                busy.push(name);
+            }
+            Decision::Slow(ms) => {
+                note(&name, RunOutcome::Slow, 0);
+                slow.push(format!("{name} (~{:.1}s)", ms as f64 / 1000.0));
             }
         }
     }
@@ -592,6 +674,21 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
                 crate::ui::sanitize(u)
             ));
         }
+        if !busy.is_empty() {
+            say(&format!(
+                "  tree lint not proven: {} — a warm-up holds the cache; CI will lint",
+                busy.join(" ")
+            ));
+        }
+        if !slow.is_empty() && !crate::live::quiet(settings) {
+            say(&format!(
+                "  tree lint skipped: {} — longer than this commit's checks leave; CI will lint",
+                slow.join(" ")
+            ));
+        }
+    }
+    if !cold.is_empty() {
+        warm_later(settings, &cold);
     }
     proven.iter().map(|n| format!("tree:{n}")).collect()
 }

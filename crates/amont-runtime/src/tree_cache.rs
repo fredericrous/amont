@@ -70,12 +70,20 @@ pub fn gate_dir(gate: &TreeGate) -> Option<PathBuf> {
 }
 
 /// The version of the tool the gate actually runs, as best it can be read
-/// without running the gate. Never touches `.venv` or the network.
-pub fn tool_version(cwd: &Path, gate: &TreeGate) -> String {
+/// without running the gate. Never touches `.venv` or the network on its own
+/// account; a wrapper that does (pyright's) is bounded by `deadline` and
+/// `cancel`, like any gate run. `None` when it could not be read in time —
+/// the caller withholds rather than guess.
+pub fn tool_version(
+    cwd: &Path,
+    gate: &TreeGate,
+    deadline: std::time::Instant,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<String> {
     let words: Vec<&str> = gate.command.split_whitespace().collect();
     // `uvx ruff@0.16.0 …`: the pin is in the command, which is hashed anyway.
     if words.first() == Some(&"uvx") && words.get(1).is_some_and(|w| w.contains('@')) {
-        return "pinned-in-command".into();
+        return Some("pinned-in-command".into());
     }
     match gate.tool {
         TreeTool::Eslint | TreeTool::Prettier => {
@@ -83,14 +91,16 @@ pub fn tool_version(cwd: &Path, gate: &TreeGate) -> String {
                 .join("node_modules")
                 .join(gate.tool.as_str())
                 .join("package.json");
-            std::fs::read_to_string(pkg)
-                .ok()
-                .and_then(|t| json_string_field(&t, "version"))
-                .unwrap_or_else(|| "absent".into())
+            Some(
+                std::fs::read_to_string(pkg)
+                    .ok()
+                    .and_then(|t| json_string_field(&t, "version"))
+                    .unwrap_or_else(|| "absent".into()),
+            )
         }
         _ => {
-            let probe: Vec<&str> = if words.starts_with(&["uv", "run"]) {
-                vec![
+            let probe: Vec<String> = if words.starts_with(&["uv", "run"]) {
+                [
                     "uv",
                     "run",
                     "--frozen",
@@ -98,21 +108,28 @@ pub fn tool_version(cwd: &Path, gate: &TreeGate) -> String {
                     gate.tool.as_str(),
                     "--version",
                 ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
             } else if gate.tool == TreeTool::Gofmt {
-                vec!["go", "version"]
+                vec!["go".into(), "version".into()]
             } else {
-                vec![gate.tool.as_str(), "--version"]
+                vec![gate.tool.as_str().into(), "--version".into()]
             };
-            Command::new(probe[0])
-                .args(&probe[1..])
-                .current_dir(cwd)
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|| "absent".into())
+            // A tool that is not there, or answers with an error, is a
+            // definite answer ("absent"), as it always was. Only one that did
+            // not answer in time is unknown, and that withholds.
+            match crate::tree_run::run_output(&probe, cwd, deadline, cancel) {
+                Ok(out) => Some(
+                    Some(out.lines().next().unwrap_or("").trim().to_string())
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| "absent".into()),
+                ),
+                Err(crate::tree_run::TreeRun::TimedOut | crate::tree_run::TreeRun::Cancelled) => {
+                    None
+                }
+                Err(_) => Some("absent".into()),
+            }
         }
     }
 }
@@ -131,12 +148,11 @@ fn json_string_field(text: &str, field: &str) -> Option<String> {
 
 /// The namespace for `gate`: see the module doc. `None` when git cannot
 /// answer, which reads as cold.
-pub fn namespace(cwd: &Path, gate: &TreeGate) -> Option<String> {
+pub fn namespace(gate: &TreeGate, version: &str) -> Option<String> {
     let staged = crate::git::stdout(&["ls-files", "-s"])?;
     let mut material = format!(
         "amont-tree-ns-v1\ncommand {}\nversion {}\n",
-        gate.command,
-        tool_version(cwd, gate)
+        gate.command, version
     );
     for line in staged.lines() {
         // `<mode> <blob> <stage>\t<path>`
@@ -195,8 +211,13 @@ const LOCK_NB: i32 = 4;
 /// the lock file cannot be made) — which the caller reads as cold: a commit
 /// never waits on a warm-up.
 pub fn try_lock(gate: &TreeGate) -> Option<Lock> {
-    let dir = gate_dir(gate)?;
-    std::fs::create_dir_all(&dir).ok()?;
+    lock_in(&gate_dir(gate)?)
+}
+
+/// [`try_lock`] on `dir/.lock` — the part that does not ask git where the
+/// cache is, so it can be tested without depending on the process's cwd.
+fn lock_in(dir: &Path) -> Option<Lock> {
+    std::fs::create_dir_all(dir).ok()?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -230,6 +251,65 @@ pub fn enter_namespace(gate: &TreeGate, ns: &str) -> Option<PathBuf> {
     let ns_dir = dir.join(ns);
     std::fs::create_dir_all(&ns_dir).ok()?;
     Some(ns_dir)
+}
+
+const DURATIONS: &str = ".durations";
+const LAST_MS: &str = ".last_ms";
+
+/// The last measured duration of each declared commit check, `<id> <ms>` per
+/// line, in `$GIT_DIR/amont-cache/.durations`: how long a commit's own
+/// checks run, which is the cover a tree gate can hide behind.
+pub fn duration_of(id: &str) -> Option<u64> {
+    let path = git_dir()?.join("amont-cache").join(DURATIONS);
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines().find_map(|l| {
+        let (k, v) = l.split_once(' ')?;
+        (k == id).then(|| v.trim().parse().ok()).flatten()
+    })
+}
+
+/// Merge `measured` into the durations file (temp + rename).
+pub fn record_durations(measured: &[(String, u64)]) {
+    if measured.is_empty() {
+        return;
+    }
+    let Some(dir) = git_dir().map(|d| d.join("amont-cache")) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(DURATIONS);
+    let mut rows: Vec<(String, u64)> = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(' ')?;
+            Some((k.to_string(), v.trim().parse().ok()?))
+        })
+        .filter(|(k, _)| !measured.iter().any(|(m, _)| m == k))
+        .collect();
+    rows.extend(measured.iter().cloned());
+    let body: String = rows.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
+    let tmp = dir.join(format!("{DURATIONS}.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// How long this gate's last commit-time run took in `ns_dir` (a cancelled
+/// run records its elapsed time: a lower bound, which is what matters).
+pub fn last_ms(ns_dir: &Path) -> Option<u64> {
+    std::fs::read_to_string(ns_dir.join(LAST_MS))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+pub fn record_last_ms(ns_dir: &Path, ms: u64) {
+    let tmp = ns_dir.join(format!("{LAST_MS}.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, ms.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, ns_dir.join(LAST_MS));
+    }
 }
 
 /// Whether a full run completed in this namespace.
@@ -325,16 +405,21 @@ mod tests {
     /// A held lock is not waited for: the second taker reads it as busy.
     #[test]
     fn tree_cache_a_held_lock_is_busy_not_awaited() {
-        let name = format!("lock-test-{}", std::process::id());
-        let gate =
-            crate::manifest::tree_gates(&format!("tree {name} ruff * attest true")).remove(0);
-        let first = try_lock(&gate).expect("first lock");
-        assert!(try_lock(&gate).is_none(), "a second lock was granted");
+        let dir = std::env::temp_dir().join(format!("amont-lock-test-{}", std::process::id()));
+        let first = lock_in(&dir).expect("first lock");
+        assert!(lock_in(&dir).is_none(), "a second lock was granted");
         drop(first);
-        assert!(try_lock(&gate).is_some(), "the lock was not released");
-        if let Some(dir) = gate_dir(&gate) {
-            let _ = std::fs::remove_dir_all(dir);
+        // Released EVENTUALLY: a thread elsewhere in this process that forks
+        // (to spawn git) holds a copy of the lock's description until its
+        // exec closes it. Harmless — a gate reads busy once — but not instant.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut again = lock_in(&dir);
+        while again.is_none() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            again = lock_in(&dir);
         }
+        assert!(again.is_some(), "the lock was never released");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

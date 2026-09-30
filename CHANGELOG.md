@@ -29,7 +29,10 @@ missing here.
     file, and `inputs=`. Otherwise `amont warm --worker` warms it in the
     background, and the next commit can prove it. A gate gets at most
     `amont.treeLintSlack` (default 2 s) after the commit's own checks, then
-    it is cancelled, its whole process group with it.
+    it is cancelled, its whole process group with it. A gate whose last run
+    would not fit this commit's expected check time plus the slack is not
+    started at all. On a docs-only commit with no test run in scope, lint
+    costs nothing and CI lints.
   - **Proof or nothing.** No stamp, and no gate starts, when:
     - tracked files have unstaged edits;
     - an untracked file is present;
@@ -53,7 +56,8 @@ missing here.
   an inherited `shell: bash` for a simple command.
 - **`amont warm`** fills cold tree-gate caches in the foreground.
 - **Evidence:** `gate_evidence` records each tree gate's outcome per tree:
-  `pass`, `fail`, `cold`, `busy`, `skew`, `withheld` or `cancelled`. That
+  `pass`, `fail`, `cold`, `busy`, `skew`, `withheld`, `cancelled` or
+  `slow`. That
   gives the hit rate, and why it missed.
 
 ## v1.45.0
