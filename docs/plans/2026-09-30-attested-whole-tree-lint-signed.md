@@ -193,3 +193,14 @@ verification list. Implementation decisions taken here are logged below.
     600 s ceiling, which covers application-landscape's ~83 calls (~1 min).
   - **Also fixed:** the stale doc comment, and a test for the over-the-cap
     branch (257 pairs: typed, no marker).
+- 2026-09-30 — **Implementation review, final bind: approve** (tree
+  `d6942d93…`). The earlier lows and the person's decision are resolved.
+  - **Follow-up** (not applied here, so the reviewed tree stays bound):
+    assert that the filename-scoped test writes TYPED.
+  - **By hand:**
+    - the namespace includes the eslint config (config-like by basename);
+    - the background warm-up reads working-tree config, so with unstaged
+      config edits it could mark a staged-typed namespace untyped. Commit
+      time is safe (the guard plus the hold). Filed as https://github.com/fredericrous/amont/issues/290.
+  - **Review cost:** round 1 83k tokens / 102 s; delta 46k / 49 s; three
+    bind passes ~31k each.
