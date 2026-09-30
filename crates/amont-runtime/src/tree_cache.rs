@@ -347,6 +347,22 @@ pub fn mark_complete(ns_dir: &Path) {
     }
 }
 
+/// Whether any tracked eslint config under `cwd` names type information in
+/// its text. A heuristic that can only err towards typed.
+pub fn config_text_is_typed(cwd: &Path) -> bool {
+    let files = crate::git::stdout_in(cwd, &["ls-files"]).unwrap_or_default();
+    files
+        .lines()
+        .filter(|p| {
+            let base = p.rsplit('/').next().unwrap_or(p);
+            base.starts_with("eslint.config.") || base.starts_with(".eslintrc")
+        })
+        .filter_map(|p| std::fs::read_to_string(cwd.join(p)).ok())
+        .any(|t| {
+            t.contains("projectService") || (t.contains("parserOptions") && t.contains("project"))
+        })
+}
+
 /// Whether an `eslint --print-config` JSON uses type information
 /// (`parserOptions.project` set, or `projectService` true), which makes a
 /// per-file cache stale across files.
@@ -376,10 +392,24 @@ pub fn config_is_typed(config: &crate::json_read::Value) -> bool {
 /// Whether eslint here uses type information. FAIL-CLOSED: anything but a
 /// definite "untyped" reads as typed, which only costs the cache, where a
 /// wrong "untyped" would let a stale per-file cache prove a typed tree.
-/// Asked through `tree_run` (bounded by `deadline`, cancellable), over up to
-/// ten tracked files until one prints a config (an ignored file prints
-/// `undefined`). Remembered in the namespace only when definite, so a
-/// transient timeout never disables the cache for good.
+///
+/// Two looks, either of which says typed:
+///
+/// - the TEXT of every tracked eslint config (`eslint.config.*`,
+///   `.eslintrc*`): `projectService`, or `parserOptions` with `project`. This
+///   catches a block that types files by name (`**/*.test.ts`) that no
+///   sample would hit;
+/// - `eslint --print-config` for one tracked file per (directory, extension)
+///   pair where eslint runs, as flat configs select files — bounded by
+///   `deadline`, cancellable, through `tree_run`. A file eslint ignores
+///   (it prints `undefined`) answers nothing.
+///
+/// Untyped is remembered only when both looks are clean and at least one
+/// sampled file answered. More pairs than [`MAX_TYPED_SAMPLE`], a probe error,
+/// or no answer at all reads typed and remembers nothing, so a transient
+/// failure never disables the cache for good. Known gap: a shared config
+/// PACKAGE that types by file name, whose words never appear in a local
+/// config and whose files no sample hits.
 pub fn typed_eslint(
     cwd: &Path,
     ns_dir: &Path,
@@ -394,6 +424,10 @@ pub fn typed_eslint(
     }
     let bin = cwd.join("node_modules").join(".bin").join("eslint");
     if !bin.is_file() {
+        return true;
+    }
+    if config_text_is_typed(cwd) {
+        let _ = std::fs::write(ns_dir.join(TYPED), b"");
         return true;
     }
     // Sampled where eslint RUNS (the gate's cwd), and all of them asked: a
@@ -597,6 +631,85 @@ mod tests {
         );
         assert!(typed, "one typed file must make the namespace typed");
         assert!(ns.join(TYPED).exists());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    fn git_repo(d: &Path, paths: &[String]) {
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d)
+            .status()
+            .unwrap()
+            .success());
+        for chunk in paths.chunks(200) {
+            assert!(std::process::Command::new("git")
+                .arg("add")
+                .args(chunk)
+                .current_dir(d)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+
+    /// A config that types files by NAME, which no sample hits, is caught by
+    /// its text.
+    #[cfg(unix)]
+    #[test]
+    fn tree_cache_a_filename_scoped_typed_config_reads_typed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("amont-typed-text-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
+        std::fs::write(d.join("a.js"), "").unwrap();
+        std::fs::write(
+            d.join("eslint.config.mjs"),
+            "export default [{ files: ['**/*.test.ts'], languageOptions: { parserOptions: { projectService: true } } }];\n",
+        )
+        .unwrap();
+        git_repo(&d, &["a.js".into(), "eslint.config.mjs".into()]);
+        let eslint = d.join("node_modules/.bin/eslint");
+        std::fs::write(&eslint, "#!/bin/sh\necho '{\"rules\":{}}'\n").unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        assert!(typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(20),
+            &std::sync::atomic::AtomicBool::new(false),
+        ));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Past the cap the sample is not the tree: typed, nothing remembered.
+    #[cfg(unix)]
+    #[test]
+    fn tree_cache_more_pairs_than_the_cap_read_typed_unremembered() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("amont-typed-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..=MAX_TYPED_SAMPLE {
+            let p = format!("d{i:04}/f.js");
+            std::fs::create_dir_all(d.join(format!("d{i:04}"))).unwrap();
+            std::fs::write(d.join(&p), "").unwrap();
+            paths.push(p);
+        }
+        git_repo(&d, &paths);
+        let eslint = d.join("node_modules/.bin/eslint");
+        std::fs::write(&eslint, "#!/bin/sh\necho '{\"rules\":{}}'\n").unwrap();
+        std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ns = d.join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        assert!(typed_eslint(
+            &d,
+            &ns,
+            std::time::Instant::now() + std::time::Duration::from_secs(20),
+            &std::sync::atomic::AtomicBool::new(false),
+        ));
+        assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
         let _ = std::fs::remove_dir_all(d);
     }
 

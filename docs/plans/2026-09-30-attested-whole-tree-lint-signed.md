@@ -178,3 +178,18 @@ verification list. Implementation decisions taken here are logged below.
   namespace in the background warm-up, and a commit reads the marker. By
   hand: an eslint or tsconfig change moves the namespace (config-like by
   basename), so an old marker is never reused.
+- 2026-09-30 — **Final bind pass: approve-with-changes (two lows), plus the
+  person's decision on the residual gap.** A config that types files by
+  NAME (`**/*.test.ts`) could escape a (directory, extension) sample. The
+  person chose a **config-text check**: any tracked `eslint.config.*` or
+  `.eslintrc*` naming `projectService`, or `parserOptions` with `project`,
+  reads typed. A false positive only costs the cache.
+  - **Residual gap, accepted:** a shared config PACKAGE that types by file
+    name, whose words never appear locally and whose files no sample hits.
+  - **Wording:** pairs eslint ignores (it prints `undefined`) answer
+    nothing and do not block "untyped". Untyped needs at least one answer,
+    and every answer untyped.
+  - **Warm-up budget:** the typed probe in `amont warm` runs under its
+    600 s ceiling, which covers application-landscape's ~83 calls (~1 min).
+  - **Also fixed:** the stale doc comment, and a test for the over-the-cap
+    branch (257 pairs: typed, no marker).
