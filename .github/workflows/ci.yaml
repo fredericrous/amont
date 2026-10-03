@@ -375,7 +375,19 @@ jobs:
       # tool-gated cases skip, and what this job is for is the platform, not
       # the linters — those are covered on Linux and macOS by the `test` job,
       # which does install them and now fails if any of them is missing.
-      - run: cargo test -- --show-output
+      #
+      # Skipped only when a signature by a key in .github/allowed_signers
+      # covers this exact tree for `pre-push-cargo-test` on THIS platform —
+      # the strict default, because amont ships per-platform binaries and each
+      # leg needs its own evidence. Only here: this job runs the same suite the
+      # local gate does. The `test` job asserts more (every tool-gated case
+      # ran), which no local signature proves, so it never skips. Not on
+      # `schedule`: that run exists to catch drift no push made.
+      - id: attest
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: fredericrous/attest@v1
+      - if: ${{ !contains(fromJSON(steps.attest.outputs.gates || '[]'), 'pre-push-cargo-test') }}
+        run: cargo test -- --show-output
 
       # The Windows installer, run for real on Windows.
       #
