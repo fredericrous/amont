@@ -528,16 +528,14 @@ fn warm_log() -> Option<PathBuf> {
         .map(|d| PathBuf::from(d).join("amont-warm.log"))
 }
 
-/// Start the background warm-up for the cold gates, and say so once.
-fn warm_later(settings: &crate::config::Settings, cold: &[String]) {
+/// Start the background warm-up for the cold gates, and say so once — under
+/// every `amont.quiet` setting: a cold gate is why this commit carries no
+/// `tree:` stamp, and quiet only swallows success lines.
+fn warm_later(cold: &[String]) {
     #[cfg(unix)]
     {
         let Some(log) = warm_log() else { return };
-        let started = crate::rehearsal::spawn_amont(&["warm", "--worker"], &log);
-        if crate::live::quiet(settings) {
-            return;
-        }
-        match started {
+        match crate::rehearsal::spawn_amont(&["warm", "--worker"], &log) {
             Ok(_) => say(&fit_line(
                 "  tree lint cold: ",
                 &cold.join(" "),
@@ -552,7 +550,7 @@ fn warm_later(settings: &crate::config::Settings, cold: &[String]) {
     }
     #[cfg(not(unix))]
     {
-        let _ = (settings, cold);
+        let _ = cold;
     }
 }
 
@@ -744,7 +742,7 @@ pub fn finish(settings: &crate::config::Settings, car: SideCar, stampable: bool)
         }
     }
     if !cold.is_empty() {
-        warm_later(settings, &cold);
+        warm_later(&cold);
     }
     proven.iter().map(|n| format!("tree:{n}")).collect()
 }

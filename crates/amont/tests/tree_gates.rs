@@ -255,6 +255,19 @@ fn a_cold_commit_warms_in_the_background_and_the_next_one_is_proven() {
 }
 
 #[test]
+fn quiet_still_says_a_gate_is_cold() {
+    // `auto` is quiet here: the harness captures output, nobody is watching.
+    let r = repo_with("ok", "ruff", "true");
+    r.git(&["config", "amont.quiet", "auto"]);
+    let (ok, out) = commit(&r, "feat: a");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_lockfile_change_moves_the_namespace_and_drops_the_old_cache() {
     let r = repo_with("ok", "ruff", "true");
     warm(&r);
