@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.46.1
+
+### Fixed
+
+- **A cold tree gate now says so under `amont.quiet`.** On a commit whose
+  tree gate was cold, the background warm-up ran, but the line
+  `tree lint cold: <gates> — warming ($GIT_DIR/amont-warm.log)` was not
+  printed whenever quiet applied. That includes the default `auto` whenever
+  output is captured (an agent's tool result, a CI log). The same was true
+  of "could not start the warm-up". Quiet swallows success lines only, and
+  a cold gate is why the commit carries no `tree:` stamp, so both lines now
+  print under every setting.
+
 ## v1.46.0
 
 ### Added
