@@ -307,7 +307,7 @@ The severity is the push's, not the finding's:
     reviewed like code, named on every release push it lets through, and void
     once past its date or when dated more than 90 days ahead — a waiver is a
     decision to revisit, never an exemption. It matches advisory ids (GHSA,
-    RUSTSEC, GO, PYSEC, CVE), so a finding the tool reports without an id
+    RUSTSEC, GO, PYSEC, CVE, OSV), so a finding the tool reports without an id
     cannot be waived. Branch pushes never consult it: they never block;
 
 - **warning-class advisories** (unmaintained, unsound) are named and never

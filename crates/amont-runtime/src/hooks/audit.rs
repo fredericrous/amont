@@ -680,23 +680,6 @@ fn cargo_tree_shipped(settings: &crate::config::Settings, spec: &str) -> Option<
     audited(settings, &argv).and_then(|(ok, out)| ok.then_some(out))
 }
 
-/// The version cargo audit reports for `krate` (the `Version:` line of its
-/// block), so the tree is asked about exactly that package — a bare name is
-/// ambiguous when two versions are locked, and cargo refuses it.
-fn crate_version(out: &str, krate: &str) -> Option<String> {
-    let mut in_block = false;
-    for line in out.lines().map(str::trim) {
-        if let Some(rest) = line.strip_prefix("Crate:") {
-            in_block = rest.split_whitespace().next() == Some(krate);
-        } else if in_block {
-            if let Some(rest) = line.strip_prefix("Version:") {
-                return rest.split_whitespace().next().map(str::to_string);
-            }
-        }
-    }
-    None
-}
-
 /// Does a shipped-edges inverse tree say the crate is dev-only? Only on
 /// positive evidence: no local crate reaches it AND cargo said there is
 /// nothing to print. Anything else — an unreadable tree — ships.
@@ -712,25 +695,23 @@ fn split_shipped_crates(
     out: &str,
     shipped_tree: impl Fn(&str) -> Option<String>,
 ) -> (Vec<String>, Vec<String>) {
-    let pairs = ids_with_crates(out);
+    let specs = ids_with_specs(out);
     let mut verdicts: Vec<(String, bool)> = Vec::new();
     let (mut shipped, mut dev_only) = (Vec::new(), Vec::new());
     for id in ids {
-        let krate = pairs
+        let spec = specs
             .iter()
-            .find(|(pid, k)| *pid == id && k.is_some())
-            .and_then(|(_, k)| k.clone());
-        let ships = match krate {
+            .find(|(pid, spec)| *pid == id && spec.is_some())
+            .and_then(|(_, spec)| spec.clone());
+        let ships = match spec {
             None => true,
-            Some(k) => match verdicts.iter().find(|(name, _)| *name == k) {
+            // Cached by name@version: two locked versions of one crate are
+            // two answers, and one being dev-only says nothing of the other.
+            Some(spec) => match verdicts.iter().find(|(s, _)| *s == spec) {
                 Some((_, v)) => *v,
                 None => {
-                    let spec = match crate_version(out, &k) {
-                        Some(v) => format!("{k}@{v}"),
-                        None => k.clone(),
-                    };
                     let v = shipped_tree(&spec).map_or(true, |t| !tree_says_dev_only(&t));
-                    verdicts.push((k.clone(), v));
+                    verdicts.push((spec, v));
                     v
                 }
             },
@@ -742,6 +723,31 @@ fn split_shipped_crates(
         }
     }
     (shipped, dev_only)
+}
+
+/// Each advisory id with the package its OWN block names: `crate@version`
+/// when cargo audit printed a `Version:` in that block, the bare crate name
+/// otherwise, None for an id outside any block.
+fn ids_with_specs(out: &str) -> Vec<(String, Option<String>)> {
+    let mut pairs = Vec::new();
+    let (mut krate, mut version): (Option<String>, Option<String>) = (None, None);
+    for line in out.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("Crate:") {
+            krate = rest.split_whitespace().next().map(str::to_string);
+            version = None;
+        } else if let Some(rest) = line.strip_prefix("Version:") {
+            version = rest.split_whitespace().next().map(str::to_string);
+        } else if let Some(rest) = line.strip_prefix("ID:") {
+            if let Some(id) = rest.split_whitespace().next().filter(|w| is_advisory_id(w)) {
+                let spec = krate.take().map(|k| match version.take() {
+                    Some(v) => format!("{k}@{v}"),
+                    None => k,
+                });
+                pairs.push((id.to_string(), spec));
+            }
+        }
+    }
+    pairs
 }
 
 /// Name what a release does not ship and therefore does not refuse.
@@ -1074,7 +1080,9 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     // groups too, so on a release its findings are checked against what
     // `uv export --no-dev` says ships.
     let venv_mode = argv.iter().any(|a| a == "--path");
-    let mut waivable = true;
+    // A row whose advisory id is not one a waiver can name (MAL-, a new
+    // scheme) makes the whole report unwaivable, in every mode.
+    let mut waivable = pip_rows_all_named(&out);
     if release && venv_mode && matches!(report, Report::Vulnerabilities(_)) {
         let rows = pip_vulnerable_rows(&out);
         if let (false, Some(prod)) = (rows.is_empty(), uv_production_names(settings)) {
@@ -1090,7 +1098,7 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
                     (s, d)
                 });
             warn_dev_only("audit-python", &dev_only);
-            waivable = shipped.iter().all(|row| !advisory_ids(row).is_empty());
+            waivable = waivable && shipped.iter().all(|row| !advisory_ids(row).is_empty());
             report = if shipped.is_empty() {
                 Report::Clean
             } else {
@@ -1128,6 +1136,20 @@ fn pip_vulnerable_rows(out: &str) -> Vec<(String, String)> {
     rows.sort();
     rows.dedup();
     rows
+}
+
+/// Does every advisory row of pip-audit's table carry an id a waiver can
+/// name? A row is `name version id …`: a version starting with a digit and
+/// an id shaped `PREFIX-…`, whatever the prefix.
+fn pip_rows_all_named(out: &str) -> bool {
+    out.lines().all(|l| {
+        let cols: Vec<&str> = l.split_whitespace().collect();
+        let is_row = cols.len() >= 3
+            && cols[1].starts_with(|c: char| c.is_ascii_digit())
+            && cols[2].contains('-')
+            && cols[2].starts_with(|c: char| c.is_ascii_uppercase());
+        !is_row || !advisory_ids(cols[2]).is_empty()
+    })
 }
 
 /// What a uv project ships: `uv export --no-dev` of its lock, names only.
@@ -1284,6 +1306,31 @@ mod tests {
         assert_eq!(days_from_date("2026-02-30"), None);
         assert!(days_from_date("2028-02-29").is_some());
         assert_eq!(days_from_date("2026-13-01"), None);
+    }
+
+    #[test]
+    fn two_locked_versions_are_two_answers() {
+        let out = "Crate: foo\nVersion: 0.1.0\nID: RUSTSEC-2025-0010\n\
+                   Crate: foo\nVersion: 0.2.0\nID: RUSTSEC-2025-0011\n";
+        let ids = vec![
+            "RUSTSEC-2025-0010".to_string(),
+            "RUSTSEC-2025-0011".to_string(),
+        ];
+        let (shipped, dev) = split_shipped_crates(ids, out, |spec| match spec {
+            "foo@0.1.0" => Some("warning: nothing to print.\n".into()),
+            "foo@0.2.0" => Some("foo v0.2.0\n└── me v0.1.0 (/repo)\n".into()),
+            _ => None,
+        });
+        assert_eq!(shipped, vec!["RUSTSEC-2025-0011"]);
+        assert_eq!(dev, vec!["RUSTSEC-2025-0010"]);
+    }
+
+    #[test]
+    fn a_pip_row_without_a_nameable_id_is_unwaivable() {
+        let named = "requests 2.31.0 PYSEC-2023-74 2.31.1\nFound 1 known vulnerability\n";
+        let unnamed = "evil 1.0.0 MAL-2024-1234\nrequests 2.31.0 PYSEC-2023-74 2.31.1\n";
+        assert!(pip_rows_all_named(named));
+        assert!(!pip_rows_all_named(unnamed));
     }
 
     #[test]
