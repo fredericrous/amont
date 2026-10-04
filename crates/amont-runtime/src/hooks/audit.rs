@@ -62,6 +62,21 @@ fn conclude(
     releasing: bool,
     full: &str,
 ) -> Outcome {
+    conclude_waivable(settings, tool, report, releasing, full, true)
+}
+
+/// [`conclude`], where `waivable` is false when something in the report
+/// could not be attributed (a project the audit could not answer for, a
+/// finding without a recognised id): a waiver must never vouch for what
+/// nobody saw.
+fn conclude_waivable(
+    settings: &crate::config::Settings,
+    tool: &str,
+    report: Report,
+    releasing: bool,
+    full: &str,
+    waivable: bool,
+) -> Outcome {
     match report {
         Report::Clean => {
             common::ok(settings, &format!("{tool}: no known vulnerabilities"));
@@ -75,16 +90,17 @@ fn conclude(
             Outcome::Warned
         }
         Report::Vulnerabilities(what) => {
+            let waivers = Waivers::load(&common::repo_root(), today());
+            // The ids the verdict names first; the tool's report when the
+            // verdict is a summary line (npm, pnpm).
+            let mut ids = advisory_ids(&what.join(" "));
+            if ids.is_empty() {
+                ids = advisory_ids(full);
+            }
+            let unwaived: Vec<&String> = ids.iter().filter(|id| !waivers.covers(id)).collect();
+            let all_waived = waivable && !ids.is_empty() && unwaived.is_empty();
             if releasing {
-                let waivers = Waivers::load(&common::repo_root(), today());
-                // The ids the verdict names first; the tool's report when
-                // the verdict is a summary line (npm, pnpm).
-                let mut ids = advisory_ids(&what.join(" "));
-                if ids.is_empty() {
-                    ids = advisory_ids(full);
-                }
-                let unwaived: Vec<&String> = ids.iter().filter(|id| !waivers.covers(id)).collect();
-                if !ids.is_empty() && unwaived.is_empty() {
+                if all_waived {
                     common::warn(&format!(
                         "{tool}: known vulnerabilities shipped under a reviewed waiver \
                          ({WAIVERS_FILE}) — not blocking this release: {}",
@@ -119,6 +135,17 @@ fn conclude(
                     }
                 ));
                 Outcome::Failed
+            } else if all_waived {
+                common::warn(&format!(
+                    "{tool}: known vulnerabilities ({}) — covered by a reviewed waiver \
+                     ({WAIVERS_FILE}), so a v* tag push will pass while it holds: {}",
+                    what.join(", "),
+                    ids.iter()
+                        .map(|id| waivers.describe(id))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+                Outcome::Warned
             } else {
                 common::warn(&format!(
                     "{tool}: known vulnerabilities in the dependency tree ({}) — \
@@ -144,7 +171,7 @@ const WAIVERS_FILE: &str = ".amont-audit-waivers";
 /// How far ahead a waiver may run. A waiver is a decision to revisit, not
 /// an exemption: one dated further out is void, so nothing is waived for
 /// good by accident.
-const MAX_WAIVER_DAYS: i64 = 180;
+const MAX_WAIVER_DAYS: i64 = 90;
 
 /// One line of the waiver file: `<advisory id> <expires YYYY-MM-DD> <reason>`.
 #[derive(Debug)]
@@ -171,11 +198,16 @@ struct Waivers {
 
 impl Waivers {
     fn load(root: &str, today: i64) -> Self {
-        let Ok(text) = std::fs::read_to_string(std::path::Path::new(root).join(WAIVERS_FILE))
-        else {
-            return Self::default();
-        };
-        Self::parse(&text, today)
+        match std::fs::read_to_string(std::path::Path::new(root).join(WAIVERS_FILE)) {
+            Ok(text) => Self::parse(&text, today),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => Self {
+                entries: Vec::new(),
+                problems: vec![format!(
+                    "{WAIVERS_FILE} could not be read ({e}) — it waives nothing"
+                )],
+            },
+        }
     }
 
     fn parse(text: &str, today: i64) -> Self {
@@ -296,7 +328,7 @@ fn advisory_ids(text: &str) -> Vec<String> {
                 ["GHSA", a, b, c] => [a, b, c]
                     .iter()
                     .all(|p| p.len() == 4 && p.bytes().all(|b| b.is_ascii_alphanumeric())),
-                ["RUSTSEC" | "GO" | "PYSEC" | "CVE", year, num] => {
+                ["RUSTSEC" | "GO" | "PYSEC" | "CVE" | "OSV", year, num] => {
                     year.len() == 4
                         && year.bytes().all(|b| b.is_ascii_digit())
                         && !num.is_empty()
@@ -629,12 +661,12 @@ pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
 /// dependencies (a dependency's build script runs on every machine that
 /// compiles it), for every target and every feature, so nothing a consumer
 /// could switch on is mistaken for dev-only. None if it could not run.
-fn cargo_tree_shipped(settings: &crate::config::Settings, krate: &str) -> Option<String> {
+fn cargo_tree_shipped(settings: &crate::config::Settings, spec: &str) -> Option<String> {
     let argv = vec![
         common::program("cargo"),
         "tree".into(),
         "--invert".into(),
-        krate.into(),
+        spec.into(),
         "--edges".into(),
         "normal,build".into(),
         "--target".into(),
@@ -643,7 +675,33 @@ fn cargo_tree_shipped(settings: &crate::config::Settings, krate: &str) -> Option
         "--color".into(),
         "never".into(),
     ];
-    audited(settings, &argv).map(|(_, out)| out)
+    // Unlike the message-only inverse tree, a failure here must not read as
+    // "nothing reaches it": an error prints no local crate either.
+    audited(settings, &argv).and_then(|(ok, out)| ok.then_some(out))
+}
+
+/// The version cargo audit reports for `krate` (the `Version:` line of its
+/// block), so the tree is asked about exactly that package — a bare name is
+/// ambiguous when two versions are locked, and cargo refuses it.
+fn crate_version(out: &str, krate: &str) -> Option<String> {
+    let mut in_block = false;
+    for line in out.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("Crate:") {
+            in_block = rest.split_whitespace().next() == Some(krate);
+        } else if in_block {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                return rest.split_whitespace().next().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
+/// Does a shipped-edges inverse tree say the crate is dev-only? Only on
+/// positive evidence: no local crate reaches it AND cargo said there is
+/// nothing to print. Anything else — an unreadable tree — ships.
+fn tree_says_dev_only(tree: &str) -> bool {
+    local_dependents(tree).is_empty() && tree.contains("nothing to print")
 }
 
 /// Split a release's advisory ids into those that ship and those only the
@@ -667,7 +725,11 @@ fn split_shipped_crates(
             Some(k) => match verdicts.iter().find(|(name, _)| *name == k) {
                 Some((_, v)) => *v,
                 None => {
-                    let v = shipped_tree(&k).map_or(true, |t| !local_dependents(&t).is_empty());
+                    let spec = match crate_version(out, &k) {
+                        Some(v) => format!("{k}@{v}"),
+                        None => k.clone(),
+                    };
+                    let v = shipped_tree(&spec).map_or(true, |t| !tree_says_dev_only(&t));
                     verdicts.push((k.clone(), v));
                     v
                 }
@@ -920,6 +982,7 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         ));
     }
     warn_dev_only("audit-js", &dev_only);
+    let waivable = unchecked.is_empty();
     let report = if !found.is_empty() {
         Report::Vulnerabilities(found)
     } else if !unchecked.is_empty() {
@@ -927,7 +990,7 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     } else {
         Report::Clean
     };
-    conclude(settings, "audit-js", report, releasing(refs), &full)
+    conclude_waivable(settings, "audit-js", report, release, &full, waivable)
 }
 
 /// Go needs no production filter: modules have no dev-dependency set, and
@@ -1011,6 +1074,7 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     // groups too, so on a release its findings are checked against what
     // `uv export --no-dev` says ships.
     let venv_mode = argv.iter().any(|a| a == "--path");
+    let mut waivable = true;
     if release && venv_mode && matches!(report, Report::Vulnerabilities(_)) {
         let rows = pip_vulnerable_rows(&out);
         if let (false, Some(prod)) = (rows.is_empty(), uv_production_names(settings)) {
@@ -1026,6 +1090,7 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
                     (s, d)
                 });
             warn_dev_only("audit-python", &dev_only);
+            waivable = shipped.iter().all(|row| !advisory_ids(row).is_empty());
             report = if shipped.is_empty() {
                 Report::Clean
             } else {
@@ -1033,7 +1098,7 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             };
         }
     }
-    conclude(settings, "audit-python", report, release, &out)
+    conclude_waivable(settings, "audit-python", report, release, &out, waivable)
 }
 
 /// PEP 503 normalised: `Foo_Bar.baz` and `foo-bar-baz` are one package.
@@ -1079,6 +1144,8 @@ fn uv_production_names(
         "export".into(),
         "--frozen".into(),
         "--no-dev".into(),
+        // Optional extras ship: a consumer who asks for one installs it.
+        "--all-extras".into(),
         "--no-hashes".into(),
         "--no-emit-workspace".into(),
         "--format".into(),
@@ -1181,13 +1248,14 @@ mod tests {
     #[test]
     fn advisory_ids_are_found_wherever_they_sit() {
         let text = "More info https://github.com/advisories/GHSA-h3mg-xc3c-68pw\n\
-                    ID: RUSTSEC-2025-0001, GO-2024-2687 PYSEC-2023-74 CVE-2024-35195 GHSA-bad";
+                    ID: RUSTSEC-2025-0001, GO-2024-2687 PYSEC-2023-74 CVE-2024-35195 OSV-2024-12 GHSA-bad";
         assert_eq!(
             advisory_ids(text),
             vec![
                 "CVE-2024-35195",
                 "GHSA-h3mg-xc3c-68pw",
                 "GO-2024-2687",
+                "OSV-2024-12",
                 "PYSEC-2023-74",
                 "RUSTSEC-2025-0001"
             ]
@@ -1201,7 +1269,7 @@ mod tests {
             "# id expires reason\n\
              GHSA-aaaa-bbbb-cccc 2026-12-01 no patched version; build-time only\n\
              GHSA-dddd-eeee-ffff 2026-10-01 expired one\n\
-             GHSA-gggg-hhhh-iiii 2027-12-01 too far ahead\n\
+             GHSA-gggg-hhhh-iiii 2027-02-01 too far ahead\n\
              GHSA-jjjj-kkkk-llll 2026-11-01\n\
              GHSA-mmmm-nnnn-oooo soon no date\n",
             today,
@@ -1220,19 +1288,32 @@ mod tests {
 
     #[test]
     fn a_crate_ships_unless_its_tree_says_otherwise() {
-        let out = "Crate: dev\nID: RUSTSEC-2025-0001\nCrate: app\nID: RUSTSEC-2025-0002\nRUSTSEC-2025-0003\n";
+        let out = "Crate: dev\nVersion: 0.2.0\nID: RUSTSEC-2025-0001\n\
+                   Crate: app\nID: RUSTSEC-2025-0002\n\
+                   Crate: odd\nID: RUSTSEC-2025-0004\nRUSTSEC-2025-0003\n";
         let ids = vec![
             "RUSTSEC-2025-0001".to_string(),
             "RUSTSEC-2025-0002".to_string(),
             "RUSTSEC-2025-0003".to_string(),
+            "RUSTSEC-2025-0004".to_string(),
         ];
-        let (shipped, dev) = split_shipped_crates(ids, out, |k| match k {
-            "dev" => Some("warning: nothing to print.\n".into()),
+        let (shipped, dev) = split_shipped_crates(ids, out, |spec| match spec {
+            // Asked by name@version when cargo audit gave the version.
+            "dev@0.2.0" => Some("warning: nothing to print.\n".into()),
             "app" => Some("app v1.0.0\n└── me v0.1.0 (/repo)\n".into()),
+            // A tree that says neither: not proof of dev-only.
+            "odd" => Some("odd v1.0.0\n".into()),
             _ => None,
         });
-        // 0003 has no crate: unknown ships.
-        assert_eq!(shipped, vec!["RUSTSEC-2025-0002", "RUSTSEC-2025-0003"]);
+        // 0003 has no crate, 0004's tree is unclear: unknowns ship.
+        assert_eq!(
+            shipped,
+            vec![
+                "RUSTSEC-2025-0002",
+                "RUSTSEC-2025-0003",
+                "RUSTSEC-2025-0004"
+            ]
+        );
         assert_eq!(dev, vec!["RUSTSEC-2025-0001"]);
     }
 

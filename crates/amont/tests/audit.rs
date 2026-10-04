@@ -63,11 +63,20 @@ fn push_check(r: &Repo, check: &str, remote_ref: &str) -> (i32, String) {
 /// a local crate line like `app v0.1.0 (/repo/app)` reaches it, an empty
 /// string means nothing that ships does. Any other `tree` sees the dev edge.
 fn cargo_reaching(shipped: &str) -> String {
+    // Real cargo, for a crate only a dev edge reaches: exit 0 and
+    // "warning: nothing to print." The tree is asked about `bad@1.0.0`,
+    // the version cargo audit reported.
+    let answer = if shipped.is_empty() {
+        "echo 'warning: nothing to print.' >&2; exit 0".to_string()
+    } else {
+        format!("printf 'bad v1.0.0\\n%s\\n' '{shipped}'; exit 0")
+    };
     format!(
         "case \"$1\" in\n\
-         audit) echo 'Crate: bad'; echo 'ID: RUSTSEC-2025-0001'; echo 'error: 1 vulnerability found'; exit 1;;\n\
+         audit) echo 'Crate: bad'; echo 'Version: 1.0.0'; echo 'ID: RUSTSEC-2025-0001'; echo 'error: 1 vulnerability found'; exit 1;;\n\
          tree) case \"$*\" in\n\
-           *normal,build*) printf 'bad v1.0.0\\n%s\\n' '{shipped}'; exit 0;;\n\
+           *bad@1.0.0*normal,build*) {answer};;\n\
+           *normal,build*) echo 'error: package ID specification is ambiguous' >&2; exit 101;;\n\
            *) printf 'bad v1.0.0\\n└── devtool v0.1.0 (/repo/devtool)\\n'; exit 0;;\n\
          esac;;\n\
          esac\nexit 0"
@@ -725,4 +734,62 @@ fn an_expired_or_unrelated_waiver_refuses_the_release() {
     let r = shipped_braces_repo(None);
     let (code, _) = push_check(&r, "pre-push-audit-js", "refs/tags/v4.3.0");
     assert_ne!(code, 0);
+}
+
+/// A shipped-edges tree that cannot be read is not "dev-only": cargo
+/// erroring (an ambiguous spec, a stale lock) prints no local crate either.
+#[test]
+fn a_rust_release_blocks_when_the_tree_cannot_answer() {
+    let r = repo();
+    shim(&r, "cargo-audit", "exit 0");
+    shim(
+        &r,
+        "cargo",
+        "case \"$1\" in\n\
+         audit) echo 'Crate: bad'; echo 'Version: 1.0.0'; echo 'ID: RUSTSEC-2025-0001'; echo 'error: 1 vulnerability found'; exit 1;;\n\
+         tree) echo 'error: failed to load manifest' >&2; exit 101;;\n\
+         esac\nexit 0",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "an unknown is not a pass: {out}");
+}
+
+/// A waiver never vouches for a project the audit could not check.
+#[test]
+fn a_waiver_does_not_cover_an_unchecked_project() {
+    let r = bare_repo();
+    r.stage("pnpm-workspace.yaml", "packages:\n  - apps/*\n");
+    r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.stage("spikes/s3/pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    r.stage(
+        ".amont-audit-waivers",
+        &format!("GHSA-3gc7-fjrx-p6mg {} braces; no patch\n", date_in(30)),
+    );
+    r.commit("chore: a workspace with a spike");
+    shim(
+        &r,
+        "pnpm",
+        "case \" $* \" in *' --ignore-workspace '*) echo 'ERR_PNPM_AUDIT_BAD_RESPONSE' >&2; exit 1;; esac\n\
+         echo 'https://github.com/advisories/GHSA-3gc7-fjrx-p6mg'\n\
+         echo '1 vulnerabilities found'\necho 'Severity: 1 high'\nexit 1",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v1.0.0");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("NOT checked"), "{out}");
+}
+
+/// A branch push names the waiver instead of promising a refusal.
+#[test]
+fn a_branch_push_names_the_waiver() {
+    let r = shipped_braces_repo(Some(format!(
+        "GHSA-3gc7-fjrx-p6mg {} braces; no patch\n",
+        date_in(30)
+    )));
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/heads/feat/x");
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("a v* tag push will pass while it holds"),
+        "{out}"
+    );
+    assert!(!out.contains("will BLOCK"), "{out}");
 }

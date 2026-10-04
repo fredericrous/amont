@@ -281,12 +281,14 @@ The severity is the push's, not the finding's:
       `pnpm audit --prod`;
     - Rust: each affected crate must be reached by one of the workspace's own
       crates through
-      `cargo tree -i <crate> -e normal,build --target all --all-features` —
+      `cargo tree -i <crate>@<version> -e normal,build --target all --all-features`
+      (dev-only only on cargo's own "nothing to print") —
       build dependencies count, since a dependency's build script runs
       wherever it compiles;
     - Python: a `requirements.txt` is the production list by convention; a
       virtualenv's findings are matched against
-      `uv export --frozen --no-dev`;
+      `uv export --frozen --no-dev --all-extras` (an optional extra ships: a
+      consumer who asks for it installs it);
     - Go: `govulncheck ./...` runs without `-test` and reports only what the
       module's code reaches, so it already audits what ships.
 
@@ -303,7 +305,7 @@ The severity is the push's, not the finding's:
     ```
 
     reviewed like code, named on every release push it lets through, and void
-    once past its date or when dated more than 180 days ahead — a waiver is a
+    once past its date or when dated more than 90 days ahead — a waiver is a
     decision to revisit, never an exemption. It matches advisory ids (GHSA,
     RUSTSEC, GO, PYSEC, CVE), so a finding the tool reports without an id
     cannot be waived. Branch pushes never consult it: they never block;
