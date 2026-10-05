@@ -272,8 +272,44 @@ The severity is the push's, not the finding's:
   that it *will* block a release;
 - **a push carrying a `v*` tag** (a `v` followed by a digit — `v1.2.3`,
   `v2`; a tag merely starting with the letter v does not count) is a release
-  leaving the building, and known vulnerabilities refuse it, with the tool's
-  full report reprinted;
+  leaving the building, and known vulnerabilities in what it SHIPS refuse it,
+  with the tool's full report reprinted. A finding only the development tree
+  carries — a build script's toolchain, a test runner — is named and does
+  not refuse the tag, because nobody who installs the release installs it:
+
+    - JS: the finding is audited again with `npm audit --omit=dev` or
+      `pnpm audit --prod`;
+    - Rust: each affected crate must be reached by one of the workspace's own
+      crates through
+      `cargo tree -i <crate>@<version> -e normal,build --target all --all-features`
+      (dev-only only on cargo's own "nothing to print") —
+      build dependencies count, since a dependency's build script runs
+      wherever it compiles;
+    - Python: a `requirements.txt` is the production list by convention; a
+      virtualenv's findings are matched against
+      `uv export --frozen --no-dev --all-extras` (an optional extra ships: a
+      consumer who asks for it installs it);
+    - Go: `govulncheck ./...` runs without `-test` and reports only what the
+      module's code reaches, so it already audits what ships.
+
+    Whatever cannot be attributed — a crate the report does not name, a tree
+    or export that fails, a virtualenv without `uv.lock` — still refuses the
+    tag: an unknown is not a pass. An advisory that ships but that nobody can
+    fix yet (no patched version, a path the project cannot replace) passes
+    only under a **waiver**: a committed `.amont-audit-waivers` file, one line
+    per advisory,
+
+    ```text
+    # id                 expires     reason
+    GHSA-vfj7-8cjw-p6xm  2026-12-31  braces via react-strict-dom; no patched version
+    ```
+
+    reviewed like code, named on every release push it lets through, and void
+    once past its date or when dated more than 90 days ahead — a waiver is a
+    decision to revisit, never an exemption. It matches advisory ids (GHSA,
+    RUSTSEC, GO, PYSEC, CVE, OSV), so a finding the tool reports without an id
+    cannot be waived. Branch pushes never consult it: they never block;
+
 - **warning-class advisories** (unmaintained, unsound) are named and never
   block, anywhere — a gate nothing can pass is a gate people learn to
   delete;

@@ -62,6 +62,21 @@ fn conclude(
     releasing: bool,
     full: &str,
 ) -> Outcome {
+    conclude_waivable(settings, tool, report, releasing, full, true)
+}
+
+/// [`conclude`], where `waivable` is false when something in the report
+/// could not be attributed (a project the audit could not answer for, a
+/// finding without a recognised id): a waiver must never vouch for what
+/// nobody saw.
+fn conclude_waivable(
+    settings: &crate::config::Settings,
+    tool: &str,
+    report: Report,
+    releasing: bool,
+    full: &str,
+    waivable: bool,
+) -> Outcome {
     match report {
         Report::Clean => {
             common::ok(settings, &format!("{tool}: no known vulnerabilities"));
@@ -75,16 +90,62 @@ fn conclude(
             Outcome::Warned
         }
         Report::Vulnerabilities(what) => {
+            let waivers = Waivers::load(&common::repo_root(), today());
+            // The ids the verdict names first; the tool's report when the
+            // verdict is a summary line (npm, pnpm).
+            let mut ids = advisory_ids(&what.join(" "));
+            if ids.is_empty() {
+                ids = advisory_ids(full);
+            }
+            let unwaived: Vec<&String> = ids.iter().filter(|id| !waivers.covers(id)).collect();
+            let all_waived = waivable && !ids.is_empty() && unwaived.is_empty();
             if releasing {
+                if all_waived {
+                    common::warn(&format!(
+                        "{tool}: known vulnerabilities shipped under a reviewed waiver \
+                         ({WAIVERS_FILE}) — not blocking this release: {}",
+                        ids.iter()
+                            .map(|id| waivers.describe(id))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                    return Outcome::Warned;
+                }
                 for line in full.lines() {
                     crate::say!("{line}");
                 }
+                for note in waivers.problems() {
+                    common::warn(&format!("{tool}: {note}"));
+                }
                 common::fail(&format!(
                     "{tool}: known vulnerabilities in the dependency tree — a v* tag \
-                     does not ship with these: {}",
-                    what.join(", ")
+                     does not ship with these: {}{}",
+                    what.join(", "),
+                    if ids.is_empty() {
+                        " (no advisory id to match a waiver against)".to_string()
+                    } else {
+                        format!(
+                            " — not waived: {}",
+                            unwaived
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
                 ));
                 Outcome::Failed
+            } else if all_waived {
+                common::warn(&format!(
+                    "{tool}: known vulnerabilities ({}) — covered by a reviewed waiver \
+                     ({WAIVERS_FILE}), so a v* tag push will pass while it holds: {}",
+                    what.join(", "),
+                    ids.iter()
+                        .map(|id| waivers.describe(id))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+                Outcome::Warned
             } else {
                 common::warn(&format!(
                     "{tool}: known vulnerabilities in the dependency tree ({}) — \
@@ -102,6 +163,185 @@ fn conclude(
             Outcome::Unavailable
         }
     }
+}
+
+/// Where a repository records the advisories a release may ship anyway.
+const WAIVERS_FILE: &str = ".amont-audit-waivers";
+
+/// How far ahead a waiver may run. A waiver is a decision to revisit, not
+/// an exemption: one dated further out is void, so nothing is waived for
+/// good by accident.
+const MAX_WAIVER_DAYS: i64 = 90;
+
+/// One line of the waiver file: `<advisory id> <expires YYYY-MM-DD> <reason>`.
+#[derive(Debug)]
+struct Waiver {
+    id: String,
+    expires: String,
+    reason: String,
+    valid: bool,
+}
+
+/// The repository's reviewed waivers, judged against today.
+///
+/// A waiver lets a RELEASE ship a known vulnerability nobody can fix yet —
+/// an advisory with no patched version, on a path the project cannot
+/// replace. It is committed (so it is reviewed like code), names its
+/// reason, and expires: past its date, or dated more than
+/// [`MAX_WAIVER_DAYS`] ahead, it waives nothing and the tag is refused
+/// again. Branch pushes never consult it — they never block.
+#[derive(Debug, Default)]
+struct Waivers {
+    entries: Vec<Waiver>,
+    problems: Vec<String>,
+}
+
+impl Waivers {
+    fn load(root: &str, today: i64) -> Self {
+        match std::fs::read_to_string(std::path::Path::new(root).join(WAIVERS_FILE)) {
+            Ok(text) => Self::parse(&text, today),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => Self {
+                entries: Vec::new(),
+                problems: vec![format!(
+                    "{WAIVERS_FILE} could not be read ({e}) — it waives nothing"
+                )],
+            },
+        }
+    }
+
+    fn parse(text: &str, today: i64) -> Self {
+        let mut w = Self::default();
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(3, char::is_whitespace);
+            let id = parts.next().unwrap_or_default().to_string();
+            let expires = parts.next().unwrap_or_default().trim().to_string();
+            let reason = parts.next().unwrap_or_default().trim().to_string();
+            let valid = match days_from_date(&expires) {
+                None => {
+                    w.problems.push(format!(
+                        "waiver for {id} has no readable expiry date (YYYY-MM-DD) — it waives nothing"
+                    ));
+                    false
+                }
+                Some(_) if reason.is_empty() => {
+                    w.problems.push(format!(
+                        "waiver for {id} gives no reason — it waives nothing"
+                    ));
+                    false
+                }
+                Some(d) if d < today => {
+                    w.problems
+                        .push(format!("waiver for {id} expired on {expires}"));
+                    false
+                }
+                Some(d) if d - today > MAX_WAIVER_DAYS => {
+                    w.problems.push(format!(
+                        "waiver for {id} runs to {expires}, more than {MAX_WAIVER_DAYS} days \
+                         ahead — it waives nothing; date it sooner and revisit"
+                    ));
+                    false
+                }
+                Some(_) => true,
+            };
+            w.entries.push(Waiver {
+                id,
+                expires,
+                reason,
+                valid,
+            });
+        }
+        w
+    }
+
+    fn covers(&self, id: &str) -> bool {
+        self.entries.iter().any(|w| w.valid && w.id == id)
+    }
+
+    fn describe(&self, id: &str) -> String {
+        match self.entries.iter().find(|w| w.valid && w.id == id) {
+            Some(w) => format!("{id} until {} ({})", w.expires, w.reason),
+            None => id.to_string(),
+        }
+    }
+
+    fn problems(&self) -> &[String] {
+        &self.problems
+    }
+}
+
+/// Days since 1970-01-01 for a `YYYY-MM-DD` date (proleptic Gregorian).
+fn days_from_date(date: &str) -> Option<i64> {
+    let mut it = date.split('-');
+    let (y, m, d): (i64, i64, i64) = (
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    );
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if it.next().is_some() || !(1..=12).contains(&m) || d < 1 || d > month_days[(m - 1) as usize] {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+/// Today, in days since the epoch (UTC).
+fn today() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86_400) as i64)
+        .unwrap_or(0)
+}
+
+/// Every advisory id in `text`: GitHub (`GHSA-xxxx-xxxx-xxxx`), RustSec,
+/// Go, PyPA and CVE ids, wherever they sit (a URL, a table cell).
+fn advisory_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| {
+            let parts: Vec<&str> = w.split('-').collect();
+            match parts.as_slice() {
+                ["GHSA", a, b, c] => [a, b, c]
+                    .iter()
+                    .all(|p| p.len() == 4 && p.bytes().all(|b| b.is_ascii_alphanumeric())),
+                ["RUSTSEC" | "GO" | "PYSEC" | "CVE" | "OSV", year, num] => {
+                    year.len() == 4
+                        && year.bytes().all(|b| b.is_ascii_digit())
+                        && !num.is_empty()
+                        && num.bytes().all(|b| b.is_ascii_digit())
+                }
+                _ => false,
+            }
+        })
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Is this word a RUSTSEC id? `RUSTSEC-` + 4 digits + `-` + 4 digits.
@@ -394,15 +634,130 @@ pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let Some((exit_ok, out)) = audited(settings, &argv) else {
         return Outcome::Unavailable;
     };
+    let release = releasing(refs);
+    let mut report = read_cargo_audit(exit_ok, &out);
+    if release {
+        if let Report::Vulnerabilities(ids) = report {
+            let (shipped, dev_only) =
+                split_shipped_crates(ids, &out, |krate| cargo_tree_shipped(settings, krate));
+            warn_dev_only("audit-rust", &dev_only);
+            report = if shipped.is_empty() {
+                Report::Clean
+            } else {
+                Report::Vulnerabilities(shipped)
+            };
+        }
+    }
     conclude(
         settings,
         "audit-rust",
-        attribute(read_cargo_audit(exit_ok, &out), &out, |krate| {
-            cargo_tree_inverse(settings, krate)
-        }),
-        releasing(refs),
+        attribute(report, &out, |krate| cargo_tree_inverse(settings, krate)),
+        release,
         &out,
     )
+}
+
+/// `cargo tree -i <crate>` over the edges a RELEASE ships: normal and build
+/// dependencies (a dependency's build script runs on every machine that
+/// compiles it), for every target and every feature, so nothing a consumer
+/// could switch on is mistaken for dev-only. None if it could not run.
+fn cargo_tree_shipped(settings: &crate::config::Settings, spec: &str) -> Option<String> {
+    let argv = vec![
+        common::program("cargo"),
+        "tree".into(),
+        "--invert".into(),
+        spec.into(),
+        "--edges".into(),
+        "normal,build".into(),
+        "--target".into(),
+        "all".into(),
+        "--all-features".into(),
+        "--color".into(),
+        "never".into(),
+    ];
+    // Unlike the message-only inverse tree, a failure here must not read as
+    // "nothing reaches it": an error prints no local crate either.
+    audited(settings, &argv).and_then(|(ok, out)| ok.then_some(out))
+}
+
+/// Does a shipped-edges inverse tree say the crate is dev-only? Only on
+/// positive evidence: no local crate reaches it AND cargo said there is
+/// nothing to print. Anything else — an unreadable tree — ships.
+fn tree_says_dev_only(tree: &str) -> bool {
+    local_dependents(tree).is_empty() && tree.contains("nothing to print")
+}
+
+/// Split a release's advisory ids into those that ship and those only the
+/// dev tree carries. An id whose crate is unknown, or whose tree could not
+/// be read, ships: an unknown is not a pass.
+fn split_shipped_crates(
+    ids: Vec<String>,
+    out: &str,
+    shipped_tree: impl Fn(&str) -> Option<String>,
+) -> (Vec<String>, Vec<String>) {
+    let specs = ids_with_specs(out);
+    let mut verdicts: Vec<(String, bool)> = Vec::new();
+    let (mut shipped, mut dev_only) = (Vec::new(), Vec::new());
+    for id in ids {
+        let spec = specs
+            .iter()
+            .find(|(pid, spec)| *pid == id && spec.is_some())
+            .and_then(|(_, spec)| spec.clone());
+        let ships = match spec {
+            None => true,
+            // Cached by name@version: two locked versions of one crate are
+            // two answers, and one being dev-only says nothing of the other.
+            Some(spec) => match verdicts.iter().find(|(s, _)| *s == spec) {
+                Some((_, v)) => *v,
+                None => {
+                    let v = shipped_tree(&spec).map_or(true, |t| !tree_says_dev_only(&t));
+                    verdicts.push((spec, v));
+                    v
+                }
+            },
+        };
+        if ships {
+            shipped.push(id);
+        } else {
+            dev_only.push(id);
+        }
+    }
+    (shipped, dev_only)
+}
+
+/// Each advisory id with the package its OWN block names: `crate@version`
+/// when cargo audit printed a `Version:` in that block, the bare crate name
+/// otherwise, None for an id outside any block.
+fn ids_with_specs(out: &str) -> Vec<(String, Option<String>)> {
+    let mut pairs = Vec::new();
+    let (mut krate, mut version): (Option<String>, Option<String>) = (None, None);
+    for line in out.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("Crate:") {
+            krate = rest.split_whitespace().next().map(str::to_string);
+            version = None;
+        } else if let Some(rest) = line.strip_prefix("Version:") {
+            version = rest.split_whitespace().next().map(str::to_string);
+        } else if let Some(rest) = line.strip_prefix("ID:") {
+            if let Some(id) = rest.split_whitespace().next().filter(|w| is_advisory_id(w)) {
+                let spec = krate.take().map(|k| match version.take() {
+                    Some(v) => format!("{k}@{v}"),
+                    None => k,
+                });
+                pairs.push((id.to_string(), spec));
+            }
+        }
+    }
+    pairs
+}
+
+/// Name what a release does not ship and therefore does not refuse.
+fn warn_dev_only(tool: &str, dev_only: &[String]) {
+    if !dev_only.is_empty() {
+        common::warn(&format!(
+            "{tool}: only in development dependencies, which the release does not ship — not blocking: {}",
+            dev_only.join("; ")
+        ));
+    }
 }
 
 /// `cargo tree -i <crate>`, or None if it could not be run. Failure here is
@@ -503,6 +858,9 @@ struct JsAuditor {
     read: fn(bool, &str) -> Report,
     /// Extra arguments for a project in `dir`.
     args: fn(&str) -> Vec<String>,
+    /// The flag that limits the audit to what the project ships — its
+    /// production dependencies, without the dev tree.
+    prod_only: &'static str,
 }
 
 /// pnpm answers for the WORKSPACE it finds above a directory, not for the
@@ -530,12 +888,14 @@ const JS_AUDITORS: [JsAuditor; 2] = [
         tool: "npm",
         read: read_npm_audit,
         args: |_| vec![],
+        prod_only: "--omit=dev",
     },
     JsAuditor {
         lockfile: "pnpm-lock.yaml",
         tool: "pnpm",
         read: read_pnpm_audit,
         args: pnpm_args,
+        prod_only: "--prod",
     },
 ];
 
@@ -554,6 +914,13 @@ const JS_AUDITORS: [JsAuditor; 2] = [
 /// so its whole tree — 28 vulnerable versions, two critical, in one
 /// repository — was never audited and nothing said so. pnpm audits its own
 /// lockfile, from the lockfile alone, the same way.
+///
+/// On a release, what blocks is what SHIPS: a finding is audited again with
+/// the production dependencies only (`--omit=dev` / `--prod`), and one that
+/// lives only in the dev tree — a build script's toolchain, a test runner —
+/// is named but does not refuse the tag. Nobody who installs the package
+/// installs it. A finding whose production re-audit cannot answer still
+/// blocks: an unknown is not a pass.
 pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let projects: Vec<(&JsAuditor, String)> = JS_AUDITORS
         .iter()
@@ -563,7 +930,9 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         return Outcome::Inert;
     }
     let root = std::path::PathBuf::from(common::repo_root());
+    let release = releasing(refs);
     let mut found = Vec::new();
+    let mut dev_only = Vec::new();
     let mut unchecked = Vec::new();
     let mut full = String::new();
     for (auditor, dir) in &projects {
@@ -582,6 +951,28 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             return Outcome::Unavailable;
         };
         match (auditor.read)(exit_ok, &out) {
+            Report::Vulnerabilities(what) if release => {
+                let mut prod = argv.clone();
+                prod.push(auditor.prod_only.into());
+                match audited_in(settings, &prod, &root.join(dir))
+                    .map(|(ok, pout)| ((auditor.read)(ok, &pout), pout))
+                {
+                    Some((Report::Clean | Report::Advisories(_), _)) => {
+                        dev_only.extend(what.into_iter().map(|w| format!("{label}: {w}")));
+                    }
+                    Some((Report::Vulnerabilities(shipped), pout)) => {
+                        found.extend(shipped.into_iter().map(|w| format!("{label}: {w}")));
+                        full.push_str(&format!(
+                            "── {} audit {} in {label}\n{pout}\n",
+                            auditor.tool, auditor.prod_only
+                        ));
+                    }
+                    Some((Report::CouldNotCheck, _)) | None => {
+                        found.extend(what.into_iter().map(|w| format!("{label}: {w}")));
+                        full.push_str(&format!("── {} audit in {label}\n{out}\n", auditor.tool));
+                    }
+                }
+            }
             Report::Vulnerabilities(what) => {
                 found.extend(what.into_iter().map(|w| format!("{label}: {w}")));
                 full.push_str(&format!("── {} audit in {label}\n{out}\n", auditor.tool));
@@ -596,6 +987,8 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             unchecked.join(", ")
         ));
     }
+    warn_dev_only("audit-js", &dev_only);
+    let waivable = unchecked.is_empty();
     let report = if !found.is_empty() {
         Report::Vulnerabilities(found)
     } else if !unchecked.is_empty() {
@@ -603,9 +996,12 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     } else {
         Report::Clean
     };
-    conclude(settings, "audit-js", report, releasing(refs), &full)
+    conclude_waivable(settings, "audit-js", report, release, &full, waivable)
 }
 
+/// Go needs no production filter: modules have no dev-dependency set, and
+/// `govulncheck ./...` without `-test` reports only vulnerabilities the
+/// module's non-test code can reach — what ships, already.
 pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if !has_lockfile("go.sum") {
         return Outcome::Inert;
@@ -677,12 +1073,120 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let Some((exit_ok, out)) = audited(settings, &argv) else {
         return Outcome::Unavailable;
     };
-    conclude(
-        settings,
-        "audit-python",
-        read_pip_audit(exit_ok, &out),
-        releasing(refs),
-        &out,
+    let release = releasing(refs);
+    let mut report = read_pip_audit(exit_ok, &out);
+    // A requirements.txt is the production list by convention (dev pins
+    // live beside it, in requirements-dev.txt). A virtualenv holds the dev
+    // groups too, so on a release its findings are checked against what
+    // `uv export --no-dev` says ships.
+    let venv_mode = argv.iter().any(|a| a == "--path");
+    // A row whose advisory id is not one a waiver can name (MAL-, a new
+    // scheme) makes the whole report unwaivable, in every mode.
+    let mut waivable = pip_rows_all_named(&out);
+    if release && venv_mode && matches!(report, Report::Vulnerabilities(_)) {
+        let rows = pip_vulnerable_rows(&out);
+        if let (false, Some(prod)) = (rows.is_empty(), uv_production_names(settings)) {
+            let (shipped, dev_only): (Vec<String>, Vec<String>) = rows
+                .into_iter()
+                .map(|(name, id)| (prod.contains(&name), format!("{name} {id}")))
+                .fold((Vec::new(), Vec::new()), |(mut s, mut d), (ships, row)| {
+                    if ships {
+                        s.push(row);
+                    } else {
+                        d.push(row);
+                    }
+                    (s, d)
+                });
+            warn_dev_only("audit-python", &dev_only);
+            waivable = waivable && shipped.iter().all(|row| !advisory_ids(row).is_empty());
+            report = if shipped.is_empty() {
+                Report::Clean
+            } else {
+                Report::Vulnerabilities(shipped)
+            };
+        }
+    }
+    conclude_waivable(settings, "audit-python", report, release, &out, waivable)
+}
+
+/// PEP 503 normalised: `Foo_Bar.baz` and `foo-bar-baz` are one package.
+fn normalise(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .split(['-', '_', '.'])
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The packages pip-audit's table names, one row per advisory:
+/// `Name Version ID Fix Versions`. Only rows whose third column is an
+/// advisory id count, so the header, the rule and the summary never do.
+fn pip_vulnerable_rows(out: &str) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = out
+        .lines()
+        .filter_map(|l| {
+            let cols: Vec<&str> = l.split_whitespace().collect();
+            let id = cols.get(2)?;
+            ["PYSEC-", "GHSA-", "CVE-", "OSV-"]
+                .iter()
+                .any(|p| id.starts_with(p))
+                .then(|| (normalise(cols[0]), (*id).to_string()))
+        })
+        .collect();
+    rows.sort();
+    rows.dedup();
+    rows
+}
+
+/// Does every advisory row of pip-audit's table carry an id a waiver can
+/// name? A row is `name version id …`: a version starting with a digit and
+/// an id shaped `PREFIX-…`, whatever the prefix.
+fn pip_rows_all_named(out: &str) -> bool {
+    out.lines().all(|l| {
+        let cols: Vec<&str> = l.split_whitespace().collect();
+        let is_row = cols.len() >= 3
+            && cols[1].starts_with(|c: char| c.is_ascii_digit())
+            && cols[2].contains('-')
+            && cols[2].starts_with(|c: char| c.is_ascii_uppercase());
+        !is_row || !advisory_ids(cols[2]).is_empty()
+    })
+}
+
+/// What a uv project ships: `uv export --no-dev` of its lock, names only.
+/// None when there is no `uv.lock`, no `uv`, or the export fails — the
+/// caller then keeps every finding, because an unknown is not a pass.
+fn uv_production_names(
+    settings: &crate::config::Settings,
+) -> Option<std::collections::HashSet<String>> {
+    if !has_lockfile("uv.lock") || common::which("uv").is_none() {
+        return None;
+    }
+    let argv = vec![
+        common::program("uv"),
+        "export".into(),
+        "--frozen".into(),
+        "--no-dev".into(),
+        // Optional extras ship: a consumer who asks for one installs it.
+        "--all-extras".into(),
+        "--no-hashes".into(),
+        "--no-emit-workspace".into(),
+        "--format".into(),
+        "requirements-txt".into(),
+    ];
+    let (ok, out) = audited(settings, &argv)?;
+    if !ok {
+        return None;
+    }
+    Some(
+        out.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
+            .filter_map(|l| {
+                l.split(|c: char| "=<>!~;[ ".contains(c))
+                    .next()
+                    .map(normalise)
+            })
+            .collect(),
     )
 }
 
@@ -747,6 +1251,119 @@ mod tests {
 
     /// `v` + digit gates; a branch, a bare-word tag, or a tag merely
     /// starting with the letter v does not.
+    #[test]
+    fn pip_audit_rows_name_their_packages_normalised() {
+        let out = "Name       Version ID                  Fix Versions\n\
+                   ---------- ------- ------------------- ------------\n\
+                   Pytest_Cov 4.0.0   GHSA-aaaa-bbbb-cccc 4.1.0\n\
+                   requests   2.31.0  PYSEC-2023-74       2.31.1\n\
+                   requests   2.31.0  CVE-2024-35195      2.32.0\n\
+                   Found 3 known vulnerabilities in 2 packages\n";
+        let names: Vec<String> = pip_vulnerable_rows(out)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, vec!["pytest-cov", "requests", "requests"]);
+        assert_eq!(normalise("Foo_Bar.baz"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn advisory_ids_are_found_wherever_they_sit() {
+        let text = "More info https://github.com/advisories/GHSA-h3mg-xc3c-68pw\n\
+                    ID: RUSTSEC-2025-0001, GO-2024-2687 PYSEC-2023-74 CVE-2024-35195 OSV-2024-12 GHSA-bad";
+        assert_eq!(
+            advisory_ids(text),
+            vec![
+                "CVE-2024-35195",
+                "GHSA-h3mg-xc3c-68pw",
+                "GO-2024-2687",
+                "OSV-2024-12",
+                "PYSEC-2023-74",
+                "RUSTSEC-2025-0001"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_waiver_is_reasoned_dated_and_bounded() {
+        let today = days_from_date("2026-10-05").unwrap();
+        let w = Waivers::parse(
+            "# id expires reason\n\
+             GHSA-aaaa-bbbb-cccc 2026-12-01 no patched version; build-time only\n\
+             GHSA-dddd-eeee-ffff 2026-10-01 expired one\n\
+             GHSA-gggg-hhhh-iiii 2027-02-01 too far ahead\n\
+             GHSA-jjjj-kkkk-llll 2026-11-01\n\
+             GHSA-mmmm-nnnn-oooo soon no date\n",
+            today,
+        );
+        assert!(w.covers("GHSA-aaaa-bbbb-cccc"));
+        assert!(!w.covers("GHSA-dddd-eeee-ffff"), "expired");
+        assert!(!w.covers("GHSA-gggg-hhhh-iiii"), "beyond the horizon");
+        assert!(!w.covers("GHSA-jjjj-kkkk-llll"), "no reason");
+        assert!(!w.covers("GHSA-mmmm-nnnn-oooo"), "no date");
+        assert_eq!(w.problems().len(), 4);
+        assert_eq!(days_from_date("1970-01-01"), Some(0));
+        assert_eq!(days_from_date("2026-02-30"), None);
+        assert!(days_from_date("2028-02-29").is_some());
+        assert_eq!(days_from_date("2026-13-01"), None);
+    }
+
+    #[test]
+    fn two_locked_versions_are_two_answers() {
+        let out = "Crate: foo\nVersion: 0.1.0\nID: RUSTSEC-2025-0010\n\
+                   Crate: foo\nVersion: 0.2.0\nID: RUSTSEC-2025-0011\n";
+        let ids = vec![
+            "RUSTSEC-2025-0010".to_string(),
+            "RUSTSEC-2025-0011".to_string(),
+        ];
+        let (shipped, dev) = split_shipped_crates(ids, out, |spec| match spec {
+            "foo@0.1.0" => Some("warning: nothing to print.\n".into()),
+            "foo@0.2.0" => Some("foo v0.2.0\n└── me v0.1.0 (/repo)\n".into()),
+            _ => None,
+        });
+        assert_eq!(shipped, vec!["RUSTSEC-2025-0011"]);
+        assert_eq!(dev, vec!["RUSTSEC-2025-0010"]);
+    }
+
+    #[test]
+    fn a_pip_row_without_a_nameable_id_is_unwaivable() {
+        let named = "requests 2.31.0 PYSEC-2023-74 2.31.1\nFound 1 known vulnerability\n";
+        let unnamed = "evil 1.0.0 MAL-2024-1234\nrequests 2.31.0 PYSEC-2023-74 2.31.1\n";
+        assert!(pip_rows_all_named(named));
+        assert!(!pip_rows_all_named(unnamed));
+    }
+
+    #[test]
+    fn a_crate_ships_unless_its_tree_says_otherwise() {
+        let out = "Crate: dev\nVersion: 0.2.0\nID: RUSTSEC-2025-0001\n\
+                   Crate: app\nID: RUSTSEC-2025-0002\n\
+                   Crate: odd\nID: RUSTSEC-2025-0004\nRUSTSEC-2025-0003\n";
+        let ids = vec![
+            "RUSTSEC-2025-0001".to_string(),
+            "RUSTSEC-2025-0002".to_string(),
+            "RUSTSEC-2025-0003".to_string(),
+            "RUSTSEC-2025-0004".to_string(),
+        ];
+        let (shipped, dev) = split_shipped_crates(ids, out, |spec| match spec {
+            // Asked by name@version when cargo audit gave the version.
+            "dev@0.2.0" => Some("warning: nothing to print.\n".into()),
+            "app" => Some("app v1.0.0\n└── me v0.1.0 (/repo)\n".into()),
+            // A tree that says neither: not proof of dev-only.
+            "odd" => Some("odd v1.0.0\n".into()),
+            _ => None,
+        });
+        // 0003 has no crate, 0004's tree is unclear: unknowns ship.
+        assert_eq!(
+            shipped,
+            vec![
+                "RUSTSEC-2025-0002",
+                "RUSTSEC-2025-0003",
+                "RUSTSEC-2025-0004"
+            ]
+        );
+        assert_eq!(dev, vec!["RUSTSEC-2025-0001"]);
+    }
+
     #[test]
     fn a_release_is_a_v_number_tag() {
         assert!(releasing(&[tag("refs/tags/v1.6.6")]));
