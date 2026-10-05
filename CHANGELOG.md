@@ -6,6 +6,34 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.47.0
+
+### Changed
+
+- **A release refuses only what it ships.** On a push carrying a `v*` tag,
+  the dependency audits used to refuse any known vulnerability in the
+  lockfile, including ones only a build script or a test runner pulls in,
+  which nobody installing the release ever gets. They now ask what ships:
+  JS findings are audited again with `pnpm audit --prod` /
+  `npm audit --omit=dev`; a Rust crate must be reached by one of the
+  workspace's own crates through normal or build edges
+  (`cargo tree -i <crate>@<version> -e normal,build --target all --all-features`);
+  a Python virtualenv is matched against `uv export --no-dev --all-extras`;
+  Go's `govulncheck ./...` already reported only reachable non-test code. A
+  dev-only finding is named on the push and does not block. Anything that
+  cannot be attributed — a tree that errors, a project the audit could not
+  check, a finding without an id — still refuses the tag.
+
+### Added
+
+- **Expiring audit waivers.** An advisory that ships but has no fix anywhere
+  can be let through a release by a committed `.amont-audit-waivers` line —
+  `<id> <expires YYYY-MM-DD> <reason>` — reviewed like code, named on every
+  push it touches (a branch push says the tag will pass while it holds), and
+  void once expired, when dated more than 90 days ahead, or without a
+  reason. It never covers an unchecked project or a finding it cannot name.
+  See `docs/checks.md`, "The dependency audits".
+
 ## v1.46.1
 
 ### Fixed
