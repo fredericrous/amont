@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/snapshot-init-no-rebake
 repos: [amont]
 adrs: [ADR-0008, ADR-0022]
@@ -155,6 +155,13 @@ How the real-repo check was run, and where it departs from the plan (deliberate)
 - **Stale stamps:** two first mixed runs were void ("already stamped on this tree"). They were re-run after removing the scratch clone's `amont-gate` note on the tree.
 - **Prepare test:** the `snapshotPrepare` coverage is a new sibling test rather than an edit to `a_prepare_command_owns_the_dependencies`. Its second `init` runs under `env -u AMONT_SNAPSHOT`, the shape of an install a gate runs itself.
 - **Unanswerable path:** when git cannot answer at all (`Unanswerable`), `init` keeps git's own error over "cannot tell". Both fail without writing.
+
+## Implementation review
+
+- **approve** after a Delta. Round 1 approve-with-changes (59k, 47 s), Delta approve (30k, 22 s).
+- Fixed: the marked-snapshot test asserts its sentinel took; `snapshot_marker_path` carries git's stderr (`errors.never-swallowed`).
+- deliberate: gate-run install covered by `env -u AMONT_SNAPSHOT` in `snapshotPrepare` (recorded deviation above).
+- Re-verified after the fixes: lib + `init` + `snapshot_deps` tests, clippy at the pin; one gate run hit a timing flake under load 65-84 (`ctrl_c_mid_run…`, passes alone in 7 s).
 
 ## After merge
 
