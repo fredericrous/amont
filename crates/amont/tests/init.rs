@@ -425,6 +425,17 @@ fn init_in_a_marked_snapshot_leaves_the_shared_hooks_alone() {
         std::fs::write(hooks.join(name), text).expect("seed");
     }
     let before = hook_bytes(&hooks);
+    let shims: Vec<_> = before
+        .iter()
+        .filter(|(_, b)| String::from_utf8_lossy(b).contains("BAKED="))
+        .collect();
+    assert!(!shims.is_empty(), "no amont shims to seed");
+    assert!(
+        shims
+            .iter()
+            .all(|(_, b)| String::from_utf8_lossy(b).contains("/sentinel/A/amont")),
+        "the sentinel did not take: a re-bake could not show"
+    );
 
     let (code, out) = s.init(&wt);
     assert_eq!(code, 0, "{out}");

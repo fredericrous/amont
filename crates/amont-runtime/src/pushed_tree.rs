@@ -91,27 +91,37 @@ pub const SNAPSHOT_ENV: &str = "AMONT_SNAPSHOT";
 /// marker, and an older pinned `init` does not read one.
 const MARKER: &str = "amont-snapshot";
 
-/// Where `dir`'s snapshot marker lives, absolute. `None` when git would not
-/// say. The `GIT_*` environment is stripped: a hook's `GIT_DIR` names the
-/// repository the hook runs for, not the snapshot being asked about.
-fn snapshot_marker_path(dir: &Path) -> Option<PathBuf> {
+/// Where `dir`'s snapshot marker lives, absolute. `Err` carries git's own
+/// reason when it would not say. The `GIT_*` environment is stripped: a
+/// hook's `GIT_DIR` names the repository the hook runs for, not the
+/// snapshot being asked about.
+fn snapshot_marker_path(dir: &Path) -> std::io::Result<PathBuf> {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C")
         .arg(dir)
         .args(["rev-parse", "--path-format=absolute", "--git-path", MARKER])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null());
     crate::hooks::common::strip_git_env(&mut cmd);
-    let out = cmd.output().ok()?;
+    let out = cmd.output()?;
     if !out.status.success() {
-        return None;
+        let why = String::from_utf8_lossy(&out.stderr);
+        let why = why
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given");
+        return Err(std::io::Error::other(format!(
+            "git would not say where the snapshot marker lives: {}",
+            crate::ui::sanitize(why)
+        )));
     }
     let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if p.is_empty() {
-        return None;
+        return Err(std::io::Error::other(
+            "git gave an empty path for the snapshot marker",
+        ));
     }
     let p = PathBuf::from(p);
-    Some(if p.is_absolute() { p } else { dir.join(p) })
+    Ok(if p.is_absolute() { p } else { dir.join(p) })
 }
 
 /// Is the marker at `path`? Three answers, not two: `Path::exists` folds
@@ -127,18 +137,13 @@ pub fn probe_marker(path: &Path) -> std::io::Result<bool> {
 /// Is `dir` inside an amont push snapshot? `Err` when that cannot be told —
 /// which the caller must treat as "do not write", never as "no".
 pub fn in_push_snapshot(dir: &Path) -> std::io::Result<bool> {
-    let path = snapshot_marker_path(dir).ok_or_else(|| {
-        std::io::Error::other("git would not say where the snapshot marker lives")
-    })?;
-    probe_marker(&path)
+    probe_marker(&snapshot_marker_path(dir)?)
 }
 
 /// Mark the snapshot at `dir` as one. Resolving the path is part of the
 /// mark: a snapshot whose marker could not even be located is unmarked.
 fn mark_snapshot(dir: &Path) -> std::io::Result<()> {
-    let path = snapshot_marker_path(dir)
-        .ok_or_else(|| std::io::Error::other("git would not say where the snapshot marker goes"))?;
-    std::fs::write(path, b"")
+    std::fs::write(snapshot_marker_path(dir)?, b"")
 }
 
 pub fn prepare_command(settings: &crate::config::Settings) -> Option<String> {
