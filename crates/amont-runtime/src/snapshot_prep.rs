@@ -448,6 +448,9 @@ fn manager_cmd(u: &Unit, at: &Path, args: &[&str]) -> Command {
         }
     }
     crate::hooks::common::strip_git_env(&mut cmd);
+    // For a `prepare` script that wants to know; the guard itself is the
+    // marker in the snapshot's git dir (`pushed_tree::MARKER`).
+    cmd.env(crate::pushed_tree::SNAPSHOT_ENV, "1");
     cmd
 }
 

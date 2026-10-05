@@ -347,3 +347,143 @@ fn the_hooks_init_writes_run_a_real_commit() {
         "no sign a check ran:\n{text}"
     );
 }
+
+// ----------------------------------------------------- push snapshots
+
+/// A linked worktree marked the way amont's push snapshot marks itself: an
+/// `amont-snapshot` file in its OWN git admin dir.
+fn marked_worktree(repo: &Path, wt: &Path) {
+    git(repo, &["commit", "--allow-empty", "-qm", "seed"]);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "-q", "--detach"])
+        .arg(wt)
+        .output()
+        .expect("git worktree add");
+    assert!(out.status.success(), "worktree add failed");
+    let marker = Command::new("git")
+        .arg("-C")
+        .arg(wt)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "amont-snapshot",
+        ])
+        .output()
+        .expect("git rev-parse");
+    let marker = PathBuf::from(String::from_utf8_lossy(&marker.stdout).trim());
+    assert!(
+        marker.ends_with(
+            Path::new(".git/worktrees")
+                .join(wt.file_name().unwrap())
+                .join("amont-snapshot")
+        ),
+        "the marker must be worktree-private: {}",
+        marker.display()
+    );
+    std::fs::write(marker, "").expect("mark");
+}
+
+/// Every hook file's bytes, by name, so "untouched" means byte for byte.
+fn hook_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<_> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read(e.path()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// Inside a push snapshot, `init` writes nothing. The shims are baked to a
+/// sentinel A first and the running binary is a different path B, so a
+/// re-bake would SHOW — "unchanged" cannot pass by baking the same bytes.
+#[test]
+fn init_in_a_marked_snapshot_leaves_the_shared_hooks_alone() {
+    let s = Sandbox::new("snapshot");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    // The worktree first: its seed commit must not run shims that point at
+    // a sentinel.
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+    let (code, out) = s.init(&repo);
+    assert_eq!(code, 0, "{out}");
+    let hooks = repo.join(".git/hooks");
+    for (name, bytes) in hook_bytes(&hooks) {
+        let text = String::from_utf8_lossy(&bytes)
+            .replace(env!("CARGO_BIN_EXE_amont"), "/sentinel/A/amont");
+        std::fs::write(hooks.join(name), text).expect("seed");
+    }
+    let before = hook_bytes(&hooks);
+
+    let (code, out) = s.init(&wt);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("inside an amont push snapshot"), "{out}");
+    assert_eq!(before, hook_bytes(&hooks), "init re-baked from a snapshot");
+}
+
+/// The stand-down comes BEFORE hook config is judged: a redirect `init`
+/// would refuse anywhere else must not fail a snapshot's `prepare`, since
+/// nothing is going to be written either way.
+#[test]
+fn init_in_a_marked_snapshot_does_not_fail_over_a_redirect() {
+    let s = Sandbox::new("snapshot-husky");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    std::fs::create_dir_all(repo.join(".husky/_")).expect("mkdir");
+    git(&repo, &["config", "core.hooksPath", ".husky/_"]);
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+
+    let (code, out) = s.init(&wt);
+    assert_eq!(code, 0, "{out}");
+    assert!(hook_bytes(&repo.join(".git/hooks")).is_empty(), "{out}");
+    assert!(hook_bytes(&repo.join(".husky/_")).is_empty(), "{out}");
+    // …and outside the snapshot it is still refused, as before.
+    let (code, out) = s.init(&repo);
+    assert_ne!(code, 0, "{out}");
+}
+
+/// Why a marker in the snapshot's git dir and not an inherited variable:
+/// while a snapshot exists, `init` in ANOTHER repository — with
+/// `AMONT_SNAPSHOT=1` in its environment, as a suite run from a snapshot
+/// would inherit — still bakes that repository's hooks normally.
+#[test]
+fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
+    let s = Sandbox::new("isolation");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+    let other = s.path("other");
+    init_repo(&other);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("init")
+        .current_dir(&other)
+        .env("HOME", s.path(""))
+        .env("XDG_CONFIG_HOME", s.path(".config"))
+        .env("AMONT_SNAPSHOT", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run amont init");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{text}");
+    assert!(!text.contains("inside an amont push snapshot"), "{text}");
+    let hook = std::fs::read_to_string(other.join(".git/hooks/pre-commit")).expect("baked");
+    assert!(hook.contains(env!("CARGO_BIN_EXE_amont")), "{hook}");
+}

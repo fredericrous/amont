@@ -442,6 +442,19 @@ below for what each caller then does. Nothing is needed for a Rust crate
 (cargo resolves from the shared registry; the build is cold, which is the
 cost the `testPushedTree` section describes).
 
+The install runs lifecycle scripts, so a `"prepare": "amont init"` runs
+inside the snapshot — and the snapshot is a linked worktree, sharing the
+repository's hooks directory. To keep that `init` from baking every hook to
+a binary in a temp directory deleted minutes later, the snapshot marks
+itself with an `amont-snapshot` file in its own git admin dir
+(`git rev-parse --git-path amont-snapshot`), and `amont init` writes nothing
+where it finds one; if it cannot tell, it fails rather than guess. Both
+halves must be a version carrying this — the amont that runs the rehearsal
+writes the marker, and the amont the pushed commit's lockfile installs
+reads it — so bumping only one of them is not enough. The install and
+`amont.snapshotPrepare` also get `AMONT_SNAPSHOT=1`, for a custom `prepare`
+script that wants to know; the marker, not the variable, is the guard.
+
 ## `amont.snapshotCarry` — untracked files a snapshot needs
 
 ```sh

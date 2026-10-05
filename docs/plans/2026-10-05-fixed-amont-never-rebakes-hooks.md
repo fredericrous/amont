@@ -131,6 +131,31 @@ Upgrading only the runner is not enough. The docs say so, and a mixed-version ch
     - First run: the runner is the fixed build (live `node_modules` from the local tarball), and the rehearsed commit's lockfile still pins 1.47.0. Expected and recorded: `BAKED` changes to a temp path, the documented limit. The reverse also gets a run: an old runner rehearsing a commit that pins the fixed build. Expected and recorded: `BAKED` changes too, because no marker was written. Only the both-fixed run above leaves it unchanged.
 - The full gate as CI runs it (`cargo fmt --check`, clippy at the pinned toolchain, `cargo test`), and `amont rehearse --wait` before the push.
 
+## Verification record (2026-10-05, branch at the code commit)
+
+| check | expected | actual |
+|---|---|---|
+| `snapshot_deps` `a_snapshot_install_never_rebakes_the_shared_hooks` on `origin/main` 3ee6aa9 | fails, `BAKED` under `amont-push-*` | failed: `pre-commit` `BAKED="…/T/amont-push-95366-556fa2e69ae5644b/node_modules/.bin/amont"` |
+| same test, and `a_prepare_command_in_the_snapshot_…`, on `origin/main` | fail | both failed |
+| `init` marked-snapshot and redirect tests on `origin/main` | fail | both failed; the isolation test passes there, as it must |
+| all new tests on the branch | pass | pass |
+| mutation: `probe_marker` `Err` arm → `Ok(false)` | only the `0o000` probe test red | only `a_marker_that_cannot_be_looked_at_is_an_error_not_absent` red |
+| mutation: `init_with` reads a probe `Err` as `false` | only the `init_with` test red | only `init_fails_closed_when_the_snapshot_probe_cannot_answer` red |
+| `cargo fmt --check`, `clippy --workspace --all-targets --all-features -D warnings`, `make test` | green | green; 1,461 passed (the 3 "FAILED" lines are fixture crates, expected) |
+| duro-design-system, fixed runner + fixed pin | snapshot binary sha = local build; `BAKED` unchanged | sha `f86bdbc7…` = `target/release/amont`; unchanged; stand-down line in the rehearsal log |
+| control: 1.47.0 runner + 1.47.0 pin | `BAKED` → temp path | → `…/amont-push-37819-…/@amont-hooks+darwin-x64@1.47.0/…/amont` (sha `91589726…`) |
+| mixed: fixed runner + 1.47.0 pin | `BAKED` changes (documented limit) | changed → `amont-push-42409-…` (snapshot ran sha `91589726…`) |
+| mixed: 1.47.0 runner + fixed pin | `BAKED` changes (no marker written) | changed → `amont-push-43987-…` (snapshot ran sha `f86bdbc7…`) |
+| hooks restored after each run | `BAKED` back to its pre-run value | yes, all four |
+
+How the real-repo check was run, and where it departs from the plan (deliberate):
+- **Scratch clone:** it ran in a scratch clone of duro-design-system at f92b580d, not a branch of the live checkout. A worktree shares its repository's hooks, so the control and mixed runs would have re-baked the live repository's hooks.
+- **Packing:** the fixed build was packed as version `1.47.1-snapfix.0`. pnpm writes `file:` lockfile entries relative to the lockfile, so a temporary `$TMPDIR/tgz` symlink made them resolve from the snapshot; it was removed afterwards.
+- **Measuring the binary:** the sha256 was taken by the throwaway commit's `prepare` (`node sha.cjs && amont init`) rather than by a gate. It measures the binary that `prepare` resolves, which is the one that bakes.
+- **Stale stamps:** two first mixed runs were void ("already stamped on this tree"). They were re-run after removing the scratch clone's `amont-gate` note on the tree.
+- **Prepare test:** the `snapshotPrepare` coverage is a new sibling test rather than an edit to `a_prepare_command_owns_the_dependencies`. Its second `init` runs under `env -u AMONT_SNAPSHOT`, the shape of an install a gate runs itself.
+- **Unanswerable path:** when git cannot answer at all (`Unanswerable`), `init` keeps git's own error over "cannot tell". Both fail without writing.
+
 ## After merge
 
 - Release on request. Consumers that pin amont via npm (duro-design-system, duro-app) take the release in their next bump.

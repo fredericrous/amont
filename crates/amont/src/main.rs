@@ -50,7 +50,8 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   install        turn hooks on here: copy the binary if needed, bake the shims
                  [--force] replaces a hook that is not ours
   init           wire up THIS repository only — the verb a package manager
-                 calls from `prepare`; never copies a binary, never prompts
+                 calls from `prepare`; never copies a binary, never prompts,
+                 never re-bakes from inside a push snapshot
   uninstall      remove OUR six shims and nothing else [--binary: the binary too]
   setup          the commit-style questions, current values as defaults
                  [--local|--global] [--dry-run]
