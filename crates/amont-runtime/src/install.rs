@@ -630,15 +630,65 @@ fn same_dir(a: &str, b: &str) -> bool {
 /// (dubious ownership in a container bind mount, an unreadable `.git/config`)
 /// all still fail, because those are repositories where somebody believes they
 /// have hooks and does not. The silence is git's verdict, never git's absence.
+///
+/// ## Inside a push snapshot, it stands down
+///
+/// A push snapshot is a linked worktree, so it SHARES this repository's hooks
+/// directory — and its dependency install runs `prepare`, which runs this.
+/// Baking there pointed every hook at a binary inside a temp directory that
+/// is deleted minutes later. The snapshot marks itself in its own git admin
+/// dir ([`crate::pushed_tree::in_push_snapshot`]); when the mark is there,
+/// nothing is written. When it cannot be TOLD whether the mark is there, it
+/// fails rather than guess: a wrong guess is exactly the bake this prevents.
 pub fn init() -> Result<(), String> {
-    let hooks = match repo_hooks() {
+    init_with(
+        std::env::current_exe(),
+        Path::new("."),
+        &crate::pushed_tree::in_push_snapshot,
+    )
+}
+
+/// [`init`] with what it would otherwise read from the process — the binary
+/// to bake, the directory to ask about, and the snapshot probe — passed in,
+/// so a test can reach every branch without `set_current_dir`.
+fn init_with(
+    me: std::io::Result<PathBuf>,
+    dir: &Path,
+    in_snapshot: &dyn Fn(&Path) -> std::io::Result<bool>,
+) -> Result<(), String> {
+    let rh = repo_hooks_in(dir);
+    // The one silent exit, and the only one: git itself said this is not a
+    // repository.
+    if matches!(rh, RepoHooks::Nowhere) {
+        return Ok(());
+    }
+    // BEFORE the redirect and `Unanswerable` arms: a snapshot's install must
+    // never fail `prepare` over hook config it is not going to touch anyway.
+    match in_snapshot(dir) {
+        Ok(true) => {
+            eprintln!(
+                "amont init: inside an amont push snapshot — the repository's hooks are left as they are"
+            );
+            return Ok(());
+        }
+        Ok(false) => {}
+        // git would not answer either question: its own reason, below, says
+        // more than ours would. Still a failure — nothing is written.
+        Err(_) if matches!(rh, RepoHooks::Unanswerable { .. }) => {}
+        Err(e) => {
+            return Err(format!(
+                "{} cannot tell whether this is an amont push snapshot — {e}\n    \
+                 Hooks were NOT installed.",
+                error_sign()
+            ))
+        }
+    }
+    let hooks = match rh {
         RepoHooks::Own(dir) => dir,
         RepoHooks::Redirected { to, own } if redirect_is_hostile(&to, &own) => {
             return Err(redirected_message(&to, &own))
         }
         RepoHooks::Redirected { to, .. } => to,
-        // The one silent exit, and the only one: git itself said this is not a
-        // repository.
         RepoHooks::Nowhere => return Ok(()),
         RepoHooks::Unanswerable { why } => {
             return Err(format!(
@@ -650,8 +700,7 @@ pub fn init() -> Result<(), String> {
         }
     };
 
-    let me =
-        std::env::current_exe().map_err(|e| format!("cannot locate the running binary: {e}"))?;
+    let me = me.map_err(|e| format!("cannot locate the running binary: {e}"))?;
     // `absolute` rather than `canonicalize`: the shim needs an absolute path
     // and nothing more, so there is no reason to touch the filesystem again.
     //
@@ -1058,17 +1107,26 @@ pub enum RepoHooks {
 /// has no `.git/hooks` until something writes one), and `canonicalize` cannot be
 /// asked about a path that does not. Same reason `is_within` is lexical.
 pub fn repo_hooks() -> RepoHooks {
+    repo_hooks_in(Path::new("."))
+}
+
+/// [`repo_hooks`] for the repository at `dir`, so a test can aim it at a
+/// fixture without moving the process.
+pub fn repo_hooks_in(dir: &Path) -> RepoHooks {
     // `git::output`, not `git::stdout`: the latter collapses every non-zero
     // exit to `None` with stderr discarded, which folded "not in a repository"
     // (silence is right) and "git refused to answer" (silence hid a container
     // checkout getting no hooks from `prepare`, with exit 0) into one arm.
-    let Some(out) = crate::git::output(&[
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-path",
-        "hooks",
-        "--git-common-dir",
-    ]) else {
+    let Some(out) = crate::git::output_in(
+        dir,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "hooks",
+            "--git-common-dir",
+        ],
+    ) else {
         return RepoHooks::Unanswerable {
             why: "could not run git".to_string(),
         };
@@ -1873,5 +1931,44 @@ mod tests {
         assert_eq!(name_for(Path::new("/u/target/release/amont")), "amont");
         // A path that happens to contain a dot elsewhere is not an extension.
         assert_eq!(name_for(Path::new("/some.dir/amont")), "amont");
+    }
+
+    fn hook_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .expect("hooks dir")
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(e.path()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A snapshot probe that cannot answer is NOT "not a snapshot": that
+    /// answer is the one that bakes, and baking from a snapshot is the bug.
+    /// The shims sit at sentinel A and the binary offered is B, so a re-bake
+    /// would show — and the control at the end proves it does show.
+    #[test]
+    fn init_fails_closed_when_the_snapshot_probe_cannot_answer() {
+        let d = tmp("probe-err");
+        git(&d, &["init", "-q", "--template=", "."]);
+        let hooks = d.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("mkdir");
+        write_shims(&hooks, "/sentinel/A/amont", false).expect("seed");
+        let before = hook_bytes(&hooks);
+        let b = || Ok(PathBuf::from("/sentinel/B/amont"));
+
+        let got = init_with(b(), &d, &|_| Err(std::io::Error::other("probe broke")));
+        let why = got.expect_err("a probe that cannot answer must fail init");
+        assert!(why.contains("cannot tell"), "{why}");
+        assert_eq!(before, hook_bytes(&hooks), "init wrote on doubt");
+
+        init_with(b(), &d, &|_| Ok(false)).expect("not a snapshot: bakes");
+        assert_ne!(before, hook_bytes(&hooks), "the control could not fail");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

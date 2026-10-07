@@ -171,7 +171,21 @@ pub struct Output {
 /// the other is a mistake somebody needs to be told about. See `config`.
 pub fn output(args: &[&str]) -> Option<Output> {
     let mut cmd = Command::new("git");
-    cmd.args(args).stdin(Stdio::null());
+    cmd.args(args);
+    full_output(cmd)
+}
+
+/// [`output`] run inside `dir` — for a caller that must ask about a
+/// repository without moving the whole process there (`set_current_dir` is
+/// process-global, and races every test in the binary).
+pub fn output_in(dir: &std::path::Path, args: &[&str]) -> Option<Output> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    full_output(cmd)
+}
+
+fn full_output(mut cmd: Command) -> Option<Output> {
+    cmd.stdin(Stdio::null());
     let out = retrying(|| cmd.output()).ok()?;
     Some(Output {
         // A process killed by a signal has no code. Treat that as "git did not

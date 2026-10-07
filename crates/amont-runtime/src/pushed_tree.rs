@@ -67,6 +67,85 @@ const PREPARE: &str = "amont.snapshotPrepare";
 /// The environment variable naming the source working tree (see PREPARE).
 pub const SOURCE_WORKTREE_ENV: &str = "AMONT_SOURCE_WORKTREE";
 
+/// Set to `1` on what a snapshot runs to prepare itself — the dependency
+/// install and `amont.snapshotPrepare` — for a custom `prepare` script that
+/// wants to know. INFORMATION, not the guard: the guard is `MARKER`, a file
+/// in the snapshot's git dir, which cannot leak into another repository the
+/// way an inherited variable does.
+pub const SNAPSHOT_ENV: &str = "AMONT_SNAPSHOT";
+
+/// The file a push snapshot carries in its OWN git admin dir
+/// (`<common>/worktrees/<name>/`), which `amont init` reads before baking.
+///
+/// Why it exists: the snapshot is a linked worktree, so it shares the
+/// repository's hooks directory, and its dependency install runs `prepare` —
+/// `amont init` — which baked every hook to a binary inside the snapshot,
+/// deleted minutes later. Why a file there and not an environment variable:
+/// that admin dir is the snapshot's alone and dies with it, so every process
+/// run inside the snapshot sees it (the install, `snapshotPrepare`, an
+/// install a gate runs itself) and a fixture repository amont's own suite
+/// creates does not. `AMONT_REHEARSAL` could not serve: it is removed before
+/// any gate spawns (`rehearsal::in_snapshot`), deliberately.
+///
+/// Both halves must be a version carrying this: an older runner writes no
+/// marker, and an older pinned `init` does not read one.
+const MARKER: &str = "amont-snapshot";
+
+/// Where `dir`'s snapshot marker lives, absolute. `Err` carries git's own
+/// reason when it would not say. The `GIT_*` environment is stripped: a
+/// hook's `GIT_DIR` names the repository the hook runs for, not the
+/// snapshot being asked about.
+fn snapshot_marker_path(dir: &Path) -> std::io::Result<PathBuf> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-path", MARKER])
+        .stdin(std::process::Stdio::null());
+    crate::hooks::common::strip_git_env(&mut cmd);
+    let out = cmd.output()?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        let why = why
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given");
+        return Err(std::io::Error::other(format!(
+            "git would not say where the snapshot marker lives: {}",
+            crate::ui::sanitize(why)
+        )));
+    }
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if p.is_empty() {
+        return Err(std::io::Error::other(
+            "git gave an empty path for the snapshot marker",
+        ));
+    }
+    let p = PathBuf::from(p);
+    Ok(if p.is_absolute() { p } else { dir.join(p) })
+}
+
+/// Is the marker at `path`? Three answers, not two: `Path::exists` folds
+/// "cannot look" into "absent", and absent is the answer that bakes.
+pub fn probe_marker(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Is `dir` inside an amont push snapshot? `Err` when that cannot be told —
+/// which the caller must treat as "do not write", never as "no".
+pub fn in_push_snapshot(dir: &Path) -> std::io::Result<bool> {
+    probe_marker(&snapshot_marker_path(dir)?)
+}
+
+/// Mark the snapshot at `dir` as one. Resolving the path is part of the
+/// mark: a snapshot whose marker could not even be located is unmarked.
+fn mark_snapshot(dir: &Path) -> std::io::Result<()> {
+    std::fs::write(snapshot_marker_path(dir)?, b"")
+}
+
 pub fn prepare_command(settings: &crate::config::Settings) -> Option<String> {
     crate::config::string_value(settings, PREPARE).filter(|s| !s.trim().is_empty())
 }
@@ -127,6 +206,18 @@ impl PushedTree {
     /// receive a directory that already exists as long as it is empty —
     /// which this one, having just been created, provably is.
     fn checkout_at(base: PathBuf, repo: &Path, tip: &str) -> Option<PushedTree> {
+        Self::checkout_at_with(base, repo, tip, &mark_snapshot)
+    }
+
+    /// [`checkout_at`] with the marker writer passed in — a parameter, not a
+    /// global switch, so a test can make it fail without racing the other
+    /// tests in the binary.
+    fn checkout_at_with(
+        base: PathBuf,
+        repo: &Path,
+        tip: &str,
+        mark: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Option<PushedTree> {
         std::fs::create_dir(&base).ok()?;
         let ok = crate::git::succeeds(&[
             "-C",
@@ -144,11 +235,19 @@ impl PushedTree {
             let _ = std::fs::remove_dir_all(&base);
             return None;
         }
-        Some(PushedTree {
+        let tree = PushedTree {
             path: base,
             repo: repo.to_path_buf(),
             tip: tip.to_string(),
-        })
+        };
+        // Fail closed: an unmarked snapshot is one whose install re-bakes the
+        // repository's hooks to itself. `Drop` unregisters the worktree git
+        // has already recorded and removes the directory.
+        if let Err(e) = mark(&tree.path) {
+            println!("{} could not mark the snapshot: {e}", warning_sign());
+            return None;
+        }
+        Some(tree)
     }
 
     /// Make the checkout runnable: carry, dependencies, then
@@ -184,6 +283,7 @@ impl PushedTree {
         // the working tree the snapshot was taken FROM — where an installed
         // workspace already lives (see PREPARE)
         cmd.env(SOURCE_WORKTREE_ENV, &self.repo);
+        cmd.env(SNAPSHOT_ENV, "1");
         if crate::hooks::common::bounded_success(settings, &mut cmd, PREPARE) {
             Ok(())
         } else {
@@ -451,5 +551,108 @@ mod tests {
         assert_eq!(seen, "committed\n", "the worktree saw the dirty tree");
         assert!(!at.exists(), "the worktree outlived its guard");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn seeded(name: &str) -> (PathBuf, String) {
+        let d = repo(name);
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&d)
+                .output()
+                .expect("git")
+        };
+        git(&["commit", "--allow-empty", "-qm", "seed"]);
+        let head = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        (d, head)
+    }
+
+    /// The snapshot carries the marker in its own admin dir; the repository
+    /// it was taken from does not — the marker is per-worktree, not shared.
+    #[test]
+    fn a_snapshot_is_marked_and_its_source_is_not() {
+        let (d, head) = seeded("marked");
+        let tree = PushedTree::checkout(&d, &head).expect("worktree");
+        assert!(in_push_snapshot(tree.path()).expect("probe"));
+        assert!(!in_push_snapshot(&d).expect("probe"));
+        drop(tree);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Fail closed: a snapshot that could not be marked would re-bake the
+    /// repository's hooks to itself, so it is no snapshot — and git's
+    /// registration of it is undone, not just the directory.
+    #[test]
+    fn an_unmarkable_snapshot_is_no_snapshot() {
+        let (d, head) = seeded("unmarkable");
+        let base = std::env::temp_dir().join(unique_name("amont-push-unmarkable"));
+        let name = base.file_name().unwrap().to_string_lossy().into_owned();
+        let got = PushedTree::checkout_at_with(base.clone(), &d, &head, &|_| {
+            Err(std::io::Error::other("cannot mark"))
+        });
+        assert!(got.is_none(), "an unmarked snapshot was handed out");
+        assert!(
+            !base.exists(),
+            "the snapshot directory outlived the refusal"
+        );
+        let list = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&d)
+            .output()
+            .expect("git");
+        let list = String::from_utf8_lossy(&list.stdout);
+        assert!(!list.contains(&name), "still registered:\n{list}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    fn is_root() -> bool {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false)
+    }
+
+    /// Three answers, not two. A marker that cannot be looked at is an
+    /// error — `Path::exists` would have said "absent", which bakes.
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_that_cannot_be_looked_at_is_an_error_not_absent() {
+        use std::os::unix::fs::PermissionsExt;
+        if is_root() {
+            eprintln!("skipped: root ignores directory permissions");
+            return;
+        }
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+                if let Some(parent) = self.0.parent() {
+                    let _ = std::fs::remove_dir_all(parent);
+                }
+            }
+        }
+        let d = std::env::temp_dir().join(unique_name("amont-probe"));
+        let locked = d.join("locked");
+        std::fs::create_dir_all(&locked).expect("mkdir");
+        let marker = locked.join(MARKER);
+        std::fs::write(&marker, "").expect("marker");
+        assert!(probe_marker(&marker).expect("readable"), "present");
+        assert!(
+            !probe_marker(&locked.join("nope")).expect("readable"),
+            "absent"
+        );
+
+        let _guard = Restore(locked.clone());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let got = probe_marker(&marker);
+        assert_eq!(
+            got.expect_err("a locked directory is not an absent marker")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 }

@@ -64,6 +64,14 @@ if [ "$op" = install ]; then
   [ -e .env ] && echo "ENV-VISIBLE $(pwd)" >> "$ctl/log"
   mkdir -p node_modules && echo x > node_modules/marker-installed
 fi
+if [ "$op" = install ] && [ -e "$ctl/init-bin" ]; then
+  # What a real package's `prepare: amont init` does: run an amont that
+  # lives UNDER the snapshot, so its current_exe() is a snapshot path.
+  mkdir -p node_modules/.bin && cp "$(cat "$ctl/init-bin")" node_modules/.bin/amont
+  echo "SNAPSHOT-ENV=${AMONT_SNAPSHOT:-unset}" >> "$ctl/log"
+  node_modules/.bin/amont init >> "$ctl/init.out" 2>&1
+  echo "INIT-EXIT=$?" >> "$ctl/log"
+fi
 if [ "$op" = verify ] && [ -e node_modules/.pnpm-workspace-state-v1.json ]; then
   echo "STATE-FILE-KEPT" >> "$ctl/log"
 fi
@@ -334,6 +342,113 @@ fn a_prepare_command_owns_the_dependencies() {
     assert_eq!(code, 0, "{out}");
     assert!(!logged(&r, "npm"), "{}", stub_log(&r));
     assert!(out.contains("carried .env"), "{out}");
+}
+
+// ------------------------------------------------- the shared hooks dir
+
+/// Every amont shim's `BAKED=` line, by hook name.
+fn baked(r: &Repo) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = std::fs::read_dir(r.dir.join(".git/hooks"))
+        .unwrap()
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let text = std::fs::read_to_string(e.path()).ok()?;
+            let line = text.lines().find(|l| l.starts_with("BAKED="))?.to_string();
+            Some((e.file_name().to_string_lossy().into_owned(), line))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+const SENTINEL: &str = "/sentinel/A/amont";
+
+/// Re-point every shim at a path no build will ever have, so a re-bake —
+/// by ANY binary, this test's included — shows as a changed line.
+fn seed_sentinel(r: &Repo) {
+    for entry in std::fs::read_dir(r.dir.join(".git/hooks")).unwrap() {
+        let p = entry.unwrap().path();
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        if text.contains(env!("CARGO_BIN_EXE_amont")) {
+            std::fs::write(&p, text.replace(env!("CARGO_BIN_EXE_amont"), SENTINEL)).unwrap();
+        }
+    }
+    let seeded = baked(r);
+    assert!(!seeded.is_empty(), "no amont shims to seed");
+    assert!(
+        seeded.iter().all(|(_, l)| l.contains(SENTINEL)),
+        "{seeded:?}"
+    );
+}
+
+/// The bug this guards: the snapshot is a linked worktree, so it shares
+/// `.git/hooks`, and its install runs `prepare` — an `amont init` whose
+/// binary lives UNDER the snapshot. That baked every shim to a temp path
+/// deleted minutes later. The snapshot is marked; `init` stands down.
+#[test]
+fn a_snapshot_install_never_rebakes_the_shared_hooks() {
+    if missing("node") {
+        return;
+    }
+    let (r, _) = js_repo(npm_root);
+    seed_sentinel(&r);
+    let before = baked(&r);
+    set(&r, "init-bin", env!("CARGO_BIN_EXE_amont"));
+
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}\n{}", stub_log(&r));
+    assert!(logged(&r, "INIT-EXIT=0"), "{}", stub_log(&r));
+    assert!(logged(&r, "SNAPSHOT-ENV=1"), "{}", stub_log(&r));
+    let init_out = std::fs::read_to_string(ctl(&r).join("init.out")).unwrap_or_default();
+    assert!(
+        init_out.contains("inside an amont push snapshot"),
+        "{init_out}"
+    );
+    let after = baked(&r);
+    assert!(
+        after.iter().all(|(_, l)| !l.contains("amont-push-")),
+        "a shim was baked into the snapshot: {after:?}"
+    );
+    assert_eq!(before, after, "the shared hooks changed");
+}
+
+/// `snapshotPrepare` runs inside the snapshot too, and gets
+/// `AMONT_SNAPSHOT=1` to know it. The guard does not depend on that
+/// variable: the second `init` runs WITHOUT it — the shape of an install a
+/// gate runs itself, whose environment carries no snapshot variable — and
+/// still stands down, because the marker is in the snapshot's own git dir.
+#[test]
+fn a_prepare_command_in_the_snapshot_never_rebakes_the_shared_hooks() {
+    if missing("node") {
+        return;
+    }
+    let (r, _) = js_repo(npm_root);
+    seed_sentinel(&r);
+    let before = baked(&r);
+    let log = ctl(&r).join("prepare.log").display().to_string();
+    let bin = env!("CARGO_BIN_EXE_amont");
+    r.git(&[
+        "config",
+        "amont.snapshotPrepare",
+        &format!(
+            "mkdir -p node_modules/.bin && cp {bin:?} node_modules/.bin/amont && \
+             echo \"env=${{AMONT_SNAPSHOT:-unset}}\" >> {log:?} && \
+             node_modules/.bin/amont init >> {log:?} 2>&1 && \
+             env -u AMONT_SNAPSHOT node_modules/.bin/amont init >> {log:?} 2>&1"
+        ),
+    ]);
+    let (code, out) = rehearse(&r, &["--wait"]);
+    let prepared = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(code, 0, "{out}\n{prepared}");
+    assert!(prepared.contains("env=1"), "{prepared}");
+    assert_eq!(
+        prepared.matches("inside an amont push snapshot").count(),
+        2,
+        "{prepared}"
+    );
+    assert_eq!(before, baked(&r), "the shared hooks changed");
 }
 
 /// A failing install fails the preparation; the rehearsal records WHY.
