@@ -78,6 +78,49 @@ fn module_roots<'a>(root: &str, files: impl Iterator<Item = &'a str>) -> Vec<Pat
     seen.into_iter().collect()
 }
 
+/// Does the module at `dir` hold a package `./...` would match? A tools
+/// module (a `go.mod` with `tool` directives and nothing else) holds none,
+/// and `go vet ./...` / `go test ./...` exit 1 there with "matched no
+/// packages". The walk skips what `./...` skips: nested modules, `vendor/`,
+/// `testdata/` and directories starting with `.` or `_`.
+fn has_go_package(dir: &Path) -> bool {
+    fn walk(dir: &Path, top: bool) -> bool {
+        if !top && dir.join("go.mod").is_file() {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut subdirs = Vec::new();
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                let skipped = name.starts_with('.')
+                    || name.starts_with('_')
+                    || name == "vendor"
+                    || name == "testdata";
+                if !skipped {
+                    subdirs.push(e.path());
+                }
+            } else if name.ends_with(".go") {
+                return true;
+            }
+        }
+        subdirs.iter().any(|d| walk(d, false))
+    }
+    walk(dir, true)
+}
+
+/// The module roots `go vet` / `go test` can run in: those with a package.
+fn package_roots<'a>(root: &str, files: impl Iterator<Item = &'a str>) -> Vec<PathBuf> {
+    module_roots(root, files)
+        .into_iter()
+        .filter(|d| has_go_package(d))
+        .collect()
+}
+
 /// Run one `go`/`gofmt` invocation in every module root. True when all
 /// succeeded.
 fn run_in_roots(
@@ -202,7 +245,7 @@ pub fn vet(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
         return Outcome::Passed;
     }
     let root = repo_root();
-    let roots = module_roots(&root, files.iter().map(String::as_str));
+    let roots = package_roots(&root, files.iter().map(String::as_str));
     if roots.is_empty() {
         return Outcome::Passed;
     }
@@ -238,7 +281,7 @@ pub fn test(
     let mut ran_any = false;
     for r in refs {
         let changed = crate::pushrefs::changed_files_for(r, &zero);
-        let roots = module_roots(&root, changed.iter().map(String::as_str));
+        let roots = package_roots(&root, changed.iter().map(String::as_str));
         if roots.is_empty() {
             continue;
         }
@@ -319,6 +362,48 @@ mod tests {
         let root = tmp.to_string_lossy().into_owned();
         let got = module_roots(&root, ["pkg/a.go", "pkg/b.go", "go.mod"].into_iter());
         assert_eq!(got.len(), 1, "one go invocation, not three: {got:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_tools_module_without_packages_is_not_vetted_or_tested() {
+        let tmp = std::env::temp_dir().join("amont-go-tools-module");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let w = |rel: &str, text: &str| {
+            let p = tmp.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        w("go.mod", "module op\n");
+        w("internal/x/x.go", "package x\n");
+        w(
+            "tools/go.mod",
+            "module tools\n\ntool golang.org/x/tools/gopls\n",
+        );
+        w("tools/go.sum", "");
+        // What `./...` skips does not count as a package of `tools`.
+        w("tools/vendor/v/v.go", "package v\n");
+        w("tools/testdata/t.go", "package t\n");
+        w("tools/_ignored/i.go", "package i\n");
+        w("tools/.hidden/h.go", "package h\n");
+        // Nor does a nested module's code.
+        w("tools/nested/go.mod", "module nested\n");
+        w("tools/nested/n.go", "package nested\n");
+        let root = tmp.to_string_lossy().into_owned();
+        let files = ["tools/go.mod", "tools/go.sum", "internal/x/x.go"];
+        assert_eq!(
+            module_roots(&root, files.into_iter()),
+            vec![tmp.clone(), tmp.join("tools")],
+            "both are modules"
+        );
+        assert_eq!(
+            package_roots(&root, files.into_iter()),
+            vec![tmp.clone()],
+            "only the module with a package is vetted and tested"
+        );
+        // A package in any ordinary subdirectory keeps the module.
+        w("tools/gen/main.go", "package main\n");
+        assert_eq!(package_roots(&root, files.into_iter()).len(), 2);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
