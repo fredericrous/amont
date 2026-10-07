@@ -6,6 +6,24 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.47.1
+
+### Fixed
+
+- **A Go module with no package is no longer vetted or tested.** `go vet
+  ./...` and `go test ./...` exit 1 with "matched no packages" in a module
+  that holds no Go code, such as a `tools/` module that only pins a tool
+  with a `tool` directive (`go get -tool`). The go-vet and go-test gates now
+  run only in module roots with a package, skipping what `./...` skips
+  (nested modules, `vendor/`, `testdata/`, `.`- and `_`-prefixed
+  directories).
+- **A push snapshot never rebakes the hooks.** A snapshot's dependency
+  install runs `prepare` → `amont init`, which used to bake every hook shim
+  to a binary inside the temporary snapshot. The snapshot now marks its own
+  git admin dir and `init` writes nothing there; when it cannot tell, `init`
+  fails without writing. Both the rehearsal runner and the pushed commit's
+  pinned amont need this release.
+
 ## v1.47.0
 
 ### Changed
