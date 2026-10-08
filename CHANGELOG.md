@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.47.2
+
+### Fixed
+
+- **A new ref that brings no new commits runs no scope-gated check.**
+  Seeding a fork (`git remote rename origin upstream`, add the fork as
+  `origin`, push `main`) pushes a new ref whose every commit is already on
+  `upstream/*`. The empty `rev-list --not --remotes` result fell through to
+  the "no remote to compare against" fallback, which diffs the tip commit
+  alone, so whatever upstream's last commit touched selected its checks — a
+  full JS suite ran for 40 minutes over code the push did not bring (#301).
+  "Nothing new" and "no remote" are now separate cases: the first gates
+  nothing, the second keeps the tip-diff fallback.
+
 ## v1.47.1
 
 ### Fixed
