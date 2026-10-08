@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.47.3
+
+### Fixed
+
+- **The Rust, Go and Python audits run where each lockfile is.** They ran
+  at the repository root only, so a project whose `Cargo.lock` lives in a
+  subdirectory — a Tauri app's `apps/ui/src-tauri` — got cargo-audit's
+  "entity not found" and a "could not complete" with no reason, over a tree
+  with 19 known vulnerabilities (#305). Each directory holding the lockfile
+  is now audited on its own; a finding from a subdirectory is labelled with
+  it, and a repository with its lockfile at the root reads exactly as
+  before. `cargo tree`, for a release's shipped-only check and the
+  attribution, runs in the same directory. Python's requirements mode is
+  per directory; its virtualenv mode is unchanged. `audit-js` already
+  worked this way.
+- **"Could not complete" says why.** A directory the tool could not answer
+  for is named with the tool's own last error line, and still keeps the
+  result from reading clean or being waived.
+- **A killed amont takes its tree gates with it.** A tree gate runs in its
+  own process group, so a signal sent to amont — `kill`, a tool's timeout,
+  the `git push` that ran the hook — never reached it: fifteen `uv run
+  pyright` groups from killed pushes were found alive days later (#302). On
+  SIGHUP/INT/QUIT/TERM amont now TERMs every running gate group, KILLs what
+  survives the usual grace, then restores and dies by the signal as before.
+  SIGKILL of amont itself is not covered: no handler runs.
+
 ## v1.47.2
 
 ### Fixed
