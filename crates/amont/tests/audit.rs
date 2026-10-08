@@ -423,6 +423,97 @@ esac"#,
     assert!(!out.contains("could not complete"), "{out}");
 }
 
+/// The same bug, still live for Rust (amont#305): a repository whose only
+/// `Cargo.lock` is in a subdirectory — a Tauri app's `apps/ui/src-tauri` —
+/// was audited at the root, where cargo-audit exits 2 ("entity not found"),
+/// and the check said "could not complete" with no reason, over a tree that
+/// carried 19 known vulnerabilities.
+#[test]
+fn audit_rust_runs_in_every_lockfile_directory() {
+    let r = bare_repo();
+    r.stage("apps/ui/src-tauri/Cargo.lock", "# fixture\n");
+    r.commit("chore: a nested cargo project, none at the root");
+    shim(&r, "cargo-audit", "exit 0");
+    shim(
+        &r,
+        "cargo",
+        r#"case "$1" in
+  audit) case "$PWD" in
+    */src-tauri) echo 'Crate: bad'; echo 'Version: 1.0.0'; echo 'ID: RUSTSEC-2025-0001'; echo 'error: 1 vulnerability found'; exit 1 ;;
+    *) echo 'error: I/O operation failed: entity not found' >&2; exit 2 ;;
+  esac ;;
+  tree) printf 'bad v1.0.0\n└── app v0.1.0 (/repo/app)\n'; exit 0 ;;
+esac
+exit 0"#,
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/heads/feat/x");
+    assert_eq!(code, 0, "a branch push must not block: {out}");
+    assert!(
+        out.contains("apps/ui/src-tauri: RUSTSEC-2025-0001"),
+        "{out}"
+    );
+    assert!(!out.contains("could not complete"), "{out}");
+
+    let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/tags/v1.0.0");
+    assert_ne!(
+        code, 0,
+        "a v* tag must not ship over the nested findings: {out}"
+    );
+}
+
+/// Go and Python had the same root-only runner.
+#[test]
+fn audit_go_and_python_run_in_every_lockfile_directory() {
+    let r = bare_repo();
+    r.stage("svc/go.sum", "# fixture\n");
+    r.stage("tools/requirements.txt", "# fixture\n");
+    r.commit("chore: a nested go module and python project");
+    shim(
+        &r,
+        "govulncheck",
+        r#"case "$PWD" in
+  */svc) echo 'Vulnerability #1: GO-2025-0001'; echo 'Your code is affected by 1 vulnerability'; exit 3 ;;
+  *) echo 'go: no go.mod file found' >&2; exit 1 ;;
+esac"#,
+    );
+    let (_, out) = push_check(&r, "pre-push-audit-go", "refs/heads/feat/x");
+    assert!(out.contains("svc: GO-2025-0001"), "{out}");
+    assert!(!out.contains("could not complete"), "{out}");
+
+    shim(
+        &r,
+        "pip-audit",
+        r#"case "$PWD" in
+  */tools) echo 'Found 1 known vulnerability in 1 package'; echo 'Name Version ID Fix Versions'; echo 'jinja2 2.0 PYSEC-2025-1 3.0'; exit 1 ;;
+  *) echo 'ERROR: requirements.txt not found' >&2; exit 1 ;;
+esac"#,
+    );
+    let (_, out) = push_check(&r, "pre-push-audit-python", "refs/heads/feat/x");
+    assert!(out.contains("tools: Found 1 known vulnerability"), "{out}");
+    assert!(!out.contains("could not complete"), "{out}");
+}
+
+/// "Could not complete" says why: the tool's own last error line.
+#[test]
+fn an_audit_that_cannot_answer_names_the_tools_error() {
+    let r = bare_repo();
+    r.stage("Cargo.lock", "# fixture\n");
+    r.commit("chore: a cargo project");
+    shim(&r, "cargo-audit", "exit 0");
+    shim(
+        &r,
+        "cargo",
+        "echo 'Fetching advisory database'; echo 'error: failed to fetch advisory database: network unreachable' >&2; exit 1",
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-rust", "refs/heads/feat/x");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("could not complete"), "{out}");
+    assert!(
+        out.contains("failed to fetch advisory database: network unreachable"),
+        "the reason must be printed: {out}"
+    );
+}
+
 /// A pnpm workspace has no package-lock.json, so audit-js — which only knew
 /// npm — never audited it and said nothing: one such tree carried 28
 /// vulnerable versions, two critical, release after release. pnpm audits

@@ -55,17 +55,7 @@ fn releasing(refs: &[PushRef]) -> bool {
 /// Apply the push's stakes to the tool's report. `full` is the captured
 /// output, reprinted only when the verdict blocks — that is the moment the
 /// reader needs the table, and the only moment worth the scrollback.
-fn conclude(
-    settings: &crate::config::Settings,
-    tool: &str,
-    report: Report,
-    releasing: bool,
-    full: &str,
-) -> Outcome {
-    conclude_waivable(settings, tool, report, releasing, full, true)
-}
-
-/// [`conclude`], where `waivable` is false when something in the report
+/// `waivable` is false when something in the report
 /// could not be attributed (a project the audit could not answer for, a
 /// finding without a recognised id): a waiver must never vouch for what
 /// nobody saw.
@@ -614,6 +604,119 @@ fn audited_in(
     }
 }
 
+/// The tool's own reason for not answering: its last line that says
+/// `error`, else its last non-empty line, clipped. "Could not complete" with
+/// nothing after it was the whole message once, over a tree with 19 known
+/// vulnerabilities (amont#305) — the next one must be readable from the hook
+/// output alone.
+fn failure_line(out: &str) -> Option<String> {
+    let lines: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.to_ascii_lowercase().contains("error"))
+        .or(lines.last())?;
+    let mut s: String = line.chars().take(200).collect();
+    if line.chars().count() > 200 {
+        s.push('…');
+    }
+    Some(s)
+}
+
+/// What one audit found across every directory it ran in.
+struct Merged {
+    report: Report,
+    /// The tools' reports, each under a header naming its directory (the
+    /// bare report when the only directory is the root).
+    full: String,
+    waivable: bool,
+}
+
+/// Run one audit in every directory holding `lockfile` and merge the
+/// answers — the shape `js()` has had since a root-only run left a nested
+/// npm project unaudited. Rust, Go and Python kept the root-only runner, and
+/// a repository whose `Cargo.lock` lived in `apps/ui/src-tauri` was reported
+/// "could not complete" over 19 known vulnerabilities (amont#305).
+///
+/// `argv_in(dir)` builds the command for one directory, or None to skip it
+/// (said by the caller). `refine(dir, report, out)` runs in that directory
+/// after the read — a release's shipped-only split, attribution. A finding
+/// from a subdirectory is labelled with it; the root's are not, so a
+/// repository with its lockfile at the root reads exactly as before. A
+/// directory the tool could not answer for is named with the tool's own
+/// reason, and keeps the merged result from reading clean or being waived.
+fn audit_each_dir(
+    settings: &crate::config::Settings,
+    tool: &str,
+    lockfile: &str,
+    argv_in: impl Fn(&std::path::Path) -> Option<Vec<String>>,
+    read: fn(bool, &str) -> Report,
+    mut refine: impl FnMut(&std::path::Path, Report, &str) -> Report,
+) -> Option<Merged> {
+    let root = std::path::PathBuf::from(common::repo_root());
+    let dirs = lockfile_dirs(lockfile);
+    let only_root = dirs.len() == 1 && dirs[0].is_empty();
+    let (mut vulns, mut advisories, mut unchecked) = (Vec::new(), Vec::new(), Vec::new());
+    let mut full = String::new();
+    for dir in &dirs {
+        let path = root.join(dir);
+        let label = if dir.is_empty() { "." } else { dir.as_str() };
+        let label_ids = |ids: Vec<String>| -> Vec<String> {
+            if dir.is_empty() {
+                ids
+            } else {
+                ids.into_iter().map(|id| format!("{dir}: {id}")).collect()
+            }
+        };
+        let Some(argv) = argv_in(&path) else {
+            unchecked.push(format!("{label} (nothing to audit there)"));
+            continue;
+        };
+        // A timeout is said by `audited_in` itself; it is not an answer.
+        let (exit_ok, out) = audited_in(settings, &argv, &path)?;
+        match refine(&path, read(exit_ok, &out), &out) {
+            Report::Vulnerabilities(ids) => {
+                vulns.extend(label_ids(ids));
+                if only_root {
+                    full.push_str(&out);
+                } else {
+                    full.push_str(&format!("── {tool} in {label}\n{out}\n"));
+                }
+            }
+            Report::Advisories(ids) => advisories.extend(label_ids(ids)),
+            Report::CouldNotCheck => unchecked.push(match failure_line(&out) {
+                Some(why) => format!("{label} ({why})"),
+                None => label.to_string(),
+            }),
+            Report::Clean => {}
+        }
+    }
+    if !unchecked.is_empty() {
+        common::warn(&format!(
+            "{tool}: the audit could not answer in {} — NOT checked there",
+            unchecked.join(", ")
+        ));
+    }
+    let report = if !vulns.is_empty() {
+        Report::Vulnerabilities(vulns)
+    } else if !unchecked.is_empty() {
+        Report::CouldNotCheck
+    } else if !advisories.is_empty() {
+        Report::Advisories(advisories)
+    } else {
+        Report::Clean
+    };
+    Some(Merged {
+        report,
+        full,
+        waivable: unchecked.is_empty(),
+    })
+}
+
 pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if !has_lockfile("Cargo.lock") {
         return Outcome::Inert;
@@ -631,29 +734,41 @@ pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         "--color".into(),
         "never".into(),
     ];
-    let Some((exit_ok, out)) = audited(settings, &argv) else {
-        return Outcome::Unavailable;
-    };
     let release = releasing(refs);
-    let mut report = read_cargo_audit(exit_ok, &out);
-    if release {
-        if let Report::Vulnerabilities(ids) = report {
-            let (shipped, dev_only) =
-                split_shipped_crates(ids, &out, |krate| cargo_tree_shipped(settings, krate));
-            warn_dev_only("audit-rust", &dev_only);
-            report = if shipped.is_empty() {
-                Report::Clean
-            } else {
-                Report::Vulnerabilities(shipped)
-            };
-        }
-    }
-    conclude(
+    let Some(merged) = audit_each_dir(
         settings,
         "audit-rust",
-        attribute(report, &out, |krate| cargo_tree_inverse(settings, krate)),
+        "Cargo.lock",
+        |_| Some(argv.clone()),
+        read_cargo_audit,
+        |dir, mut report, out| {
+            if release {
+                if let Report::Vulnerabilities(ids) = report {
+                    let (shipped, dev_only) = split_shipped_crates(ids, out, |krate| {
+                        cargo_tree_shipped(settings, dir, krate)
+                    });
+                    warn_dev_only("audit-rust", &dev_only);
+                    report = if shipped.is_empty() {
+                        Report::Clean
+                    } else {
+                        Report::Vulnerabilities(shipped)
+                    };
+                }
+            }
+            attribute(report, out, |krate| {
+                cargo_tree_inverse(settings, dir, krate)
+            })
+        },
+    ) else {
+        return Outcome::Unavailable;
+    };
+    conclude_waivable(
+        settings,
+        "audit-rust",
+        merged.report,
         release,
-        &out,
+        &merged.full,
+        merged.waivable,
     )
 }
 
@@ -661,7 +776,11 @@ pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
 /// dependencies (a dependency's build script runs on every machine that
 /// compiles it), for every target and every feature, so nothing a consumer
 /// could switch on is mistaken for dev-only. None if it could not run.
-fn cargo_tree_shipped(settings: &crate::config::Settings, spec: &str) -> Option<String> {
+fn cargo_tree_shipped(
+    settings: &crate::config::Settings,
+    dir: &std::path::Path,
+    spec: &str,
+) -> Option<String> {
     let argv = vec![
         common::program("cargo"),
         "tree".into(),
@@ -677,7 +796,7 @@ fn cargo_tree_shipped(settings: &crate::config::Settings, spec: &str) -> Option<
     ];
     // Unlike the message-only inverse tree, a failure here must not read as
     // "nothing reaches it": an error prints no local crate either.
-    audited(settings, &argv).and_then(|(ok, out)| ok.then_some(out))
+    audited_in(settings, &argv, dir).and_then(|(ok, out)| ok.then_some(out))
 }
 
 /// Does a shipped-edges inverse tree say the crate is dev-only? Only on
@@ -763,7 +882,11 @@ fn warn_dev_only(tool: &str, dev_only: &[String]) {
 /// `cargo tree -i <crate>`, or None if it could not be run. Failure here is
 /// never fatal: attribution is an improvement to a message, and an advisory
 /// reported without it is still an advisory reported.
-fn cargo_tree_inverse(settings: &crate::config::Settings, krate: &str) -> Option<String> {
+fn cargo_tree_inverse(
+    settings: &crate::config::Settings,
+    dir: &std::path::Path,
+    krate: &str,
+) -> Option<String> {
     let argv = vec![
         common::program("cargo"),
         "tree".into(),
@@ -774,7 +897,7 @@ fn cargo_tree_inverse(settings: &crate::config::Settings, krate: &str) -> Option
         "--color".into(),
         "never".into(),
     ];
-    audited(settings, &argv).map(|(_, out)| out)
+    audited_in(settings, &argv, dir).map(|(_, out)| out)
 }
 
 /// Name the crate behind each advisory, and which of this workspace's crates
@@ -1014,15 +1137,23 @@ pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         return Outcome::Unavailable;
     }
     let argv = vec![common::program("govulncheck"), "./...".into()];
-    let Some((exit_ok, out)) = audited(settings, &argv) else {
-        return Outcome::Unavailable;
-    };
-    conclude(
+    let Some(merged) = audit_each_dir(
         settings,
         "audit-go",
-        read_govulncheck(exit_ok, &out),
+        "go.sum",
+        |_| Some(argv.clone()),
+        read_govulncheck,
+        |_, report, _| report,
+    ) else {
+        return Outcome::Unavailable;
+    };
+    conclude_waivable(
+        settings,
+        "audit-go",
+        merged.report,
         releasing(refs),
-        &out,
+        &merged.full,
+        merged.waivable,
     )
 }
 
@@ -1038,16 +1169,37 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         return Outcome::Unavailable;
     }
     let root = common::repo_root();
-    let argv = if std::path::Path::new(&root)
-        .join("requirements.txt")
-        .exists()
-    {
-        vec![
+    // A requirements.txt is the production list by convention, audited in
+    // its own directory — wherever the repository keeps one (amont#305).
+    if !lockfile_dirs("requirements.txt").is_empty() {
+        let argv = vec![
             common::program("pip-audit"),
             "-r".into(),
             "requirements.txt".into(),
-        ]
-    } else if let Some(site_packages) = venv_site_packages(&root) {
+        ];
+        let Some(merged) = audit_each_dir(
+            settings,
+            "audit-python",
+            "requirements.txt",
+            |_| Some(argv.clone()),
+            read_pip_audit,
+            |_, report, _| report,
+        ) else {
+            return Outcome::Unavailable;
+        };
+        // A row whose advisory id is not one a waiver can name makes the
+        // whole report unwaivable.
+        let waivable = merged.waivable && pip_rows_all_named(&merged.full);
+        return conclude_waivable(
+            settings,
+            "audit-python",
+            merged.report,
+            releasing(refs),
+            &merged.full,
+            waivable,
+        );
+    }
+    let argv = if let Some(site_packages) = venv_site_packages(&root) {
         // A uv/PEP-621 project has no requirements.txt, and EXPORTING one
         // does not work either: `uv export` emits the workspace's own
         // members and any private-index dependency, and pip-audit resolves
