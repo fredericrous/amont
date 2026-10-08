@@ -224,6 +224,83 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
     assert!(!alive, "the gate's child {pid} outlived the commit");
 }
 
+/// amont killed mid-gate takes the gate down with it (amont#302).
+///
+/// A tree gate runs in its OWN process group, so a signal sent to amont —
+/// `kill <pid>`, a tool's timeout, the group of the `git push` that ran it —
+/// never reaches it. Fifteen `uv run pyright` groups from killed pushes were
+/// found alive 3 hours to 3 days later, re-parented to init. The gate here
+/// forks a 300 s sleeper and records its pid; amont alone gets SIGTERM.
+#[test]
+fn a_killed_amont_leaves_no_gate_running() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let r = repo_with("slow", "pyright", "sh slow.sh");
+    r.stage(
+        "slow.sh",
+        "#!/bin/sh\nsleep 300 & echo $! > slow.pid; wait\n",
+    );
+    r.stage(".gitignore", "slow.pid\n");
+    r.commit("chore: a slow gate");
+    let mut amont = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("warm")
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("amont warm");
+
+    let pid_file = r.dir.join("slow.pid");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pid = loop {
+        if let Some(p) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "the gate never started");
+        assert!(
+            amont.try_wait().expect("try_wait").is_none(),
+            "amont exited before the gate started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let sent = Command::new("kill")
+        .args(["-TERM", &amont.id().to_string()])
+        .status()
+        .expect("kill -TERM");
+    assert!(sent.success());
+    let status = amont.wait().expect("wait amont");
+    assert_eq!(
+        status.signal(),
+        Some(15),
+        "amont must still die BY the signal: {status:?}"
+    );
+
+    // TERM, a grace, then KILL: give the reap a moment, never 300 s.
+    let alive = || {
+        Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill -0")
+            .success()
+    };
+    let until = Instant::now() + Duration::from_secs(5);
+    while alive() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let survivor = alive();
+    if survivor {
+        let _ = Command::new("kill").args(["-KILL", &pid]).status();
+    }
+    assert!(!survivor, "the gate's child {pid} outlived a killed amont");
+}
+
 #[test]
 fn a_cold_commit_warms_in_the_background_and_the_next_one_is_proven() {
     let r = repo_with("ok", "ruff", "true");

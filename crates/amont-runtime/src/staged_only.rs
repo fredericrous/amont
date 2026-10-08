@@ -875,6 +875,15 @@ pub fn restore_command(settings: &crate::config::Settings) -> Result<(), String>
 /// the standard "self-pipe" pattern for getting work out of a signal handler.
 #[cfg(unix)]
 pub fn install_signal_handler() {
+    // Once per process: `tree_run` arms it before every gate it spawns, and a
+    // second call would open another pipe, start another watcher and leave
+    // the first one blocked forever.
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(install_signal_handler_once);
+}
+
+#[cfg(unix)]
+fn install_signal_handler_once() {
     let mut fds = [-1i32; 2];
     if unsafe { libc_pipe(fds.as_mut_ptr()) } != 0 {
         // No pipe, no watcher, no handler: Ctrl-C falls back to the default
@@ -891,6 +900,9 @@ pub fn install_signal_handler() {
         if n <= 0 {
             return; // pipe closed, or a real error: nothing left to watch for
         }
+        // Gates first: they run in their own process groups, so the signal
+        // that is killing amont never reached them (amont#302).
+        crate::tree_run::reap_live();
         StagedOnly::restore(fixing_from_config());
         // Re-raise with the default handler so the exit status is honest
         // about having been killed.
@@ -956,9 +968,12 @@ pub fn install_signal_handler() {
     extern "system" {
         fn SetConsoleCtrlHandler(handler: extern "system" fn(u32) -> i32, add: i32) -> i32;
     }
-    unsafe {
+    // Once per process, as on unix: `tree_run` arms it before every gate, and
+    // each extra registration would run the restore again.
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| unsafe {
         SetConsoleCtrlHandler(on_ctrl, 1);
-    }
+    });
 }
 
 #[cfg(not(any(unix, windows)))]

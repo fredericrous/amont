@@ -100,6 +100,79 @@ pub fn group_alive(pgid: u32) -> bool {
     signal_group(pgid, 0)
 }
 
+/// The process groups of tree gates running right now.
+///
+/// A gate's own process group is what lets a timeout or a cancel kill the
+/// whole tree it forked — and also what hides it from a signal sent to amont:
+/// `kill <pid>`, a tool's timeout, the group of the `git push` that ran the
+/// hook. Fifteen `uv run pyright` groups from killed pushes were found alive
+/// 3 hours to 3 days later, re-parented to init (amont#302). So every running
+/// group is listed here, and the signal watcher (`staged_only`) reaps the list
+/// before amont re-raises and dies.
+#[cfg(unix)]
+static LIVE: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// Set once amont is dying of a signal; see [`reap_live`].
+static DYING: AtomicBool = AtomicBool::new(false);
+
+/// Hold the calling thread while amont dies of a signal: the watcher thread
+/// re-raises it with the default disposition, which ends the process. Never
+/// returns once `DYING` is set; returns at once otherwise.
+fn park_if_dying() {
+    while DYING.load(Ordering::SeqCst) {
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Lists `pgid` in [`LIVE`] for as long as it is held.
+#[cfg(unix)]
+struct Listed(u32);
+
+#[cfg(unix)]
+impl Listed {
+    fn new(pgid: u32) -> Listed {
+        LIVE.lock().unwrap_or_else(|p| p.into_inner()).push(pgid);
+        Listed(pgid)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Listed {
+    fn drop(&mut self) {
+        LIVE.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|g| *g != self.0);
+    }
+}
+
+/// Kill every tree gate still running: TERM, the same grace as a timeout,
+/// then KILL. Called by the signal watcher in ordinary thread context, never
+/// from the handler itself. A no-op when no gate runs.
+#[cfg(unix)]
+pub fn reap_live() {
+    // Before the kill: a gate that dies of THIS reap must not return to its
+    // caller, which would finish and exit 0 before the watcher re-raises —
+    // a killed amont reporting success. `run_output` parks instead.
+    DYING.store(true, std::sync::atomic::Ordering::SeqCst);
+    let groups: Vec<u32> = LIVE.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if groups.is_empty() {
+        return;
+    }
+    for g in &groups {
+        signal_group(*g, SIGTERM);
+    }
+    let until = Instant::now() + GRACE;
+    while Instant::now() < until && groups.iter().any(|g| group_alive(*g)) {
+        std::thread::sleep(POLL);
+    }
+    for g in groups.iter().filter(|g| group_alive(**g)) {
+        signal_group(*g, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn reap_live() {}
+
 fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
     {
@@ -163,7 +236,9 @@ fn summary(tail: &Mutex<VecDeque<String>>) -> String {
 
 /// Run `argv` in `cwd` until it exits, `deadline` passes, or `cancel` is set.
 pub fn run(argv: &[String], cwd: &Path, deadline: Instant, cancel: &AtomicBool) -> TreeRun {
-    run_inner(argv, cwd, deadline, cancel, false).0
+    let ran = run_inner(argv, cwd, deadline, cancel, false).0;
+    park_if_dying();
+    ran
 }
 
 /// [`run`], returning the tool's output (its last lines) on success — for a
@@ -174,7 +249,9 @@ pub fn run_output(
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Result<String, TreeRun> {
-    match run_inner(argv, cwd, deadline, cancel, true) {
+    let ran = run_inner(argv, cwd, deadline, cancel, true);
+    park_if_dying();
+    match ran {
         (TreeRun::Passed, out) => Ok(out),
         (other, _) => Err(other),
     }
@@ -220,10 +297,15 @@ fn run_inner(
             });
         }
     }
+    // Armed before the spawn: a signal landing between the spawn and the
+    // listing would otherwise find nothing to reap. Idempotent.
+    crate::staged_only::install_signal_handler();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return (TreeRun::Spawn(format!("{program}: {e}")), String::new()),
     };
+    #[cfg(unix)]
+    let _listed = Listed::new(child.id());
     // The parent's copies of the write end went into `cmd` and die with it,
     // so the reader sees EOF once every process holding the pipe has exited.
     drop(cmd);
