@@ -197,6 +197,62 @@ fn a_new_branch_is_judged_by_every_commit_not_just_its_tip() {
     );
 }
 
+/// A new ref whose every commit a remote already has introduces nothing.
+///
+/// Seeding a fork — `git remote rename origin upstream`, add the fork as
+/// `origin`, push `main` — is a new ref on `origin` whose tip is already on
+/// `upstream/main`. `rev-list <tip> --not --remotes` is EMPTY, and the empty
+/// list used to fall through to the "no remote to compare against" fallback,
+/// which diffs the tip commit alone: whatever upstream's last commit touched
+/// selected its package, and a 40-minute suite ran over code this push did not
+/// bring. The signal is `"test": "exit 1"` on a package the tip touches: if it
+/// runs, the push fails.
+#[test]
+fn a_new_ref_already_on_a_remote_runs_no_gate() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"test":"exit 1"}}"#,
+    );
+    r.commit("chore: base");
+    r.stage("src/a.js", "const x = 1;\n");
+    r.commit("feat: upstream's last commit touches js");
+    with_origin(&r);
+
+    assert_eq!(
+        push_new_branch(&r, "mirror", &head(&r)),
+        0,
+        "every pushed commit is already on origin/main; the gate must not run"
+    );
+}
+
+/// With no remote-tracking ref at all, `--not --remotes` excludes nothing:
+/// the whole history is new and is judged. The empty-range fix must not turn
+/// "no remote" into "nothing new" — pins the half that must NOT change.
+#[test]
+fn a_new_ref_with_no_remote_is_still_gated() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"test":"exit 1"}}"#,
+    );
+    r.commit("chore: base");
+    r.stage("src/a.js", "const x = 1;\n");
+    r.commit("feat: js");
+
+    assert_ne!(
+        push_new_branch(&r, "main", &head(&r)),
+        0,
+        "no remote to compare against: the tip's change must still be gated"
+    );
+}
+
 /// A file changed and reverted within one push still selects its package.
 ///
 /// `diff-tree A..B` is a two-TREE compare, not a commit walk — unlike `log`,
