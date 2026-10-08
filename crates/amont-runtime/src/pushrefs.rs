@@ -157,16 +157,44 @@ pub fn changed_files_for(r: &PushRef, zero: &str) -> Vec<String> {
         // commits back, with a docs-only commit on top, reported only the
         // docs file as changed, so a scope-gated check like
         // `pre-push-cargo-test` never ran.
-        let commits = crate::git::stdout(&["rev-list", &r.local_oid, "--not", "--remotes"]);
-        return match commits {
-            Some(commits) if !commits.is_empty() => diff_tree_stdin(&commits),
-            // No remote-tracking ref to exclude anything against (e.g. no
-            // remote configured at all) — fall back to the tip alone,
-            // which is at least what the check always did before.
-            _ => diff_tree_stdin(&r.local_oid),
+        return match new_ref_commits(&r.local_oid) {
+            NewRefCommits::Introduced(commits) => diff_tree_stdin(&commits),
+            NewRefCommits::AlreadyOnARemote => Vec::new(),
+            NewRefCommits::Unknown => diff_tree_stdin(&r.local_oid),
         };
     }
     range_changed_files(&r.remote_oid, &r.local_oid)
+}
+
+/// What a brand-new ref brings that no remote already has.
+///
+/// `rev-list <tip> --not --remotes` answers it, and its EMPTY answer used to
+/// share the fallback arm with a failed `rev-list`. Empty is not "unknown":
+/// the tip itself is listed unless a remote-tracking ref already reaches it,
+/// so empty means every pushed commit is on a remote. That is a fork being
+/// seeded from an upstream clone, and the fallback then gated whatever
+/// upstream's last commit touched — a full JS suite, 40 minutes, over code
+/// this push did not bring (amont#301).
+///
+/// No remote-tracking ref at all is NOT a third case: `--not --remotes` then
+/// excludes nothing and the walk returns the whole history, which is right —
+/// all of it is new. Diverting that case to the tip alone skipped a crate
+/// added two commits back (`rust_tools`' several-commits-back test).
+enum NewRefCommits {
+    /// The commits to judge, newline-separated, never empty.
+    Introduced(String),
+    /// Every pushed commit is already reachable from a remote-tracking ref.
+    AlreadyOnARemote,
+    /// `rev-list` failed: judge the tip, as the check always did.
+    Unknown,
+}
+
+fn new_ref_commits(local_oid: &str) -> NewRefCommits {
+    match crate::git::stdout(&["rev-list", local_oid, "--not", "--remotes"]) {
+        Some(commits) if !commits.is_empty() => NewRefCommits::Introduced(commits),
+        Some(_) => NewRefCommits::AlreadyOnARemote,
+        None => NewRefCommits::Unknown,
+    }
 }
 
 /// `(commit, files)` for every commit ONE ref would push — the same walks as
@@ -185,10 +213,11 @@ pub fn commits_and_files_for(r: &PushRef, zero: &str) -> Vec<(String, Vec<String
         return Vec::new(); // deleting a ref pushes no code
     }
     let commits = if r.remote_oid == zero {
-        // Same shape as `changed_files_for`'s new-branch arm, same fallback.
-        match crate::git::stdout(&["rev-list", &r.local_oid, "--not", "--remotes"]) {
-            Some(commits) if !commits.is_empty() => commits,
-            _ => r.local_oid.clone(),
+        // Same three cases as `changed_files_for`'s new-branch arm.
+        match new_ref_commits(&r.local_oid) {
+            NewRefCommits::Introduced(commits) => commits,
+            NewRefCommits::AlreadyOnARemote => return Vec::new(),
+            NewRefCommits::Unknown => r.local_oid.clone(),
         }
     } else {
         let range = format!("{}..{}", r.remote_oid, r.local_oid);
