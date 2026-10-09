@@ -394,11 +394,16 @@ pub struct Budgets {
     pub idle: u64,
     pub ceiling: u64,
     pub lock_wait: u64,
+    /// The extended silence budget, `idle × amont.idleLoadScale`: what a
+    /// check answers to while its CPU cannot be measured.
+    pub extended: u64,
 }
 
 fn budgets(settings: &crate::config::Settings) -> Budgets {
+    let idle = crate::hooks::common::idle_timeout(settings);
     Budgets {
-        idle: crate::hooks::common::idle_timeout(settings),
+        idle,
+        extended: idle.saturating_mul(crate::hooks::common::idle_load_scale(settings)),
         ceiling: crate::hooks::common::check_timeout(settings),
         lock_wait: match crate::hooks::common::lock_wait(settings) {
             crate::hooks::common::LockWait::Secs(s) => s,
@@ -475,13 +480,17 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
                 // The countdown counts what the kill decision counts: the
                 // still-time, which only differs from the silence once CPU
                 // work has pushed it back.
-                RowCpu::Idle | RowCpu::Unmeasured if row.quiet - row.still >= 1.0 => {
-                    line.push_str(&format!(
-                        " · quiet {quiet} · idle {}/{}",
-                        crate::hooks::common::human_secs(row.still as u64),
-                        crate::hooks::common::human_secs(budgets.idle)
-                    ))
-                }
+                // Unmeasured: the extended budget is the one that counts,
+                // and the row says why the figure is not the usual one.
+                RowCpu::Unmeasured => line.push_str(&format!(
+                    " · quiet {quiet}/{} (CPU unmeasured)",
+                    crate::hooks::common::human_secs(budgets.extended.max(budgets.idle))
+                )),
+                RowCpu::Idle if row.quiet - row.still >= 1.0 => line.push_str(&format!(
+                    " · quiet {quiet} · idle {}/{}",
+                    crate::hooks::common::human_secs(row.still as u64),
+                    crate::hooks::common::human_secs(budgets.idle)
+                )),
                 _ => line.push_str(&format!(
                     " · quiet {quiet}/{}",
                     crate::hooks::common::human_secs(budgets.idle)
@@ -599,6 +608,10 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
         match row.cpu {
             RowCpu::Busy(m) => line.push_str(&format!(", busy {}", crate::hooks::common::cores(m))),
             RowCpu::Idle => line.push_str(&format!(", CPU idle {}", human_secs(row.still as u64))),
+            RowCpu::Unmeasured if budgets.idle > 0 => line.push_str(&format!(
+                ", CPU unmeasured — extended budget {}",
+                human_secs(budgets.extended.max(budgets.idle))
+            )),
             RowCpu::Unmeasured => line.push_str(", CPU unmeasured"),
             RowCpu::None | RowCpu::NotSampled => {}
         }
@@ -613,12 +626,17 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             s => human_secs(s),
         };
         match row.cpu {
-            RowCpu::Busy(_) | RowCpu::Idle | RowCpu::Unmeasured if budgets.idle > 0 => {
-                line.push_str(&format!(
-                    " (killed after {idle} with no output and under 0.1 core of CPU, or \
-                     {ceiling} in total — amont.idleTimeout / amont.timeout)"
-                ))
-            }
+            // The budget that applies to THIS check, not the configured
+            // one: while CPU is unmeasured that is the extended budget.
+            RowCpu::Unmeasured if budgets.idle > 0 => line.push_str(&format!(
+                " (killed after {} with no output while its CPU is unmeasured, or {ceiling} \
+                 in total — amont.idleTimeout × amont.idleLoadScale / amont.timeout)",
+                human_secs(budgets.extended.max(budgets.idle))
+            )),
+            RowCpu::Busy(_) | RowCpu::Idle if budgets.idle > 0 => line.push_str(&format!(
+                " (killed after {idle} with no output and under 0.1 core of CPU, or \
+                 {ceiling} in total — amont.idleTimeout / amont.timeout)"
+            )),
             _ => line.push_str(&format!(
                 " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
             )),
@@ -938,7 +956,38 @@ mod tests {
         idle: 120,
         ceiling: 3600,
         lock_wait: 600,
+        extended: 480,
     };
+
+    /// While CPU is unmeasured the extended budget is the one that counts:
+    /// the region counts toward it and says why, the heartbeat names it,
+    /// and the first beat states that rule rather than the configured one.
+    #[test]
+    fn an_unmeasured_check_is_shown_against_the_extended_budget() {
+        let mut r = row("pre-push-run-tests-js", 240.0);
+        r.quiet = 130.0;
+        r.still = 130.0;
+        r.cpu = RowCpu::Unmeasured;
+        let text = region(&[r.clone()], 80, B);
+        assert!(
+            text.contains("· quiet 2m10s/8m00s (CPU unmeasured)"),
+            "{text:?}"
+        );
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
+        let beat = beat_line(&r, false, B, false);
+        assert!(
+            beat.ends_with(", CPU unmeasured — extended budget 8m00s\n"),
+            "{beat:?}"
+        );
+        let first = flat(&beat_line(&r, true, B, false));
+        assert!(
+            first.contains(
+                "killed after 8m00s with no output while its CPU is unmeasured, or 1h00m in total"
+            ),
+            "{first:?}"
+        );
+        assert!(first.contains("amont.idleLoadScale"), "{first:?}");
+    }
 
     /// A declared wait replaces the silence countdown in the region and
     /// rides after the heartbeat's unchanged prefix, naming its budget; both
@@ -1066,7 +1115,10 @@ mod tests {
         r.cpu = RowCpu::Unmeasured;
         r.still = 130.0;
         let plain = region(&[r], 80, B);
-        assert!(plain.contains("· quiet 2m10s/2m00s"), "{plain:?}");
+        assert!(
+            plain.contains("· quiet 2m10s/8m00s (CPU unmeasured)"),
+            "{plain:?}"
+        );
 
         for text in [busy, idle, plain] {
             assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
@@ -1084,7 +1136,10 @@ mod tests {
         for (cpu, suffix) in [
             (RowCpu::Busy(3900), ", busy ~3.9 cores\n"),
             (RowCpu::Idle, ", CPU idle 40s\n"),
-            (RowCpu::Unmeasured, ", CPU unmeasured\n"),
+            (
+                RowCpu::Unmeasured,
+                ", CPU unmeasured — extended budget 8m00s\n",
+            ),
             (RowCpu::None, "\n"),
             (RowCpu::NotSampled, "\n"),
         ] {
@@ -1097,7 +1152,7 @@ mod tests {
     #[test]
     fn the_first_beat_states_the_rule_in_force() {
         let mut r = row("vitest", 60.0);
-        r.cpu = RowCpu::Unmeasured;
+        r.cpu = RowCpu::Idle;
         let sampled = beat_line(&r, true, B, false);
         assert!(
             flat(&sampled).contains(
@@ -1155,6 +1210,7 @@ mod tests {
                 idle: 0,
                 ceiling: 0,
                 lock_wait: 0,
+                extended: 0,
             },
             false,
         );

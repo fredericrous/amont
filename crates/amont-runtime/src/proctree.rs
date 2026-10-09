@@ -83,7 +83,10 @@ impl Default for Limits {
         Limits {
             max_procs: 4096,
             max_retries: 2,
-            deadline: Duration::from_millis(100),
+            // Half the sampler's stop bound. 100 ms was too tight on a
+            // loaded machine: the walk itself was descheduled and every
+            // sample came back partial (ADR-0009).
+            deadline: Duration::from_millis(500),
         }
     }
 }
@@ -218,6 +221,10 @@ pub struct Window {
     pub start: Instant,
     pub end: Instant,
     pub gain_ns: u64,
+    /// One or more partial snapshots fell inside this window. Work done by
+    /// a child born and reaped during the gap is missed, so a gapped window
+    /// may count as busy but never as measured idle (ADR-0009).
+    pub gapped: bool,
 }
 
 impl Window {
@@ -238,16 +245,27 @@ pub enum Observation {
     Baseline,
     /// Two consecutive complete snapshots, and the work between them.
     Window(Window),
-    /// The snapshot was incomplete: nothing measured, and the next complete
-    /// one starts over as a baseline.
+    /// The snapshot was incomplete, but the last complete one is kept: the
+    /// next complete snapshot spans the gap as a window, so one slow walk
+    /// on a loaded machine costs an interval, not the baseline.
+    Skipped,
+    /// Nothing can be measured from here: the root could not be read, or
+    /// too many snapshots in a row came back partial. The next complete one
+    /// starts over as a baseline.
     Unmeasured,
 }
+
+/// How many partial snapshots in a row the tracker spans before it gives
+/// the baseline up: past this, "the next complete one" is not coming.
+pub const PARTIALS_BEFORE_RESET: u32 = 3;
 
 /// Turns successive snapshots into windows of work, remembering which
 /// processes it has seen so a reparented worker keeps counting.
 #[derive(Default)]
 pub struct Tracker {
     prev: Option<(Instant, HashMap<Id, Proc>)>,
+    /// Partial snapshots since the last complete one.
+    partials: u32,
 }
 
 impl Tracker {
@@ -261,10 +279,25 @@ impl Tracker {
     }
 
     pub fn observe(&mut self, now: Instant, snap: Snapshot) -> Observation {
-        let Snapshot::Complete(procs) = snap else {
-            self.prev = None;
-            return Observation::Unmeasured;
+        let procs = match snap {
+            Snapshot::Complete(procs) => procs,
+            Snapshot::Partial => {
+                self.partials += 1;
+                if self.partials >= PARTIALS_BEFORE_RESET {
+                    self.prev = None;
+                    self.partials = 0;
+                    return Observation::Unmeasured;
+                }
+                return Observation::Skipped;
+            }
+            Snapshot::Unavailable => {
+                self.prev = None;
+                self.partials = 0;
+                return Observation::Unmeasured;
+            }
         };
+        let gapped = self.partials > 0;
+        self.partials = 0;
         let cur: HashMap<Id, Proc> = procs.into_iter().map(|p| (p.id, p)).collect();
         let Some((then, prev)) = self.prev.replace((now, cur)) else {
             return Observation::Baseline;
@@ -274,6 +307,7 @@ impl Tracker {
             start: then,
             end: now,
             gain_ns: gain_ns(&prev, cur),
+            gapped,
         })
     }
 }
@@ -716,10 +750,16 @@ mod tests {
         let w = World::new(&ps);
         let base = Instant::now();
         let mut ticks = 0u64;
+        // The test is about the deadline, not its default: pin one the
+        // 60 ms ticks below cross on the third process.
+        let limits = Limits {
+            deadline: Duration::from_millis(100),
+            ..Limits::default()
+        };
         let got = walk(
             10,
             &[],
-            &Limits::default(),
+            &limits,
             &mut || {
                 ticks += 1;
                 base + Duration::from_millis(60 * ticks)
@@ -832,29 +872,67 @@ mod tests {
         );
     }
 
+    /// One partial snapshot is skipped, not fatal: the baseline is kept, the
+    /// seen set still names its processes, and the next complete snapshot is
+    /// a window spanning the gap, marked as gapped.
     #[test]
-    fn an_incomplete_snapshot_measures_nothing_and_the_next_one_rebaselines() {
+    fn a_partial_snapshot_is_skipped_and_the_next_complete_one_spans_the_gap() {
         let mut t = Tracker::default();
         let t0 = Instant::now();
         let s = Duration::from_secs(1);
         t.observe(t0, Snapshot::Complete(vec![p(10, 1, 0)]));
+        assert_eq!(t.observe(t0 + s, Snapshot::Partial), Observation::Skipped);
+        assert_eq!(t.seen(), vec![id(10)]);
+        match t.observe(t0 + 2 * s, Snapshot::Complete(vec![p(10, 1, 5000)])) {
+            Observation::Window(w) => {
+                assert_eq!(w.gain_ns, 5000 * MS);
+                assert_eq!(w.start, t0);
+                assert_eq!(w.end, t0 + 2 * s);
+                assert_eq!(w.milli_cores(), 2500);
+                assert!(w.gapped);
+            }
+            o => panic!("{o:?}"),
+        }
+        // A window with no gap in it says so.
+        match t.observe(t0 + 3 * s, Snapshot::Complete(vec![p(10, 1, 5500)])) {
+            Observation::Window(w) => {
+                assert_eq!(w.gain_ns, 500 * MS);
+                assert!(!w.gapped);
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// Three partials in a row, or an unreadable root, give the baseline up:
+    /// unmeasured, nothing seen, and the next complete snapshot starts over.
+    #[test]
+    fn too_many_partials_or_an_unavailable_root_rebaseline() {
+        let mut t = Tracker::default();
+        let t0 = Instant::now();
+        let s = Duration::from_secs(1);
+        t.observe(t0, Snapshot::Complete(vec![p(10, 1, 0)]));
+        assert_eq!(t.observe(t0 + s, Snapshot::Partial), Observation::Skipped);
         assert_eq!(
-            t.observe(t0 + s, Snapshot::Partial),
+            t.observe(t0 + 2 * s, Snapshot::Partial),
+            Observation::Skipped
+        );
+        assert_eq!(
+            t.observe(t0 + 3 * s, Snapshot::Partial),
             Observation::Unmeasured
         );
         assert!(t.seen().is_empty());
         assert_eq!(
-            t.observe(t0 + 2 * s, Snapshot::Complete(vec![p(10, 1, 5000)])),
+            t.observe(t0 + 4 * s, Snapshot::Complete(vec![p(10, 1, 5000)])),
             Observation::Baseline
         );
-        match t.observe(t0 + 3 * s, Snapshot::Complete(vec![p(10, 1, 5500)])) {
-            Observation::Window(w) => {
-                assert_eq!(w.gain_ns, 500 * MS);
-                assert_eq!(w.start, t0 + 2 * s);
-                assert_eq!(w.milli_cores(), 500);
-            }
-            o => panic!("{o:?}"),
-        }
+
+        let mut t = Tracker::default();
+        t.observe(t0, Snapshot::Complete(vec![p(10, 1, 0)]));
+        assert_eq!(
+            t.observe(t0 + s, Snapshot::Unavailable),
+            Observation::Unmeasured
+        );
+        assert!(t.seen().is_empty());
     }
 
     #[test]
@@ -876,6 +954,7 @@ mod tests {
             start: t0,
             end: t0 + Duration::from_secs(10),
             gain_ns: 40 * 1_000 * MS,
+            gapped: false,
         };
         assert_eq!(w.milli_cores(), 4000);
     }

@@ -198,6 +198,9 @@ pub struct Settings {
     policy: crate::policy::Policy,
     /// The precedence reader: one `--show-scope` scan per process.
     scoped: OnceLock<Option<BTreeSet<String>>>,
+    /// The host-key reader: one `--show-scope` scan with values, run only
+    /// when a host key is first read. `(scope, key lowercased, value)`.
+    host: OnceLock<Option<Vec<(String, String, String)>>>,
     /// Reads memoised on first use. Each was a module-level `OnceLock` beside
     /// its accessor; here, "resolved once" is scoped to a `Settings` rather
     /// than to the process, so a second one cannot inherit the first's answers.
@@ -205,6 +208,7 @@ pub struct Settings {
     pub(crate) idle: OnceLock<u64>,
     pub(crate) idle_cpu: OnceLock<bool>,
     pub(crate) lock_wait: OnceLock<u64>,
+    pub(crate) idle_load_scale: OnceLock<u64>,
     pub(crate) quiet: OnceLock<bool>,
     pub(crate) progress: OnceLock<bool>,
     pub(crate) declared_mode: OnceLock<bool>,
@@ -363,6 +367,131 @@ pub fn integer_or(
             complain(key, &why, &default.to_string());
             default
         }
+    }
+}
+
+/// A HOST key: a setting that describes the machine — how many heavy checks
+/// it runs at once, how far its load may stretch a budget — and so is read
+/// from `--global` or `--system` config only (ADR-0009). A value set in a
+/// repository is ignored with one warning naming the scope to use: two
+/// repositories that disagreed about the host's slot count would each take
+/// slots the other never sees. An environment variable named after the key
+/// (`amont.idleLoadScale` → `AMONT_IDLE_LOAD_SCALE`) outranks both, which
+/// is the precedence `cli.config.precedence` gives it: flag or environment,
+/// then the person's config, then the system's, then the default. The
+/// `amont.conf` policy ladder does not apply: a committed file cannot set
+/// a host key.
+///
+/// One `--show-scope` scan per `Settings`, run on the first host key read
+/// and never before, so a commit that runs no heavy check spawns nothing
+/// for it.
+pub fn host_integer_or(
+    settings: &crate::config::Settings,
+    key: &str,
+    default: i64,
+    range: RangeInclusive<i64>,
+) -> i64 {
+    let accept = |raw: &str, source: &str| -> Option<i64> {
+        match raw.trim().parse::<i64>() {
+            Ok(v) if range.contains(&v) => Some(v),
+            Ok(v) => {
+                complain(
+                    key,
+                    &format!(
+                        "{v} ({source}) is outside {}..={}",
+                        range.start(),
+                        range.end()
+                    ),
+                    &default.to_string(),
+                );
+                None
+            }
+            Err(_) => {
+                complain(
+                    key,
+                    &format!("{raw:?} ({source}) is not a whole number"),
+                    &default.to_string(),
+                );
+                None
+            }
+        }
+    };
+    let env_name = host_env_name(key);
+    if let Some(raw) = std::env::var(&env_name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        if let Some(v) = accept(&raw, &env_name) {
+            return v;
+        }
+    }
+    let rows = settings.host.get_or_init(|| {
+        git::stdout(&["config", "--show-scope", "--get-regexp", r"^amont\."]).map(|out| {
+            out.lines()
+                .filter_map(|line| {
+                    let (scope, rest) = line.split_once('\t')?;
+                    let (k, v) = match rest.split_once(' ') {
+                        Some((k, v)) => (k, v),
+                        None => (rest, ""),
+                    };
+                    Some((scope.to_string(), k.to_ascii_lowercase(), v.to_string()))
+                })
+                .collect()
+        })
+    });
+    let Some(rows) = rows else {
+        // A git too old for `--show-scope`: the default, said once.
+        complain(key, "git cannot report config scopes", &default.to_string());
+        return default;
+    };
+    let wanted = key.to_ascii_lowercase();
+    let host = rows
+        .iter()
+        .rev()
+        .find(|(scope, k, _)| *k == wanted && (scope == "global" || scope == "system"));
+    if host.is_none() && rows.iter().any(|(_, k, _)| *k == wanted) {
+        complain(
+            key,
+            "is set in this repository's config, but a host key is read from --global or \
+             --system only",
+            &default.to_string(),
+        );
+    }
+    host.and_then(|(scope, _, v)| accept(v, scope))
+        .unwrap_or(default)
+}
+
+/// `amont.idleLoadScale` → `AMONT_IDLE_LOAD_SCALE`: the environment name a
+/// host key answers to.
+pub fn host_env_name(key: &str) -> String {
+    let mut out = String::from("AMONT");
+    for part in key.trim_start_matches("amont.").split('.') {
+        out.push('_');
+        for c in part.chars() {
+            if c.is_ascii_uppercase() {
+                out.push('_');
+            }
+            out.push(c.to_ascii_uppercase());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    #[test]
+    fn a_host_key_names_its_environment_variable() {
+        use super::host_env_name;
+        assert_eq!(
+            host_env_name("amont.idleLoadScale"),
+            "AMONT_IDLE_LOAD_SCALE"
+        );
+        assert_eq!(host_env_name("amont.hostSlots"), "AMONT_HOST_SLOTS");
+        assert_eq!(host_env_name("amont.timeout"), "AMONT_TIMEOUT");
+        assert_eq!(
+            host_env_name("amont.commit.bodyWrap"),
+            "AMONT_COMMIT_BODY_WRAP"
+        );
     }
 }
 

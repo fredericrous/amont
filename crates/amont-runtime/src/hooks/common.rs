@@ -686,8 +686,17 @@ impl Activity {
                     // whole new budget.
                     self.last_busy.fetch_max(self.offset(w.start), Relaxed);
                 }
+                if w.gapped {
+                    // Busy is still busy, but a gap is not a measurement:
+                    // the measured-idle span starts over at the gap's end,
+                    // so the claim never covers what was not seen.
+                    self.measured_since.store(self.offset(w.end) + 1, Relaxed);
+                }
                 self.set_cpu_state(CpuState::Measuring);
             }
+            // A skipped sample changes nothing: the rate ages and goes
+            // stale on its own if the next complete one is late.
+            crate::proctree::Observation::Skipped => {}
             crate::proctree::Observation::Unmeasured => {
                 self.measured_since.store(0, Relaxed);
                 self.set_cpu_state(CpuState::Unavailable);
@@ -698,6 +707,29 @@ impl Activity {
     pub fn enable_cpu(&self) {
         self.set_cpu_state(CpuState::Waiting);
     }
+    /// Which silence budget applies right now, from what the sampler can
+    /// claim: see [`CpuGate`].
+    pub fn gate(&self) -> CpuGate {
+        match self.verdict() {
+            CpuVerdict::NotSampled => CpuGate::NotSampled,
+            CpuVerdict::MeasuredIdle(_) | CpuVerdict::BusyAtKill(_) => CpuGate::Measured,
+            CpuVerdict::Unmeasured => CpuGate::Unmeasured,
+        }
+    }
+}
+
+/// What the kill decision may rest on from the CPU side (ADR-0009). Not
+/// sampled at all: the silence-only rule, as ever. Measured: the silence
+/// budget, because "silent and idle" was actually observed. Unmeasured —
+/// sampling is on but the last sample was late, partial, or has not come
+/// yet: the EXTENDED budget, `amont.idleTimeout × amont.idleLoadScale`,
+/// which is bounded even when the ceiling is off, and never the bare
+/// silence budget, because that would kill on a measurement nobody made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuGate {
+    NotSampled,
+    Measured,
+    Unmeasured,
 }
 
 /// What the CPU sampler could say when a command was killed.
@@ -806,9 +838,21 @@ impl Clocks {
             ceiling: (wall > 0).then_some(wall),
             silence: (idle_secs > 0).then_some(idle_secs),
             lock_wait: lock_wait(settings),
-            extended: (idle_secs > 0).then_some(idle_secs),
+            extended: (idle_secs > 0).then(|| idle_secs.saturating_mul(idle_load_scale(settings))),
         }
     }
+}
+
+/// `amont.idleLoadScale`: how far the silence budget may stretch, as a
+/// factor — under load (ADR-0009, the load-scaled budget) and whenever the
+/// CPU could not be measured (the extended budget, `idleTimeout × this`).
+/// Default 4, `1` disables the stretch, range 1..=16. A HOST key: read from
+/// global or system config only, never from a repository, because it
+/// describes the machine and two repositories must not disagree about it.
+pub fn idle_load_scale(settings: &crate::config::Settings) -> u64 {
+    *settings.idle_load_scale.get_or_init(|| {
+        crate::config::host_integer_or(settings, "amont.idleLoadScale", 4, 1..=16) as u64
+    })
 }
 
 /// What became of a command run under the deadline.
@@ -1006,7 +1050,15 @@ fn sample_loop(
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let (first, every) = sampling_schedule(idle_secs);
-    let limits = crate::proctree::Limits::default();
+    let mut limits = crate::proctree::Limits::default();
+    // A diagnostic, and the seam the timing tests use to force a partial
+    // snapshot: cap the walk at this many processes.
+    if let Some(n) = std::env::var("AMONT_CPU_MAX_PROCS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
+        limits.max_procs = n;
+    }
     let trace = std::env::var_os("AMONT_CPU_TRACE");
     let mut tracker = crate::proctree::Tracker::default();
     let nap = |d: std::time::Duration| {
@@ -1157,7 +1209,8 @@ pub(crate) fn wait_within(
         // is not sampled, and zero during a declared wait.
         let quiet = activity.map(|a| a.still_for());
         let waiting = activity.and_then(Activity::waiting);
-        let why = judge(now.duration_since(started), quiet, waiting, &clocks);
+        let gate = activity.map_or(CpuGate::NotSampled, Activity::gate);
+        let why = judge(now.duration_since(started), quiet, waiting, gate, &clocks);
         if let Some(why) = why {
             let _ = child.kill();
             let _ = child.wait();
@@ -1188,11 +1241,14 @@ pub(crate) fn wait_within(
 /// declared wait answers to `lock_wait`, never to the silence budget — the
 /// tool has said what it is doing — and with `lock_wait` deferring to a
 /// ceiling that is off, to the extended silence budget, so that nothing is
-/// unbounded.
+/// unbounded. `cpu` picks which silence budget applies: the plain one when
+/// idleness was measured or is not sampled at all, the extended one while
+/// the sampler cannot say ([`CpuGate`]).
 pub fn judge(
     ran: std::time::Duration,
     quiet: Option<std::time::Duration>,
     waiting: Option<(crate::hooks::wait::WaitKind, std::time::Duration)>,
+    cpu: CpuGate,
     clocks: &Clocks,
 ) -> Option<Why> {
     if let Some(wall) = clocks.ceiling {
@@ -1211,7 +1267,11 @@ pub fn judge(
             _ => None,
         };
     }
-    if let (Some(idle), Some(q)) = (clocks.silence, quiet) {
+    let budget = match cpu {
+        CpuGate::NotSampled | CpuGate::Measured => clocks.silence,
+        CpuGate::Unmeasured => clocks.extended.or(clocks.silence),
+    };
+    if let (Some(idle), Some(q)) = (budget, quiet) {
         if q >= std::time::Duration::from_secs(idle) {
             return Some(Why::Silence(idle));
         }
@@ -1235,6 +1295,17 @@ pub fn say_timed_out(what: &str, k: Killed) {
                     hl(what),
                     human_secs(budget),
                     human_secs(covered.max(1)),
+                    human_secs(k.ran_secs),
+                    hl("git config amont.idleTimeout <secs>")
+                ),
+                CpuVerdict::Unmeasured if budget != k.idle_secs => format!(
+                    "{} printed nothing for {} — the extended budget, {} × {}, because its \
+                     CPU could not be measured — and was killed after {}; a tool this quiet \
+                     is usually stuck, not slow. {} raises the silence budget (0 disables)",
+                    hl(what),
+                    human_secs(budget),
+                    human_secs(k.idle_secs),
+                    hl("amont.idleLoadScale"),
                     human_secs(k.ran_secs),
                     hl("git config amont.idleTimeout <secs>")
                 ),
@@ -1280,6 +1351,15 @@ pub fn say_timed_out(what: &str, k: Killed) {
                      silence budget whatever their CPU.",
                         human_secs(q),
                         cores(m),
+                        hl("git config amont.idleCpuCredit false")
+                    )
+                }
+                (Some(q), CpuVerdict::Unmeasured) if k.idle_secs > 0 && q >= k.idle_secs => {
+                    format!(
+                        " It printed nothing for the last {} and its CPU could not be measured, \
+                         so only the extended silence budget applied. {} kills quiet runs at \
+                         the silence budget whatever their CPU.",
+                        human_secs(q),
                         hl("git config amont.idleCpuCredit false")
                     )
                 }
@@ -1509,7 +1589,60 @@ mod tests {
             start,
             end,
             gain_ns: gain,
+            gapped: false,
         })
+    }
+
+    /// A gapped window resets the measured-idle span to its own end: the
+    /// claim never covers the gap, while a busy gapped window still counts
+    /// as busy.
+    #[test]
+    fn a_gapped_window_is_never_claimed_as_measured_idle() {
+        use super::{Activity, CpuVerdict};
+        use crate::proctree::{Observation, Window};
+        let s = std::time::Duration::from_secs;
+        let every = s(10);
+        let a = Activity::new();
+        a.enable_cpu();
+        let t0 = std::time::Instant::now() - s(30);
+        a.record(Observation::Baseline, t0, every);
+        a.record(Observation::Skipped, t0 + s(10), every);
+        let gap_end = std::time::Instant::now();
+        a.record(
+            Observation::Window(Window {
+                start: t0,
+                end: gap_end,
+                gain_ns: 0,
+                gapped: true,
+            }),
+            gap_end,
+            every,
+        );
+        // Idle, but the span rests only on what followed the gap: 0 s.
+        assert_eq!(a.verdict(), CpuVerdict::MeasuredIdle(0));
+        assert_eq!(a.gate(), super::CpuGate::Measured);
+
+        let busy = Activity::new();
+        busy.enable_cpu();
+        busy.record(Observation::Baseline, t0, every);
+        busy.record(Observation::Skipped, t0 + s(10), every);
+        let now = std::time::Instant::now();
+        busy.record(window_gapped(t0, now, 3000), now, every);
+        assert_eq!(busy.verdict(), CpuVerdict::BusyAtKill(3000));
+        assert!(busy.still_for() < s(1));
+    }
+
+    fn window_gapped(
+        start: std::time::Instant,
+        end: std::time::Instant,
+        milli: u64,
+    ) -> crate::proctree::Observation {
+        match window(start, end, milli) {
+            crate::proctree::Observation::Window(w) => {
+                crate::proctree::Observation::Window(crate::proctree::Window { gapped: true, ..w })
+            }
+            o => o,
+        }
     }
 
     /// Even the shortest budget is sampled several times before it runs out,
@@ -1587,6 +1720,10 @@ mod tests {
         broken.record(window(before, now, 20), now, every);
         broken.record(Observation::Unmeasured, now, every);
         assert_eq!(broken.verdict(), CpuVerdict::Unmeasured);
+        assert_eq!(broken.gate(), super::CpuGate::Unmeasured);
+        assert_eq!(off.gate(), super::CpuGate::NotSampled);
+        assert_eq!(idle.gate(), super::CpuGate::Measured);
+        assert_eq!(busy.gate(), super::CpuGate::Measured);
     }
 
     /// A rate older than two sampling intervals is not shown, and cannot
@@ -1619,7 +1756,7 @@ mod tests {
     /// however short; a command nobody watches answers to the ceiling only.
     #[test]
     fn the_clocks_judge_silence_and_ceiling_separately() {
-        use super::{judge, Why};
+        use super::{judge, CpuGate, Why};
         use std::time::Duration as D;
         let s = D::from_secs;
         let c = |ceiling: Option<u64>, silence: Option<u64>| super::Clocks {
@@ -1630,38 +1767,89 @@ mod tests {
         };
         // Chatty and long: past a five-second silence budget, still fine.
         assert_eq!(
-            judge(s(900), Some(s(0)), None, &c(Some(3600), Some(5))),
+            judge(
+                s(900),
+                Some(s(0)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
             None
         );
         assert_eq!(
-            judge(s(900), Some(s(4)), None, &c(Some(3600), Some(5))),
+            judge(
+                s(900),
+                Some(s(4)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
             None
         );
         // Silent for the budget: killed, and the silence is blamed.
         assert_eq!(
-            judge(s(30), Some(s(5)), None, &c(Some(3600), Some(5))),
+            judge(
+                s(30),
+                Some(s(5)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
             Some(Why::Silence(5))
         );
         // Unobserved output: the silence clock cannot run at all.
-        assert_eq!(judge(s(900), None, None, &c(Some(3600), Some(5))), None);
+        assert_eq!(
+            judge(
+                s(900),
+                None,
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
+            None
+        );
         // The ceiling fires on elapsed time whatever the output is doing.
         assert_eq!(
-            judge(s(3600), Some(s(0)), None, &c(Some(3600), Some(120))),
+            judge(
+                s(3600),
+                Some(s(0)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(120))
+            ),
             Some(Why::Ceiling(3600))
         );
         // Both fired at once: the ceiling is the answer.
         assert_eq!(
-            judge(s(3600), Some(s(600)), None, &c(Some(3600), Some(120))),
+            judge(
+                s(3600),
+                Some(s(600)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(120))
+            ),
             Some(Why::Ceiling(3600))
         );
         // Both off: nothing ever fires.
         assert_eq!(
-            judge(s(86_400), Some(s(86_400)), None, &c(None, None)),
+            judge(
+                s(86_400),
+                Some(s(86_400)),
+                None,
+                CpuGate::NotSampled,
+                &c(None, None)
+            ),
             None
         );
         // Only silence on: no ceiling, however long it runs.
         assert_eq!(
-            judge(s(86_400), Some(s(1)), None, &c(None, Some(120))),
+            judge(
+                s(86_400),
+                Some(s(1)),
+                None,
+                CpuGate::NotSampled,
+                &c(None, Some(120))
+            ),
             None
         );
     }
@@ -1671,7 +1859,7 @@ mod tests {
     /// to the extended silence budget — never to nothing.
     #[test]
     fn a_declared_wait_answers_to_its_own_budget() {
-        use super::{judge, Clocks, LockWait, Why};
+        use super::{judge, Clocks, CpuGate, LockWait, Why};
         use crate::hooks::wait::{CargoLockWhat, WaitKind};
         use std::time::Duration as D;
         let s = D::from_secs;
@@ -1684,17 +1872,35 @@ mod tests {
         };
         // Silent for ten times the budget, but in a declared wait: fine.
         assert_eq!(
-            judge(s(1300), Some(s(0)), Some((kind, s(599))), &clocks),
+            judge(
+                s(1300),
+                Some(s(0)),
+                Some((kind, s(599))),
+                CpuGate::Measured,
+                &clocks
+            ),
             None
         );
         // The wait outlives its budget: killed, and the wait is blamed.
         assert_eq!(
-            judge(s(1300), Some(s(0)), Some((kind, s(600))), &clocks),
+            judge(
+                s(1300),
+                Some(s(0)),
+                Some((kind, s(600))),
+                CpuGate::Measured,
+                &clocks
+            ),
             Some(Why::Waited(kind, 600))
         );
         // The ceiling still wins.
         assert_eq!(
-            judge(s(3600), Some(s(0)), Some((kind, s(3000))), &clocks),
+            judge(
+                s(3600),
+                Some(s(0)),
+                Some((kind, s(3000))),
+                CpuGate::Measured,
+                &clocks
+            ),
             Some(Why::Ceiling(3600))
         );
         // lockWait 0 with a ceiling: the ceiling alone bounds the wait.
@@ -1703,7 +1909,13 @@ mod tests {
             ..clocks
         };
         assert_eq!(
-            judge(s(3000), Some(s(0)), Some((kind, s(2900))), &until),
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(2900))),
+                CpuGate::Measured,
+                &until
+            ),
             None
         );
         // lockWait 0 and no ceiling: the extended budget bounds it.
@@ -1712,12 +1924,70 @@ mod tests {
             ..until
         };
         assert_eq!(
-            judge(s(3000), Some(s(0)), Some((kind, s(479))), &open),
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(479))),
+                CpuGate::Measured,
+                &open
+            ),
             None
         );
         assert_eq!(
-            judge(s(3000), Some(s(0)), Some((kind, s(480))), &open),
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(480))),
+                CpuGate::Measured,
+                &open
+            ),
             Some(Why::Waited(kind, 480))
+        );
+    }
+
+    /// While the CPU is unmeasured the silence budget is the extended one:
+    /// no kill before `idle × scale`, a kill at it even with the ceiling
+    /// off; measured and not-sampled keep the plain budget.
+    #[test]
+    fn an_unmeasured_cpu_answers_to_the_extended_budget() {
+        use super::{judge, Clocks, CpuGate, LockWait, Why};
+        use std::time::Duration as D;
+        let s = D::from_secs;
+        let clocks = Clocks {
+            ceiling: None,
+            silence: Some(120),
+            lock_wait: LockWait::Secs(600),
+            extended: Some(480),
+        };
+        assert_eq!(
+            judge(s(500), Some(s(300)), None, CpuGate::Unmeasured, &clocks),
+            None
+        );
+        assert_eq!(
+            judge(s(500), Some(s(479)), None, CpuGate::Unmeasured, &clocks),
+            None
+        );
+        assert_eq!(
+            judge(s(500), Some(s(480)), None, CpuGate::Unmeasured, &clocks),
+            Some(Why::Silence(480))
+        );
+        assert_eq!(
+            judge(s(500), Some(s(120)), None, CpuGate::Measured, &clocks),
+            Some(Why::Silence(120))
+        );
+        assert_eq!(
+            judge(s(500), Some(s(120)), None, CpuGate::NotSampled, &clocks),
+            Some(Why::Silence(120))
+        );
+        // No extended budget configured (silence off): nothing fires.
+        let off = Clocks {
+            silence: None,
+            extended: None,
+            ..clocks
+        };
+        assert_eq!(
+            judge(s(86_400), Some(s(86_400)), None, CpuGate::Unmeasured, &off),
+            None
         );
     }
 
