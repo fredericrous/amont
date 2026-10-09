@@ -372,6 +372,11 @@ pub const SETTABLE: &[&str] = &[
     "commit.bodyWrap",
     "autoRebase",
     "timeout",
+    // How long a tool may sit in a declared lock wait (ADR-0009). A property
+    // of the project's build — a workspace whose cold check holds the cargo
+    // lock for ten minutes is the project's to know — and, like `timeout`,
+    // only ever lengthens or shortens a wait; it enforces nothing.
+    "lockWait",
     "testPushedTree",
     "minVersion",
     // A snapshot is not a workspace. `testPushedTree` is settable here, so a

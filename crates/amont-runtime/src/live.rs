@@ -330,6 +330,10 @@ pub struct Row {
     /// is judged against. Equal to `quiet` when CPU is not sampled.
     pub still: f64,
     pub cpu: RowCpu,
+    /// The declared lock wait it is in, and for how many seconds
+    /// (ADR-0009): shown instead of the silence countdown, which does not
+    /// run meanwhile.
+    pub wait: Option<(crate::hooks::wait::WaitKind, f64)>,
 }
 
 /// What a running check's CPU is doing, as far as the displays may say.
@@ -357,8 +361,8 @@ pub enum RowCpu {
 fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
     use crate::hooks::common::{CpuState, BUSY_MILLI_CORES};
     let slot_quiet = now.duration_since(s.last_output).as_secs_f64();
-    let (quiet, still, cpu) = match &s.activity {
-        None => (slot_quiet, slot_quiet, RowCpu::None),
+    let (quiet, still, cpu, wait) = match &s.activity {
+        None => (slot_quiet, slot_quiet, RowCpu::None, None),
         Some(a) => {
             let quiet = slot_quiet.min(a.quiet_for().as_secs_f64());
             let still = quiet.min(a.still_for().as_secs_f64());
@@ -368,7 +372,8 @@ fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
                 (_, Some(_)) => RowCpu::Idle,
                 (_, None) => RowCpu::Unmeasured,
             };
-            (quiet, still, cpu)
+            let wait = a.waiting().map(|(k, d)| (k, d.as_secs_f64()));
+            (quiet, still, cpu, wait)
         }
     };
     Row {
@@ -377,21 +382,28 @@ fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
         quiet,
         still,
         cpu,
+        wait,
     }
 }
 
-/// The two clocks, as the region annotates them: `(idle, ceiling)` in
-/// seconds, `0` for off.
+/// The clocks, as the region annotates them, in seconds: `idle` and
+/// `ceiling` with `0` for off; `lock_wait` with `0` for "until the
+/// ceiling".
 #[derive(Debug, Clone, Copy)]
 pub struct Budgets {
     pub idle: u64,
     pub ceiling: u64,
+    pub lock_wait: u64,
 }
 
 fn budgets(settings: &crate::config::Settings) -> Budgets {
     Budgets {
         idle: crate::hooks::common::idle_timeout(settings),
         ceiling: crate::hooks::common::check_timeout(settings),
+        lock_wait: match crate::hooks::common::lock_wait(settings) {
+            crate::hooks::common::LockWait::Secs(s) => s,
+            crate::hooks::common::LockWait::UntilCeiling => 0,
+        },
     }
 }
 
@@ -437,7 +449,21 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
         let frame = FRAMES[((row.elapsed * 10.0) as usize) % FRAMES.len()];
         let name = &row.name;
         let mut line = format!("{frame} {name:<pad$} {}", elapsed_column(row.elapsed));
-        if row.quiet >= QUIET_NOTE_SECS {
+        if let Some((kind, waited)) = row.wait {
+            // A declared wait: no silence countdown runs, so the row says
+            // what is being waited for and against which budget.
+            line.push_str(&format!(
+                " · {} {}",
+                kind.short(),
+                crate::hooks::common::human_secs(waited as u64)
+            ));
+            if budgets.lock_wait > 0 {
+                line.push_str(&format!(
+                    "/{}",
+                    crate::hooks::common::human_secs(budgets.lock_wait)
+                ));
+            }
+        } else if row.quiet >= QUIET_NOTE_SECS {
             let quiet = crate::hooks::common::human_secs(row.quiet as u64);
             match row.cpu {
                 // Working: no countdown — no kill is coming — just how hard.
@@ -559,11 +585,23 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
         human_secs(row.elapsed as u64),
         human_secs(row.quiet as u64)
     );
-    match row.cpu {
-        RowCpu::Busy(m) => line.push_str(&format!(", busy {}", crate::hooks::common::cores(m))),
-        RowCpu::Idle => line.push_str(&format!(", CPU idle {}", human_secs(row.still as u64))),
-        RowCpu::Unmeasured => line.push_str(", CPU unmeasured"),
-        RowCpu::None | RowCpu::NotSampled => {}
+    if let Some((kind, waited)) = row.wait {
+        line.push_str(&format!(
+            ", waiting for {} {}",
+            kind.describe(),
+            human_secs(waited as u64)
+        ));
+        match budgets.lock_wait {
+            0 => line.push_str(" (amont.lockWait 0: until the ceiling)"),
+            s => line.push_str(&format!(" (amont.lockWait {})", human_secs(s))),
+        }
+    } else {
+        match row.cpu {
+            RowCpu::Busy(m) => line.push_str(&format!(", busy {}", crate::hooks::common::cores(m))),
+            RowCpu::Idle => line.push_str(&format!(", CPU idle {}", human_secs(row.still as u64))),
+            RowCpu::Unmeasured => line.push_str(", CPU unmeasured"),
+            RowCpu::None | RowCpu::NotSampled => {}
+        }
     }
     if first {
         let idle = match budgets.idle {
@@ -892,13 +930,50 @@ mod tests {
             quiet: 0.0,
             still: 0.0,
             cpu: RowCpu::None,
+            wait: None,
         }
     }
 
     const B: Budgets = Budgets {
         idle: 120,
         ceiling: 3600,
+        lock_wait: 600,
     };
+
+    /// A declared wait replaces the silence countdown in the region and
+    /// rides after the heartbeat's unchanged prefix, naming its budget; both
+    /// fit 80 columns with the longest built-in name.
+    #[test]
+    fn a_declared_wait_is_shown_against_its_own_budget() {
+        use crate::hooks::wait::{CargoLockWhat, WaitKind};
+        let mut r = row("pre-push-run-tests-js", 240.0);
+        r.quiet = 130.0;
+        r.still = 0.0;
+        r.cpu = RowCpu::Unmeasured;
+        r.wait = Some((WaitKind::CargoLock(CargoLockWhat::BuildDirectory), 90.0));
+        let text = region(&[r.clone()], 80, B);
+        assert!(text.contains("· cargo lock 1m30s/10m00s"), "{text:?}");
+        assert!(!text.contains("quiet"), "no silence countdown: {text:?}");
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
+        let until = Budgets { lock_wait: 0, ..B };
+        let text = region(&[r.clone()], 80, until);
+        assert!(
+            text.contains("· cargo lock 1m30s") && !text.contains("1m30s/"),
+            "{text:?}"
+        );
+
+        let beat = beat_line(&r, false, B, false);
+        assert_eq!(
+            beat,
+            "  … pre-push-run-tests-js still running: 4m00s, last output 2m10s ago, \
+             waiting for the cargo lock on the build directory 1m30s (amont.lockWait 10m00s)\n"
+        );
+        let beat = beat_line(&r, false, until, false);
+        assert!(
+            beat.contains("(amont.lockWait 0: until the ceiling)"),
+            "{beat:?}"
+        );
+    }
 
     /// The spinner frame comes from the clock: different elapsed, different
     /// frame; same elapsed, same frame.
@@ -1079,6 +1154,7 @@ mod tests {
             Budgets {
                 idle: 0,
                 ceiling: 0,
+                lock_wait: 0,
             },
             false,
         );

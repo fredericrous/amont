@@ -204,6 +204,7 @@ pub struct Settings {
     pub(crate) timeout: OnceLock<u64>,
     pub(crate) idle: OnceLock<u64>,
     pub(crate) idle_cpu: OnceLock<bool>,
+    pub(crate) lock_wait: OnceLock<u64>,
     pub(crate) quiet: OnceLock<bool>,
     pub(crate) progress: OnceLock<bool>,
     pub(crate) declared_mode: OnceLock<bool>,
