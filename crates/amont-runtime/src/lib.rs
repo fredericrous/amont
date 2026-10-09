@@ -57,6 +57,7 @@ pub mod install;
 pub mod json;
 pub mod json_read;
 pub mod live;
+pub mod load;
 pub mod manifest;
 pub mod pack;
 pub mod policy;

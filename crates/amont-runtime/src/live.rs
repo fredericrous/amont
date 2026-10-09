@@ -334,6 +334,10 @@ pub struct Row {
     /// (ADR-0009): shown instead of the silence countdown, which does not
     /// run meanwhile.
     pub wait: Option<(crate::hooks::wait::WaitKind, f64)>,
+    /// The silence budget the kill decision is applying, stretched by the
+    /// host's load, with the load and the factor; `None` while it is the
+    /// configured one (ADR-0009).
+    pub load: Option<(u64, crate::load::Load, u32)>,
 }
 
 /// What a running check's CPU is doing, as far as the displays may say.
@@ -361,8 +365,8 @@ pub enum RowCpu {
 fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
     use crate::hooks::common::{CpuState, BUSY_MILLI_CORES};
     let slot_quiet = now.duration_since(s.last_output).as_secs_f64();
-    let (quiet, still, cpu, wait) = match &s.activity {
-        None => (slot_quiet, slot_quiet, RowCpu::None, None),
+    let (quiet, still, cpu, wait, load) = match &s.activity {
+        None => (slot_quiet, slot_quiet, RowCpu::None, None, None),
         Some(a) => {
             let quiet = slot_quiet.min(a.quiet_for().as_secs_f64());
             let still = quiet.min(a.still_for().as_secs_f64());
@@ -373,7 +377,7 @@ fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
                 (_, None) => RowCpu::Unmeasured,
             };
             let wait = a.waiting().map(|(k, d)| (k, d.as_secs_f64()));
-            (quiet, still, cpu, wait)
+            (quiet, still, cpu, wait, a.load_scale())
         }
     };
     Row {
@@ -383,6 +387,18 @@ fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
         still,
         cpu,
         wait,
+        load,
+    }
+}
+
+impl Row {
+    /// The silence budget this row counts toward: the load-stretched one
+    /// when the host stretched it, else the configured one.
+    fn applied_idle(&self, budgets: Budgets) -> u64 {
+        match self.load {
+            Some((applied, _, _)) if applied > 0 => applied,
+            _ => budgets.idle,
+        }
     }
 }
 
@@ -489,12 +505,15 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
                 RowCpu::Idle if row.quiet - row.still >= 1.0 => line.push_str(&format!(
                     " · quiet {quiet} · idle {}/{}",
                     crate::hooks::common::human_secs(row.still as u64),
-                    crate::hooks::common::human_secs(budgets.idle)
+                    crate::hooks::common::human_secs(row.applied_idle(budgets))
                 )),
                 _ => line.push_str(&format!(
                     " · quiet {quiet}/{}",
-                    crate::hooks::common::human_secs(budgets.idle)
+                    crate::hooks::common::human_secs(row.applied_idle(budgets))
                 )),
+            }
+            if let (Some((_, _, factor)), false) = (row.load, row.cpu == RowCpu::Unmeasured) {
+                line.push_str(&format!(" (load {})", crate::load::factor_text(factor)));
             }
         }
         if budgets.ceiling > 0 && row.elapsed >= 0.8 * budgets.ceiling as f64 {
@@ -615,9 +634,18 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             RowCpu::Unmeasured => line.push_str(", CPU unmeasured"),
             RowCpu::None | RowCpu::NotSampled => {}
         }
+        if let (Some((applied, load, factor)), false) = (row.load, row.cpu == RowCpu::Unmeasured) {
+            line.push_str(&format!(
+                ", budget {} (load avg {} on {} cores, {} — amont.idleLoadScale)",
+                human_secs(applied),
+                load.avg1_text(),
+                load.cores,
+                crate::load::factor_text(factor)
+            ));
+        }
     }
     if first {
-        let idle = match budgets.idle {
+        let idle = match row.applied_idle(budgets) {
             0 => "off".to_string(),
             s => human_secs(s),
         };
@@ -949,7 +977,42 @@ mod tests {
             still: 0.0,
             cpu: RowCpu::None,
             wait: None,
+            load: None,
         }
+    }
+
+    /// Under load the region counts toward the stretched budget and says
+    /// so; the heartbeat names the budget, the load and the key; the first
+    /// beat states the stretched figure.
+    #[test]
+    fn a_load_stretched_budget_is_shown_with_its_load() {
+        let mut r = row("pre-push-run-tests-js", 240.0);
+        r.quiet = 130.0;
+        r.still = 130.0;
+        r.cpu = RowCpu::Idle;
+        r.load = Some((
+            468,
+            crate::load::Load {
+                avg1_milli: 31_200,
+                cores: 8,
+            },
+            3900,
+        ));
+        let text = region(&[r.clone()], 80, B);
+        assert!(text.contains("· quiet 2m10s/7m48s (load ×3.9)"), "{text:?}");
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
+        let beat = beat_line(&r, false, B, false);
+        assert!(
+            beat.ends_with(
+                ", CPU idle 2m10s, budget 7m48s (load avg 31.2 on 8 cores, ×3.9 — amont.idleLoadScale)\n"
+            ),
+            "{beat:?}"
+        );
+        let first = flat(&beat_line(&r, true, B, false));
+        assert!(
+            first.contains("killed after 7m48s with no output and under 0.1 core of CPU"),
+            "{first:?}"
+        );
     }
 
     const B: Budgets = Budgets {

@@ -477,6 +477,14 @@ pub struct Activity {
     /// The code of the most recent wait, kept after it ends, so the note can
     /// name what was waited for.
     last_wait_kind: std::sync::atomic::AtomicU8,
+    /// The silence budget the wait loop is applying right now, in seconds,
+    /// after the host's load stretched it; 0 while it is the configured one
+    /// (ADR-0009). What the displays count toward.
+    budget_secs: std::sync::atomic::AtomicU32,
+    /// The load that stretched it: average × 1000, cores, factor × 1000.
+    load_avg_milli: std::sync::atomic::AtomicU32,
+    load_cores: std::sync::atomic::AtomicU32,
+    load_factor_milli: std::sync::atomic::AtomicU32,
     /// The last complete, non-empty stderr line, colour stripped and
     /// clipped: what a kill message may quote, and what decides a retry.
     last_line: std::sync::Mutex<String>,
@@ -497,6 +505,10 @@ impl Activity {
             wait_kind: Default::default(),
             waited_ns: Default::default(),
             last_wait_kind: Default::default(),
+            budget_secs: Default::default(),
+            load_avg_milli: Default::default(),
+            load_cores: Default::default(),
+            load_factor_milli: Default::default(),
             last_line: std::sync::Mutex::new(String::new()),
         })
     }
@@ -570,6 +582,34 @@ impl Activity {
     pub fn last_line(&self) -> Option<String> {
         let keep = self.last_line.lock().unwrap_or_else(|p| p.into_inner());
         (!keep.is_empty()).then(|| keep.clone())
+    }
+
+    /// The wait loop read the host's load and is applying `budget_secs`.
+    pub fn set_load(&self, budget_secs: u64, load: crate::load::Load, factor_milli: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.budget_secs
+            .store(u32::try_from(budget_secs).unwrap_or(u32::MAX), Relaxed);
+        self.load_avg_milli.store(load.avg1_milli, Relaxed);
+        self.load_cores.store(load.cores, Relaxed);
+        self.load_factor_milli.store(factor_milli, Relaxed);
+    }
+
+    /// The load-stretched budget in force, with the load behind it, when
+    /// the host's load stretched it at all.
+    pub fn load_scale(&self) -> Option<(u64, crate::load::Load, u32)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let factor = self.load_factor_milli.load(Relaxed);
+        if factor <= 1000 {
+            return None;
+        }
+        Some((
+            u64::from(self.budget_secs.load(Relaxed)),
+            crate::load::Load {
+                avg1_milli: self.load_avg_milli.load(Relaxed),
+                cores: self.load_cores.load(Relaxed),
+            },
+            factor,
+        ))
     }
     fn offset(&self, at: std::time::Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.base).as_nanos()).unwrap_or(u64::MAX)
@@ -800,6 +840,9 @@ pub struct Killed {
     /// [`LAST_LINE_CHARS`]: what decides a retry, and what the message may
     /// quote.
     pub last_line: Option<String>,
+    /// The host's load at the kill, with the factor it stretched the
+    /// silence budget by, when it stretched it at all.
+    pub load: Option<(crate::load::Load, u32)>,
 }
 
 /// The budgets one wait is judged under — the inputs to [`judge`] that do
@@ -817,6 +860,9 @@ pub struct Clocks {
     /// the ceiling" and the ceiling is off: the extended silence budget,
     /// `None` when silence is off too.
     pub extended: Option<u64>,
+    /// `amont.idleLoadScale`: how far the host's load may stretch
+    /// `silence`; 1 means not at all.
+    pub scale: u64,
 }
 
 impl Clocks {
@@ -827,6 +873,7 @@ impl Clocks {
             silence: None,
             lock_wait: LockWait::UntilCeiling,
             extended: None,
+            scale: 1,
         }
     }
 
@@ -834,14 +881,19 @@ impl Clocks {
     /// the caller resolved (0 = off).
     pub fn from_settings(settings: &crate::config::Settings, idle_secs: u64) -> Clocks {
         let wall = check_timeout(settings);
+        let scale = idle_load_scale(settings);
         Clocks {
             ceiling: (wall > 0).then_some(wall),
             silence: (idle_secs > 0).then_some(idle_secs),
             lock_wait: lock_wait(settings),
-            extended: (idle_secs > 0).then(|| idle_secs.saturating_mul(idle_load_scale(settings))),
+            extended: (idle_secs > 0).then(|| idle_secs.saturating_mul(scale)),
+            scale,
         }
     }
 }
+
+/// How often the wait loop re-reads the host's load.
+const LOAD_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// `amont.idleLoadScale`: how far the silence budget may stretch, as a
 /// factor — under load (ADR-0009, the load-scaled budget) and whenever the
@@ -1200,17 +1252,35 @@ pub(crate) fn wait_within(
     if clocks.ceiling.is_none() && clocks.silence.is_none() {
         return child.wait().map(Ran::Status);
     }
+    // The clocks as judged: `silence` stretched by the host's load, re-read
+    // every few seconds. The configured value stays in `clocks` for the
+    // message.
+    let mut live = clocks;
+    let mut load: Option<(crate::load::Load, u32)> = None;
+    let mut next_load = started;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Ran::Status(status));
         }
         let now = std::time::Instant::now();
+        if let (Some(idle), Some(a)) = (clocks.silence, activity) {
+            if clocks.scale > 1 && now >= next_load {
+                next_load = now + LOAD_EVERY;
+                if let Some(l) = crate::load::read() {
+                    let factor = l.factor_milli(clocks.scale);
+                    let applied = crate::load::scaled_budget(idle, l, clocks.scale, clocks.ceiling);
+                    live.silence = Some(applied);
+                    a.set_load(applied, l, factor);
+                    load = (factor > 1000).then_some((l, factor));
+                }
+            }
+        }
         // Judged on "silent AND idle on CPU"; equal to plain silence when CPU
         // is not sampled, and zero during a declared wait.
         let quiet = activity.map(|a| a.still_for());
         let waiting = activity.and_then(Activity::waiting);
         let gate = activity.map_or(CpuGate::NotSampled, Activity::gate);
-        let why = judge(now.duration_since(started), quiet, waiting, gate, &clocks);
+        let why = judge(now.duration_since(started), quiet, waiting, gate, &live);
         if let Some(why) = why {
             let _ = child.kill();
             let _ = child.wait();
@@ -1224,6 +1294,7 @@ pub(crate) fn wait_within(
                 idle_secs: clocks.silence.unwrap_or(0),
                 waiting: waiting.map(|(k, d)| (k, d.as_secs())),
                 last_line: activity.and_then(Activity::last_line),
+                load,
             }));
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -1287,39 +1358,51 @@ pub fn judge(
 pub fn say_timed_out(what: &str, k: Killed) {
     match k.why {
         Why::Silence(budget) => {
+            // Why the budget is not the configured one, when it is not:
+            // the extended budget while CPU could not be measured, or the
+            // configured one stretched by the host's load.
+            let stretched = match (k.cpu, k.load) {
+                _ if budget == k.idle_secs => String::new(),
+                (CpuVerdict::Unmeasured, _) => format!(
+                    " (the extended budget, {} × {}: its CPU could not be measured)",
+                    human_secs(k.idle_secs),
+                    hl("amont.idleLoadScale")
+                ),
+                (_, Some((load, factor))) => format!(
+                    " ({} stretched {} by a load average of {} on {} cores — {})",
+                    human_secs(k.idle_secs),
+                    crate::load::factor_text(factor),
+                    load.avg1_text(),
+                    load.cores,
+                    hl("amont.idleLoadScale")
+                ),
+                _ => String::new(),
+            };
             fail(&match k.cpu {
                 CpuVerdict::MeasuredIdle(covered) => format!(
-                    "{} printed nothing for {} and did no measurable CPU work (< 0.1 core) in \
-                     the last {} of it; killed after {} — a tool this idle is stuck, not slow. \
-                     {} raises the silence budget (0 disables)",
+                    "{} printed nothing for {}{stretched} and did no measurable CPU work \
+                     (< 0.1 core) in the last {} of it; killed after {} — a tool this idle \
+                     is stuck, not slow. {} raises the silence budget (0 disables)",
                     hl(what),
                     human_secs(budget),
                     human_secs(covered.max(1)),
                     human_secs(k.ran_secs),
                     hl("git config amont.idleTimeout <secs>")
                 ),
-                CpuVerdict::Unmeasured if budget != k.idle_secs => format!(
-                    "{} printed nothing for {} — the extended budget, {} × {}, because its \
-                     CPU could not be measured — and was killed after {}; a tool this quiet \
-                     is usually stuck, not slow. {} raises the silence budget (0 disables)",
+                _ => format!(
+                    "{} printed nothing for {}{stretched}{} and was killed after {} — a tool \
+                     this quiet is usually stuck, not slow. {} raises the silence budget (0 \
+                     disables)",
                     hl(what),
                     human_secs(budget),
-                    human_secs(k.idle_secs),
-                    hl("amont.idleLoadScale"),
+                    if k.cpu == CpuVerdict::Unmeasured && stretched.is_empty() {
+                        " (CPU not measured)"
+                    } else {
+                        ""
+                    },
                     human_secs(k.ran_secs),
                     hl("git config amont.idleTimeout <secs>")
                 ),
-                _ => {
-                    format!(
-                "{} printed nothing for {}{} and was killed after {} — a tool this quiet is \
-                 usually stuck, not slow. {} raises the silence budget (0 disables)",
-                hl(what),
-                human_secs(budget),
-                if k.cpu == CpuVerdict::Unmeasured { " (CPU not measured)" } else { "" },
-                human_secs(k.ran_secs),
-                hl("git config amont.idleTimeout <secs>")
-            )
-                }
             })
         }
         Why::Waited(kind, budget) => fail(&format!(
@@ -1764,6 +1847,7 @@ mod tests {
             silence,
             lock_wait: super::LockWait::Secs(600),
             extended: silence,
+            scale: 1,
         };
         // Chatty and long: past a five-second silence budget, still fine.
         assert_eq!(
@@ -1869,6 +1953,7 @@ mod tests {
             silence: Some(120),
             lock_wait: LockWait::Secs(600),
             extended: Some(480),
+            scale: 4,
         };
         // Silent for ten times the budget, but in a declared wait: fine.
         assert_eq!(
@@ -1958,6 +2043,7 @@ mod tests {
             silence: Some(120),
             lock_wait: LockWait::Secs(600),
             extended: Some(480),
+            scale: 4,
         };
         assert_eq!(
             judge(s(500), Some(s(300)), None, CpuGate::Unmeasured, &clocks),
