@@ -6,6 +6,35 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **A snapshot installs yarn dependencies.** A directory holding a tracked
+  `yarn.lock` is a unit like npm's and pnpm's: yarn 1 installs with
+  `yarn install --frozen-lockfile --non-interactive --prefer-offline`,
+  yarn 2+ ("berry") with `yarn install --immutable`, told apart by the
+  committed lockfile — berry's opens with a `__metadata:` block — so the
+  pushed commit decides, and each flavour gets the spelling it accepts
+  without a warning. A yarn 1 workspace (the Happier fork) rehearsed and
+  pushed in a checkout with no `node_modules`, and every workspace's
+  typecheck died on `Cannot find module` having tested nothing (#308).
+  `package.json`'s `packageManager` now names any of the four managers,
+  and settles a directory holding more than one lockfile. yarn is never
+  reused: a frozen install checks the lockfile against the manifests, not
+  the installed tree, so `reuse` installs a yarn unit and says so, the way
+  it does for npm.
+
+### Fixed
+
+- **A bun lockfile is refused with the fix named.** `bun.lock` and
+  `bun.lockb` are recognised as units — so a push that does not touch one
+  skips it like any other — and a unit the push needs fails the
+  preparation: `amont cannot install bun dependencies — set
+  amont.snapshotPrepare to the install command, or amont.snapshotDeps off`.
+  Before, the gate ran over no dependencies and failed every workspace at
+  once, which reads like a broken branch (#308).
+
 ## v1.49.1
 
 A correction to the `docs-skip` marker from v1.49.0; upgrade when you use it.

@@ -501,8 +501,10 @@ it earns is for exactly that tree. Only the test gates run — `branch-protect`,
 run when it is. A fresh worktree has no `node_modules`, so the snapshot is
 prepared first: the untracked files `amont.snapshotCarry` names, then each
 lockfile's dependencies (`amont.snapshotDeps`: `npm ci` / `pnpm install
---frozen-lockfile` by default, or a clone of your installed tree that the
-package manager accepts), then `amont.snapshotPrepare` if set. The worker
+--frozen-lockfile` / `yarn install --frozen-lockfile` (`--immutable` for
+yarn 2+) by default, or a clone of your installed tree that the package
+manager accepts; a bun lockfile is refused with the fix named), then
+`amont.snapshotPrepare` if set. The worker
 registers itself *before* preparing — `--status` reports `preparing`, a
 push waits for it, a newer commit cancels it, installer included — and a
 preparation that fails is recorded with its reason and fails the rehearsal
