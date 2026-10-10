@@ -349,6 +349,55 @@ impl HookRun {
     }
 }
 
+/// The variable [`fixture_exec`] sets for its one priming run.
+pub const PRIME_ENV: &str = "AMONT_FIXTURE_PRIME";
+
+/// Write a fixture executable — a `#!/bin/sh` script `body`, shebang
+/// included — make it executable, and exec it ONCE, before any test reads a
+/// clock.
+///
+/// macOS tags every file a process writes with `com.apple.provenance`, and
+/// Gatekeeper assesses such a file the first time it is exec'd: measured on a
+/// workstation, the first launch of a two-line script took 0.7 to 6.4 s, the
+/// second 0.04 s. A test that writes a shim and then times the hook running
+/// it was timing that assessment — the hung-remote probe took 15 s, an
+/// installer stub was not seen to start within 30 s, and a sampler watched
+/// a root shell sit for a second with 1 ms of CPU, before its child existed.
+///
+/// The priming run must not run the fixture's body (a `sleep 30`, a log
+/// line a test counts), so a guard is put on the line after the shebang:
+/// it exits at once when [`PRIME_ENV`] is set. Paying the assessment here
+/// costs the same seconds, outside every measured span.
+#[cfg(unix)]
+pub fn fixture_exec(p: &Path, body: &str) {
+    let (shebang, rest) = body
+        .split_once('\n')
+        .expect("a fixture script starts with its shebang line");
+    assert!(shebang.starts_with("#!"), "no shebang in {}", p.display());
+    std::fs::write(
+        p,
+        format!("{shebang}\n[ -n \"${PRIME_ENV}\" ] && exit 0\n{rest}"),
+    )
+    .expect("write the fixture executable");
+    make_executable(p);
+    prime(p);
+}
+
+/// Exec `p` once with [`PRIME_ENV`] set (see [`fixture_exec`]), for a script
+/// already carrying the guard.
+#[cfg(unix)]
+pub fn prime(p: &Path) {
+    let ok = Command::new(p)
+        .env(PRIME_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "priming {} failed", p.display());
+}
+
 #[cfg(unix)]
 fn make_executable(p: &Path) {
     use std::os::unix::fs::PermissionsExt;

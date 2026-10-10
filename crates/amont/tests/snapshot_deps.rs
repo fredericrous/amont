@@ -95,10 +95,10 @@ fn install_stubs(r: &Repo) {
     std::fs::create_dir_all(ctl(r)).unwrap();
     let body = STUB.replace("__CTL__", &ctl(r).display().to_string());
     for tool in ["npm", "pnpm"] {
-        let p = bin.join(tool);
-        std::fs::write(&p, &body).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Primed, so the installer's first exec is not the one macOS holds
+        // for an assessment (see `common::fixture_exec`): a test waiting 30 s
+        // for the installer to start was waiting on that.
+        common::fixture_exec(&bin.join(tool), &body);
     }
 }
 
