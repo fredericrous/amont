@@ -58,6 +58,34 @@ pub fn not_the_index() -> bool {
     NOT_THE_INDEX.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Extensions a commit may edit without running `docs-skip` checks. `.txt` is
+/// left out on purpose: `requirements.txt` is a dependency manifest, and a
+/// dependency change must never skip the gate that judges it.
+const DOC_EXTS: &[&str] = &[".md", ".mdx", ".rst", ".adoc"];
+
+/// Whether the staged change is ONLY edits to existing documentation: every
+/// path a modification (an added, deleted or renamed file can break a citation
+/// in either direction, so it is never skipped) with a documentation
+/// extension, outside the decision registry's `adr/`, whose records the
+/// decision graph is built from. False when the file set is not the index,
+/// when git would not say, and for an empty change.
+pub fn staged_docs_only() -> bool {
+    if not_the_index() {
+        return false;
+    }
+    let Some(raw) = git::stdout_paths(&["diff", "--cached", "--no-renames", "--name-status"])
+    else {
+        return false;
+    };
+    !raw.is_empty()
+        && raw.len() % 2 == 0
+        && raw.chunks(2).all(|pair| {
+            pair[0] == "M"
+                && !pair[1].starts_with("adr/")
+                && DOC_EXTS.iter().any(|e| pair[1].ends_with(e))
+        })
+}
+
 /// An empty `exts` returns them all.
 ///
 /// The UNFILTERED list is read from git ONCE per process and lent to every

@@ -707,6 +707,7 @@ mod tests {
         const BY_NAME: Scope = Scope {
             files: &[],
             names: &["package.json"],
+            dirs: &[],
             opt_in: &[],
             not_during: &[],
         };

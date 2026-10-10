@@ -48,9 +48,16 @@ and separately downgradable. See _What a repository cannot do_ for the limits.
 extensions and bare **filenames**: `*.ts,package.json,.prettierrc`. A bare
 token matches the path's basename exactly, anywhere in the tree — an
 extension list cannot say `package.json` without also matching
-`not-package.json`, which is why this is its own kind of token. Directories
-are not expressible. Evaluated against the files staged for a commit, or
-against the range being pushed. This gate is real: a `*.sh` check does not
+`not-package.json`, which is why this is its own kind of token.
+
+A **directory** is a token of the form `dir/**/*.ext`: a path is in scope when
+it sits under `dir/` and ends with `.ext`. `claude-plugin/**/*.md` covers
+`claude-plugin/skills/x/SKILL.md` and never `claude-plugin-old/SKILL.md`. The
+directory is whole segments, with no glob characters, no empty segment and no
+`.` or `..`; the extension is a plain suffix. Anything else containing a `/`
+or a glob (`claude-*/**/*.md`, `claude-plugin/*.md`, `x/**/*`) is refused as a
+parse error. Evaluated against the files staged for a commit, or against the
+range being pushed. This gate is real: a `*.sh` check does not
 run on a commit that touches no shell.
 
 A `+` adds the second half — what the **repository** must carry:
@@ -82,7 +89,7 @@ errors.
 
 A `+` that names no file (`*.rb+`) is refused rather than read as "no
 condition" — that is the opposite of what it was reaching for. A filename
-containing `+` is not expressible, the same class of limit as directories.
+containing `+` is not expressible.
 
 **severity** — `block` fails the stage; `warn` runs the check, prints whatever it
 prints, and lets the commit through. It is your choice, per check.
@@ -115,6 +122,19 @@ pre-commit  lint-shell  *.sh  block  files scripts/lint-shell.sh --strict
 With `files`, a commit whose matched set is empty does not run the command at
 all — most linters error on an empty argv, and a commit must not be blocked
 over nothing.
+
+- **the `docs-skip` marker**, opt-in, pre-commit only: prefix the command with
+  `docs-skip ` and the check does not run when the staged change only edits
+  existing documentation. Documentation is a `.md`, `.mdx`, `.rst` or `.adoc`
+  file, outside `adr/`, that is a modification: an added, deleted or renamed
+  file, a code file, a `.txt` (a `requirements.txt` is a dependency manifest)
+  or a decision record always runs the check. The skip is printed as
+  `skipped — the commit only edits existing documentation`. A `docs-skip` on a
+  `pre-push` line is a parse error.
+
+  This is a trade, and the `adr` line in amont's own `amont.conf` takes it: a
+  documentation edit that adds a link to a file that does not exist will pass
+  commit time. CI and the push-side checks still see it.
 
 ## There is no shell
 

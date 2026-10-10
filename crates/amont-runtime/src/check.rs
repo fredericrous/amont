@@ -111,6 +111,10 @@ pub struct Scope {
     /// `pre-commit-hadolint`, the first builtin to need it: a Dockerfile has
     /// no extension to gate on.
     pub names: &'static [&'static str],
+    /// Directory-scoped triggers, each written `dir/**/*.ext`: a path is in
+    /// scope when it sits under `dir/` and ends with `.ext`. The manifest's
+    /// scope column is the only writer; a built-in never needs one.
+    pub dirs: &'static [&'static str],
     /// Config paths that opt a repository in. Empty means always on.
     pub opt_in: &'static [&'static str],
     /// Git operations during which this check does not run.
@@ -127,6 +131,7 @@ impl Scope {
     pub const ALWAYS: Scope = Scope {
         files: &[],
         names: &[],
+        dirs: &[],
         opt_in: &[],
         not_during: &[],
     };
@@ -135,6 +140,7 @@ impl Scope {
         Scope {
             files,
             names: &[],
+            dirs: &[],
             opt_in: &[],
             not_during: &[],
         }
@@ -146,6 +152,7 @@ impl Scope {
         Scope {
             files: &[],
             names,
+            dirs: &[],
             opt_in: &[],
             not_during: &[],
         }
@@ -155,6 +162,7 @@ impl Scope {
         Scope {
             files,
             names: &[],
+            dirs: &[],
             opt_in,
             not_during: &[],
         }
@@ -165,6 +173,7 @@ impl Scope {
         Scope {
             files: self.files,
             names: self.names,
+            dirs: self.dirs,
             opt_in: self.opt_in,
             not_during: states,
         }
@@ -172,15 +181,17 @@ impl Scope {
 
     /// No file gate at all — every change is in scope.
     pub fn is_unscoped(&self) -> bool {
-        self.files.is_empty() && self.names.is_empty()
+        self.files.is_empty() && self.names.is_empty() && self.dirs.is_empty()
     }
 
     /// Does ONE path fall inside the file gate?
     pub fn covers(&self, path: &str) -> bool {
-        self.files.iter().any(|ext| path.ends_with(ext)) || {
-            let base = path.rsplit('/').next().unwrap_or(path);
-            self.names.contains(&base)
-        }
+        self.files.iter().any(|ext| path.ends_with(ext))
+            || self.dirs.iter().any(|token| in_dir(token, path))
+            || {
+                let base = path.rsplit('/').next().unwrap_or(path);
+                self.names.contains(&base)
+            }
     }
 
     /// Does this gate have work to do, given the files a PUSH changed?
@@ -491,6 +502,19 @@ impl Check for Builtin {
     }
 }
 
+/// Does `path` fall under a `dir/**/*.ext` token? The prefix is a whole
+/// directory, so `claude-plugin/**/*.md` covers `claude-plugin/a/b.md` and
+/// never `claude-plugin-old/b.md`. Malformed tokens are refused by the
+/// manifest before they reach here; a built-in never writes one.
+pub fn in_dir(token: &str, path: &str) -> bool {
+    let Some((dir, ext)) = token.split_once("/**/*") else {
+        return false;
+    };
+    path.strip_prefix(dir)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| !rest.is_empty() && path.ends_with(ext))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +579,22 @@ mod tests {
     fn opt_in_matches_a_nested_manifest() {
         let cargo = Scope::new(&[".rs"], &["Cargo.toml"]);
         assert!(cargo.matches(&["crates/a/src/lib.rs".into(), "crates/a/Cargo.toml".into()]));
+    }
+
+    #[test]
+    fn a_directory_token_covers_its_subtree_and_not_a_lookalike() {
+        let s = Scope {
+            files: &[],
+            names: &[],
+            dirs: &["claude-plugin/**/*.md"],
+            opt_in: &[],
+            not_during: &[],
+        };
+        assert!(!s.is_unscoped());
+        assert!(s.covers("claude-plugin/SKILL.md"));
+        assert!(s.covers("claude-plugin/skills/x/SKILL.md"));
+        assert!(!s.covers("claude-plugin-old/SKILL.md"));
+        assert!(!s.covers("claude-plugin/SKILL.rs"));
+        assert!(!s.covers("docs/claude-plugin/x.md"));
     }
 }
