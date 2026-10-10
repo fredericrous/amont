@@ -576,7 +576,7 @@ fn slow_clippy_repo() -> Repo {
     std::fs::write(
         &cargo,
         "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
-         clippy) [ \"$2\" = --version ] && { echo clippy; exit 0; }; sleep 3;;\nesac\nexit 0\n",
+         clippy) [ \"$2\" = --version ] && { echo clippy; exit 0; }; sleep 5;;\nesac\nexit 0\n",
     )
     .expect("write");
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -584,7 +584,9 @@ fn slow_clippy_repo() -> Repo {
 }
 
 /// Two repositories commit at once with one host slot: their clippys run
-/// one after the other, not together. With a slot directory another user
+/// one after the other, not together. Five-second clippys, so a loaded
+/// machine cannot blur "one after the other" (≥ 10 s) into "together"
+/// (≈ 5 s). With a slot directory another user
 /// could have made (mode 0755), queueing is off, both run at once, and each
 /// says why.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -628,10 +630,18 @@ fn heavy_checks_queue_for_a_host_slot() {
     };
 
     let _ = std::fs::remove_dir_all(&slots);
-    let (took, _) = run_pair(&slots);
+    let (took, outputs) = run_pair(&slots);
     assert!(
-        took >= std::time::Duration::from_millis(5500),
-        "two 3 s clippys with one slot took {took:?}: they ran together"
+        took >= std::time::Duration::from_secs(10),
+        "two 5 s clippys with one slot took {took:?}: they ran together"
+    );
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|o| o.contains("for a host slot"))
+            .count(),
+        1,
+        "exactly one of the two waited, and said so:\n{outputs:#?}"
     );
 
     use std::os::unix::fs::PermissionsExt;
@@ -640,7 +650,7 @@ fn heavy_checks_queue_for_a_host_slot() {
     std::fs::set_permissions(&slots, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let (took, outputs) = run_pair(&slots);
     assert!(
-        took < std::time::Duration::from_millis(5500),
+        took < std::time::Duration::from_millis(8500),
         "an unsafe slot directory must not queue: took {took:?}"
     );
     for out in outputs {
@@ -709,6 +719,11 @@ fn a_wait_like_kill_is_retried_once() {
     let (run, took) = r.hook_watched("pre-commit", &[("PATH", path.as_os_str())], WATCHDOG);
     assert!(run.passed(), "the retry passed:\n{}", run.output());
     assert!(took < std::time::Duration::from_secs(8), "took {took:?}");
+    assert!(
+        run.says("clippy") && run.says("was killed while it looked like it was waiting"),
+        "names the check, not the program:\n{}",
+        run.output()
+    );
     assert_eq!(
         run.output().matches("retrying once").count(),
         1,

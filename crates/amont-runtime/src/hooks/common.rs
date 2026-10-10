@@ -1234,7 +1234,10 @@ pub fn status_streamed(
     let Some(left) = retry_budget(retry, k, check_timeout(settings)) else {
         return first;
     };
-    let what = cmd.get_program().to_string_lossy().into_owned();
+    // The check's name (`clippy`), which is what the reader knows; the
+    // program (`cargo`) only when no check is running on this thread.
+    let what = crate::host_slots::current_check()
+        .unwrap_or_else(|| cmd.get_program().to_string_lossy().into_owned());
     say(&format!(
         "{} was killed while it looked like it was waiting ({}); retrying once{}.",
         hl(&what),

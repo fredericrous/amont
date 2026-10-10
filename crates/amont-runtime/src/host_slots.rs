@@ -71,6 +71,9 @@ pub enum Reason {
     Unsupported,
     /// No slot freed within `amont.timeout`.
     TimedOut(Duration),
+    /// A slot file could not be opened or locked for a reason other than
+    /// "another holder has it".
+    Io(String),
 }
 
 /// What [`acquire`] got.
@@ -129,8 +132,15 @@ pub fn acquire(n: u64, budget: Duration) -> Acquired {
     let started = Instant::now();
     loop {
         for i in 0..n {
-            if let Some(file) = platform::try_lock(&dir.join(format!("slot-{i}"))) {
-                return Acquired::Slot(Slot { _file: file });
+            let path = dir.join(format!("slot-{i}"));
+            match platform::try_lock(&path) {
+                Ok(Some(file)) => return Acquired::Slot(Slot { _file: file }),
+                Ok(None) => {}
+                // Not "busy": an error waiting would only repeat, and a
+                // full queue must not be claimed when nobody was seen.
+                Err(e) => {
+                    return Acquired::Unqueued(Reason::Io(format!("{}: {e}", path.display())))
+                }
             }
         }
         if started.elapsed() >= budget {
@@ -143,6 +153,8 @@ pub fn acquire(n: u64, budget: Duration) -> Acquired {
 /// What the check running on THIS thread is, as far as slots go.
 #[derive(Default)]
 struct Current {
+    /// The check's name, for the messages its tools' runners print.
+    name: String,
     heavy: bool,
     /// The slot question has been answered for this check (held, or
     /// unqueued for a reason).
@@ -176,11 +188,21 @@ impl Drop for CheckGuard {
 pub fn enter_check(name: &str) -> CheckGuard {
     CURRENT.with(|c| {
         *c.borrow_mut() = Current {
+            name: name.to_string(),
             heavy: weight_of(name) == Weight::Heavy,
             ..Current::default()
         }
     });
     CheckGuard
+}
+
+/// The name of the check running on this thread, without its stage
+/// prefix (`clippy`), when the dispatcher installed one.
+pub fn current_check() -> Option<String> {
+    CURRENT.with(|c| {
+        let c = c.borrow();
+        (!c.name.is_empty()).then(|| crate::short_name(&c.name).to_string())
+    })
 }
 
 /// Whether this process was started by an amont that holds a slot.
@@ -197,7 +219,9 @@ pub fn before_spawn(settings: &crate::config::Settings) -> bool {
         c.heavy && !c.settled
     });
     if pending {
-        let n = configured(settings);
+        // Nested first: a nested amont must not pay the host-key scan for
+        // a slot count it is about to ignore.
+        let n = if nested() { 0 } else { configured(settings) };
         let outcome = if nested() {
             Acquired::Unqueued(Reason::Nested)
         } else if n == 0 {
@@ -216,7 +240,17 @@ pub fn before_spawn(settings: &crate::config::Settings) -> bool {
             if let Some((stage, idx)) = &sink {
                 stage.queue(*idx, None);
             }
-            CURRENT.with(|c| c.borrow_mut().queued += started.elapsed());
+            let waited = started.elapsed();
+            CURRENT.with(|c| c.borrow_mut().queued += waited);
+            // Piped output never shows the region, and a heartbeat only
+            // comes after a minute: say once where the time went.
+            if matches!(got, Acquired::Slot(_)) && waited >= Duration::from_secs(1) {
+                crate::hooks::common::say(&format!(
+                    "  (waited {} for a host slot, {} {n})",
+                    crate::hooks::common::human_secs(waited.as_secs()),
+                    crate::ui::highlight("amont.hostSlots")
+                ));
+            }
             got
         };
         let held = match outcome {
@@ -251,6 +285,9 @@ fn note(reason: &Reason, n: u64) {
             n,
             crate::ui::highlight("amont.hostSlots")
         )),
+        Reason::Io(why) => {
+            crate::hooks::common::warn(&format!("host slots are off for this check: {why}"))
+        }
         Reason::Disabled | Reason::Nested | Reason::Unsupported => {}
     }
 }
@@ -308,15 +345,24 @@ mod platform {
         Ok(())
     }
 
-    pub fn try_lock(path: &Path) -> Option<std::fs::File> {
+    /// `Ok(None)` only when another holder has the lock (EWOULDBLOCK);
+    /// every other failure is an error the caller reports.
+    pub fn try_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(path)
-            .ok()?;
+            .open(path)?;
         // SAFETY: a valid fd we own; flock touches no memory.
-        (unsafe { libc_flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0).then_some(file)
+        if unsafe { libc_flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
+            return Ok(Some(file));
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(None)
+        } else {
+            Err(e)
+        }
     }
 }
 
@@ -335,8 +381,8 @@ mod platform {
     pub fn check_private(_dir: &Path) -> Result<(), String> {
         Ok(())
     }
-    pub fn try_lock(_path: &Path) -> Option<std::fs::File> {
-        None
+    pub fn try_lock(_path: &Path) -> std::io::Result<Option<std::fs::File>> {
+        Ok(None)
     }
 }
 
@@ -372,15 +418,19 @@ mod tests {
     fn slots_are_exclusive_and_released_on_drop() {
         let d = scratch("exclusive");
         safe_dir(&d).unwrap();
-        let a = platform::try_lock(&d.join("slot-0")).expect("first");
-        assert!(platform::try_lock(&d.join("slot-0")).is_none());
+        let a = platform::try_lock(&d.join("slot-0"))
+            .expect("no error")
+            .expect("first");
+        assert!(platform::try_lock(&d.join("slot-0"))
+            .expect("busy is not an error")
+            .is_none());
         drop(a);
         // Released on the last close. A thread of another test that forks
         // in the instant before its exec holds a copy of every descriptor
         // until then (O_CLOEXEC closes it at exec, not at fork), so allow
         // that instant rather than assert a release that is a race away.
         let freed = (0..100).any(|_| {
-            platform::try_lock(&d.join("slot-0")).is_some() || {
+            matches!(platform::try_lock(&d.join("slot-0")), Ok(Some(_))) || {
                 std::thread::sleep(Duration::from_millis(20));
                 false
             }
@@ -415,11 +465,29 @@ mod tests {
         assert_eq!(std::env::var("AMONT_IDLE_LOAD_SCALE").as_deref(), Ok("1"));
     }
 
-    /// A light check never asks; a heavy one settles once per check.
+    /// A light check never asks. A heavy one run by an amont that holds a
+    /// slot (the test process has `AMONT_HOST_SLOT=held` from
+    /// `.cargo/config.toml`) is nested: it settles without a slot.
     #[test]
     fn a_light_check_never_takes_a_slot() {
         let settings = crate::config::Settings::default();
         let _g = enter_check("pre-commit-cargo-fmt");
         assert!(!before_spawn(&settings));
+    }
+
+    #[test]
+    fn a_nested_heavy_check_settles_without_a_slot() {
+        let settings = crate::config::Settings::default();
+        let _g = enter_check("pre-commit-clippy");
+        assert_eq!(current_check().as_deref(), Some("clippy"));
+        assert!(!before_spawn(&settings));
+        assert!(CURRENT.with(|c| c.borrow().settled));
+    }
+
+    /// An unopenable slot file is an error, not a full queue.
+    #[test]
+    fn an_unopenable_slot_is_an_error_not_busy() {
+        let d = scratch("missing").join("absent-subdir").join("slot-0");
+        assert!(platform::try_lock(&d).is_err());
     }
 }

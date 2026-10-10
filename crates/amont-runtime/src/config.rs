@@ -383,8 +383,10 @@ pub fn integer_or(
 /// a host key.
 ///
 /// One `--show-scope` scan per `Settings`, run on the first host key read
-/// and never before, so a commit that runs no heavy check spawns nothing
-/// for it.
+/// and never before: `amont.idleLoadScale` is read when the first observed
+/// tool of any check is spawned, so a commit that runs no tool spawns
+/// nothing for it and one that does pays exactly one spawn, pinned by
+/// `spawn_budget.rs`.
 pub fn host_integer_or(
     settings: &crate::config::Settings,
     key: &str,

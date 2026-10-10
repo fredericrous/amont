@@ -319,7 +319,8 @@ deadline model. Process-group kill of a check's grandchildren.
 - [x] Phase 5 — Behaviour 4: `host_slots.rs`, `Weight`, registry `HEAVY` test, acquisition in both stage runners, `AMONT_HOST_SLOT`/`AMONT_SLOT_DIR`, harness env opt-out, `amont.hostSlots`, queued display.
 - [x] Phase 6 — Behaviour 5: drop `--workspace` for member roots, fallbacks.
 - [x] Phase 7 — Behaviour 6: `last_line` in `Killed`, `looks_like_wait`, one retry in `status_streamed` under the remaining ceiling.
-- [ ] Phase 8 — docs, `agents_md.rs` + `amont agents-md`, CHANGELOG v1.48.0, spawn budget; `make check`, `make lint-cross`, MSRV check, `check-no-deps.sh`; pilot; implementation review; PR; merge-when-green.
+- [x] Phase 8a — docs, `agents_md.rs` + `amont agents-md`, CHANGELOG v1.48.0, spawn budget; `make check`, `make lint-cross`, MSRV check, `check-no-deps.sh`; pilot; implementation review.
+- [ ] Phase 8b — PR; merge-when-green.
 - [ ] Phase 9 — release v1.48.0 (`tag-release`), reinstall locally (`amont install --force` in happier), verify the next happier commit under load.
 
 ## Verification
@@ -494,8 +495,11 @@ deadline model. Process-group kill of a check's grandchildren.
     `AMONT_IDLE_LOAD_SCALE=1` from `.cargo/config.toml` `[env]` (a test
     proves it reaches them), because about forty test files spawn amont
     directly; the slot/load fixtures remove both.
-  - `spawn_budget.rs` caps unchanged: the host-key scan runs only when a
-    heavy check spawns a tool, which no budgeted fixture does.
+  - `spawn_budget.rs` caps unchanged: its fixtures commit a `.txt` and
+    run no tool, so the host-key scan (read at the first observed tool of
+    ANY check) never runs there. A new test pins its cost instead: the
+    same commit running one declared tool spawns git exactly once more
+    without the scale pinned than with it (implementation review, finding 2).
   - The by-hand reproduction of a fixture ran `amont install` from the
     branch build and replaced `~/.local/bin/amont` for a day; restored to
     the 1.47.3 release with `install.sh` before the before-pilot reran.
