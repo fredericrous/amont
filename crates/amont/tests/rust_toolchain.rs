@@ -173,3 +173,68 @@ fn without_rustup_the_path_cargo_is_used_and_still_checked() {
         "{out}"
     );
 }
+
+/// A `cargo` shim that answers the version probes and records every clippy
+/// call as `<cwd> <args>`.
+fn recording_cargo(r: &Repo) -> std::path::PathBuf {
+    let dir = r.path(".git/toolshims");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let log = dir.join("calls");
+    let p = dir.join("cargo");
+    std::fs::write(
+        &p,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
+             clippy) [ \"$2\" = --version ] && {{ echo clippy; exit 0; }}; \
+             echo \"$PWD $*\" >> \"{}\";;\nesac\nexit 0\n",
+            log.display()
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    log
+}
+
+/// Pre-commit clippy judges the package that owns the staged source, from
+/// its own root and without `--workspace`; a staged lockfile makes it judge
+/// the whole workspace (ADR-0009, `hooks.clippy-scope`).
+#[test]
+fn clippy_judges_the_staged_package_unless_the_lockfile_is_staged() {
+    let r = Repo::new();
+    r.stage(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n",
+    );
+    for c in ["a", "b"] {
+        r.stage(
+            &format!("crates/{c}/Cargo.toml"),
+            &format!("[package]\nname = \"{c}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        );
+        r.stage(&format!("crates/{c}/src/lib.rs"), "pub fn x() {}\n");
+    }
+    r.stage("Cargo.lock", "version = 3\n");
+    r.commit("init");
+    let log = recording_cargo(&r);
+    let path = shimmed_path(&r);
+
+    r.stage("crates/a/src/lib.rs", "pub fn x() {}\npub fn y() {}\n");
+    let (code, out) = clippy_with_path(&r, &path);
+    assert_eq!(code, 0, "{out}");
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.lines().count() == 1
+            && calls.contains("crates/a clippy --all-targets")
+            && !calls.contains("--workspace"),
+        "one call, in crates/a, without --workspace:\n{calls}"
+    );
+
+    std::fs::remove_file(&log).expect("reset");
+    r.stage("Cargo.lock", "version = 3\n# bumped\n");
+    let (code, out) = clippy_with_path(&r, &path);
+    assert_eq!(code, 0, "{out}");
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("clippy --workspace"),
+        "a staged lockfile judges the workspace:\n{calls}"
+    );
+}
