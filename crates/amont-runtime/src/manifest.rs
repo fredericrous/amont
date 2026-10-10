@@ -85,6 +85,8 @@ pub enum ParseError {
     /// hook must not modify the worktree or index — the pushed commit would
     /// then differ from the tree the developer is looking at.
     FixOnPrePush,
+    /// `docs-skip` on a pre-push line: a push has no staged change to judge as docs.
+    DocsSkipOnPrePush,
     /// A `tree` line with the wrong shape; carries what was wrong.
     BadTreeLine(&'static str),
     /// A `tree` line naming a tool amont does not know how to attest.
@@ -158,6 +160,10 @@ impl std::fmt::Display for ParseError {
                 f,
                 "`fix` is only for pre-commit — a pre-push hook must not rewrite files"
             ),
+            ParseError::DocsSkipOnPrePush => write!(
+                f,
+                "`docs-skip` is only for pre-commit — a push has no staged change to judge"
+            ),
             ParseError::BadSeverity(t) => {
                 write!(f, "severity {t:?} must be `block` or `warn`")
             }
@@ -176,6 +182,9 @@ pub struct Declared {
     pub fix: Fix,
     /// The command column carried the `files` marker.
     pub files: bool,
+    /// The command column began `docs-skip ` — do not run on a commit whose
+    /// staged change only edits existing documentation (`staged_docs_only`).
+    pub docs_skip: bool,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -183,6 +192,8 @@ pub struct Declared {
     pub exts: Vec<String>,
     /// Exact filenames that gate it — the scope column's bare tokens.
     pub names: Vec<String>,
+    /// Directory triggers, each `dir/**/*.ext` — see `parse_scope`.
+    pub dirs: Vec<String>,
     /// Files the REPOSITORY must carry for this check to apply at all — the
     /// scope column's `+` half. Empty means always applicable, which is what
     /// every declaration meant before `amont add` made a line something you
@@ -295,6 +306,7 @@ pub struct TreeGate {
     pub tool: TreeTool,
     pub exts: Vec<String>,
     pub names: Vec<String>,
+    pub dirs: Vec<String>,
     pub opt_in: Vec<String>,
     /// The directory the command runs in, relative to the repository root.
     pub cwd: Option<String>,
@@ -562,6 +574,8 @@ pub enum Kind {
         /// The command column began `files ` — append the matched paths to
         /// the argv, the way a builtin hands its tool the staged list.
         files: bool,
+        /// The command column began `docs-skip ` — see `Declared::docs_skip`.
+        docs_skip: bool,
     },
     Unusable {
         why: String,
@@ -604,15 +618,16 @@ impl Check for External {
 
     fn run(&self, ctx: &Ctx) -> Outcome {
         let settings = ctx.settings;
-        let (scope, program, args, fix, files) = match &self.kind {
+        let (scope, program, args, fix, files, docs_skip) = match &self.kind {
             Kind::Runnable {
                 scope,
                 program,
                 args,
                 fix,
                 files,
+                docs_skip,
                 ..
-            } => (scope, program, args, *fix, *files),
+            } => (scope, program, args, *fix, *files, *docs_skip),
             Kind::Unusable { why } => {
                 crate::hooks::common::warn(&format!(
                     "{MANIFEST}: {} — {}",
@@ -671,6 +686,18 @@ impl Check for External {
         match self.stage {
             Stage::PreCommit => {
                 let staged = crate::hooks::common::staged_files(&[]);
+                // An edit to existing documentation cannot break what this
+                // gate judges: the tests and decision graph are untouched by
+                // prose. Said out loud, like every other skip that is a
+                // decision and not a missing tool.
+                if docs_skip && crate::hooks::common::staged_docs_only() {
+                    crate::say!(
+                        "{} {} skipped — the commit only edits existing documentation",
+                        crate::ui::valid_sign(),
+                        crate::ui::highlight(&self.short_name),
+                    );
+                    return Outcome::Passed;
+                }
                 let Some(matched) = files_to_judge(scope, files, &staged) else {
                     return Outcome::Passed;
                 };
@@ -937,14 +964,36 @@ fn leak(exts: Vec<String>) -> &'static [&'static str] {
 /// semantics.
 ///
 /// Splitting on the FIRST `+` means a filename containing one is not
-/// expressible. That is the same class of limit as directories being
-/// inexpressible, and it is stated in `docs/custom-checks.md` rather than
-/// worked around with quoting this grammar deliberately does not have.
+/// expressible. It is stated in `docs/custom-checks.md` rather than worked
+/// around with quoting this grammar deliberately does not have.
 ///
 /// Returns owned strings rather than a `Scope`, so validating a manifest
 /// costs nothing permanent. Only `External::from` turns these into the
 /// `&'static` form `Scope` requires.
-type ParsedScope = (Vec<String>, Vec<String>, Vec<String>);
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ParsedScope {
+    exts: Vec<String>,
+    names: Vec<String>,
+    dirs: Vec<String>,
+    opt_in: Vec<String>,
+}
+
+/// A directory trigger: `dir/**/*.ext`. The directory is whole segments with no
+/// glob characters, so `claude-plugin/**/*.md` is in and `claude-*/**/*.md`,
+/// `/abs/**/*.md`, `a//b/**/*.md` and `../x/**/*.md` are out. The extension is
+/// a plain suffix. Nothing else in the grammar gets a `/` or a glob.
+fn is_dir_token(part: &str) -> bool {
+    let Some((dir, ext)) = part.split_once("/**/*") else {
+        return false;
+    };
+    !dir.is_empty()
+        && dir.split('/').all(|seg| {
+            !seg.is_empty() && seg != "." && seg != ".." && !seg.contains(['*', '?', '['])
+        })
+        && ext.len() > 1
+        && ext.starts_with('.')
+        && !ext.contains(['*', '?', '[', '/'])
+}
 
 fn parse_scope(token: &str) -> Result<ParsedScope, ParseError> {
     let (triggers, opt_in) = match token.split_once('+') {
@@ -973,27 +1022,43 @@ fn parse_scope(token: &str) -> Result<ParsedScope, ParseError> {
         }
     };
     if triggers == "*" {
-        return Ok((Vec::new(), Vec::new(), opt_in));
+        return Ok(ParsedScope {
+            opt_in,
+            ..ParsedScope::default()
+        });
     }
     let mut exts = Vec::new();
     let mut names = Vec::new();
+    let mut dirs = Vec::new();
     for part in triggers.split(',') {
         if let Some(ext) = part.strip_prefix('*').filter(|ext| ext.starts_with('.')) {
             exts.push(ext.to_string());
             continue;
         }
+        if part.contains("/**/*") {
+            if is_dir_token(part) {
+                dirs.push(part.to_string());
+                continue;
+            }
+            return Err(ParseError::BadScope(part.to_string()));
+        }
         // A bare token is an exact FILENAME — `package.json`, `Dockerfile`,
-        // `.prettierrc` — matched against the basename. Directories are not
-        // expressible (a `/` is refused), and anything that LOOKS like a glob
-        // (`*`, `?`, `[`) is refused as the typo it almost certainly is —
-        // this grammar deliberately has no globs to mis-guess.
+        // `.prettierrc` — matched against the basename. A directory is only
+        // ever `dir/**/*.ext`, handled above; any other `/`, and anything that
+        // LOOKS like a glob (`*`, `?`, `[`), is refused as the typo it almost
+        // certainly is — this grammar has no globs to mis-guess.
         if !part.is_empty() && !part.contains(['*', '?', '[', '/']) {
             names.push(part.to_string());
             continue;
         }
         return Err(ParseError::BadScope(part.to_string()));
     }
-    Ok((exts, names, opt_in))
+    Ok(ParsedScope {
+        exts,
+        names,
+        dirs,
+        opt_in,
+    })
 }
 
 fn parse_stage(token: &str) -> Option<Stage> {
@@ -1226,7 +1291,12 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     {
         return fail(ParseError::Duplicate(declared.to_string()));
     }
-    let (exts, names, opt_in) = match parse_scope(scope_tok) {
+    let ParsedScope {
+        exts,
+        names,
+        dirs,
+        opt_in,
+    } = match parse_scope(scope_tok) {
         Ok(e) => e,
         Err(why) => return fail(why),
     };
@@ -1240,6 +1310,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let mut command = command;
     let mut wants_fix = false;
     let mut wants_files = false;
+    let mut wants_docs_skip = false;
     loop {
         if let Some(rest) = command.strip_prefix("fix ") {
             command = rest.trim_start();
@@ -1251,10 +1322,18 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             wants_files = true;
             continue;
         }
+        if let Some(rest) = command.strip_prefix("docs-skip ") {
+            command = rest.trim_start();
+            wants_docs_skip = true;
+            continue;
+        }
         break;
     }
     if wants_fix && stage == Stage::PrePush {
         return fail(ParseError::FixOnPrePush);
+    }
+    if wants_docs_skip && stage == Stage::PrePush {
+        return fail(ParseError::DocsSkipOnPrePush);
     }
     // `tokenise` guarantees a non-empty command, so the split cannot fail.
     let mut argv = command.split_whitespace().map(str::to_owned);
@@ -1264,11 +1343,13 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     Line::Usable(Declared {
         fix: if wants_fix { Fix::Rewrite } else { Fix::None },
         files: wants_files,
+        docs_skip: wants_docs_skip,
         name: declared.to_string(),
         stage,
         severity,
         exts,
         names,
+        dirs,
         opt_in,
         program,
         args: argv.collect(),
@@ -1341,7 +1422,12 @@ fn parse_tree_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let Some((scope_tok, rest)) = split_token(rest) else {
         return fail(name, ParseError::BadTreeLine("missing scope"));
     };
-    let (exts, names, opt_in) = match parse_scope(scope_tok) {
+    let ParsedScope {
+        exts,
+        names,
+        dirs,
+        opt_in,
+    } = match parse_scope(scope_tok) {
         Ok(s) => s,
         Err(why) => return fail(name, why),
     };
@@ -1401,6 +1487,7 @@ fn parse_tree_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         tool,
         exts,
         names,
+        dirs,
         opt_in,
         cwd,
         inputs,
@@ -1449,12 +1536,17 @@ impl From<Line> for External {
                 // repository" — and collapsing that to `ALWAYS` would run the
                 // check everywhere, which is the exact bug this field exists
                 // to prevent.
-                scope: if d.exts.is_empty() && d.names.is_empty() && d.opt_in.is_empty() {
+                scope: if d.exts.is_empty()
+                    && d.names.is_empty()
+                    && d.dirs.is_empty()
+                    && d.opt_in.is_empty()
+                {
                     Scope::ALWAYS
                 } else {
                     Scope {
                         files: leak(d.exts),
                         names: leak(d.names),
+                        dirs: leak(d.dirs),
                         opt_in: leak(d.opt_in),
                         not_during: &[],
                     }
@@ -1464,6 +1556,7 @@ impl From<Line> for External {
                 args: d.args,
                 fix: d.fix,
                 files: d.files,
+                docs_skip: d.docs_skip,
             },
             Err(why) => Kind::Unusable { why },
         };
@@ -1786,6 +1879,59 @@ mod tests {
         assert_eq!(
             g.command,
             "NODE_OPTIONS=--max-old-space-size=4096 npm run lint"
+        );
+    }
+
+    /// `dir/**/*.ext` is the one trigger with a `/` in it: a whole directory
+    /// prefix and a plain suffix. Everything else with a slash, a glob or an
+    /// empty segment is refused, so the grammar cannot grow a glob by accident.
+    #[test]
+    fn a_directory_token_is_a_trigger_and_nothing_else_with_a_slash_is() {
+        let Line::Usable(d) = one("pre-commit  plugin  claude-plugin/**/*.md  block  true\n")
+        else {
+            panic!("a directory trigger should parse");
+        };
+        assert_eq!(d.dirs, ["claude-plugin/**/*.md"]);
+        assert!(d.exts.is_empty() && d.names.is_empty());
+
+        let Line::Usable(d) = one("pre-commit  plugin  docs/x/**/*.md+Cargo.toml  block  true\n")
+        else {
+            panic!("a directory trigger with an opt-in should parse");
+        };
+        assert_eq!(d.dirs, ["docs/x/**/*.md"]);
+        assert_eq!(d.opt_in, ["Cargo.toml"]);
+
+        for bad in [
+            "claude-*/**/*.md",
+            "/abs/**/*.md",
+            "a//b/**/*.md",
+            "../x/**/*.md",
+            "a/./**/*.md",
+            "x/**/*",
+            "claude-plugin/*.md",
+            "claude-plugin/**/*.md/x",
+        ] {
+            let l = one(&format!("pre-commit  plugin  {bad}  block  true\n"));
+            assert!(
+                matches!(why(&l), ParseError::BadScope(_)),
+                "{bad} must be refused"
+            );
+        }
+    }
+
+    /// `docs-skip` is a leading marker like `fix` and `files`, and it means
+    /// something only where there is a staged change to judge.
+    #[test]
+    fn docs_skip_is_a_marker_and_refused_on_pre_push() {
+        let Line::Usable(d) = one("pre-commit  adr  *+.adr.yaml  block  docs-skip aval check\n")
+        else {
+            panic!("docs-skip should parse on pre-commit");
+        };
+        assert!(d.docs_skip);
+        assert_eq!(d.program, "aval");
+        assert_eq!(
+            why(&one("pre-push  adr  *  block  docs-skip aval check\n")),
+            ParseError::DocsSkipOnPrePush
         );
     }
 

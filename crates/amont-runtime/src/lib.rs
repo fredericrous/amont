@@ -885,6 +885,7 @@ fn describe(s: crate::check::Scope) -> String {
         s.files
             .iter()
             .chain(s.names.iter())
+            .chain(s.dirs.iter())
             .copied()
             .collect::<Vec<_>>()
             .join(" ")

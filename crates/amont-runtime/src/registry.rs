@@ -359,6 +359,7 @@ pub const CHECKS: &[Builtin] = &[
         scope: Scope {
             files: hooks::k8s::EXTS,
             names: &[crate::manifest::MANIFEST],
+            dirs: &[],
             opt_in: &[crate::manifest::MANIFEST],
             not_during: MID_OPERATION,
         },
