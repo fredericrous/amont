@@ -15,8 +15,13 @@
 //! dependencies must be the ones the committed lockfile describes.
 //!
 //! The default, `install`, is what CI does: `npm ci`, `pnpm install
-//! --frozen-lockfile`. `reuse` (pnpm only; see `reuse` for why npm is not
-//! reusable) clones the working tree's `node_modules` and keeps the clone
+//! --frozen-lockfile`, `yarn install --frozen-lockfile` (yarn 1) or
+//! `--immutable` (berry, told apart by the lockfile's `__metadata:` block).
+//! A bun lockfile is recognised and refused with the fix named, never
+//! installed: a gate run over no dependencies fails every workspace at once
+//! and reads like a broken branch. `reuse` (pnpm only; see `reuse` for why
+//! npm and yarn are not reusable) clones the working tree's `node_modules`
+//! and keeps the clone
 //! only when it has pnpm's isolated layout and a frozen offline install
 //! accepts it against the snapshot's manifests and lockfile — which catches
 //! a missing or wrong-version package, a stray directory, and a manifest the
@@ -40,7 +45,8 @@ const DEPS: &str = "amont.snapshotDeps";
 /// `amont.snapshotDeps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepsMode {
-    /// `npm ci` / `pnpm install --frozen-lockfile` in the snapshot.
+    /// `npm ci` / `pnpm install --frozen-lockfile` / `yarn install
+    /// --frozen-lockfile` (`--immutable` for berry) in the snapshot.
     Install,
     /// Clone the working tree's install, keep it only if the manager accepts it.
     Reuse,
@@ -314,19 +320,32 @@ pub fn carry(
 pub enum Manager {
     Npm,
     Pnpm,
+    Yarn,
+    /// Recognised so that its lockfile is a unit — skipped when the push
+    /// does not touch it, refused with the fix named when it does — never
+    /// installed: see `bun_refusal`.
+    Bun,
 }
 
 impl Manager {
-    fn lockfile(self) -> &'static str {
+    const ALL: [Manager; 4] = [Manager::Npm, Manager::Pnpm, Manager::Yarn, Manager::Bun];
+
+    /// The lockfiles that make a directory a unit of this manager. bun has
+    /// two: the binary `bun.lockb`, and the text `bun.lock` since bun 1.2.
+    fn lockfiles(self) -> &'static [&'static str] {
         match self {
-            Manager::Npm => "package-lock.json",
-            Manager::Pnpm => "pnpm-lock.yaml",
+            Manager::Npm => &["package-lock.json"],
+            Manager::Pnpm => &["pnpm-lock.yaml"],
+            Manager::Yarn => &["yarn.lock"],
+            Manager::Bun => &["bun.lock", "bun.lockb"],
         }
     }
     fn tool(self) -> &'static str {
         match self {
             Manager::Npm => "npm",
             Manager::Pnpm => "pnpm",
+            Manager::Yarn => "yarn",
+            Manager::Bun => "bun",
         }
     }
 }
@@ -338,9 +357,22 @@ pub struct Unit {
     /// Repo-relative, `""` for the root.
     pub dir: String,
     pub manager: Manager,
+    /// The tracked lockfile's basename.
+    pub lockfile: &'static str,
     /// pnpm only: a lockfile with no `pnpm-workspace.yaml` beside it is a
     /// standalone project, even inside a workspace (see `audit::pnpm_args`).
     pub standalone: bool,
+    /// yarn only: the lockfile is yarn 2+'s ("berry"), whose install is
+    /// `--immutable`; a classic (yarn 1) lockfile installs with
+    /// `--frozen-lockfile`.
+    pub berry: bool,
+}
+
+/// Is this `yarn.lock` yarn 2+'s? Berry writes a `__metadata:` block at the
+/// top of every lockfile; yarn 1 writes `# yarn lockfile v1` and never that
+/// key. Read from the SNAPSHOT's lockfile, so the pushed commit decides.
+pub fn is_berry_lock(text: &str) -> bool {
+    text.lines().any(|l| l.starts_with("__metadata:"))
 }
 
 /// The directories of `files` named exactly `name`, repo-relative (`""` for
@@ -370,8 +402,8 @@ fn join_rel(dir: &str, name: &str) -> String {
 }
 
 /// The `packageManager` field of a package.json, by a targeted scan of that
-/// one key — `Some("npm")`/`Some("pnpm")` when it names one of them without
-/// ambiguity, `None` otherwise.
+/// one key — the manager it names (`npm@…`, `pnpm@…`, `yarn@…`, `bun@…`)
+/// when it names one without ambiguity, `None` otherwise.
 pub fn declared_manager(package_json: &str) -> Option<Manager> {
     let key = "\"packageManager\"";
     let mut hits = package_json.match_indices(key);
@@ -383,50 +415,79 @@ pub fn declared_manager(package_json: &str) -> Option<Manager> {
     let rest = rest.strip_prefix(':')?.trim_start();
     let rest = rest.strip_prefix('"')?;
     let value = &rest[..rest.find('"')?];
-    if value.starts_with("pnpm@") || value == "pnpm" {
-        Some(Manager::Pnpm)
-    } else if value.starts_with("npm@") || value == "npm" {
-        Some(Manager::Npm)
-    } else {
-        None
-    }
+    let name = value.split('@').next().unwrap_or(value);
+    Manager::ALL.into_iter().find(|m| m.tool() == name)
 }
 
-/// Every installation unit in `files`. A directory holding BOTH lockfiles is
-/// settled by `packageManager`, or refused: guessing would install the wrong
-/// tree and test it as if it were the right one.
+/// Every installation unit in `files`. A directory holding MORE THAN ONE
+/// manager's lockfile is settled by `packageManager`, or refused: guessing
+/// would install the wrong tree and test it as if it were the right one.
 pub fn units(files: &[String], snapshot: &Path) -> Result<Vec<Unit>, String> {
-    let npm = lockfile_dirs_in(files, Manager::Npm.lockfile());
-    let pnpm = lockfile_dirs_in(files, Manager::Pnpm.lockfile());
-    let mut out = Vec::new();
-    let mut dirs: Vec<&String> = npm.iter().chain(pnpm.iter()).collect();
+    // Every tracked lockfile: (directory, manager, basename).
+    let mut found: Vec<(String, Manager, &'static str)> = Vec::new();
+    for m in Manager::ALL {
+        for lock in m.lockfiles() {
+            found.extend(
+                lockfile_dirs_in(files, lock)
+                    .into_iter()
+                    .map(|dir| (dir, m, *lock)),
+            );
+        }
+    }
+    let mut dirs: Vec<String> = found.iter().map(|f| f.0.clone()).collect();
     dirs.sort();
     dirs.dedup();
+    let mut out = Vec::new();
     for dir in dirs {
-        let manager = match (npm.contains(dir), pnpm.contains(dir)) {
-            (true, true) => {
-                let manifest = snapshot.join(join_rel(dir, "package.json"));
-                let body = std::fs::read_to_string(&manifest).unwrap_or_default();
-                declared_manager(&body).ok_or_else(|| {
+        let here: Vec<&(String, Manager, &'static str)> =
+            found.iter().filter(|f| f.0 == dir).collect();
+        let (manager, lockfile) = if here.iter().all(|f| f.1 == here[0].1) {
+            (here[0].1, here[0].2)
+        } else {
+            let manifest = snapshot.join(join_rel(&dir, "package.json"));
+            let body = std::fs::read_to_string(&manifest).unwrap_or_default();
+            declared_manager(&body)
+                .and_then(|m| here.iter().find(|f| f.1 == m))
+                .map(|f| (f.1, f.2))
+                .ok_or_else(|| {
+                    let names: Vec<&str> = here.iter().map(|f| f.2).collect();
                     format!(
-                        "both package-lock.json and pnpm-lock.yaml in {} and no \
-                         `packageManager` to choose — set amont.snapshotPrepare",
-                        if dir.is_empty() { "the root" } else { dir }
+                        "both {} in {} and no `packageManager` to choose — set \
+                         amont.snapshotPrepare",
+                        names.join(" and "),
+                        if dir.is_empty() { "the root" } else { &dir }
                     )
                 })?
-            }
-            (true, false) => Manager::Npm,
-            _ => Manager::Pnpm,
         };
         let standalone =
-            manager == Manager::Pnpm && !files.contains(&join_rel(dir, "pnpm-workspace.yaml"));
+            manager == Manager::Pnpm && !files.contains(&join_rel(&dir, "pnpm-workspace.yaml"));
+        let berry = manager == Manager::Yarn
+            && std::fs::read_to_string(snapshot.join(join_rel(&dir, lockfile)))
+                .map(|t| is_berry_lock(&t))
+                .unwrap_or(false);
         out.push(Unit {
-            dir: dir.clone(),
+            dir,
             manager,
+            lockfile,
             standalone,
+            berry,
         });
     }
     Ok(out)
+}
+
+/// Why a bun unit is never installed, with the fix: bun's `--frozen-lockfile`
+/// and its lockfile formats have not been exercised here, and running the
+/// gate in a checkout with no dependencies fails every workspace at once
+/// and reads like a broken branch (#308). The snapshot's owner names the
+/// install command, or turns the preparation off.
+fn bun_refusal(u: &Unit) -> String {
+    format!(
+        "{} in {}: amont cannot install bun dependencies — set amont.snapshotPrepare \
+         to the install command, or amont.snapshotDeps off",
+        u.lockfile,
+        unit_label(u)
+    )
 }
 
 fn unit_label(u: &Unit) -> String {
@@ -479,6 +540,17 @@ fn install(settings: &crate::config::Settings, u: &Unit, at: &Path) -> Result<()
     let args: &[&str] = match u.manager {
         Manager::Npm => &["ci", "--no-audit", "--no-fund", "--prefer-offline"],
         Manager::Pnpm => &["install", "--frozen-lockfile", "--prefer-offline"],
+        // Berry accepts `--frozen-lockfile` only as a deprecated alias and
+        // warns on `--prefer-offline`; yarn 1 ignores `--immutable`. Each
+        // flavour gets its own spelling.
+        Manager::Yarn if u.berry => &["install", "--immutable"],
+        Manager::Yarn => &[
+            "install",
+            "--frozen-lockfile",
+            "--non-interactive",
+            "--prefer-offline",
+        ],
+        Manager::Bun => return Err(bun_refusal(u)),
     };
     let mut cmd = manager_cmd(u, at, args);
     let what = format!("{} {}", u.manager.tool(), args[0]);
@@ -690,6 +762,12 @@ fn pnpm_layout_problem(nm: &Path, is_root: bool) -> Option<String> {
 /// peer-range conflicts `npm ci` installs without complaint fails `npm ls`
 /// on a fresh install (application-landscape: 182 findings), so it can
 /// neither accept a correct clone nor be trusted to reject a wrong one.
+///
+/// yarn is never reused either: `yarn check` is gone from yarn 1 and berry
+/// alike, a frozen install checks the lockfile against the manifests and
+/// not the installed tree, and yarn 1's `--frozen-lockfile` is known to let
+/// some drift through (yarnpkg/yarn#5840) — so nothing yarn offers can
+/// vouch for a clone.
 fn reuse(
     settings: &crate::config::Settings,
     u: &Unit,
@@ -697,16 +775,27 @@ fn reuse(
     snapshot: &Path,
     unit_dirs: &[String],
 ) -> Result<(), String> {
-    if u.manager == Manager::Npm {
-        return Err(
-            "npm cannot check an installed tree against its lockfile, so npm \
-                    snapshots always install"
-                .to_string(),
-        );
+    match u.manager {
+        Manager::Npm => {
+            return Err(
+                "npm cannot check an installed tree against its lockfile, so npm \
+                 snapshots always install"
+                    .to_string(),
+            )
+        }
+        Manager::Yarn => {
+            return Err(
+                "yarn cannot check an installed tree against its lockfile, so yarn \
+                 snapshots always install"
+                    .to_string(),
+            )
+        }
+        Manager::Bun => return Err(bun_refusal(u)),
+        Manager::Pnpm => {}
     }
     let src_dir = source.join(&u.dir);
     let snap_dir = snapshot.join(&u.dir);
-    let lock = u.manager.lockfile();
+    let lock = u.lockfile;
     let src_lock = std::fs::read(src_dir.join(lock))
         .map_err(|_| "no lockfile in the working tree".to_string())?;
     let snap_lock = std::fs::read(snap_dir.join(lock)).map_err(|e| format!("{lock}: {e}"))?;
@@ -885,6 +974,11 @@ pub fn deps(
     for u in &units {
         let at = snapshot.join(&u.dir);
         let label = unit_label(u);
+        if u.manager == Manager::Bun {
+            // Refused before anything is printed or cloned: the message IS
+            // the preparation's result for this unit.
+            return Err(bun_refusal(u));
+        }
         if mode == DepsMode::Reuse {
             // No clone tool on Windows: `clone_dir` says so and this falls
             // through to the install, like any other refusal.
@@ -899,13 +993,13 @@ pub fn deps(
                 }
                 Err(why) => println!(
                     "snapshot: {} in {label} — not reusing the working tree's install: {why}",
-                    highlight(&format!("{} {}", u.manager.tool(), install_verb(u.manager)))
+                    highlight(&format!("{} {}", u.manager.tool(), install_verb(u)))
                 ),
             }
         } else {
             println!(
                 "snapshot: {} in {label}",
-                highlight(&format!("{} {}", u.manager.tool(), install_verb(u.manager)))
+                highlight(&format!("{} {}", u.manager.tool(), install_verb(u)))
             );
         }
         install(settings, u, &at)?;
@@ -913,10 +1007,13 @@ pub fn deps(
     Ok(())
 }
 
-fn install_verb(m: Manager) -> &'static str {
-    match m {
+fn install_verb(u: &Unit) -> &'static str {
+    match u.manager {
         Manager::Npm => "ci",
         Manager::Pnpm => "install --frozen-lockfile",
+        Manager::Yarn if u.berry => "install --immutable",
+        Manager::Yarn => "install --frozen-lockfile",
+        Manager::Bun => "install",
     }
 }
 
@@ -1018,7 +1115,19 @@ mod tests {
             declared_manager(r#"{"packageManager":"npm@11"}"#),
             Some(Manager::Npm)
         );
-        assert_eq!(declared_manager(r#"{"packageManager":"yarn@4"}"#), None);
+        assert_eq!(
+            declared_manager(r#"{"packageManager":"yarn@4"}"#),
+            Some(Manager::Yarn)
+        );
+        assert_eq!(
+            declared_manager(r#"{"packageManager":"bun@1.2.0"}"#),
+            Some(Manager::Bun)
+        );
+        assert_eq!(
+            declared_manager(r#"{"packageManager":"yarnpkg@1"}"#),
+            None,
+            "a name, not a prefix"
+        );
         assert_eq!(declared_manager(r#"{"name":"x"}"#), None);
         assert_eq!(
             declared_manager(r#"{"packageManager":"npm@1","x":{"packageManager":"pnpm@1"}}"#),
@@ -1031,8 +1140,75 @@ mod tests {
         Unit {
             dir: dir.to_string(),
             manager: Manager::Pnpm,
+            lockfile: "pnpm-lock.yaml",
             standalone: !dir.is_empty(),
+            berry: false,
         }
+    }
+
+    #[test]
+    fn a_berry_lockfile_is_told_by_its_metadata_block() {
+        assert!(is_berry_lock(
+            "# This file is generated by running \"yarn install\" inside your project.\n\n__metadata:\n  version: 8\n"
+        ));
+        assert!(!is_berry_lock(
+            "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n"
+        ));
+        assert!(!is_berry_lock(""));
+    }
+
+    #[test]
+    fn every_manager_lockfile_is_a_unit_and_a_mixed_directory_needs_the_field() {
+        let d = std::env::temp_dir().join(format!("units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("berry")).unwrap();
+        std::fs::write(d.join("yarn.lock"), "# yarn lockfile v1\n").unwrap();
+        std::fs::write(d.join("berry/yarn.lock"), "__metadata:\n  version: 8\n").unwrap();
+        let files = s(&[
+            "yarn.lock",
+            "berry/yarn.lock",
+            "old/bun.lockb",
+            "new/bun.lock",
+            "mixed/package-lock.json",
+            "mixed/yarn.lock",
+        ]);
+        let err = units(&files, &d).unwrap_err();
+        assert!(
+            err.contains("both package-lock.json and yarn.lock in mixed"),
+            "{err}"
+        );
+        std::fs::create_dir_all(d.join("mixed")).unwrap();
+        std::fs::write(
+            d.join("mixed/package.json"),
+            r#"{"packageManager":"yarn@1.22.22"}"#,
+        )
+        .unwrap();
+        let got = units(&files, &d).unwrap();
+        let brief: Vec<(&str, Manager, &str, bool)> = got
+            .iter()
+            .map(|u| (u.dir.as_str(), u.manager, u.lockfile, u.berry))
+            .collect();
+        assert_eq!(
+            brief,
+            vec![
+                ("", Manager::Yarn, "yarn.lock", false),
+                ("berry", Manager::Yarn, "yarn.lock", true),
+                ("mixed", Manager::Yarn, "yarn.lock", false),
+                ("new", Manager::Bun, "bun.lock", false),
+                ("old", Manager::Bun, "bun.lockb", false),
+            ]
+        );
+        std::fs::write(
+            d.join("mixed/package.json"),
+            r#"{"packageManager":"pnpm@10"}"#,
+        )
+        .unwrap();
+        let err = units(&files, &d).unwrap_err();
+        assert!(
+            err.contains("no `packageManager` to choose"),
+            "a field naming an absent lockfile chooses nothing: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

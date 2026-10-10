@@ -395,15 +395,29 @@ A worktree git just created is a checkout, not a workspace: no
 `node_modules`, and a suite started there fails on `Cannot find module`
 having tested nothing. Every snapshot — the background rehearsal's and
 `amont.testPushedTree`'s alike — is prepared before any suite runs, one
-*unit* at a time: each directory holding a tracked `package-lock.json` or
-`pnpm-lock.yaml`, read from the snapshot's own index, so the pushed commit
-decides, not `HEAD` and not what you have staged. A nested project with a
-lockfile of its own is its own unit. A directory with both lockfiles is
-settled by `package.json`'s `packageManager`, or refused.
+*unit* at a time: each directory holding a tracked `package-lock.json`,
+`pnpm-lock.yaml` or `yarn.lock`, read from the snapshot's own index, so the
+pushed commit decides, not `HEAD` and not what you have staged. A nested
+project with a lockfile of its own is its own unit. A directory with more
+than one manager's lockfile is settled by `package.json`'s
+`packageManager`, or refused.
+
+A `bun.lock` or `bun.lockb` is a unit too, so that a push which does not
+touch it is skipped like any other — but amont does not install bun
+dependencies: a unit the push needs fails the preparation with the fix
+named, `amont.snapshotPrepare` set to the install command, or
+`amont.snapshotDeps off`. Failing there is deliberate: a gate run over a
+checkout with no dependencies fails every workspace at once, and that reads
+like a broken branch rather than a missing install.
 
 - **`install`** does what CI does: `npm ci --prefer-offline`, `pnpm install
-  --frozen-lockfile --prefer-offline`. Exact, and it refuses a
-  `package.json` its lockfile does not satisfy — so does the snapshot.
+  --frozen-lockfile --prefer-offline`, `yarn install --frozen-lockfile
+  --non-interactive --prefer-offline` for yarn 1 and `yarn install
+  --immutable` for yarn 2+ ("berry"; the committed `yarn.lock` says which —
+  berry's opens with a `__metadata:` block — so the pushed commit decides,
+  and each flavour gets the spelling it accepts without a warning). Exact,
+  and it refuses a `package.json` its lockfile does not satisfy — so does
+  the snapshot.
 - **`reuse`** (pnpm only) clones the working tree's `node_modules`
   (copy-on-write on APFS and btrfs: instant, no extra disk) — the root's
   and each workspace member's, as `pnpm ls -r` lists them — and keeps the
@@ -424,7 +438,10 @@ settled by `package.json`'s `packageManager`, or refused.
   graph is valid, not whether the tree is the one the lockfile describes,
   and a real graph with peer-range conflicts `npm ci` installs happily
   fails it on a fresh install — so it can vouch for nothing, and an npm
-  unit installs under `reuse` too, saying so.
+  unit installs under `reuse` too, saying so. **Neither is yarn:** a
+  frozen install checks the lockfile against the manifests, not the
+  installed tree, and `yarn check` is gone from both flavours, so a yarn
+  unit installs under `reuse` too.
 - **`off`** prepares nothing.
 
 Only the units the push touches are prepared: the root one, and each unit
