@@ -53,6 +53,7 @@ pub mod gate_stamp;
 pub mod git;
 pub mod hookfile;
 pub mod hooks;
+pub mod host_slots;
 pub mod install;
 pub mod json;
 pub mod json_read;

@@ -74,6 +74,9 @@ struct Slot {
     /// clock and what its CPU is doing — the same object the kill decision
     /// reads, so the displays can never disagree with it (ADR-0008).
     activity: Option<Arc<crate::hooks::common::Activity>>,
+    /// Waiting for a host slot since, and how many slots there are
+    /// (ADR-0009).
+    queued: Option<(Instant, u64)>,
 }
 
 /// A running stage: the slots, and the one lock every terminal write inside
@@ -123,6 +126,7 @@ impl Stage {
                         running: false,
                         done: false,
                         activity: None,
+                        queued: None,
                     })
                     .collect(),
             ),
@@ -172,6 +176,14 @@ impl Stage {
         }
         SINK.with(|s| *s.borrow_mut() = Some((Arc::clone(self), idx)));
         SinkGuard
+    }
+
+    /// Slot `idx` is waiting for a host slot (`Some`), or no longer is.
+    pub fn queue(&self, idx: usize, since: Option<(Instant, u64)>) {
+        let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = slots.get_mut(idx) {
+            slot.queued = since;
+        }
     }
 
     /// Show slot `idx`'s spawned command in the displays while the returned
@@ -338,6 +350,9 @@ pub struct Row {
     /// host's load, with the load and the factor; `None` while it is the
     /// configured one (ADR-0009).
     pub load: Option<(u64, crate::load::Load, u32)>,
+    /// Waiting for a host slot: for how many seconds, out of how many
+    /// slots.
+    pub queued: Option<(f64, u64)>,
 }
 
 /// What a running check's CPU is doing, as far as the displays may say.
@@ -388,6 +403,9 @@ fn row_of(s: &Slot, now: Instant, elapsed: f64) -> Row {
         cpu,
         wait,
         load,
+        queued: s
+            .queued
+            .map(|(since, n)| (now.duration_since(since).as_secs_f64(), n)),
     }
 }
 
@@ -470,7 +488,12 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
         let frame = FRAMES[((row.elapsed * 10.0) as usize) % FRAMES.len()];
         let name = &row.name;
         let mut line = format!("{frame} {name:<pad$} {}", elapsed_column(row.elapsed));
-        if let Some((kind, waited)) = row.wait {
+        if let Some((secs, n)) = row.queued {
+            line.push_str(&format!(
+                " · queued {} (slots {n}/{n})",
+                crate::hooks::common::human_secs(secs as u64)
+            ));
+        } else if let Some((kind, waited)) = row.wait {
             // A declared wait: no silence countdown runs, so the row says
             // what is being waited for and against which budget.
             line.push_str(&format!(
@@ -613,7 +636,12 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
         human_secs(row.elapsed as u64),
         human_secs(row.quiet as u64)
     );
-    if let Some((kind, waited)) = row.wait {
+    if let Some((secs, n)) = row.queued {
+        line.push_str(&format!(
+            ", queued {} for a host slot (amont.hostSlots {n})",
+            human_secs(secs as u64)
+        ));
+    } else if let Some((kind, waited)) = row.wait {
         line.push_str(&format!(
             ", waiting for {} {}",
             kind.describe(),
@@ -978,7 +1006,28 @@ mod tests {
             cpu: RowCpu::None,
             wait: None,
             load: None,
+            queued: None,
         }
+    }
+
+    /// A check waiting for a host slot says so in the region, within 80
+    /// columns, and in the heartbeat after its unchanged prefix.
+    #[test]
+    fn a_queued_check_says_it_waits_for_a_host_slot() {
+        let mut r = row("pre-push-run-tests-js", 42.0);
+        r.queued = Some((42.0, 2));
+        let text = region(&[r.clone()], 80, B);
+        assert!(text.contains("· queued 42s (slots 2/2)"), "{text:?}");
+        assert!(text.lines().all(|l| l.chars().count() <= 80), "{text:?}");
+        r.elapsed = 60.0;
+        r.quiet = 60.0;
+        r.queued = Some((60.0, 2));
+        let beat = beat_line(&r, false, B, false);
+        assert_eq!(
+            beat,
+            "  … pre-push-run-tests-js still running: 1m00s, last output 1m00s ago, \
+             queued 1m00s for a host slot (amont.hostSlots 2)\n"
+        );
     }
 
     /// Under load the region counts toward the stretched budget and says

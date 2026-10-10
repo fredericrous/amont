@@ -1,0 +1,17 @@
+# Environment for every test binary cargo runs (ADR-0009).
+#
+# The integration tests spawn amont hundreds of times, often under amont's
+# own gate on a loaded workstation. Two host-level knobs must not reach
+# them from the machine:
+#
+# - AMONT_HOST_SLOT=held: a fixture's heavy check would otherwise queue on
+#   the real host slots, behind the very suite that is running it.
+# - AMONT_IDLE_LOAD_SCALE=1: every kill-time bound in timing.rs would
+#   otherwise stretch with the machine's load average.
+#
+# The slot and load fixtures remove both and set their own. The test
+# `cargo_pins_the_host_knobs_for_tests` in host_slots.rs fails if this file
+# stops reaching the tests.
+[env]
+AMONT_HOST_SLOT = "held"
+AMONT_IDLE_LOAD_SCALE = "1"

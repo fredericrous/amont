@@ -596,8 +596,11 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
             };
+            let slot = crate::host_slots::enter_check(check.name());
             let outcome = check.run(&sub);
-            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            // The record measures the check, not its wait for a host slot.
+            let ran = started.elapsed().saturating_sub(slot.queued());
+            let ms = u64::try_from(ran.as_millis()).unwrap_or(u64::MAX);
             (outcome, ms)
         },
         // A check whose thread died has not passed. Stated here, where the slot
@@ -1123,12 +1126,15 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
+        let slot = crate::host_slots::enter_check(check.name());
         let outcome = check.run(&sub);
+        let ran = started.elapsed().saturating_sub(slot.queued());
+        drop(slot);
         evidence.push(crate::gate_stamp::Run {
             at: crate::gate_evidence::now(),
             gate: check.name().to_string(),
             outcome: run_outcome(outcome),
-            ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            ms: ran.as_millis().min(u128::from(u64::MAX)) as u64,
         });
         match outcome {
             Outcome::Passed => {

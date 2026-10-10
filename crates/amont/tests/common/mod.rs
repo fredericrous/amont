@@ -250,6 +250,11 @@ impl Repo {
         Self::strip_git_env_impl(&mut cmd);
         if pinned {
             Self::pin_host_env(&mut cmd);
+        } else {
+            // `.cargo/config.toml` pins both for the whole test process;
+            // an unpinned fixture starts from neither and sets its own.
+            cmd.env_remove("AMONT_HOST_SLOT");
+            cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
         }
         for (k, v) in env {
             cmd.env(k, v);
