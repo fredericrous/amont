@@ -113,3 +113,36 @@ fn docs_skip_never_passes_an_edit_to_a_decision_record() {
         run.output()
     );
 }
+
+/// A skipped gate must not be stamped as having passed. The marker is what
+/// post-commit binds to the commit, and the push-side pairing and attestations
+/// read it as "this gate ran clean on this tree" — so a gate that never ran
+/// may not be in it, and one that did run must be.
+#[test]
+fn docs_skip_earns_no_stamp_and_a_real_run_does() {
+    let r = Repo::new();
+    manifest(&r, "pre-commit  gate  *  block  docs-skip true\n");
+    r.stage("docs/guide.md", "one\n");
+    r.stage("src/lib.rs", "code\n");
+    r.commit("base");
+    let marker = r.path(".git/amont-gate");
+
+    r.stage("docs/guide.md", "two\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.says("skipped"), "must be skipped: {}", run.output());
+    let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        !stamped.lines().any(|l| l == "gate"),
+        "a skipped gate must not be stamped: {stamped:?}"
+    );
+    r.git(&["reset", "-q", "--hard", "HEAD"]);
+
+    r.stage("src/lib.rs", "changed\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        stamped.lines().any(|l| l == "gate"),
+        "a gate that ran clean must be stamped: {stamped:?}"
+    );
+}

@@ -134,7 +134,10 @@ over nothing.
 
   This is a trade, and the `adr` line in amont's own `amont.conf` takes it: a
   documentation edit that adds a link to a file that does not exist will pass
-  commit time. CI and the push-side checks still see it.
+  commit time. A skipped check is **not** recorded as having passed: it earns
+  no commit-time stamp, so a same-named `pre-push` declaration still runs and
+  an attestation never tells CI the gate is covered. CI and the push-side
+  checks see it.
 
 ## There is no shell
 
