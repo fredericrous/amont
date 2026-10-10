@@ -486,7 +486,7 @@ fn run_gate(
             .current_dir(&dir)
             .stdin(Stdio::null());
         super::common::strip_git_env(&mut cmd);
-        match super::common::status_streamed(settings, &mut cmd) {
+        match super::common::status_streamed(settings, &mut cmd, super::common::Retry::Once) {
             Ok(super::common::Ran::Status(status)) if status.success() => {}
             Ok(super::common::Ran::TimedOut(budget)) => {
                 super::common::say_timed_out(script, budget);

@@ -957,6 +957,7 @@ fn run_observed(
     settings: &crate::config::Settings,
     cmd: &mut Command,
     on_output: impl Fn(&[u8]) + Send + Sync + 'static,
+    ceiling_left: Option<u64>,
 ) -> std::io::Result<Ran> {
     // A heavy check's first tool waits here for a host slot (ADR-0009);
     // its clocks start at the spawn below, after the wait.
@@ -1024,11 +1025,13 @@ fn run_observed(
     let idle = idle_timeout(settings);
     let sampler = (idle > 0 && idle_cpu_credit(settings) && crate::proctree::SUPPORTED)
         .then(|| CpuSampler::start(child.id(), std::sync::Arc::clone(&activity), idle));
-    let ran = wait_within(
-        &mut child,
-        Clocks::from_settings(settings, idle),
-        Some(&activity),
-    );
+    let mut clocks = Clocks::from_settings(settings, idle);
+    if let Some(left) = ceiling_left {
+        // A retry runs under what the first attempt left of the ceiling:
+        // both attempts together answer to one `amont.timeout`.
+        clocks.ceiling = Some(left.max(1));
+    }
+    let ran = wait_within(&mut child, clocks, Some(&activity));
     if let Some(s) = sampler {
         s.stop();
     }
@@ -1204,6 +1207,7 @@ fn trace_sample(
 pub fn status_streamed(
     settings: &crate::config::Settings,
     cmd: &mut Command,
+    retry: Retry,
 ) -> std::io::Result<Ran> {
     let Some((stage, idx)) = crate::live::current_sink() else {
         return status_within(settings, cmd);
@@ -1215,7 +1219,69 @@ pub fn status_streamed(
             .env("CLICOLOR_FORCE", "1")
             .env("CARGO_TERM_COLOR", "always");
     }
-    run_observed(settings, cmd, move |bytes| stage.append_raw(idx, bytes))
+    let first = run_observed(
+        settings,
+        cmd,
+        {
+            let stage = std::sync::Arc::clone(&stage);
+            move |bytes| stage.append_raw(idx, bytes)
+        },
+        None,
+    );
+    let Ok(Ran::TimedOut(k)) = &first else {
+        return first;
+    };
+    let Some(left) = retry_budget(retry, k, check_timeout(settings)) else {
+        return first;
+    };
+    let what = cmd.get_program().to_string_lossy().into_owned();
+    say(&format!(
+        "{} was killed while it looked like it was waiting ({}); retrying once{}.",
+        hl(&what),
+        k.last_line.as_deref().unwrap_or(""),
+        match left {
+            Some(s) => format!(" with {} left", human_secs(s)),
+            None => String::new(),
+        }
+    ));
+    run_observed(
+        settings,
+        cmd,
+        move |bytes| stage.append_raw(idx, bytes),
+        left,
+    )
+}
+
+/// Whether a check's tool may be run once more after a kill (ADR-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// A built-in check: its tools are safe to run twice.
+    Once,
+    /// A declared external: a user's command may not be safe to run twice.
+    Never,
+}
+
+/// Whether a kill earns the one retry, and with how much ceiling left
+/// (`Some(None)`: the ceiling is off). Only after a SILENCE kill whose last
+/// line reads like a wait — never after a declared wait outlived its own
+/// budget, nor at the ceiling — and only while the ceiling has at least one
+/// silence budget left. Pure.
+pub fn retry_budget(retry: Retry, k: &Killed, ceiling: u64) -> Option<Option<u64>> {
+    if retry == Retry::Never || !matches!(k.why, Why::Silence(_)) {
+        return None;
+    }
+    if !k
+        .last_line
+        .as_deref()
+        .is_some_and(crate::hooks::wait::looks_like_wait)
+    {
+        return None;
+    }
+    if ceiling == 0 {
+        return Some(None);
+    }
+    let left = ceiling.saturating_sub(k.ran_secs);
+    (left >= k.idle_secs.max(1)).then_some(Some(left))
 }
 
 /// Run to completion under the `amont.timeout` deadline with stdout and
@@ -1229,11 +1295,16 @@ pub fn capture_within(
 ) -> Option<(Ran, String)> {
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let sink = std::sync::Arc::clone(&text);
-    let ran = run_observed(settings, cmd, move |bytes| {
-        sink.lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push_str(&String::from_utf8_lossy(bytes));
-    })
+    let ran = run_observed(
+        settings,
+        cmd,
+        move |bytes| {
+            sink.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push_str(&String::from_utf8_lossy(bytes));
+        },
+        None,
+    )
     .ok()?;
     let text = std::sync::Arc::try_unwrap(text)
         .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
@@ -1477,7 +1548,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
 /// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
 /// tool spawns want. A timeout says so, names `what`, and reads as failure.
 pub fn bounded_success(settings: &crate::config::Settings, cmd: &mut Command, what: &str) -> bool {
-    match status_streamed(settings, cmd) {
+    match status_streamed(settings, cmd, Retry::Once) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(what, b);
@@ -1530,7 +1601,7 @@ pub fn run_quiet(
     // the output is discarded, and capture would resurrect it into the
     // block. Observed and dropped instead of `/dev/null`, so the silence
     // clock still sees whether the tool is alive.
-    match run_observed(settings, &mut cmd, |_| {}) {
+    match run_observed(settings, &mut cmd, |_| {}, None) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(program, b);
@@ -2037,6 +2108,57 @@ mod tests {
                 &open
             ),
             Some(Why::Waited(kind, 480))
+        );
+    }
+
+    /// One retry, only after a silence kill whose last line reads like a
+    /// wait, only for a built-in, only with a silence budget of ceiling
+    /// left, and under what is left.
+    #[test]
+    fn a_wait_like_silence_kill_earns_one_retry_under_the_remaining_ceiling() {
+        use super::{retry_budget, CpuVerdict, Killed, Retry, Why};
+        use crate::hooks::wait::{CargoLockWhat, WaitKind};
+        let k = |why: Why, line: &str, ran: u64| Killed {
+            why,
+            ran_secs: ran,
+            quiet_secs: Some(ran),
+            cpu: CpuVerdict::MeasuredIdle(1),
+            idle_secs: 120,
+            waiting: None,
+            last_line: Some(line.to_string()),
+            load: None,
+        };
+        let wait = "waiting for lock on x";
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 120), 3600),
+            Some(Some(3480))
+        );
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 120), 0),
+            Some(None)
+        );
+        assert_eq!(
+            retry_budget(Retry::Never, &k(Why::Silence(120), wait, 120), 3600),
+            None
+        );
+        assert_eq!(
+            retry_budget(
+                Retry::Once,
+                &k(Why::Silence(120), "test_lock.py::x", 120),
+                3600
+            ),
+            None
+        );
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Ceiling(3600), wait, 3600), 3600),
+            None
+        );
+        let waited = Why::Waited(WaitKind::CargoLock(CargoLockWhat::BuildDirectory), 600);
+        assert_eq!(retry_budget(Retry::Once, &k(waited, wait, 700), 3600), None);
+        // Less than one silence budget of ceiling left: no retry.
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 3500), 3600),
+            None
         );
     }
 

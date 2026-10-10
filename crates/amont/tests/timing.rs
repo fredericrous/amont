@@ -648,3 +648,112 @@ fn heavy_checks_queue_for_a_host_slot() {
     }
     let _ = std::fs::remove_dir_all(&slots);
 }
+
+/// A Rust repository whose `cargo` prints a look-alike wait line and hangs
+/// on its first clippy, then passes; `always` makes it hang every time.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn waiting_clippy_repo(always: bool) -> Repo {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn x() {}\n");
+    let dir = r.path(".git/toolshims");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let seen = dir.join("seen");
+    let guard = if always {
+        String::new()
+    } else {
+        format!("[ -f '{0}' ] && exit 0; touch '{0}'; ", seen.display())
+    };
+    std::fs::write(
+        dir.join("cargo"),
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
+             clippy) [ \"$2\" = --version ] && {{ echo clippy; exit 0; }}; {guard}\
+             echo 'waiting for lock on x' >&2; exec sleep 30;;\nesac\nexit 0\n"
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(dir.join("cargo"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    r
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn with_shims(r: &Repo) -> std::ffi::OsString {
+    std::ffi::OsString::from(format!(
+        "{}:{}",
+        r.path(".git/toolshims").display(),
+        std::env::var("PATH").unwrap_or_default()
+    ))
+}
+
+/// Run as the `pre-commit` STAGE, which is how git runs it: a check run on
+/// its own by name inherits the terminal, where nobody reads its lines and
+/// only the ceiling applies.
+///
+/// A built-in killed while its last line read like a wait is retried once,
+/// says so, and passes when the retry does — with no failure text. A
+/// second kill is final, and both attempts fit in one ceiling.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_wait_like_kill_is_retried_once() {
+    let _alone = alone();
+    let r = waiting_clippy_repo(false);
+    let path = with_shims(&r);
+    let (run, took) = r.hook_watched("pre-commit", &[("PATH", path.as_os_str())], WATCHDOG);
+    assert!(run.passed(), "the retry passed:\n{}", run.output());
+    assert!(took < std::time::Duration::from_secs(8), "took {took:?}");
+    assert_eq!(
+        run.output().matches("retrying once").count(),
+        1,
+        "{}",
+        run.output()
+    );
+    assert!(
+        !run.says("printed nothing"),
+        "no failure text:\n{}",
+        run.output()
+    );
+
+    let r = waiting_clippy_repo(true);
+    let path = with_shims(&r);
+    let (run, took) = r.hook_watched("pre-commit", &[("PATH", path.as_os_str())], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(
+        took < std::time::Duration::from_secs(12),
+        "one ceiling: took {took:?}"
+    );
+    assert_eq!(
+        run.output().matches("retrying once").count(),
+        1,
+        "{}",
+        run.output()
+    );
+    assert!(run.says("printed nothing"), "{}", run.output());
+}
+
+/// A declared external is never retried: a user's command may not be safe
+/// to run twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_declared_check_is_never_retried() {
+    let _alone = alone();
+    let r = Repo::new();
+    script(
+        &r,
+        "look.sh",
+        "echo 'waiting for lock on x' >&2\nexec sleep 30\n",
+    );
+    manifest(&r, "pre-commit  look  *  block  ./look.sh\n");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    let (run, _) = r.hook_watched("pre-commit", &[], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(!run.says("retrying once"), "{}", run.output());
+}
