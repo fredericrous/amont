@@ -71,11 +71,7 @@ fn a_check_that_outlives_the_budget_is_killed_and_fails() {
     // harness's output pipe would hold this TEST hostage the way no real git
     // invocation can (git lends hooks its own stdio, it does not read a pipe).
     let body = "#!/bin/sh\nexec sleep 300\n";
-    r.stage("slow.sh", body);
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(r.path("slow.sh"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
-    r.git(&["add", "slow.sh"]);
+    staged_exec(&r, "slow.sh", body);
     manifest(&r, "pre-commit  slowpoke  *  block  ./slow.sh\n");
     r.git(&["config", "amont.timeout", "1"]);
 
@@ -102,11 +98,7 @@ fn a_silent_check_is_killed_by_the_idle_budget() {
     let _alone = alone();
     let r = Repo::new();
     let body = "#!/bin/sh\nexec sleep 300\n";
-    r.stage("quiet.sh", body);
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(r.path("quiet.sh"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
-    r.git(&["add", "quiet.sh"]);
+    staged_exec(&r, "quiet.sh", body);
     manifest(&r, "pre-commit  quiet  *  block  ./quiet.sh\n");
     r.git(&["config", "amont.timeout", "0"]);
     r.git(&["config", "amont.idleTimeout", "1"]);
@@ -139,11 +131,7 @@ fn a_chatty_check_outlives_the_idle_budget() {
     let r = Repo::new();
     let body =
         "#!/bin/sh\ni=0\nwhile [ $i -lt 75 ]; do i=$((i+1)); echo tick $i; sleep 0.2; done\n";
-    r.stage("chatty.sh", body);
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(r.path("chatty.sh"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
-    r.git(&["add", "chatty.sh"]);
+    staged_exec(&r, "chatty.sh", body);
     manifest(&r, "pre-commit  chatty  *  block  ./chatty.sh\n");
     // Fifteen seconds of ticks every 0.2s against a ten-second budget. The
     // 50x margin is for a machine running the whole suite at once, where a
@@ -170,17 +158,13 @@ fn a_chatty_check_outlives_the_idle_budget() {
 #[test]
 fn concurrent_checks_emit_contiguous_blocks() {
     let _alone = alone();
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     for name in ["alpha", "beta"] {
-        let file = format!("{name}.sh");
-        r.stage(
-            &file,
+        staged_exec(
+            &r,
+            &format!("{name}.sh"),
             &format!("#!/bin/sh\necho {name}-first\nsleep 1\necho {name}-second\nexit 0\n"),
         );
-        std::fs::set_permissions(r.path(&file), std::fs::Permissions::from_mode(0o755))
-            .expect("chmod");
-        r.git(&["add", &file]);
     }
     manifest(
         &r,
@@ -251,9 +235,15 @@ fn burn(secs: u32) -> String {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn script(r: &Repo, name: &str, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    r.stage(name, &format!("#!/bin/sh\ntrap 'kill 0' EXIT\n{body}"));
-    std::fs::set_permissions(r.path(name), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    staged_exec(r, name, &format!("#!/bin/sh\ntrap 'kill 0' EXIT\n{body}"));
+}
+
+/// Write `name` as a fixture executable, primed (see
+/// [`common::fixture_exec`]: the first exec of a fresh file is not timed),
+/// and stage it.
+#[cfg(unix)]
+fn staged_exec(r: &Repo, name: &str, body: &str) {
+    common::fixture_exec(&r.path(name), body);
     r.git(&["add", name]);
 }
 
@@ -563,7 +553,6 @@ fn an_unmeasured_check_answers_to_the_extended_budget() {
 /// for the host-slot fixtures.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn slow_clippy_repo() -> Repo {
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     r.stage(
         "Cargo.toml",
@@ -572,14 +561,11 @@ fn slow_clippy_repo() -> Repo {
     r.stage("src/lib.rs", "pub fn x() {}\n");
     let dir = r.path(".git/toolshims");
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let cargo = dir.join("cargo");
-    std::fs::write(
-        &cargo,
+    common::fixture_exec(
+        &dir.join("cargo"),
         "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
          clippy) [ \"$2\" = --version ] && { echo clippy; exit 0; }; sleep 5;;\nesac\nexit 0\n",
-    )
-    .expect("write");
-    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     r
 }
 
@@ -595,12 +581,15 @@ fn heavy_checks_queue_for_a_host_slot() {
     let _alone = alone();
     let slots = std::env::temp_dir().join(format!("amont-slots-fixture-{}", std::process::id()));
     let run_pair = |slots: &std::path::Path| -> (std::time::Duration, Vec<String>) {
+        // Both repositories exist, their shims primed, before the clock
+        // starts: the span measured is the two hooks and nothing else.
+        let repos = [slow_clippy_repo(), slow_clippy_repo()];
         let started = std::time::Instant::now();
         let outputs: Vec<String> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..2)
-                .map(|_| {
+            let handles: Vec<_> = repos
+                .iter()
+                .map(|r| {
                     s.spawn(move || {
-                        let r = slow_clippy_repo();
                         let path = std::ffi::OsString::from(format!(
                             "{}:{}",
                             r.path(".git/toolshims").display(),
@@ -663,7 +652,6 @@ fn heavy_checks_queue_for_a_host_slot() {
 /// on its first clippy, then passes; `always` makes it hang every time.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn waiting_clippy_repo(always: bool) -> Repo {
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     r.stage(
         "Cargo.toml",
@@ -678,17 +666,14 @@ fn waiting_clippy_repo(always: bool) -> Repo {
     } else {
         format!("[ -f '{0}' ] && exit 0; touch '{0}'; ", seen.display())
     };
-    std::fs::write(
-        dir.join("cargo"),
-        format!(
+    common::fixture_exec(
+        &dir.join("cargo"),
+        &format!(
             "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
              clippy) [ \"$2\" = --version ] && {{ echo clippy; exit 0; }}; {guard}\
              echo 'waiting for lock on x' >&2; exec sleep 30;;\nesac\nexit 0\n"
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(dir.join("cargo"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
+    );
     r.git(&["config", "amont.idleTimeout", "2"]);
     r.git(&["config", "amont.timeout", "12"]);
     r

@@ -119,13 +119,15 @@ fn a_passing_tree_gate_stamps_the_commit_and_its_tree() {
 #[test]
 fn a_failing_tree_gate_never_blocks_and_never_stamps() {
     let r = repo_with("bad", "ruff", "./bad.sh");
-    r.stage("bad.sh", "#!/bin/sh\necho '3 problems'\nexit 1\n");
+    common::fixture_exec(
+        &r.dir.join("bad.sh"),
+        "#!/bin/sh\necho '3 problems'\nexit 1\n",
+    );
+    r.git(&["add", "bad.sh"]);
     r.git(&["update-index", "--chmod=+x", "bad.sh"]);
-    std::fs::set_permissions(
-        r.dir.join("bad.sh"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
+    // The verdict must be in before the commit is: this test is about what
+    // a failing gate says, not about the slack, which has its own test.
+    r.git(&["config", "amont.treeLintSlack", "60"]);
     let warmed = warm(&r);
     let (ok, out) = commit(&r, "feat: a");
     assert!(
@@ -436,6 +438,9 @@ fn remote_note(remote: &std::path::Path, commit: &str) -> String {
 #[test]
 fn a_proven_tree_is_attested_on_push() {
     let r = repo_with("ok", "ruff", "true");
+    // Proving the tree is what is attested; how long the commit waits for
+    // the proof is the slack's own test.
+    r.git(&["config", "amont.treeLintSlack", "60"]);
     let remote = attesting(&r);
     warm(&r);
     let (ok, out) = commit(&r, "feat: a");
@@ -616,12 +621,16 @@ fn every_tree_outcome_is_recorded_as_evidence_on_the_tree() {
 
 /// Fresh start: the gate's time is known (it outlasts the slack), the
 /// covering check's is not. Unknown cover means run — and learn — never skip.
+///
+/// The cover runs 6 s against the gate's 2 s: with 3 s, a loaded machine
+/// starting the gate a second late left it "still running when the commit
+/// was ready", and the test read that as cover not counting.
 #[test]
 fn an_unmeasured_covering_check_counts_as_cover() {
     let r = Repo::new();
     r.stage(
         "amont.conf",
-        "pre-commit  suite  *.txt  block  sleep 3\ntree slowish ruff * attest sleep 2\n",
+        "pre-commit  suite  *.txt  block  sleep 6\ntree slowish ruff * attest sleep 2\n",
     );
     r.stage(
         ".forgejo/workflows/ci.yaml",
@@ -714,8 +723,7 @@ fn a_hanging_version_probe_never_delays_the_commit() {
     let bin = r.dir.join(".git").join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fake = bin.join("pyright");
-    std::fs::write(&fake, "#!/bin/sh\nsleep 301\necho pyright 1.1.400\n").unwrap();
-    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::fixture_exec(&fake, "#!/bin/sh\nsleep 301\necho pyright 1.1.400\n");
     let path = format!(
         "{}:{}",
         bin.display(),

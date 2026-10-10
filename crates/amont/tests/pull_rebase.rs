@@ -373,7 +373,6 @@ fn offline_reads_as_unreachable_not_deleted() {
 #[cfg(unix)]
 #[test]
 fn a_hung_remote_is_cut_at_the_deadline() {
-    use std::os::unix::fs::PermissionsExt;
     let r = with_origin();
     r.git(&["checkout", "-q", "-b", "feat/hung"]);
     r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/hung"]);
@@ -390,13 +389,10 @@ fn a_hung_remote_is_cut_at_the_deadline() {
     let real = real.trim().to_string();
     let shims = r.path(".git/gitshim");
     std::fs::create_dir_all(&shims).expect("mkdir");
-    std::fs::write(
-        shims.join("git"),
-        format!("#!/bin/sh\ncase \"$1\" in ls-remote) sleep 30 ;; esac\nexec {real} \"$@\"\n"),
-    )
-    .expect("write");
-    std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
+    common::fixture_exec(
+        &shims.join("git"),
+        &format!("#!/bin/sh\ncase \"$1\" in ls-remote) sleep 30 ;; esac\nexec {real} \"$@\"\n"),
+    );
 
     let started = std::time::Instant::now();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amont"));

@@ -418,13 +418,17 @@ mod tests {
 
     /// The deadline kills the WHOLE group: a grandchild the tool forked must
     /// not survive it (it could still be writing the cache).
+    ///
+    /// Three seconds for the shell to fork and record its grandchild: at
+    /// 400 ms, a loaded machine killed the shell before it wrote the pid
+    /// file, and the test failed on reading it rather than on a survivor.
     #[test]
     fn tree_run_timed_out_leaves_no_child_alive() {
         let dir = std::env::temp_dir().join(format!("amont-tree-run-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let pidfile = dir.join("grandchild.pid");
         let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
-        let r = run(&sh(&script), &dir, soon(400), &AtomicBool::new(false));
+        let r = run(&sh(&script), &dir, soon(3_000), &AtomicBool::new(false));
         assert_eq!(r, TreeRun::TimedOut);
         let pid: i32 = std::fs::read_to_string(&pidfile)
             .unwrap()
