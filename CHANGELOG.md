@@ -6,6 +6,17 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A `docs-skip` check is no longer stamped as having passed.** v1.49.0
+  reported the skip as a pass, so the commit's gate stamp named a check that
+  never ran. Nothing in this repository's CI read that stamp, but a
+  same-named `pre-push` declaration would have deferred to it, and an
+  attestation could have told CI the gate was covered. The skip now reports
+  nothing verified, and the gate runs wherever a stamp would have excused it.
+
 ## v1.49.0
 
 The scope column learns directories, and a check can step aside for a

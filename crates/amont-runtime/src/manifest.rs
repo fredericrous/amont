@@ -686,17 +686,24 @@ impl Check for External {
         match self.stage {
             Stage::PreCommit => {
                 let staged = crate::hooks::common::staged_files(&[]);
-                // An edit to existing documentation cannot break what this
-                // gate judges: the tests and decision graph are untouched by
-                // prose. Said out loud, like every other skip that is a
-                // decision and not a missing tool.
+                // The declaration's own bet is that an edit to existing
+                // documentation does not change what this gate judges. Said
+                // out loud, like every other skip that is a decision and not a
+                // missing tool.
+                //
+                // `Inert`, not `Passed`: a bet is not a verdict. `Passed` is
+                // what the stamp and the push-side pairing read as "this gate
+                // ran clean on this tree", and a stamp for a run that never
+                // happened would let a same-named `pre-push` declaration defer
+                // to it, or an attestation tell CI the gate is covered. Left
+                // unstamped, the push gate runs it as it would have.
                 if docs_skip && crate::hooks::common::staged_docs_only() {
                     crate::say!(
                         "{} {} skipped — the commit only edits existing documentation",
                         crate::ui::valid_sign(),
                         crate::ui::highlight(&self.short_name),
                     );
-                    return Outcome::Passed;
+                    return Outcome::Inert;
                 }
                 let Some(matched) = files_to_judge(scope, files, &staged) else {
                     return Outcome::Passed;
