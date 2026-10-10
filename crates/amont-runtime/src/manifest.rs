@@ -372,6 +372,11 @@ pub const SETTABLE: &[&str] = &[
     "commit.bodyWrap",
     "autoRebase",
     "timeout",
+    // How long a tool may sit in a declared lock wait (ADR-0009). A property
+    // of the project's build — a workspace whose cold check holds the cargo
+    // lock for ten minutes is the project's to know — and, like `timeout`,
+    // only ever lengthens or shortens a wait; it enforces nothing.
+    "lockWait",
     "testPushedTree",
     "minVersion",
     // A snapshot is not a workspace. `testPushedTree` is settable here, so a
@@ -811,7 +816,11 @@ impl External {
         // Under the deadline: repo-authored code that outlives the budget is
         // killed and FAILS — "hung" must not read as "passed", and pre-push
         // runs these serially where one hang stalls the entire push.
-        let status = match crate::hooks::common::status_streamed(settings, &mut cmd) {
+        let status = match crate::hooks::common::status_streamed(
+            settings,
+            &mut cmd,
+            crate::hooks::common::Retry::Never,
+        ) {
             Ok(crate::hooks::common::Ran::Status(s)) => Ok(s),
             Ok(crate::hooks::common::Ran::TimedOut(budget)) => {
                 crate::hooks::common::say_timed_out(&self.short_name, budget);

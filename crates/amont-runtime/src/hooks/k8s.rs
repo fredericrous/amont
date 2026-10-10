@@ -344,7 +344,11 @@ fn validate_root(
     // the network, say) never feels the pipe close, and an unbounded wait
     // here would inherit its hang. Same clock, and a kill on expiry.
     let built = matches!(
-        super::common::wait_within(&mut build, super::common::check_timeout(settings), 0, None),
+        super::common::wait_within(
+            &mut build,
+            super::common::Clocks::ceiling_only(super::common::check_timeout(settings)),
+            None,
+        ),
         Ok(super::common::Ran::Status(s)) if s.success()
     );
     built && conform

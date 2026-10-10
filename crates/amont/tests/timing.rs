@@ -423,3 +423,352 @@ fn with_cpu_credit_off_a_busy_silent_check_dies_at_the_budget() {
         run.output()
     );
 }
+
+// --- Waiting is not stuck (ADR-0009) ----------------------------------------
+
+/// The exact line cargo prints while another cargo holds its lock.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CARGO_WAIT: &str = "    Blocking waiting for file lock on build directory";
+
+/// A tool that says it is waiting on a lock, then goes silent for three
+/// times the silence budget, is not killed: the clock does not run during a
+/// declared wait. It passes, and says what it waited for.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_declared_lock_wait_outlives_the_silence_budget() {
+    let _alone = alone();
+    let r = Repo::new();
+    // Not `script()`: its `trap 'kill 0' EXIT` is for fixtures that are
+    // killed, and a script that exits on its own would take amont's whole
+    // process group down with it.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        r.stage(
+            "wait.sh",
+            &format!(
+                "#!/bin/sh\necho '{CARGO_WAIT}' >&2\nsleep 6\necho '    Checking x v0.1.0' >&2\n"
+            ),
+        );
+        std::fs::set_permissions(r.path("wait.sh"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        r.git(&["add", "wait.sh"]);
+    }
+    manifest(&r, "pre-commit  locked  *  block  sh ./wait.sh\n");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
+    assert!(
+        run.passed(),
+        "a declared wait is not a hang:\n{}",
+        run.output()
+    );
+    assert!(took < std::time::Duration::from_secs(11), "took {took:?}");
+    assert!(
+        run.says("waited") && run.says("the cargo lock on the build directory"),
+        "a passing check says what it waited for:\n{}",
+        run.output()
+    );
+}
+
+/// A declared wait answers to `amont.lockWait`, and the message names the
+/// lock, its likely holders and the key.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_lock_wait_past_its_budget_is_killed_and_named() {
+    let _alone = alone();
+    let r = Repo::new();
+    script(
+        &r,
+        "stuck.sh",
+        &format!("echo '{CARGO_WAIT}' >&2\nexec sleep 30\n"),
+    );
+    manifest(&r, "pre-commit  locked  *  block  sh ./stuck.sh\n");
+    r.git(&["config", "amont.idleTimeout", "60"]);
+    r.git(&["config", "amont.lockWait", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(took < std::time::Duration::from_secs(8), "took {took:?}");
+    assert!(
+        run.says("waited 2s for the cargo lock on the build directory")
+            && run.says("amont.lockWait"),
+        "must name the wait, the lock and the key:\n{}",
+        run.output()
+    );
+}
+
+/// Only stderr is read for markers: the same words on stdout are output
+/// like any other, and the silence budget still applies after them.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_marker_on_stdout_does_not_pause_the_clock() {
+    let _alone = alone();
+    let r = Repo::new();
+    script(
+        &r,
+        "out.sh",
+        &format!("echo '{CARGO_WAIT}'\nexec sleep 30\n"),
+    );
+    manifest(&r, "pre-commit  locked  *  block  sh ./out.sh\n");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "0"]);
+    let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+    assert!(run.says("printed nothing"), "{}", run.output());
+}
+
+/// While the CPU cannot be measured, the silence budget is the extended
+/// one, `idleTimeout × idleLoadScale`: not killed at 2 s, killed near 8 s,
+/// even with the ceiling off.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn an_unmeasured_check_answers_to_the_extended_budget() {
+    let _alone = alone();
+    let r = Repo::new();
+    // A child, so the walk has more than the root to count and the cap of
+    // zero below makes every snapshot partial. Its output goes nowhere:
+    // amont kills only the root, and a child holding the pipe would keep
+    // amont reading until it exits.
+    script(&r, "idle.sh", "sleep 30 >/dev/null 2>&1 &\nwait\n");
+    manifest(&r, "pre-commit  idle  *  block  ./idle.sh\n");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "0"]);
+    let zero = std::ffi::OsString::from("0");
+    let four = std::ffi::OsString::from("4");
+    let held = std::ffi::OsString::from("held");
+    let (run, took) = r.hook_watched_unpinned(
+        "pre-commit",
+        &[
+            ("AMONT_CPU_MAX_PROCS", zero.as_os_str()),
+            ("AMONT_IDLE_LOAD_SCALE", four.as_os_str()),
+            ("AMONT_HOST_SLOT", held.as_os_str()),
+        ],
+        WATCHDOG,
+    );
+    assert!(!run.passed(), "{}", run.output());
+    assert!(
+        took >= std::time::Duration::from_secs(7) && took < std::time::Duration::from_secs(30),
+        "took {took:?}: the extended budget is 8 s\n{}",
+        run.output()
+    );
+    assert!(
+        run.says("CPU could not be measured") && run.says("amont.idleLoadScale"),
+        "must say why the budget is not the configured one:\n{}",
+        run.output()
+    );
+}
+
+/// A Rust repository whose `cargo` is a shim that sleeps through clippy,
+/// for the host-slot fixtures.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn slow_clippy_repo() -> Repo {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn x() {}\n");
+    let dir = r.path(".git/toolshims");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let cargo = dir.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
+         clippy) [ \"$2\" = --version ] && { echo clippy; exit 0; }; sleep 5;;\nesac\nexit 0\n",
+    )
+    .expect("write");
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    r
+}
+
+/// Two repositories commit at once with one host slot: their clippys run
+/// one after the other, not together. Five-second clippys, so a loaded
+/// machine cannot blur "one after the other" (≥ 10 s) into "together"
+/// (≈ 5 s). With a slot directory another user
+/// could have made (mode 0755), queueing is off, both run at once, and each
+/// says why.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn heavy_checks_queue_for_a_host_slot() {
+    let _alone = alone();
+    let slots = std::env::temp_dir().join(format!("amont-slots-fixture-{}", std::process::id()));
+    let run_pair = |slots: &std::path::Path| -> (std::time::Duration, Vec<String>) {
+        let started = std::time::Instant::now();
+        let outputs: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(move || {
+                        let r = slow_clippy_repo();
+                        let path = std::ffi::OsString::from(format!(
+                            "{}:{}",
+                            r.path(".git/toolshims").display(),
+                            std::env::var("PATH").unwrap_or_default()
+                        ));
+                        let one = std::ffi::OsString::from("1");
+                        let (run, _) = r.hook_watched_unpinned(
+                            "pre-commit-clippy",
+                            &[
+                                ("PATH", path.as_os_str()),
+                                ("AMONT_SLOT_DIR", slots.as_os_str()),
+                                ("AMONT_HOST_SLOTS", one.as_os_str()),
+                            ],
+                            WATCHDOG,
+                        );
+                        assert!(run.passed(), "{}", run.output());
+                        run.output()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("join"))
+                .collect()
+        });
+        (started.elapsed(), outputs)
+    };
+
+    let _ = std::fs::remove_dir_all(&slots);
+    let (took, outputs) = run_pair(&slots);
+    assert!(
+        took >= std::time::Duration::from_secs(10),
+        "two 5 s clippys with one slot took {took:?}: they ran together"
+    );
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|o| o.contains("for a host slot"))
+            .count(),
+        1,
+        "exactly one of the two waited, and said so:\n{outputs:#?}"
+    );
+
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::remove_dir_all(&slots);
+    std::fs::create_dir_all(&slots).expect("mkdir");
+    std::fs::set_permissions(&slots, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let (took, outputs) = run_pair(&slots);
+    assert!(
+        took < std::time::Duration::from_millis(8500),
+        "an unsafe slot directory must not queue: took {took:?}"
+    );
+    for out in outputs {
+        assert!(out.contains("host slots are off"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(&slots);
+}
+
+/// A Rust repository whose `cargo` prints a look-alike wait line and hangs
+/// on its first clippy, then passes; `always` makes it hang every time.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn waiting_clippy_repo(always: bool) -> Repo {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Repo::new();
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn x() {}\n");
+    let dir = r.path(".git/toolshims");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let seen = dir.join("seen");
+    let guard = if always {
+        String::new()
+    } else {
+        format!("[ -f '{0}' ] && exit 0; touch '{0}'; ", seen.display())
+    };
+    std::fs::write(
+        dir.join("cargo"),
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'cargo 1.0.0 (fake)';;\n  \
+             clippy) [ \"$2\" = --version ] && {{ echo clippy; exit 0; }}; {guard}\
+             echo 'waiting for lock on x' >&2; exec sleep 30;;\nesac\nexit 0\n"
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(dir.join("cargo"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    r
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn with_shims(r: &Repo) -> std::ffi::OsString {
+    std::ffi::OsString::from(format!(
+        "{}:{}",
+        r.path(".git/toolshims").display(),
+        std::env::var("PATH").unwrap_or_default()
+    ))
+}
+
+/// Run as the `pre-commit` STAGE, which is how git runs it: a check run on
+/// its own by name inherits the terminal, where nobody reads its lines and
+/// only the ceiling applies.
+///
+/// A built-in killed while its last line read like a wait is retried once,
+/// says so, and passes when the retry does — with no failure text. A
+/// second kill is final, and both attempts fit in one ceiling.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_wait_like_kill_is_retried_once() {
+    let _alone = alone();
+    let r = waiting_clippy_repo(false);
+    let path = with_shims(&r);
+    let (run, took) = r.hook_watched("pre-commit", &[("PATH", path.as_os_str())], WATCHDOG);
+    assert!(run.passed(), "the retry passed:\n{}", run.output());
+    assert!(took < std::time::Duration::from_secs(8), "took {took:?}");
+    assert!(
+        run.says("clippy") && run.says("was killed while it looked like it was waiting"),
+        "names the check, not the program:\n{}",
+        run.output()
+    );
+    assert_eq!(
+        run.output().matches("retrying once").count(),
+        1,
+        "{}",
+        run.output()
+    );
+    assert!(
+        !run.says("printed nothing"),
+        "no failure text:\n{}",
+        run.output()
+    );
+
+    let r = waiting_clippy_repo(true);
+    let path = with_shims(&r);
+    let (run, took) = r.hook_watched("pre-commit", &[("PATH", path.as_os_str())], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(
+        took < std::time::Duration::from_secs(12),
+        "one ceiling: took {took:?}"
+    );
+    assert_eq!(
+        run.output().matches("retrying once").count(),
+        1,
+        "{}",
+        run.output()
+    );
+    assert!(run.says("printed nothing"), "{}", run.output());
+}
+
+/// A declared external is never retried: a user's command may not be safe
+/// to run twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_declared_check_is_never_retried() {
+    let _alone = alone();
+    let r = Repo::new();
+    script(
+        &r,
+        "look.sh",
+        "echo 'waiting for lock on x' >&2\nexec sleep 30\n",
+    );
+    manifest(&r, "pre-commit  look  *  block  ./look.sh\n");
+    r.git(&["config", "amont.idleTimeout", "2"]);
+    r.git(&["config", "amont.timeout", "12"]);
+    let (run, _) = r.hook_watched("pre-commit", &[], WATCHDOG);
+    assert!(!run.passed(), "{}", run.output());
+    assert!(!run.says("retrying once"), "{}", run.output());
+}

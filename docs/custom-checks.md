@@ -209,9 +209,10 @@ repository still beats the policy.
 
 Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.gitmoji`, `commit.subjectMax`, `commit.descriptionMax`,
-`commit.bodyWrap`, `autoRebase`, `timeout`, `testPushedTree`,
-`snapshotPrepare`, `snapshotDeps`, `snapshotCarry`, `order`, and
-`minVersion` — the last being the team's version
+`commit.bodyWrap`, `autoRebase`, `timeout`, `lockWait`, `testPushedTree`,
+`snapshotPrepare`, `snapshotDeps`, `snapshotCarry`, `order`, `treeLint`,
+`treeLintSlack`, `treeLintWait`, `treeLintRehearsalTimeout`,
+`snapshotPrepareOutputs`, and `minVersion` — the last being the team's version
 floor: a binary older than `set minVersion 1.11.0` says so once per stage,
 warn-only, instead of silently lacking the checks the team added since.
 

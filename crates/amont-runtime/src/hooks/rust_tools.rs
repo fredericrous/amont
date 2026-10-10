@@ -384,6 +384,43 @@ pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     Outcome::Failed
 }
 
+/// What pre-commit clippy judges (ADR-0009, `hooks.clippy-scope`). It runs
+/// in the package root nearest each staged `.rs`, and without `--workspace`
+/// cargo judges that package alone (the default members, at a virtual
+/// root). The whole workspace is judged when a manifest, the lockfile, a
+/// lint config or the toolchain pin is staged — they change how every
+/// package compiles — or when the file set is not the index
+/// (`--all-files`). Lints a change provokes in a DEPENDENT package are
+/// caught by CI's workspace clippy, not here: a cold `--workspace` per
+/// worktree was the longest and most lock-hungry check of a commit.
+pub fn clippy_args(staged: &[String], not_the_index: bool) -> &'static [&'static str] {
+    const PACKAGE: &[&str] = &[
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    const WORKSPACE: &[&str] = &[
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    let shared = staged
+        .iter()
+        .any(|f| is_rust_path(f) && !f.ends_with(".rs"));
+    if not_the_index || shared {
+        WORKSPACE
+    } else {
+        PACKAGE
+    }
+}
+
 pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
     // `staged_files` matches by suffix, which would also accept
     // `vendor/NotCargo.toml`. `is_rust_path` compares the basename, so let it
@@ -400,19 +437,12 @@ pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) 
     if roots.is_empty() {
         return Outcome::Passed;
     }
+    let args = clippy_args(&files, crate::hooks::common::not_the_index());
     match each_root(
         settings,
         &roots,
         Some("clippy"),
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--all-features",
-            "--",
-            "-D",
-            "warnings",
-        ],
+        args,
         "Rust staged but clippy is not installed. `rustup component add clippy`.",
     ) {
         Err(outcome) => outcome,
@@ -593,5 +623,26 @@ mod tests {
             (nested.join("rust-toolchain.toml"), "1.94.1")
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+    /// Source alone: the package, no `--workspace`. A manifest, lockfile,
+    /// lint config or pin staged, or a file set that is not the index:
+    /// the whole workspace.
+    #[test]
+    fn clippy_judges_the_package_unless_something_shared_is_staged() {
+        use super::clippy_args;
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let pkg = clippy_args(&s(&["crates/a/src/lib.rs", "README.md"]), false);
+        assert!(!pkg.contains(&"--workspace"), "{pkg:?}");
+        assert_eq!(pkg.first(), Some(&"clippy"));
+        for shared in [
+            "Cargo.lock",
+            "crates/a/Cargo.toml",
+            "clippy.toml",
+            "rust-toolchain.toml",
+        ] {
+            let ws = clippy_args(&s(&["crates/a/src/lib.rs", shared]), false);
+            assert!(ws.contains(&"--workspace"), "{shared}: {ws:?}");
+        }
+        assert!(clippy_args(&s(&["crates/a/src/lib.rs"]), true).contains(&"--workspace"));
     }
 }

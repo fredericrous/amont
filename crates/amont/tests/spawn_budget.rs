@@ -46,6 +46,9 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+        // The budget must see the host-key scan: `.cargo/config.toml`
+        // pins the scale, which would skip it.
+        .env_remove("AMONT_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -125,6 +128,9 @@ fn post_commit_in_an_ungated_repo_stays_near_free() {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+        // The budget must see the host-key scan: `.cargo/config.toml`
+        // pins the scale, which would skip it.
+        .env_remove("AMONT_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -168,6 +174,9 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
         "severity lint-json-yaml warn\nskip yamllint\nset largeFileWarn 1\nset commit.subjectMax 50\n",
     );
     let trust = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+        // The budget must see the host-key scan: `.cargo/config.toml`
+        // pins the scale, which would skip it.
+        .env_remove("AMONT_IDLE_LOAD_SCALE")
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -204,6 +213,9 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+        // The budget must see the host-key scan: `.cargo/config.toml`
+        // pins the scale, which would skip it.
+        .env_remove("AMONT_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -234,5 +246,87 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
          — the scoped-read caches (key_set_above_policy's OnceLock, the \
          severity fold) have regressed, or a setting grew a per-check read; \
          raise this budget only with a reason written here"
+    );
+}
+
+/// The host-key scan (ADR-0009) costs exactly one git spawn, once per
+/// process, and only on a commit that runs a tool: the same commit with
+/// `AMONT_IDLE_LOAD_SCALE` set (which answers the key without git) spawns
+/// git exactly once less.
+#[cfg(unix)]
+#[test]
+fn the_host_key_scan_costs_one_spawn_when_a_tool_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let spawns_with = |pin: bool| -> usize {
+        let r = Repo::new();
+        r.stage("amont.conf", "pre-commit  noop  *  block  true\n");
+        let trust = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+            .arg("trust")
+            .current_dir(&r.dir)
+            .output()
+            .expect("amont trust");
+        assert!(trust.status.success(), "could not trust the manifest");
+        r.stage("a.txt", "hello\n");
+        let real = String::from_utf8(
+            std::process::Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .expect("which git")
+                .stdout,
+        )
+        .expect("utf8");
+        let shims = r.path(".git/gitshim");
+        std::fs::create_dir_all(&shims).expect("mkdir");
+        let count = r.path(".git/git-count");
+        std::fs::write(
+            shims.join("git"),
+            format!(
+                "#!/bin/sh\nprintf x >> {}\nexec {} \"$@\"\n",
+                count.display(),
+                real.trim()
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amont"));
+        cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
+        if pin {
+            cmd.env("AMONT_IDLE_LOAD_SCALE", "1");
+        }
+        let out = cmd
+            .args([
+                "--hooks-dir",
+                &r.path(".git/hooks").to_string_lossy(),
+                "pre-commit",
+            ])
+            .current_dir(&r.dir)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    shims.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run pre-commit");
+        assert!(
+            out.status.success(),
+            "pre-commit failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read_to_string(&count)
+            .map(|s| s.len())
+            .unwrap_or(0)
+    };
+    let unpinned = spawns_with(false);
+    let pinned = spawns_with(true);
+    assert_eq!(
+        unpinned,
+        pinned + 1,
+        "the host-key scan must cost exactly one spawn: {unpinned} unpinned vs {pinned} pinned"
     );
 }

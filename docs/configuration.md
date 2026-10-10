@@ -554,9 +554,17 @@ progress line says it is busy (`· quiet 2m10s · ~3.9 cores`).
 The trade-off is written down in ADR-0008: a silent tool that *spins* — a
 busy loop, a polling watcher — now answers to the ceiling rather than this
 budget, and the ceiling message says so. Work done by a daemon outside the
-tree (a build daemon, a container engine) is not counted. On Windows, or when
-a measurement is incomplete, silence alone counts, and the messages say CPU
+tree (a build daemon, a container engine) is not counted. On Windows, or with
+`amont.idleCpuCredit false`, silence alone counts, and the messages say CPU
 was not measured rather than claiming it was idle.
+
+When sampling is on but a measurement is incomplete — the walk came back
+partial on a loaded machine, or no sample has landed yet — the check answers
+to the **extended budget**, this budget × `amont.idleLoadScale` (eight
+minutes by default), never to the bare two minutes: a kill must rest on a
+measurement somebody made. One partial snapshot no longer throws the
+measurement away; the next complete one spans the gap, may count as busy,
+and never as measured idle (ADR-0009).
 
 ```sh
 git config amont.idleCpuCredit false  # silence alone, everywhere
@@ -564,7 +572,41 @@ git config amont.idleCpuCredit false  # silence alone, everywhere
 
 `AMONT_CPU_TRACE=<file>` appends the processes each measurement saw — a
 diagnostic for when a check was kept alive, or killed, and you want to know
-what amont was looking at.
+what amont was looking at. `AMONT_CPU_MAX_PROCS=<n>` caps the walk, which
+forces an incomplete measurement on purpose.
+
+### Waiting is not stuck
+
+A tool that is waiting on a lock says so and then says nothing: cargo
+prints `Blocking waiting for file lock on build directory` while another
+cargo — a second worktree, rust-analyzer, a build in another session —
+holds it, and uv prints `Waiting to acquire … lock for …`. Those exact lines,
+on stderr, pause this clock: the wait answers to `amont.lockWait` instead,
+and the progress line says `· cargo lock 1m30s/10m00s`. A check that passes
+after such a wait says how long it waited and for what.
+
+A line that only *looks* like a wait (`waiting for lock on …`) does not pause
+anything. If the silence budget kills a built-in check whose last line read
+like that, amont runs it once more, under what is left of the same ceiling,
+and says so; the first kill prints no failure. A declared check is never
+retried: a command you wrote may not be safe to run twice.
+
+The silence budget also stretches with the host's load: on a machine whose
+one-minute load average is twice its core count, two minutes become four,
+up to `amont.idleLoadScale`. The progress line and the kill message name
+the stretched figure, the load and the key.
+
+Worst case for a genuinely stuck, silent tool, at the defaults:
+
+| situation | killed after |
+|---|---|
+| CPU measured idle, host not loaded | 2 minutes |
+| CPU measured idle, host loaded | up to 8 minutes (`idleLoadScale` 4) |
+| CPU could not be measured | 8 minutes, even with `amont.timeout 0` |
+| in a declared cargo or uv lock wait | 10 minutes (`amont.lockWait`) |
+| retried after a wait-like last line | both attempts inside one `amont.timeout` |
+| waiting for a host slot | up to `amont.timeout`, before it starts |
+| anything | `amont.timeout`, one hour |
 
 ## `amont.timeout` — the ceiling one check's command may run for
 
@@ -583,9 +625,10 @@ orphaned, but the commit is no longer hostage to it.
 
 While a stage runs, a terminal shows a live line per check with its elapsed
 time, a `· quiet 45s/2m` note once a check has been silent for half a minute
-(`· quiet 2m10s · ~3.9 cores` instead while its CPU is busy, and
+(`· quiet 2m10s · ~3.9 cores` instead while its CPU is busy,
 `· idle 40s/2m` counting what the budget counts once busy work has pushed it
-back), and `· 50m/1h` once it is within 80% of the ceiling — the cliff, shown
+back, `· cargo lock 1m30s/10m00s` during a declared wait, and
+`· queued 42s (slots 2/2)` while it waits for a host slot), and `· 50m/1h` once it is within 80% of the ceiling — the cliff, shown
 before the fall. Piped (an agent, CI), the same information arrives as one
 plain line a minute per running check: elapsed, time since its last output,
 what its CPU is doing (`busy ~3.9 cores`, `CPU idle 40s`, `CPU unmeasured`),
@@ -597,6 +640,64 @@ sync runs under the full budget, and the reachability *probes*
 this and 30 seconds — a probe answers in a second or two when the network
 is there at all, and a captive portal must not get ten minutes to say
 nothing. `0` disables these deadlines too.
+
+## `amont.lockWait` — how long a check may wait on a lock
+
+```sh
+git config amont.lockWait 900   # seconds; default 600, 0 = until the ceiling
+```
+
+How long a tool may sit in a declared lock wait (see "Waiting is not
+stuck" above) before it is killed. The kill message names the lock and who
+probably holds it. `0` leaves the wait to `amont.timeout`; with that off
+too, the extended silence budget bounds it, so nothing waits forever.
+Settable from `amont.conf` (`set lockWait 900`): how long a workspace's cold
+build holds its lock is the project's to know.
+
+## Host keys: `amont.idleLoadScale` and `amont.hostSlots`
+
+These two describe the machine, not the repository, so they are read from
+`--global` or `--system` git config only. A value set in a repository is
+ignored, with one warning naming the key and `--global`; `amont.conf`
+cannot set them. Precedence, highest first: the environment variable
+(`AMONT_IDLE_LOAD_SCALE`, `AMONT_HOST_SLOTS`), then `--global`, then
+`--system`, then the default.
+
+### `amont.idleLoadScale` — how far a loaded host stretches the silence budget
+
+```sh
+git config --global amont.idleLoadScale 2   # default 4, 1 = never stretch, up to 16
+```
+
+The silence budget is multiplied by the host's one-minute load average over
+its core count, floored at 1 and capped at this. The same factor sets the
+extended budget a check answers to while its CPU could not be measured.
+Linux and macOS read the load; elsewhere the factor is 1.
+
+### `amont.hostSlots` — how many heavy checks one machine runs at once
+
+```sh
+git config --global amont.hostSlots 2   # default: a quarter of the cores, at least 1; 0 = off
+```
+
+Clippy, `go vet`, pyright and the test suites compile or execute the
+product, and each already uses every core. Several worktrees, sessions or
+agents running them at once thrash the same cores and the same cargo lock.
+So a heavy check takes one of these slots before its first tool runs, and
+waits — its clocks not yet started — while all are taken; the progress line
+says `· queued 42s (slots 2/2)`. A check that turns out to have nothing to
+do never queues.
+
+The slots are `flock` locks on files in `/tmp/amont-slots-<uid>`
+(`$XDG_RUNTIME_DIR/amont-slots` on Linux when set), a fixed path so every
+session shares one queue whatever its `$TMPDIR`. amont refuses that
+directory unless it is a real directory you own with mode 0700, and then
+runs the check unqueued with one line saying why. A slot that never frees
+within `amont.timeout` runs the check unqueued too, with a note: the queue
+is a courtesy to the machine, not a gate on the code. Fairness is polling,
+not first come first served. A held slot is released when the check ends,
+and by the kernel if amont dies; an amont started by a check that holds a
+slot (`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
 
 ## `amont.minVersion` — the amont this repository means
 

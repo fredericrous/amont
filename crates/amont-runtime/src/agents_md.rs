@@ -70,7 +70,11 @@ longest timeout your tooling allows, never its default: here a check is\n\
 killed only after {idle} of silence or {ceiling} in total\n\
 (`amont.idleTimeout` / `amont.timeout`) — and on Linux and macOS a silent\n\
 check whose processes are busy on CPU is not \"silent\": it can run to the\n\
-{ceiling} ceiling. A test suite may legitimately run for most of that. If your tooling caps a foreground command below it,\n\
+{ceiling} ceiling. A check waiting on a cargo or uv lock answers to\n\
+`amont.lockWait` instead, the silence budget stretches with the machine's\n\
+load (`amont.idleLoadScale`), and a heavy check (clippy, a test suite) may\n\
+first queue for a host slot (`amont.hostSlots`) while other worktrees run\n\
+theirs. A test suite may legitimately run for most of that. If your tooling caps a foreground command below it,\n\
 run the command in the background and read its result when it exits —\n\
 while it runs, a line a minute on stderr says which check is alive and\n\
 when it last printed. A push killed mid-suite pushed nothing; a commit\n\

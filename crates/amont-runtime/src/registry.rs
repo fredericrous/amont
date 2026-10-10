@@ -903,6 +903,9 @@ pub fn lookup(name: &str, manifest: &crate::manifest::Manifest) -> Option<HookFn
     {
         return Some(|ctx: &Ctx| {
             let check = one_named(ctx.name, ctx.manifest).expect("checked above");
+            // One check run by name queues for a host slot like it would
+            // inside its stage (ADR-0009).
+            let _slot = crate::host_slots::enter_check(check.name());
             Verdict::blocking(matches!(
                 (check.run(ctx), severity_of(ctx.settings, check)),
                 (Outcome::Failed, Severity::Block)

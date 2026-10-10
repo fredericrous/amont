@@ -129,6 +129,19 @@ impl Repo {
         self.hook_at(&self.dir, name, args)
     }
 
+    /// Pin the host-level knobs a fixture must not inherit from the machine
+    /// (ADR-0009). These tests run under amont's own `pre-push-cargo-test`,
+    /// on a workstation that is often loaded: without
+    /// `AMONT_IDLE_LOAD_SCALE=1` every kill-time bound in `timing.rs`
+    /// stretches with the load average, and without `AMONT_HOST_SLOT=held`
+    /// a fixture's heavy check would queue on the real host slots behind the
+    /// very suite that is running it. The slot and load fixtures use
+    /// [`Repo::hook_watched_unpinned`], which sets neither.
+    pub fn pin_host_env(cmd: &mut Command) {
+        cmd.env("AMONT_IDLE_LOAD_SCALE", "1");
+        cmd.env("AMONT_HOST_SLOT", "held");
+    }
+
     /// Run a SUBCOMMAND — `amont list`, `amont setup` — from this repo.
     ///
     /// No `--hooks-dir`: that flag is hook mode, and a subcommand takes its own
@@ -144,6 +157,7 @@ impl Repo {
         let mut cmd = Command::new(bin());
         cmd.args(args).current_dir(&self.dir).stdin(Stdio::null());
         Self::strip_git_env_impl(&mut cmd);
+        Self::pin_host_env(&mut cmd);
         cmd.env("GIT_CONFIG_GLOBAL", self.dir.join("fake-gitconfig"));
         let out = cmd.output().expect("run amont");
         HookRun {
@@ -166,6 +180,7 @@ impl Repo {
             .current_dir(cwd)
             .stdin(Stdio::null());
         Self::strip_git_env_impl(&mut cmd);
+        Self::pin_host_env(&mut cmd);
         let out = cmd.output().expect("run amont");
         HookRun {
             code: out.status.code().unwrap_or(-1),
@@ -193,6 +208,31 @@ impl Repo {
         env: &[(&str, &std::ffi::OsStr)],
         limit: std::time::Duration,
     ) -> (HookRun, std::time::Duration) {
+        self.hook_watched_in(&self.dir, name, env, limit, true)
+    }
+
+    /// [`Repo::hook_watched`] WITHOUT the host pins of [`Repo::pin_host_env`]:
+    /// for the fixtures that are about host slots and the load-scaled
+    /// budget, which set those knobs themselves through `env`.
+    #[cfg(unix)]
+    pub fn hook_watched_unpinned(
+        &self,
+        name: &str,
+        env: &[(&str, &std::ffi::OsStr)],
+        limit: std::time::Duration,
+    ) -> (HookRun, std::time::Duration) {
+        self.hook_watched_in(&self.dir, name, env, limit, false)
+    }
+
+    #[cfg(unix)]
+    fn hook_watched_in(
+        &self,
+        cwd: &Path,
+        name: &str,
+        env: &[(&str, &std::ffi::OsStr)],
+        limit: std::time::Duration,
+        pinned: bool,
+    ) -> (HookRun, std::time::Duration) {
         use std::os::unix::process::CommandExt;
         // Outside the repo: a pre-commit hold may park untracked files.
         let tmp = std::env::temp_dir();
@@ -202,12 +242,20 @@ impl Repo {
         cmd.arg("--hooks-dir")
             .arg(self.dir.join(".git/hooks"))
             .arg(name)
-            .current_dir(&self.dir)
+            .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&out_path).expect("stdout file"))
             .stderr(std::fs::File::create(&err_path).expect("stderr file"))
             .process_group(0);
         Self::strip_git_env_impl(&mut cmd);
+        if pinned {
+            Self::pin_host_env(&mut cmd);
+        } else {
+            // `.cargo/config.toml` pins both for the whole test process;
+            // an unpinned fixture starts from neither and sets its own.
+            cmd.env_remove("AMONT_HOST_SLOT");
+            cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }

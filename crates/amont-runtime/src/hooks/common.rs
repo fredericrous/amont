@@ -388,6 +388,31 @@ pub fn idle_cpu_credit(settings: &crate::config::Settings) -> bool {
         .get_or_init(|| crate::config::boolean_or(settings, "amont.idleCpuCredit", true))
 }
 
+/// How long a command may sit in a DECLARED wait — a line that says it is
+/// blocked on a lock ([`crate::hooks::wait::marker`]) — before it is killed,
+/// in seconds. `amont.lockWait`, default 600; `0` means until the ceiling.
+/// The silence clock does not run during such a wait: the tool has said
+/// what it is doing, and a lock held by another cargo for a minute on a
+/// loaded machine is not a hang (ADR-0009). Read once per `Settings`.
+pub fn lock_wait(settings: &crate::config::Settings) -> LockWait {
+    match *settings.lock_wait.get_or_init(|| {
+        crate::config::integer_or(settings, "amont.lockWait", 600, 0..=86_400) as u64
+    }) {
+        0 => LockWait::UntilCeiling,
+        s => LockWait::Secs(s),
+    }
+}
+
+/// The budget for a declared wait, as [`lock_wait`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockWait {
+    Secs(u64),
+    /// `amont.lockWait 0`: the ceiling alone bounds a declared wait — and
+    /// when the ceiling is off too, the extended silence budget does, so
+    /// nothing is ever unbounded.
+    UntilCeiling,
+}
+
 /// `secs` as people read it: `12s`, `8m12s`, `1h02m`.
 pub fn human_secs(secs: u64) -> String {
     match secs {
@@ -396,6 +421,9 @@ pub fn human_secs(secs: u64) -> String {
         s => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
     }
 }
+
+/// How much of a tool's last stderr line a message may quote.
+pub const LAST_LINE_CHARS: usize = 200;
 
 /// A work window of at least this many thousandths of one core counts as the
 /// tree doing something (ADR-0008): 0.1 core. A hang — a prompt, a lock, a
@@ -438,6 +466,28 @@ pub struct Activity {
     rate_milli: std::sync::atomic::AtomicU32,
     interval_ms: std::sync::atomic::AtomicU32,
     cpu: std::sync::atomic::AtomicU8,
+    /// Offset + 1 of the start of the current declared wait (ADR-0009); 0
+    /// when the last stderr line was not a wait marker.
+    wait_since: std::sync::atomic::AtomicU64,
+    /// [`crate::hooks::wait::WaitKind::code`] of that wait; 0 when none.
+    wait_kind: std::sync::atomic::AtomicU8,
+    /// Nanoseconds spent in declared waits that have ENDED — what the note
+    /// after a slow-but-passing check reports.
+    waited_ns: std::sync::atomic::AtomicU64,
+    /// The code of the most recent wait, kept after it ends, so the note can
+    /// name what was waited for.
+    last_wait_kind: std::sync::atomic::AtomicU8,
+    /// The silence budget the wait loop is applying right now, in seconds,
+    /// after the host's load stretched it; 0 while it is the configured one
+    /// (ADR-0009). What the displays count toward.
+    budget_secs: std::sync::atomic::AtomicU32,
+    /// The load that stretched it: average × 1000, cores, factor × 1000.
+    load_avg_milli: std::sync::atomic::AtomicU32,
+    load_cores: std::sync::atomic::AtomicU32,
+    load_factor_milli: std::sync::atomic::AtomicU32,
+    /// The last complete, non-empty stderr line, colour stripped and
+    /// clipped: what a kill message may quote, and what decides a retry.
+    last_line: std::sync::Mutex<String>,
 }
 
 impl Activity {
@@ -451,7 +501,115 @@ impl Activity {
             rate_milli: Default::default(),
             interval_ms: Default::default(),
             cpu: std::sync::atomic::AtomicU8::new(CpuState::Off as u8),
+            wait_since: Default::default(),
+            wait_kind: Default::default(),
+            waited_ns: Default::default(),
+            last_wait_kind: Default::default(),
+            budget_secs: Default::default(),
+            load_avg_milli: Default::default(),
+            load_cores: Default::default(),
+            load_factor_milli: Default::default(),
+            last_line: std::sync::Mutex::new(String::new()),
         })
+    }
+
+    /// What the most recent declared wait, ended or not, was for.
+    pub fn last_wait_kind(&self) -> Option<crate::hooks::wait::WaitKind> {
+        crate::hooks::wait::WaitKind::from_code(
+            self.last_wait_kind
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// One complete stderr line arrived. A wait marker starts a declared
+    /// wait, or continues the one in progress (cargo prints `package cache`
+    /// and then `build directory`; the budget covers the run of them, not
+    /// each); any other line ends it. The line is kept for the messages.
+    pub fn stderr_line(&self, raw: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let line = crate::hooks::wait::strip_csi(raw);
+        if !line.trim().is_empty() {
+            let mut keep = self.last_line.lock().unwrap_or_else(|p| p.into_inner());
+            keep.clear();
+            keep.extend(line.trim().chars().take(LAST_LINE_CHARS));
+        }
+        match crate::hooks::wait::marker(&line) {
+            Some(kind) => {
+                self.wait_kind.store(kind.code(), Relaxed);
+                self.last_wait_kind.store(kind.code(), Relaxed);
+                // `compare_exchange` from 0: a second marker keeps the
+                // original start.
+                let _ = self
+                    .wait_since
+                    .compare_exchange(0, self.now() + 1, Relaxed, Relaxed);
+            }
+            None => self.end_wait(),
+        }
+    }
+
+    /// The tool wrote something that is not a wait marker: whatever wait
+    /// was in progress is over, and its length is banked for the note.
+    pub fn end_wait(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let since = self.wait_since.swap(0, Relaxed);
+        if since != 0 {
+            let spent = self.now().saturating_sub(since - 1);
+            self.waited_ns.fetch_add(spent, Relaxed);
+        }
+        self.wait_kind.store(0, Relaxed);
+    }
+
+    /// The declared wait in progress, and how long it has lasted.
+    pub fn waiting(&self) -> Option<(crate::hooks::wait::WaitKind, std::time::Duration)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let since = self.wait_since.load(Relaxed);
+        if since == 0 {
+            return None;
+        }
+        let kind = crate::hooks::wait::WaitKind::from_code(self.wait_kind.load(Relaxed))?;
+        Some((kind, self.since(since - 1)))
+    }
+
+    /// Time spent in declared waits that have ended, plus the one in
+    /// progress: what a passing check waited for in total.
+    pub fn waited_total(&self) -> std::time::Duration {
+        use std::sync::atomic::Ordering::Relaxed;
+        let banked = std::time::Duration::from_nanos(self.waited_ns.load(Relaxed));
+        banked + self.waiting().map_or(std::time::Duration::ZERO, |(_, d)| d)
+    }
+
+    /// The last non-empty stderr line, if any.
+    pub fn last_line(&self) -> Option<String> {
+        let keep = self.last_line.lock().unwrap_or_else(|p| p.into_inner());
+        (!keep.is_empty()).then(|| keep.clone())
+    }
+
+    /// The wait loop read the host's load and is applying `budget_secs`.
+    pub fn set_load(&self, budget_secs: u64, load: crate::load::Load, factor_milli: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.budget_secs
+            .store(u32::try_from(budget_secs).unwrap_or(u32::MAX), Relaxed);
+        self.load_avg_milli.store(load.avg1_milli, Relaxed);
+        self.load_cores.store(load.cores, Relaxed);
+        self.load_factor_milli.store(factor_milli, Relaxed);
+    }
+
+    /// The load-stretched budget in force, with the load behind it, when
+    /// the host's load stretched it at all.
+    pub fn load_scale(&self) -> Option<(u64, crate::load::Load, u32)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let factor = self.load_factor_milli.load(Relaxed);
+        if factor <= 1000 {
+            return None;
+        }
+        Some((
+            u64::from(self.budget_secs.load(Relaxed)),
+            crate::load::Load {
+                avg1_milli: self.load_avg_milli.load(Relaxed),
+                cores: self.load_cores.load(Relaxed),
+            },
+            factor,
+        ))
     }
     fn offset(&self, at: std::time::Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.base).as_nanos()).unwrap_or(u64::MAX)
@@ -467,16 +625,28 @@ impl Activity {
         self.last_out
             .fetch_max(self.now(), std::sync::atomic::Ordering::Relaxed);
     }
-    /// How long since it last wrote a byte.
+    /// How long since it last wrote a byte — the true output silence, what
+    /// the displays report as "last output".
     pub fn quiet_for(&self) -> std::time::Duration {
         self.since(self.last_out.load(std::sync::atomic::Ordering::Relaxed))
     }
+    /// The silence the clock counts: zero while the command is in a
+    /// declared wait (it has said what it is doing), the output silence
+    /// otherwise. What [`Activity::still_for`] and the sampler's start gate
+    /// read; the displays keep [`Activity::quiet_for`].
+    pub fn silence_for(&self) -> std::time::Duration {
+        if self.waiting().is_some() {
+            std::time::Duration::ZERO
+        } else {
+            self.quiet_for()
+        }
+    }
     /// How long it has been BOTH silent and idle on CPU — the number the
-    /// silence budget is judged against. Equals [`Activity::quiet_for`]
+    /// silence budget is judged against. Equals [`Activity::silence_for`]
     /// whenever CPU is not sampled.
     pub fn still_for(&self) -> std::time::Duration {
         let busy = self.last_busy.load(std::sync::atomic::Ordering::Relaxed);
-        self.quiet_for().min(self.since(busy))
+        self.silence_for().min(self.since(busy))
     }
     pub fn cpu_state(&self) -> CpuState {
         match self.cpu.load(std::sync::atomic::Ordering::Relaxed) {
@@ -556,8 +726,17 @@ impl Activity {
                     // whole new budget.
                     self.last_busy.fetch_max(self.offset(w.start), Relaxed);
                 }
+                if w.gapped {
+                    // Busy is still busy, but a gap is not a measurement:
+                    // the measured-idle span starts over at the gap's end,
+                    // so the claim never covers what was not seen.
+                    self.measured_since.store(self.offset(w.end) + 1, Relaxed);
+                }
                 self.set_cpu_state(CpuState::Measuring);
             }
+            // A skipped sample changes nothing: the rate ages and goes
+            // stale on its own if the next complete one is late.
+            crate::proctree::Observation::Skipped => {}
             crate::proctree::Observation::Unmeasured => {
                 self.measured_since.store(0, Relaxed);
                 self.set_cpu_state(CpuState::Unavailable);
@@ -568,6 +747,29 @@ impl Activity {
     pub fn enable_cpu(&self) {
         self.set_cpu_state(CpuState::Waiting);
     }
+    /// Which silence budget applies right now, from what the sampler can
+    /// claim: see [`CpuGate`].
+    pub fn gate(&self) -> CpuGate {
+        match self.verdict() {
+            CpuVerdict::NotSampled => CpuGate::NotSampled,
+            CpuVerdict::MeasuredIdle(_) | CpuVerdict::BusyAtKill(_) => CpuGate::Measured,
+            CpuVerdict::Unmeasured => CpuGate::Unmeasured,
+        }
+    }
+}
+
+/// What the kill decision may rest on from the CPU side (ADR-0009). Not
+/// sampled at all: the silence-only rule, as ever. Measured: the silence
+/// budget, because "silent and idle" was actually observed. Unmeasured —
+/// sampling is on but the last sample was late, partial, or has not come
+/// yet: the EXTENDED budget, `amont.idleTimeout × amont.idleLoadScale`,
+/// which is bounded even when the ceiling is off, and never the bare
+/// silence budget, because that would kill on a measurement nobody made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuGate {
+    NotSampled,
+    Measured,
+    Unmeasured,
 }
 
 /// What the CPU sampler could say when a command was killed.
@@ -611,11 +813,14 @@ pub enum Why {
     Ceiling(u64),
     /// The silence budget, `amont.idleTimeout`, in seconds.
     Silence(u64),
+    /// A declared wait outlived `amont.lockWait` (or, with that at 0 and
+    /// the ceiling off, the extended silence budget), in seconds.
+    Waited(crate::hooks::wait::WaitKind, u64),
 }
 
 /// A command killed by a clock — what happened, said with enough to tell
 /// "slow" from "stuck", which is the whole reason there are two clocks.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Killed {
     pub why: Why,
     /// How long it had been running.
@@ -629,6 +834,77 @@ pub struct Killed {
     /// `quiet_secs` it says whether CPU work is what kept a silent command
     /// alive past that budget.
     pub idle_secs: u64,
+    /// The declared wait it was in at the kill, and for how long.
+    pub waiting: Option<(crate::hooks::wait::WaitKind, u64)>,
+    /// Its last non-empty stderr line, colour stripped and clipped to
+    /// [`LAST_LINE_CHARS`]: what decides a retry, and what the message may
+    /// quote.
+    pub last_line: Option<String>,
+    /// The host's load at the kill, with the factor it stretched the
+    /// silence budget by, when it stretched it at all.
+    pub load: Option<(crate::load::Load, u32)>,
+}
+
+/// The budgets one wait is judged under — the inputs to [`judge`] that do
+/// not move while the command runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clocks {
+    /// `amont.timeout`; `None` when off.
+    pub ceiling: Option<u64>,
+    /// `amont.idleTimeout`; `None` when off or when nobody watches the
+    /// output.
+    pub silence: Option<u64>,
+    /// `amont.lockWait`.
+    pub lock_wait: LockWait,
+    /// The bound a declared wait falls back to when `lock_wait` says "until
+    /// the ceiling" and the ceiling is off: the extended silence budget,
+    /// `None` when silence is off too.
+    pub extended: Option<u64>,
+    /// `amont.idleLoadScale`: how far the host's load may stretch
+    /// `silence`; 1 means not at all.
+    pub scale: u64,
+}
+
+impl Clocks {
+    /// The ceiling alone: inherited stdio, where nobody sees the bytes.
+    pub fn ceiling_only(wall_secs: u64) -> Clocks {
+        Clocks {
+            ceiling: (wall_secs > 0).then_some(wall_secs),
+            silence: None,
+            lock_wait: LockWait::UntilCeiling,
+            extended: None,
+            scale: 1,
+        }
+    }
+
+    /// Every clock, from the settings. `idle_secs` is the silence budget
+    /// the caller resolved (0 = off).
+    pub fn from_settings(settings: &crate::config::Settings, idle_secs: u64) -> Clocks {
+        let wall = check_timeout(settings);
+        let scale = idle_load_scale(settings);
+        Clocks {
+            ceiling: (wall > 0).then_some(wall),
+            silence: (idle_secs > 0).then_some(idle_secs),
+            lock_wait: lock_wait(settings),
+            extended: (idle_secs > 0).then(|| idle_secs.saturating_mul(scale)),
+            scale,
+        }
+    }
+}
+
+/// How often the wait loop re-reads the host's load.
+const LOAD_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `amont.idleLoadScale`: how far the silence budget may stretch, as a
+/// factor — under load (ADR-0009, the load-scaled budget) and whenever the
+/// CPU could not be measured (the extended budget, `idleTimeout × this`).
+/// Default 4, `1` disables the stretch, range 1..=16. A HOST key: read from
+/// global or system config only, never from a repository, because it
+/// describes the machine and two repositories must not disagree about it.
+pub fn idle_load_scale(settings: &crate::config::Settings) -> u64 {
+    *settings.idle_load_scale.get_or_init(|| {
+        crate::config::host_integer_or(settings, "amont.idleLoadScale", 4, 1..=16) as u64
+    })
 }
 
 /// What became of a command run under the deadline.
@@ -654,6 +930,11 @@ pub fn status_within(
     settings: &crate::config::Settings,
     cmd: &mut Command,
 ) -> std::io::Result<Ran> {
+    // The same host-slot wait as the observed runners: a check run without
+    // a live stage (one check by name, `amont.progress false`) still queues.
+    if crate::host_slots::before_spawn(settings) {
+        cmd.env(crate::host_slots::HELD_ENV, "held");
+    }
     status_within_secs(cmd, check_timeout(settings))
 }
 
@@ -665,7 +946,7 @@ pub fn status_within_secs(cmd: &mut Command, budget_secs: u64) -> std::io::Resul
         return cmd.status().map(Ran::Status);
     }
     let mut child = cmd.spawn()?;
-    wait_within(&mut child, budget_secs, 0, None)
+    wait_within(&mut child, Clocks::ceiling_only(budget_secs), None)
 }
 
 /// Spawn `cmd` with both streams piped, hand every chunk to `on_output` as
@@ -676,7 +957,13 @@ fn run_observed(
     settings: &crate::config::Settings,
     cmd: &mut Command,
     on_output: impl Fn(&[u8]) + Send + Sync + 'static,
+    ceiling_left: Option<u64>,
 ) -> std::io::Result<Ran> {
+    // A heavy check's first tool waits here for a host slot (ADR-0009);
+    // its clocks start at the spawn below, after the wait.
+    if crate::host_slots::before_spawn(settings) {
+        cmd.env(crate::host_slots::HELD_ENV, "held");
+    }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let activity = Activity::new();
     let on_output = std::sync::Arc::new(on_output);
@@ -686,29 +973,46 @@ fn run_observed(
     // second the tool spent saying nothing.
     activity.touch();
     let mut readers = Vec::new();
-    for pipe in [
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    // stderr is where cargo and uv print their status, so only its lines
+    // are read for wait markers: a test that prints the words on stdout
+    // must not pause its own clock. A stdout chunk still ENDS a wait — the
+    // tool is visibly alive.
+    let pipes = [
+        (
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+            false,
+        ),
+        (
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+            true,
+        ),
+    ];
+    for (pipe, is_stderr) in pipes {
+        let Some(pipe) = pipe else { continue };
         let activity = std::sync::Arc::clone(&activity);
         let on_output = std::sync::Arc::clone(&on_output);
         readers.push(std::thread::spawn(move || {
             let mut pipe = pipe;
             let mut chunk = [0u8; 4096];
+            let mut framer = crate::hooks::wait::LineFramer::default();
             loop {
                 match std::io::Read::read(&mut pipe, &mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         activity.touch();
+                        if is_stderr {
+                            for line in framer.feed(&chunk[..n]) {
+                                activity.stderr_line(&line);
+                            }
+                        } else {
+                            activity.end_wait();
+                        }
                         on_output(&chunk[..n]);
                     }
                 }
@@ -721,12 +1025,33 @@ fn run_observed(
     let idle = idle_timeout(settings);
     let sampler = (idle > 0 && idle_cpu_credit(settings) && crate::proctree::SUPPORTED)
         .then(|| CpuSampler::start(child.id(), std::sync::Arc::clone(&activity), idle));
-    let ran = wait_within(&mut child, check_timeout(settings), idle, Some(&activity));
+    let mut clocks = Clocks::from_settings(settings, idle);
+    if let Some(left) = ceiling_left {
+        // A retry runs under what the first attempt left of the ceiling:
+        // both attempts together answer to one `amont.timeout`.
+        clocks.ceiling = Some(left.max(1));
+    }
+    let ran = wait_within(&mut child, clocks, Some(&activity));
     if let Some(s) = sampler {
         s.stop();
     }
     for r in readers {
         let _ = r.join();
+    }
+    // A check that passed after sitting on a lock says so once: the
+    // reader of a slow commit learns where the minutes went, and a run that
+    // would once have been killed leaves a trace of why it no longer is.
+    if let Ok(Ran::Status(_)) = &ran {
+        let waited = activity.waited_total();
+        if waited >= std::time::Duration::from_secs(1) {
+            let what = activity
+                .last_wait_kind()
+                .map_or("a lock", crate::hooks::wait::WaitKind::describe);
+            say(&format!(
+                "  (waited {} for {what})",
+                human_secs(waited.as_secs())
+            ));
+        }
     }
     ran
 }
@@ -790,7 +1115,15 @@ fn sample_loop(
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let (first, every) = sampling_schedule(idle_secs);
-    let limits = crate::proctree::Limits::default();
+    let mut limits = crate::proctree::Limits::default();
+    // A diagnostic, and the seam the timing tests use to force a partial
+    // snapshot: cap the walk at this many processes.
+    if let Some(n) = std::env::var("AMONT_CPU_MAX_PROCS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
+        limits.max_procs = n;
+    }
     let trace = std::env::var_os("AMONT_CPU_TRACE");
     let mut tracker = crate::proctree::Tracker::default();
     let nap = |d: std::time::Duration| {
@@ -800,7 +1133,9 @@ fn sample_loop(
         }
     };
     while !stop.load(Relaxed) {
-        if activity.quiet_for() < first {
+        // The silence the clock counts, not the raw output silence: during
+        // a declared wait there is nothing to prove, and no CPU is sampled.
+        if activity.silence_for() < first {
             // Talking: nothing to prove, and the next quiet stretch starts
             // from a fresh baseline rather than a stale one.
             tracker = crate::proctree::Tracker::default();
@@ -872,6 +1207,7 @@ fn trace_sample(
 pub fn status_streamed(
     settings: &crate::config::Settings,
     cmd: &mut Command,
+    retry: Retry,
 ) -> std::io::Result<Ran> {
     let Some((stage, idx)) = crate::live::current_sink() else {
         return status_within(settings, cmd);
@@ -883,7 +1219,72 @@ pub fn status_streamed(
             .env("CLICOLOR_FORCE", "1")
             .env("CARGO_TERM_COLOR", "always");
     }
-    run_observed(settings, cmd, move |bytes| stage.append_raw(idx, bytes))
+    let first = run_observed(
+        settings,
+        cmd,
+        {
+            let stage = std::sync::Arc::clone(&stage);
+            move |bytes| stage.append_raw(idx, bytes)
+        },
+        None,
+    );
+    let Ok(Ran::TimedOut(k)) = &first else {
+        return first;
+    };
+    let Some(left) = retry_budget(retry, k, check_timeout(settings)) else {
+        return first;
+    };
+    // The check's name (`clippy`), which is what the reader knows; the
+    // program (`cargo`) only when no check is running on this thread.
+    let what = crate::host_slots::current_check()
+        .unwrap_or_else(|| cmd.get_program().to_string_lossy().into_owned());
+    say(&format!(
+        "{} was killed while it looked like it was waiting ({}); retrying once{}.",
+        hl(&what),
+        k.last_line.as_deref().unwrap_or(""),
+        match left {
+            Some(s) => format!(" with {} left", human_secs(s)),
+            None => String::new(),
+        }
+    ));
+    run_observed(
+        settings,
+        cmd,
+        move |bytes| stage.append_raw(idx, bytes),
+        left,
+    )
+}
+
+/// Whether a check's tool may be run once more after a kill (ADR-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// A built-in check: its tools are safe to run twice.
+    Once,
+    /// A declared external: a user's command may not be safe to run twice.
+    Never,
+}
+
+/// Whether a kill earns the one retry, and with how much ceiling left
+/// (`Some(None)`: the ceiling is off). Only after a SILENCE kill whose last
+/// line reads like a wait — never after a declared wait outlived its own
+/// budget, nor at the ceiling — and only while the ceiling has at least one
+/// silence budget left. Pure.
+pub fn retry_budget(retry: Retry, k: &Killed, ceiling: u64) -> Option<Option<u64>> {
+    if retry == Retry::Never || !matches!(k.why, Why::Silence(_)) {
+        return None;
+    }
+    if !k
+        .last_line
+        .as_deref()
+        .is_some_and(crate::hooks::wait::looks_like_wait)
+    {
+        return None;
+    }
+    if ceiling == 0 {
+        return Some(None);
+    }
+    let left = ceiling.saturating_sub(k.ran_secs);
+    (left >= k.idle_secs.max(1)).then_some(Some(left))
 }
 
 /// Run to completion under the `amont.timeout` deadline with stdout and
@@ -897,11 +1298,16 @@ pub fn capture_within(
 ) -> Option<(Ran, String)> {
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let sink = std::sync::Arc::clone(&text);
-    let ran = run_observed(settings, cmd, move |bytes| {
-        sink.lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push_str(&String::from_utf8_lossy(bytes));
-    })
+    let ran = run_observed(
+        settings,
+        cmd,
+        move |bytes| {
+            sink.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push_str(&String::from_utf8_lossy(bytes));
+        },
+        None,
+    )
     .ok()?;
     let text = std::sync::Arc::try_unwrap(text)
         .map(|m| m.into_inner().unwrap_or_else(|p| p.into_inner()))
@@ -909,39 +1315,56 @@ pub fn capture_within(
     Some((ran, text))
 }
 
-/// The two-clock wait over an already-spawned child — shared by every
-/// runner. `wall_secs` is the ceiling, `idle_secs` the silence budget; each
-/// `0` means that clock is off, and the silence budget is also off when
-/// there is no [`Activity`] to consult (inherited stdio).
+/// The wait over an already-spawned child — shared by every runner. The
+/// silence budget in `clocks` applies only when there is an [`Activity`] to
+/// consult (piped output); with inherited stdio the ceiling is the only
+/// clock, and with that off too the child is simply waited for.
 pub(crate) fn wait_within(
     child: &mut std::process::Child,
-    wall_secs: u64,
-    idle_secs: u64,
+    clocks: Clocks,
     activity: Option<&Activity>,
 ) -> std::io::Result<Ran> {
     let started = std::time::Instant::now();
-    let ceiling = (wall_secs > 0).then(|| started + std::time::Duration::from_secs(wall_secs));
-    let silence = match activity {
-        Some(_) if idle_secs > 0 => Some(std::time::Duration::from_secs(idle_secs)),
-        _ => None,
+    let clocks = match activity {
+        Some(_) => clocks,
+        None => Clocks {
+            silence: None,
+            extended: None,
+            ..clocks
+        },
     };
-    if ceiling.is_none() && silence.is_none() {
+    if clocks.ceiling.is_none() && clocks.silence.is_none() {
         return child.wait().map(Ran::Status);
     }
+    // The clocks as judged: `silence` stretched by the host's load, re-read
+    // every few seconds. The configured value stays in `clocks` for the
+    // message.
+    let mut live = clocks;
+    let mut load: Option<(crate::load::Load, u32)> = None;
+    let mut next_load = started;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Ran::Status(status));
         }
         let now = std::time::Instant::now();
+        if let (Some(idle), Some(a)) = (clocks.silence, activity) {
+            if clocks.scale > 1 && now >= next_load {
+                next_load = now + LOAD_EVERY;
+                if let Some(l) = crate::load::read() {
+                    let factor = l.factor_milli(clocks.scale);
+                    let applied = crate::load::scaled_budget(idle, l, clocks.scale, clocks.ceiling);
+                    live.silence = Some(applied);
+                    a.set_load(applied, l, factor);
+                    load = (factor > 1000).then_some((l, factor));
+                }
+            }
+        }
         // Judged on "silent AND idle on CPU"; equal to plain silence when CPU
-        // is not sampled.
+        // is not sampled, and zero during a declared wait.
         let quiet = activity.map(|a| a.still_for());
-        let why = judge(
-            now.duration_since(started),
-            quiet,
-            ceiling.map(|_| wall_secs),
-            silence.map(|_| idle_secs),
-        );
+        let waiting = activity.and_then(Activity::waiting);
+        let gate = activity.map_or(CpuGate::NotSampled, Activity::gate);
+        let why = judge(now.duration_since(started), quiet, waiting, gate, &live);
         if let Some(why) = why {
             let _ = child.kill();
             let _ = child.wait();
@@ -952,7 +1375,10 @@ pub(crate) fn wait_within(
                 // still-time the verdict was judged on.
                 quiet_secs: activity.map(|a| a.quiet_for().as_secs()),
                 cpu: activity.map_or(CpuVerdict::NotSampled, Activity::verdict),
-                idle_secs,
+                idle_secs: clocks.silence.unwrap_or(0),
+                waiting: waiting.map(|(k, d)| (k, d.as_secs())),
+                last_line: activity.and_then(Activity::last_line),
+                load,
             }));
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -962,23 +1388,45 @@ pub(crate) fn wait_within(
 /// Which clock, if any, has fired — the decision, with no process or
 /// clock of its own so it can be tested to the second.
 ///
-/// `ran` is how long the command has been running; `quiet` how long since
-/// it last wrote, `None` when nobody is watching its output. `ceiling` and
-/// `silence` are the two budgets in seconds, `None` when that clock is off.
-/// The ceiling wins when both have fired: it is the larger claim, and the
-/// message for it carries the silence figure anyway.
+/// `ran` is how long the command has been running; `quiet` how long it has
+/// been silent (and idle, where CPU is sampled), `None` when nobody is
+/// watching its output; `waiting` the declared wait in progress, with its
+/// length. The ceiling wins when several have fired: it is the larger
+/// claim, and the message for it carries the other figures anyway. A
+/// declared wait answers to `lock_wait`, never to the silence budget — the
+/// tool has said what it is doing — and with `lock_wait` deferring to a
+/// ceiling that is off, to the extended silence budget, so that nothing is
+/// unbounded. `cpu` picks which silence budget applies: the plain one when
+/// idleness was measured or is not sampled at all, the extended one while
+/// the sampler cannot say ([`CpuGate`]).
 pub fn judge(
     ran: std::time::Duration,
     quiet: Option<std::time::Duration>,
-    ceiling: Option<u64>,
-    silence: Option<u64>,
+    waiting: Option<(crate::hooks::wait::WaitKind, std::time::Duration)>,
+    cpu: CpuGate,
+    clocks: &Clocks,
 ) -> Option<Why> {
-    if let Some(wall) = ceiling {
+    if let Some(wall) = clocks.ceiling {
         if ran >= std::time::Duration::from_secs(wall) {
             return Some(Why::Ceiling(wall));
         }
     }
-    if let (Some(idle), Some(q)) = (silence, quiet) {
+    if let Some((kind, waited)) = waiting {
+        let budget = match clocks.lock_wait {
+            LockWait::Secs(s) => Some(s),
+            LockWait::UntilCeiling if clocks.ceiling.is_some() => None,
+            LockWait::UntilCeiling => clocks.extended,
+        };
+        return match budget {
+            Some(b) if waited >= std::time::Duration::from_secs(b) => Some(Why::Waited(kind, b)),
+            _ => None,
+        };
+    }
+    let budget = match cpu {
+        CpuGate::NotSampled | CpuGate::Measured => clocks.silence,
+        CpuGate::Unmeasured => clocks.extended.or(clocks.silence),
+    };
+    if let (Some(idle), Some(q)) = (budget, quiet) {
         if q >= std::time::Duration::from_secs(idle) {
             return Some(Why::Silence(idle));
         }
@@ -994,32 +1442,74 @@ pub fn judge(
 pub fn say_timed_out(what: &str, k: Killed) {
     match k.why {
         Why::Silence(budget) => {
+            // Why the budget is not the configured one, when it is not:
+            // the extended budget while CPU could not be measured, or the
+            // configured one stretched by the host's load.
+            let stretched = match (k.cpu, k.load) {
+                _ if budget == k.idle_secs => String::new(),
+                (CpuVerdict::Unmeasured, _) => format!(
+                    " (the extended budget, {} × {}: its CPU could not be measured)",
+                    human_secs(k.idle_secs),
+                    hl("amont.idleLoadScale")
+                ),
+                (_, Some((load, factor))) => format!(
+                    " ({} stretched {} by a load average of {} on {} cores — {})",
+                    human_secs(k.idle_secs),
+                    crate::load::factor_text(factor),
+                    load.avg1_text(),
+                    load.cores,
+                    hl("amont.idleLoadScale")
+                ),
+                _ => String::new(),
+            };
             fail(&match k.cpu {
                 CpuVerdict::MeasuredIdle(covered) => format!(
-                    "{} printed nothing for {} and did no measurable CPU work (< 0.1 core) in \
-                     the last {} of it; killed after {} — a tool this idle is stuck, not slow. \
-                     {} raises the silence budget (0 disables)",
+                    "{} printed nothing for {}{stretched} and did no measurable CPU work \
+                     (< 0.1 core) in the last {} of it; killed after {} — a tool this idle \
+                     is stuck, not slow. {} raises the silence budget (0 disables)",
                     hl(what),
                     human_secs(budget),
                     human_secs(covered.max(1)),
                     human_secs(k.ran_secs),
                     hl("git config amont.idleTimeout <secs>")
                 ),
-                _ => {
-                    format!(
-                "{} printed nothing for {}{} and was killed after {} — a tool this quiet is \
-                 usually stuck, not slow. {} raises the silence budget (0 disables)",
-                hl(what),
-                human_secs(budget),
-                if k.cpu == CpuVerdict::Unmeasured { " (CPU not measured)" } else { "" },
-                human_secs(k.ran_secs),
-                hl("git config amont.idleTimeout <secs>")
-            )
-                }
+                _ => format!(
+                    "{} printed nothing for {}{stretched}{} and was killed after {} — a tool \
+                     this quiet is usually stuck, not slow. {} raises the silence budget (0 \
+                     disables)",
+                    hl(what),
+                    human_secs(budget),
+                    if k.cpu == CpuVerdict::Unmeasured && stretched.is_empty() {
+                        " (CPU not measured)"
+                    } else {
+                        ""
+                    },
+                    human_secs(k.ran_secs),
+                    hl("git config amont.idleTimeout <secs>")
+                ),
             })
         }
+        Why::Waited(kind, budget) => fail(&format!(
+            "{} waited {} for {} and was killed after {} — {}. {} raises the wait budget \
+             (0: until the ceiling)",
+            hl(what),
+            human_secs(budget),
+            kind.describe(),
+            human_secs(k.ran_secs),
+            kind.holders(),
+            hl("git config amont.lockWait <secs>")
+        )),
         Why::Ceiling(budget) => {
             let verdict = match (k.quiet_secs, k.cpu) {
+                (_, _) if k.waiting.is_some() => {
+                    let (kind, w) = k.waiting.expect("checked");
+                    format!(
+                        " It was waiting for {} for the last {} — {}.",
+                        kind.describe(),
+                        human_secs(w),
+                        kind.holders()
+                    )
+                }
                 (Some(q), CpuVerdict::BusyAtKill(m)) if k.idle_secs > 0 && q >= k.idle_secs => {
                     format!(
                         " It printed nothing for the last {} but kept its CPU busy ({}), so the \
@@ -1028,6 +1518,15 @@ pub fn say_timed_out(what: &str, k: Killed) {
                      silence budget whatever their CPU.",
                         human_secs(q),
                         cores(m),
+                        hl("git config amont.idleCpuCredit false")
+                    )
+                }
+                (Some(q), CpuVerdict::Unmeasured) if k.idle_secs > 0 && q >= k.idle_secs => {
+                    format!(
+                        " It printed nothing for the last {} and its CPU could not be measured, \
+                         so only the extended silence budget applied. {} kills quiet runs at \
+                         the silence budget whatever their CPU.",
+                        human_secs(q),
                         hl("git config amont.idleCpuCredit false")
                     )
                 }
@@ -1052,7 +1551,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
 /// [`status_within`], collapsed to "did it exit 0" — the shape the one-shot
 /// tool spawns want. A timeout says so, names `what`, and reads as failure.
 pub fn bounded_success(settings: &crate::config::Settings, cmd: &mut Command, what: &str) -> bool {
-    match status_streamed(settings, cmd) {
+    match status_streamed(settings, cmd, Retry::Once) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(what, b);
@@ -1105,7 +1604,7 @@ pub fn run_quiet(
     // the output is discarded, and capture would resurrect it into the
     // block. Observed and dropped instead of `/dev/null`, so the silence
     // clock still sees whether the tool is alive.
-    match run_observed(settings, &mut cmd, |_| {}) {
+    match run_observed(settings, &mut cmd, |_| {}, None) {
         Ok(Ran::Status(s)) => s.success(),
         Ok(Ran::TimedOut(b)) => {
             say_timed_out(program, b);
@@ -1257,7 +1756,60 @@ mod tests {
             start,
             end,
             gain_ns: gain,
+            gapped: false,
         })
+    }
+
+    /// A gapped window resets the measured-idle span to its own end: the
+    /// claim never covers the gap, while a busy gapped window still counts
+    /// as busy.
+    #[test]
+    fn a_gapped_window_is_never_claimed_as_measured_idle() {
+        use super::{Activity, CpuVerdict};
+        use crate::proctree::{Observation, Window};
+        let s = std::time::Duration::from_secs;
+        let every = s(10);
+        let a = Activity::new();
+        a.enable_cpu();
+        let t0 = std::time::Instant::now() - s(30);
+        a.record(Observation::Baseline, t0, every);
+        a.record(Observation::Skipped, t0 + s(10), every);
+        let gap_end = std::time::Instant::now();
+        a.record(
+            Observation::Window(Window {
+                start: t0,
+                end: gap_end,
+                gain_ns: 0,
+                gapped: true,
+            }),
+            gap_end,
+            every,
+        );
+        // Idle, but the span rests only on what followed the gap: 0 s.
+        assert_eq!(a.verdict(), CpuVerdict::MeasuredIdle(0));
+        assert_eq!(a.gate(), super::CpuGate::Measured);
+
+        let busy = Activity::new();
+        busy.enable_cpu();
+        busy.record(Observation::Baseline, t0, every);
+        busy.record(Observation::Skipped, t0 + s(10), every);
+        let now = std::time::Instant::now();
+        busy.record(window_gapped(t0, now, 3000), now, every);
+        assert_eq!(busy.verdict(), CpuVerdict::BusyAtKill(3000));
+        assert!(busy.still_for() < s(1));
+    }
+
+    fn window_gapped(
+        start: std::time::Instant,
+        end: std::time::Instant,
+        milli: u64,
+    ) -> crate::proctree::Observation {
+        match window(start, end, milli) {
+            crate::proctree::Observation::Window(w) => {
+                crate::proctree::Observation::Window(crate::proctree::Window { gapped: true, ..w })
+            }
+            o => o,
+        }
     }
 
     /// Even the shortest budget is sampled several times before it runs out,
@@ -1335,6 +1887,10 @@ mod tests {
         broken.record(window(before, now, 20), now, every);
         broken.record(Observation::Unmeasured, now, every);
         assert_eq!(broken.verdict(), CpuVerdict::Unmeasured);
+        assert_eq!(broken.gate(), super::CpuGate::Unmeasured);
+        assert_eq!(off.gate(), super::CpuGate::NotSampled);
+        assert_eq!(idle.gate(), super::CpuGate::Measured);
+        assert_eq!(busy.gate(), super::CpuGate::Measured);
     }
 
     /// A rate older than two sampling intervals is not shown, and cannot
@@ -1367,33 +1923,332 @@ mod tests {
     /// however short; a command nobody watches answers to the ceiling only.
     #[test]
     fn the_clocks_judge_silence_and_ceiling_separately() {
-        use super::{judge, Why};
+        use super::{judge, CpuGate, Why};
         use std::time::Duration as D;
         let s = D::from_secs;
+        let c = |ceiling: Option<u64>, silence: Option<u64>| super::Clocks {
+            ceiling,
+            silence,
+            lock_wait: super::LockWait::Secs(600),
+            extended: silence,
+            scale: 1,
+        };
         // Chatty and long: past a five-second silence budget, still fine.
-        assert_eq!(judge(s(900), Some(s(0)), Some(3600), Some(5)), None);
-        assert_eq!(judge(s(900), Some(s(4)), Some(3600), Some(5)), None);
+        assert_eq!(
+            judge(
+                s(900),
+                Some(s(0)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
+            None
+        );
+        assert_eq!(
+            judge(
+                s(900),
+                Some(s(4)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
+            None
+        );
         // Silent for the budget: killed, and the silence is blamed.
         assert_eq!(
-            judge(s(30), Some(s(5)), Some(3600), Some(5)),
+            judge(
+                s(30),
+                Some(s(5)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
             Some(Why::Silence(5))
         );
         // Unobserved output: the silence clock cannot run at all.
-        assert_eq!(judge(s(900), None, Some(3600), Some(5)), None);
+        assert_eq!(
+            judge(
+                s(900),
+                None,
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(5))
+            ),
+            None
+        );
         // The ceiling fires on elapsed time whatever the output is doing.
         assert_eq!(
-            judge(s(3600), Some(s(0)), Some(3600), Some(120)),
+            judge(
+                s(3600),
+                Some(s(0)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(120))
+            ),
             Some(Why::Ceiling(3600))
         );
         // Both fired at once: the ceiling is the answer.
         assert_eq!(
-            judge(s(3600), Some(s(600)), Some(3600), Some(120)),
+            judge(
+                s(3600),
+                Some(s(600)),
+                None,
+                CpuGate::NotSampled,
+                &c(Some(3600), Some(120))
+            ),
             Some(Why::Ceiling(3600))
         );
         // Both off: nothing ever fires.
-        assert_eq!(judge(s(86_400), Some(s(86_400)), None, None), None);
+        assert_eq!(
+            judge(
+                s(86_400),
+                Some(s(86_400)),
+                None,
+                CpuGate::NotSampled,
+                &c(None, None)
+            ),
+            None
+        );
         // Only silence on: no ceiling, however long it runs.
-        assert_eq!(judge(s(86_400), Some(s(1)), None, Some(120)), None);
+        assert_eq!(
+            judge(
+                s(86_400),
+                Some(s(1)),
+                None,
+                CpuGate::NotSampled,
+                &c(None, Some(120))
+            ),
+            None
+        );
+    }
+
+    /// A declared wait answers to `amont.lockWait` and never to the silence
+    /// budget; at 0 it answers to the ceiling, and with the ceiling off too,
+    /// to the extended silence budget — never to nothing.
+    #[test]
+    fn a_declared_wait_answers_to_its_own_budget() {
+        use super::{judge, Clocks, CpuGate, LockWait, Why};
+        use crate::hooks::wait::{CargoLockWhat, WaitKind};
+        use std::time::Duration as D;
+        let s = D::from_secs;
+        let kind = WaitKind::CargoLock(CargoLockWhat::BuildDirectory);
+        let clocks = Clocks {
+            ceiling: Some(3600),
+            silence: Some(120),
+            lock_wait: LockWait::Secs(600),
+            extended: Some(480),
+            scale: 4,
+        };
+        // Silent for ten times the budget, but in a declared wait: fine.
+        assert_eq!(
+            judge(
+                s(1300),
+                Some(s(0)),
+                Some((kind, s(599))),
+                CpuGate::Measured,
+                &clocks
+            ),
+            None
+        );
+        // The wait outlives its budget: killed, and the wait is blamed.
+        assert_eq!(
+            judge(
+                s(1300),
+                Some(s(0)),
+                Some((kind, s(600))),
+                CpuGate::Measured,
+                &clocks
+            ),
+            Some(Why::Waited(kind, 600))
+        );
+        // The ceiling still wins.
+        assert_eq!(
+            judge(
+                s(3600),
+                Some(s(0)),
+                Some((kind, s(3000))),
+                CpuGate::Measured,
+                &clocks
+            ),
+            Some(Why::Ceiling(3600))
+        );
+        // lockWait 0 with a ceiling: the ceiling alone bounds the wait.
+        let until = Clocks {
+            lock_wait: LockWait::UntilCeiling,
+            ..clocks
+        };
+        assert_eq!(
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(2900))),
+                CpuGate::Measured,
+                &until
+            ),
+            None
+        );
+        // lockWait 0 and no ceiling: the extended budget bounds it.
+        let open = Clocks {
+            ceiling: None,
+            ..until
+        };
+        assert_eq!(
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(479))),
+                CpuGate::Measured,
+                &open
+            ),
+            None
+        );
+        assert_eq!(
+            judge(
+                s(3000),
+                Some(s(0)),
+                Some((kind, s(480))),
+                CpuGate::Measured,
+                &open
+            ),
+            Some(Why::Waited(kind, 480))
+        );
+    }
+
+    /// One retry, only after a silence kill whose last line reads like a
+    /// wait, only for a built-in, only with a silence budget of ceiling
+    /// left, and under what is left.
+    #[test]
+    fn a_wait_like_silence_kill_earns_one_retry_under_the_remaining_ceiling() {
+        use super::{retry_budget, CpuVerdict, Killed, Retry, Why};
+        use crate::hooks::wait::{CargoLockWhat, WaitKind};
+        let k = |why: Why, line: &str, ran: u64| Killed {
+            why,
+            ran_secs: ran,
+            quiet_secs: Some(ran),
+            cpu: CpuVerdict::MeasuredIdle(1),
+            idle_secs: 120,
+            waiting: None,
+            last_line: Some(line.to_string()),
+            load: None,
+        };
+        let wait = "waiting for lock on x";
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 120), 3600),
+            Some(Some(3480))
+        );
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 120), 0),
+            Some(None)
+        );
+        assert_eq!(
+            retry_budget(Retry::Never, &k(Why::Silence(120), wait, 120), 3600),
+            None
+        );
+        assert_eq!(
+            retry_budget(
+                Retry::Once,
+                &k(Why::Silence(120), "test_lock.py::x", 120),
+                3600
+            ),
+            None
+        );
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Ceiling(3600), wait, 3600), 3600),
+            None
+        );
+        let waited = Why::Waited(WaitKind::CargoLock(CargoLockWhat::BuildDirectory), 600);
+        assert_eq!(retry_budget(Retry::Once, &k(waited, wait, 700), 3600), None);
+        // Less than one silence budget of ceiling left: no retry.
+        assert_eq!(
+            retry_budget(Retry::Once, &k(Why::Silence(120), wait, 3500), 3600),
+            None
+        );
+    }
+
+    /// While the CPU is unmeasured the silence budget is the extended one:
+    /// no kill before `idle × scale`, a kill at it even with the ceiling
+    /// off; measured and not-sampled keep the plain budget.
+    #[test]
+    fn an_unmeasured_cpu_answers_to_the_extended_budget() {
+        use super::{judge, Clocks, CpuGate, LockWait, Why};
+        use std::time::Duration as D;
+        let s = D::from_secs;
+        let clocks = Clocks {
+            ceiling: None,
+            silence: Some(120),
+            lock_wait: LockWait::Secs(600),
+            extended: Some(480),
+            scale: 4,
+        };
+        assert_eq!(
+            judge(s(500), Some(s(300)), None, CpuGate::Unmeasured, &clocks),
+            None
+        );
+        assert_eq!(
+            judge(s(500), Some(s(479)), None, CpuGate::Unmeasured, &clocks),
+            None
+        );
+        assert_eq!(
+            judge(s(500), Some(s(480)), None, CpuGate::Unmeasured, &clocks),
+            Some(Why::Silence(480))
+        );
+        assert_eq!(
+            judge(s(500), Some(s(120)), None, CpuGate::Measured, &clocks),
+            Some(Why::Silence(120))
+        );
+        assert_eq!(
+            judge(s(500), Some(s(120)), None, CpuGate::NotSampled, &clocks),
+            Some(Why::Silence(120))
+        );
+        // No extended budget configured (silence off): nothing fires.
+        let off = Clocks {
+            silence: None,
+            extended: None,
+            ..clocks
+        };
+        assert_eq!(
+            judge(s(86_400), Some(s(86_400)), None, CpuGate::Unmeasured, &off),
+            None
+        );
+    }
+
+    /// A marker line starts a wait that a second marker continues and any
+    /// other line ends; the silence the clock counts is zero meanwhile, the
+    /// output silence is not, and the time is banked for the note.
+    #[test]
+    fn a_marker_line_pauses_the_silence_clock_until_another_line() {
+        use super::Activity;
+        use crate::hooks::wait::{CargoLockWhat, WaitKind};
+        let a = Activity::new();
+        a.touch();
+        assert_eq!(a.waiting(), None);
+        a.stderr_line("    Blocking waiting for file lock on package cache");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let (kind, waited) = a.waiting().expect("a wait is in progress");
+        assert_eq!(kind, WaitKind::CargoLock(CargoLockWhat::PackageCache));
+        assert!(waited >= std::time::Duration::from_millis(30));
+        assert_eq!(a.silence_for(), std::time::Duration::ZERO);
+        assert_eq!(a.still_for(), std::time::Duration::ZERO);
+        assert!(a.quiet_for() >= std::time::Duration::from_millis(30));
+        // A second marker keeps the original start, and names the new lock.
+        a.stderr_line("\u{1b}[1m    Blocking\u{1b}[0m waiting for file lock on build directory");
+        let (kind, again) = a.waiting().expect("still waiting");
+        assert_eq!(kind, WaitKind::CargoLock(CargoLockWhat::BuildDirectory));
+        assert!(again >= waited);
+        // Any other line ends it, and the time spent is banked. The reader
+        // touches the output clock before it frames, as here.
+        a.touch();
+        a.stderr_line("    Checking foo v0.1.0");
+        assert_eq!(a.waiting(), None);
+        assert!(a.waited_total() >= std::time::Duration::from_millis(30));
+        assert_eq!(a.last_wait_kind(), Some(kind));
+        assert_eq!(a.last_line().as_deref(), Some("Checking foo v0.1.0"));
+        assert!(a.silence_for() < std::time::Duration::from_millis(20));
+        // A stdout chunk ends a wait too.
+        a.stderr_line("Waiting to acquire write lock for `x`");
+        assert!(a.waiting().is_some());
+        a.end_wait();
+        assert_eq!(a.waiting(), None);
     }
 
     /// The deadline kills what outlives it and reports what finished.

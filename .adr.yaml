@@ -77,6 +77,12 @@ keys:
   hooks.liveness:
     description: When a silent check is judged stuck rather than slow
     scopes: [hook-binary]
+  hooks.host-concurrency:
+    description: How many checks that compile or execute the product one host runs at once
+    scopes: [hook-binary]
+  hooks.clippy-scope:
+    description: What pre-commit clippy judges
+    scopes: [pre-commit]
 
   # --- The command line ------------------------------------------------------
   cli.all-files-semantics:
