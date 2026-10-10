@@ -6,6 +6,40 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.49.0
+
+The scope column learns directories, and a check can step aside for a
+documentation edit.
+
+### Added
+
+- **A directory in the scope column.** `claude-plugin/**/*.md` triggers a
+  check on a change under that directory and on nothing else: a sibling such
+  as `claude-plugin-old/` does not match. A repository whose build embeds one
+  directory of markdown no longer has to run its test suite on every
+  `README.md` edit. The form is exactly `dir/**/*.ext`, with whole directory
+  segments and no glob characters; any other `/` or glob in a scope is
+  refused as before, and `amont list` shows the token it understood.
+- **`docs-skip`, a marker for the command column.** Written like `fix` and
+  `files` (`pre-commit  adr  *+.adr.yaml  block  docs-skip aval check`), it
+  makes a check stand down when the staged change only edits existing
+  `.md`, `.mdx`, `.rst` or `.adoc` files outside `adr/`, and says so:
+  `skipped — the commit only edits existing documentation`. An added,
+  deleted or renamed file, any code, a `.txt` (a `requirements.txt` is a
+  dependency manifest) and any decision record under `adr/` still run the
+  check. It is pre-commit only; on a `pre-push` line it is a parse error.
+  The cost is stated in `docs/custom-checks.md`: a documentation edit that
+  adds a link to a file that does not exist passes commit time and is caught
+  by CI.
+
+### Upgrading
+
+- A manifest that uses either feature needs amont 1.49.0 on every machine
+  that commits to it. An older amont reads `docs-skip` as the program to run
+  (`could not run docs-skip`, which warns and does not block, so the check
+  silently stops running) and refuses a directory scope as unusable. Bump the
+  pin or reinstall before adopting them.
+
 ## v1.48.0
 
 A commit gate that survives a loaded machine (ADR-0009).
