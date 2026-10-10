@@ -385,17 +385,34 @@ pub fn fixture_exec(p: &Path, body: &str) {
 
 /// Exec `p` once with [`PRIME_ENV`] set (see [`fixture_exec`]), for a script
 /// already carrying the guard.
+///
+/// On Linux, exec'ing a file just written can fail with ETXTBSY: another
+/// test thread forked while the write was open, and its child holds the
+/// descriptor until it execs in turn (O_CLOEXEC closes it then, not
+/// before). That window is short, so the exec is retried for up to two
+/// seconds; any other error fails at once, naming it.
 #[cfg(unix)]
 pub fn prime(p: &Path) {
-    let ok = Command::new(p)
-        .env(PRIME_ENV, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    assert!(ok, "priming {} failed", p.display());
+    const ETXTBSY: i32 = 26; // Linux and macOS alike
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let ran = Command::new(p)
+            .env(PRIME_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match ran {
+            Ok(s) => {
+                assert!(s.success(), "priming {} exited {s}", p.display());
+                return;
+            }
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => panic!("priming {} failed: {e}", p.display()),
+        }
+    }
 }
 
 #[cfg(unix)]
