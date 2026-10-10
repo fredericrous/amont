@@ -504,6 +504,12 @@ deadline model. Process-group kill of a check's grandchildren.
     branch build and replaced `~/.local/bin/amont` for a day; restored to
     the 1.47.3 release with `install.sh` before the before-pilot reran.
 
+## Implementation review
+- **approve** (Delta, after round 1 approve-with-changes); 94k + 105k tokens, 111 s + 28 s.
+- Fixed from round 1: slot I/O errors no longer read as a full queue; host-key scan cost pinned by a spawn-budget test and its comment corrected; nested amont skips the scan; a slot wait is announced; the retry names the check; a nested-heavy test; Phase 8 split.
+- Left as noted by the reviewer, not findings: `nested()` read twice; EINTR on `flock` runs the check unqueued; 5 s fixture shims add ~10 s to `make test`.
+- Next: Phase 8b (push, PR, merge on green), then Phase 9 (release v1.48.0, reinstall, observe a happier commit under load).
+
 ## Outcome
 
 <!-- panel: repos=amont reviewers=backend,language:rust,tui,unix body-sha=f10ac088251d -->
