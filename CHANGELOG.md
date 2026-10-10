@@ -6,7 +6,9 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.49.1
+
+A correction to the `docs-skip` marker from v1.49.0; upgrade when you use it.
 
 ### Fixed
 
