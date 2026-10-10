@@ -6,6 +6,57 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.48.0
+
+A commit gate that survives a loaded machine (ADR-0009).
+
+### Changed
+
+- **A tool waiting on a lock is no longer killed as stuck.** cargo prints
+  `Blocking waiting for file lock on build directory` while another cargo
+  holds it, then says nothing and uses no CPU, which the silence budget
+  read as a hang: a healthy clippy was killed at two minutes on a machine
+  running several worktrees. That exact line, and uv's `Waiting to acquire
+  … lock for …`, now pause the silence clock; the wait answers to the new
+  `amont.lockWait` (ten minutes), the progress line says
+  `· cargo lock 1m30s/10m00s`, and a check that passes after a wait says how
+  long it waited and for what. Only stderr is read for these lines.
+- **An unmeasured CPU no longer falls back to the two-minute rule.** One
+  incomplete process-tree snapshot used to throw the measurement away, and
+  the check was then judged on silence alone exactly when the machine was
+  busiest. A partial snapshot is now skipped and spanned by the next
+  complete one, the walk's deadline is 500 ms, and while the CPU cannot be
+  measured the check answers to the extended budget, `amont.idleTimeout ×
+  amont.idleLoadScale` (eight minutes), which stays bounded with
+  `amont.timeout 0`.
+- **The silence budget stretches with the host's load**, by the one-minute
+  load average over the core count, up to `amont.idleLoadScale` (4). The
+  region, the heartbeat and the kill message name the stretched budget and
+  the load.
+- **Pre-commit clippy judges the staged packages**, in each package root
+  without `--workspace`. A staged manifest, lockfile, lint config or
+  toolchain pin, or `--all-files`, still judges the whole workspace. Lints
+  a change provokes in a dependent crate are left to CI's workspace clippy.
+
+### Added
+
+- **Host-wide slots for heavy checks.** Clippy, `go vet`, pyright and the
+  test suites take one of `amont.hostSlots` slots (a quarter of the cores,
+  at least one) before their first tool runs, so several worktrees and
+  agents stop thrashing one machine; the wait shows as
+  `· queued 42s (slots 2/2)` and does not count against the check. The
+  slots live in `/tmp/amont-slots-<uid>`, refused unless it is a 0700
+  directory you own. A slot that never frees runs the check anyway, with a
+  note.
+- **One retry after a wait-like kill.** A built-in check killed by the
+  silence budget while its last line read like a wait runs once more
+  under what is left of the same ceiling. Declared checks are never
+  retried.
+- **Host keys.** `amont.idleLoadScale` and `amont.hostSlots` describe the
+  machine, so they are read from `--global` or `--system` config, or from
+  `AMONT_IDLE_LOAD_SCALE` / `AMONT_HOST_SLOTS`; a repository value is
+  ignored with a warning. `amont.lockWait` is settable from `amont.conf`.
+
 ## v1.47.3
 
 ### Fixed

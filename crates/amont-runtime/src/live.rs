@@ -682,6 +682,16 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             s => human_secs(s),
         };
         match row.cpu {
+            // In a declared wait the silence clock is not running: the rule
+            // in force is the wait's own budget.
+            _ if row.wait.is_some() => line.push_str(&format!(
+                " (killed after {} in the wait, or {ceiling} in total — amont.lockWait / \
+                 amont.timeout)",
+                match budgets.lock_wait {
+                    0 => ceiling.clone(),
+                    s => human_secs(s),
+                }
+            )),
             // The budget that applies to THIS check, not the configured
             // one: while CPU is unmeasured that is the extended budget.
             RowCpu::Unmeasured if budgets.idle > 0 => line.push_str(&format!(
@@ -1134,6 +1144,14 @@ mod tests {
             beat.contains("(amont.lockWait 0: until the ceiling)"),
             "{beat:?}"
         );
+        // The first beat states the wait's rule, not the CPU one: the
+        // silence clock is not running.
+        let first = flat(&beat_line(&r, true, B, false));
+        assert!(
+            first.contains("(killed after 10m00s in the wait, or 1h00m in total — amont.lockWait"),
+            "{first:?}"
+        );
+        assert!(!first.contains("unmeasured"), "{first:?}");
     }
 
     /// The spinner frame comes from the clock: different elapsed, different

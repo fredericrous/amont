@@ -312,13 +312,13 @@ deadline model. Process-group kill of a check's grandchildren.
    `lockWait` when a tool runs), with the comment it asks for.
 
 ## Phases
-- [ ] Phase 1 — plan commit; ADR-0009 + `.adr.yaml` keys; `aval heads --write`; `aval check`.
-- [ ] Phase 2 — Behaviour 1: `wait.rs` (markers, framing, `strip_csi`), `Activity` wait state + `silence_for`, `judge` input, `amont.lockWait`, messages, region/heartbeat.
-- [ ] Phase 3 — Behaviour 2: `Observation::Skipped`, partial tolerance, 500 ms deadline, `CpuGate` + extended budget in `judge`, `AMONT_CPU_MAX_PROCS`, messages.
-- [ ] Phase 4 — Behaviour 3: `load.rs`, host-key reader, `amont.idleLoadScale`, scaled budget in `wait_within`, displays.
-- [ ] Phase 5 — Behaviour 4: `host_slots.rs`, `Weight`, registry `HEAVY` test, acquisition in both stage runners, `AMONT_HOST_SLOT`/`AMONT_SLOT_DIR`, harness env opt-out, `amont.hostSlots`, queued display.
-- [ ] Phase 6 — Behaviour 5: drop `--workspace` for member roots, fallbacks.
-- [ ] Phase 7 — Behaviour 6: `last_line` in `Killed`, `looks_like_wait`, one retry in `status_streamed` under the remaining ceiling.
+- [x] Phase 1 — plan commit; ADR-0009 + `.adr.yaml` keys; `aval heads --write`; `aval check`.
+- [x] Phase 2 — Behaviour 1: `wait.rs` (markers, framing, `strip_csi`), `Activity` wait state + `silence_for`, `judge` input, `amont.lockWait`, messages, region/heartbeat.
+- [x] Phase 3 — Behaviour 2: `Observation::Skipped`, partial tolerance, 500 ms deadline, `CpuGate` + extended budget in `judge`, `AMONT_CPU_MAX_PROCS`, messages.
+- [x] Phase 4 — Behaviour 3: `load.rs`, host-key reader, `amont.idleLoadScale`, scaled budget in `wait_within`, displays.
+- [x] Phase 5 — Behaviour 4: `host_slots.rs`, `Weight`, registry `HEAVY` test, acquisition in both stage runners, `AMONT_HOST_SLOT`/`AMONT_SLOT_DIR`, harness env opt-out, `amont.hostSlots`, queued display.
+- [x] Phase 6 — Behaviour 5: drop `--workspace` for member roots, fallbacks.
+- [x] Phase 7 — Behaviour 6: `last_line` in `Killed`, `looks_like_wait`, one retry in `status_streamed` under the remaining ceiling.
 - [ ] Phase 8 — docs, `agents_md.rs` + `amont agents-md`, CHANGELOG v1.48.0, spawn budget; `make check`, `make lint-cross`, MSRV check, `check-no-deps.sh`; pilot; implementation review; PR; merge-when-green.
 - [ ] Phase 9 — release v1.48.0 (`tag-release`), reinstall locally (`amont install --force` in happier), verify the next happier commit under load.
 
@@ -406,6 +406,43 @@ deadline model. Process-group kill of a check's grandchildren.
   4. a real commit on the branch with the machine under relais load →
      expected: lands; the heartbeat names the load factor when load > cores.
 
+### Observed (2026-10-09/10)
+- **Pilot, before/after on a real lock (the person's failure).** A process
+  held real cargo's build-directory lock (`target/debug/.cargo-lock`) for
+  150 s; a local clone with one staged `.rs` ran the `pre-commit` stage with
+  DEFAULT budgets and that target dir. Released 1.47.3: `clippy … printed
+  nothing for 2m00s and did no measurable CPU work … killed after 2m00s`,
+  rc=1, 148 s. This branch: heartbeats `waiting for the cargo lock on the
+  build directory 1m59s (amont.lockWait 10m00s)`, then `(waited 2m27s for
+  the cargo lock on the build directory)`, `23 check(s) passed`, rc=0, 165 s.
+  The first pilot run's first heartbeat stated the CPU-unmeasured rule
+  during the wait; fixed to state the wait's own rule (test added).
+- **Fixtures (timing.rs, rust_toolchain.rs), all green:** declared wait
+  outlives a 2 s budget (passes in ~6 s, names the lock); `lockWait 2` kills
+  in < 8 s naming lock and key; marker on stdout does not pause (killed at
+  the budget); `AMONT_CPU_MAX_PROCS=0` + `timeout 0` killed at ≈ 8 s
+  (extended budget), not 2 s; two repos, one host slot, two 3 s clippys take
+  ≥ 5.5 s, and with a 0755 slot dir run together and print the note; retry:
+  passes once with one "retrying once" and no failure text, a second kill
+  fails inside one 12 s ceiling, a declared check is never retried; clippy
+  runs in `crates/a` without `--workspace`, and with `Cargo.lock` staged
+  with it.
+- **Unit:** 615 runtime tests pass, including wait markers on the real and
+  colour-coded cargo lines, framing across chunks and past the 4 KiB cap,
+  `judge` under lockWait/extended/ceiling, the Tracker gap, the host-key
+  reader, `scaled_budget`, `retry_budget`, slot exclusivity and the 0700
+  check, every new region row within 80 columns.
+- **Gate:** `make check` rc=0, `make lint-cross` rc=0 (three targets),
+  `cargo +1.74.0 check` rc=0 for the host and aarch64-apple-darwin (with the
+  lockfile removed, as CI does), `aval check` and `aval traits --check`
+  clean. Every phase commit went through amont's own pre-commit gate.
+- **Not done, stated:** the "Load scale, real" fixture (it would burn 4 ×
+  cores processes in every `make test`; the formula is covered by the pure
+  `scaled_budget` test and the display by `a_load_stretched_budget…`);
+  pilot step 2 (partial-snapshot rate, 100 ms vs 500 ms) and step 4 (load
+  factor shown on a real commit: the host's load was ≈ 1 per core during
+  the pilot, so the factor stayed ×1).
+
 ## Decision log
 - 2026-10-09 — Root cause from the person's log: cargo lock waits judged
   stuck; six measures asked for in one change. Clippy scope: staged
@@ -437,6 +474,31 @@ deadline model. Process-group kill of a check's grandchildren.
   Second pass: the retry fixture runs as a builtin (externals never retry),
   the unmeasured fixture joins the env opt-out, the real-load fixture asserts
   against the load it measured instead of a fixed factor.
+
+- 2026-10-10 — Implementation deviations, each forced by what the code
+  showed:
+  - Heavy is a name list (`host_slots::HEAVY`, pinned against the registry
+    by a test), not a `Builtin` field: same effect without touching 39
+    registry literals. `pre-commit-typecheck` does not exist; the list has
+    clippy, go vet, pyright and the four test suites.
+  - The slot is taken lazily, at a heavy check's first tool spawn
+    (`run_observed`, `status_within`), not before `check.run`: pre-commit
+    runs clippy whatever is staged, and a check with nothing to do must not
+    wait behind another repository's suite. The duration record subtracts
+    the wait.
+  - A check run by name (`amont run`, `--hooks-dir … pre-commit-clippy`)
+    has no live stage; its tool inherits the terminal, so only the ceiling
+    applies there and the wait markers and retry are stage-path features,
+    which is how git runs hooks. The slot is still taken on that path.
+  - The test binaries get `AMONT_HOST_SLOT=held` and
+    `AMONT_IDLE_LOAD_SCALE=1` from `.cargo/config.toml` `[env]` (a test
+    proves it reaches them), because about forty test files spawn amont
+    directly; the slot/load fixtures remove both.
+  - `spawn_budget.rs` caps unchanged: the host-key scan runs only when a
+    heavy check spawns a tool, which no budgeted fixture does.
+  - The by-hand reproduction of a fixture ran `amont install` from the
+    branch build and replaced `~/.local/bin/amont` for a day; restored to
+    the 1.47.3 release with `install.sh` before the before-pilot reran.
 
 ## Outcome
 
