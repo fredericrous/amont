@@ -39,4 +39,10 @@ Recorded in the canonical plan's Decision log by its closing pull request.
 | capture unit tests incl. 50 MB bound, 0600, pruning keeps 10 and every `.tmp`, injected write failure | pass | pass |
 | CI cross-check, run locally against amont-agent `main` | manifests equal | equal |
 | `cargo clippy --workspace --all-targets --all-features -D warnings` | clean | clean |
-| Open: twice (first run after a fixture change, load ~15) the failing-check test lost the summary's last line; 22 runs since passed, incl. 16 under parallel load. Consistent with the stream splice fixed in `d390a25`; the test now prints the log if it recurs. | — | — |
+| Open, cause unexplained: twice (first run after a fixture change, load ~15) the failing-check test lost the summary's last line; 22 runs since passed, incl. 16 under parallel load. Not the stream splice fixed in `d390a25`: that fixture writes only to stdout. The test now prints the log if it recurs, which tells a line lost before amont from one lost inside it. | — | — |
+
+## Implementation review
+
+- Round 1 approve-with-changes (2 high, 4 medium, 1 low: stream splice, exhaustive matches, flag argument, CI log in memory, unrecorded rows, deferral comment, process-env test); all fixed in `d390a25`.
+- Delta approve-with-changes (overclaimed cause of the lost line, `override_quiet`); fixed in `03828f8` and here. Bind on tree `cd59e1b5…`: **approve** (implementation-review, opus; 89k + 103k + 105k tokens).
+- Next: merge, then the amont release; the canonical plan's closing PR in amont-agent records these departures and phase 9.
