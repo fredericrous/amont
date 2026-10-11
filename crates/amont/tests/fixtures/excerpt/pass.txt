@@ -1,0 +1,13 @@
+   Compiling widget v0.3.0 (/work/widget)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.90s
+     Running unittests src/lib.rs (target/debug/deps/widget-1a2b3c)
+
+running 3 tests
+test parse::handles_error_variants ... ok
+test parse::reads_header ... ok
+test render::diff_is_stable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+Found no errors found in 3 files
+no errors found
