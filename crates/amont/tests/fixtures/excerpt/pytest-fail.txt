@@ -1,0 +1,19 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.0.0
+collected 3 items
+
+tests/test_orders.py ..F                                                 [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_total_rounds _______________________________
+
+    def test_total_rounds():
+        order = Order(items=[Item(price=0.1), Item(price=0.2)])
+>       assert order.total() == 0.3
+E       assert 0.30000000000000004 == 0.3
+E        +  where 0.30000000000000004 = <bound method Order.total of Order()>()
+
+tests/test_orders.py:14: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_orders.py::test_total_rounds - assert 0.30000000000000004 == 0.3
+========================= 1 failed, 2 passed in 0.12s ==========================

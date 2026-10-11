@@ -1029,6 +1029,12 @@ fn run_observed(
             let mut pipe = pipe;
             let mut chunk = [0u8; 4096];
             let mut framer = crate::hooks::wait::LineFramer::default();
+            // Whole lines only: stdout and stderr are two pipes with a reader
+            // each, and handing on raw chunks let one stream's chunk land in
+            // the middle of the other's line — cargo writes a panic to stderr
+            // and `test result:` to stdout, and the quiet excerpt (and the
+            // log) read the splice. The two now merge at line boundaries.
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match std::io::Read::read(&mut pipe, &mut chunk) {
                     Ok(0) | Err(_) => break,
@@ -1041,9 +1047,16 @@ fn run_observed(
                         } else {
                             activity.end_wait();
                         }
-                        on_output(&chunk[..n]);
+                        pending.extend_from_slice(&chunk[..n]);
+                        if let Some(end) = whole_lines(&pending) {
+                            on_output(&pending[..end]);
+                            pending.drain(..end);
+                        }
                     }
                 }
+            }
+            if !pending.is_empty() {
+                on_output(&pending);
             }
         }));
     }
@@ -1256,6 +1269,7 @@ pub fn status_streamed(
         },
         None,
     );
+    stage.runner_exit(idx, exit_of(&first));
     let Ok(Ran::TimedOut(k)) = &first else {
         return first;
     };
@@ -1275,12 +1289,39 @@ pub fn status_streamed(
             None => String::new(),
         }
     ));
-    run_observed(
+    let second = run_observed(
         settings,
         cmd,
-        move |bytes| stage.append_raw(idx, bytes),
+        {
+            let stage = std::sync::Arc::clone(&stage);
+            move |bytes| stage.append_raw(idx, bytes)
+        },
         left,
-    )
+    );
+    stage.runner_exit(idx, exit_of(&second));
+    second
+}
+
+/// How much of `pending` to hand on: up to and including its last newline,
+/// or all of it once it holds [`LINE_HOLD`] bytes with none — a progress bar
+/// redrawing with `\r` must not grow without bound.
+fn whole_lines(pending: &[u8]) -> Option<usize> {
+    match pending.iter().rposition(|&b| b == b'\n') {
+        Some(i) => Some(i + 1),
+        None if pending.len() >= LINE_HOLD => Some(pending.len()),
+        None => None,
+    }
+}
+
+const LINE_HOLD: usize = 64 * 1024;
+
+/// The tool's exit code, for a quiet slot's failure line; `None` when it was
+/// killed or never ran.
+fn exit_of(ran: &std::io::Result<Ran>) -> Option<i32> {
+    match ran {
+        Ok(Ran::Status(s)) => s.code(),
+        _ => None,
+    }
 }
 
 /// Whether a check's tool may be run once more after a kill (ADR-0009).

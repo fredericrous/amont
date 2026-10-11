@@ -27,4 +27,9 @@ categories = ["development-tools"]
 # because it is opt-in and does not run on every commit.
 #
 # CI asserts this emptiness — see the `deps` job.
+[features]
+# Failure injection for tests that spawn the binary, which `cfg(test)` cannot
+# reach. Never on in a shipped build: nothing reads the variables without it.
+test-hooks = []
+
 [dependencies]

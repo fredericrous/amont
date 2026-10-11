@@ -1,0 +1,34 @@
+   Compiling libc v0.2.150
+   Compiling serde v1.0.190
+   Compiling widget v0.3.0 (/work/widget)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.21s
+     Running unittests src/lib.rs (target/debug/deps/widget-1a2b3c)
+
+running 4 tests
+test parse::handles_error_variants ... ok
+test parse::reads_header ... ok
+test render::diff_is_stable ... FAILED
+test render::refuses_empty_input ... FAILED
+
+failures:
+
+---- render::diff_is_stable stdout ----
+thread 'render::diff_is_stable' panicked at src/render.rs:88:9:
+assertion `left == right` failed: rendered output differs
+  left: "alpha\nbeta\ngamma"
+ right: "alpha\nBETA\ngamma"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- render::refuses_empty_input stdout ----
+thread 'render::refuses_empty_input' panicked at src/render.rs:101:9:
+empty input must be refused,
+but the renderer returned 0 bytes
+and then kept going
+
+failures:
+    render::diff_is_stable
+    render::refuses_empty_input
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

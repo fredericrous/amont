@@ -60,6 +60,9 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   run            rehearse checks without committing: the pre-commit stage,
                  `run pre-push` for the push gate, or one check by name
                  [--all-files] [--hooks-dir <dir>]
+                 [--quiet | --raw: a captured check's output to a log, one
+                 line on a pass (the default when not at a terminal), or
+                 the tool's own output as it comes]
   rehearse       run the push gate on a snapshot of HEAD in the background
                  and stamp the tree, so `git push` skips the suite
                  (`git config amont.rehearseOnCommit true` does this after
@@ -363,7 +366,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Install => (&["--force"], &[]),
         Sub::Init | Sub::Restore => (&[], &[]),
         Sub::Uninstall => (&["--binary"], &[]),
-        Sub::Run => (&["--all-files"], &["--hooks-dir"]),
+        Sub::Run => (&["--all-files", "--quiet", "--raw"], &["--hooks-dir"]),
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
@@ -798,7 +801,7 @@ fn report(r: Result<(), String>) -> i32 {
     }
 }
 
-/// `amont run [<check>] [--all-files] [--hooks-dir <dir>]`.
+/// `amont run [<check>] [--all-files] [--quiet | --raw] [--hooks-dir <dir>]`.
 ///
 /// Scans its OWN arguments, which is the same thing it did before — but they
 /// are now unambiguously its own, so the `*a != "run"` clause that used to
@@ -821,6 +824,15 @@ fn run_mode(args: &[OsString]) -> i32 {
     // manifest::load, before any config read in the process — check_timeout
     // and friends cache on first read.
     let settings = amont_runtime::config::Settings::new(manifest.policy.clone());
+    // `--quiet` / `--raw` decide `amont.quiet` for this run only; the last
+    // one given wins, like any repeated flag.
+    if let Some(flag) = args.iter().rev().find(|a| *a == "--quiet" || *a == "--raw") {
+        settings.override_quiet(if flag == "--quiet" {
+            amont_runtime::config::QuietOverride::Quiet
+        } else {
+            amont_runtime::config::QuietOverride::Raw
+        });
+    }
     // Resolve a short name to its full id BEFORE the push-ref decision:
     // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`
     // must say so rather than fail on an upstream it was never going to use.

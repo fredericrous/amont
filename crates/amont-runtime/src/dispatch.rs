@@ -585,7 +585,7 @@ fn run_stage_traced(
             // The block is emitted however the check leaves — a panicking
             // check's partial output still reaches the reader, above the
             // dead-check verdict `run_concurrently` fills in.
-            let _flush = stage
+            let flush = stage
                 .as_ref()
                 .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, *idx));
             let sub = Ctx {
@@ -598,6 +598,9 @@ fn run_stage_traced(
             };
             let slot = crate::host_slots::enter_check(check.name());
             let outcome = check.run(&sub);
+            if let Some(f) = &flush {
+                f.outcome(outcome);
+            }
             // The record measures the check, not its wait for a host slot.
             let ran = started.elapsed().saturating_sub(slot.queued());
             let ms = u64::try_from(ran.as_millis()).unwrap_or(u64::MAX);
@@ -854,22 +857,58 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         manifest: ctx.manifest,
         settings: ctx.settings,
     };
+    // Under quiet, a check run by name is captured like one inside its stage
+    // — one slot, its tool's output to a log, one line on a pass — whatever
+    // `amont.progress` says: the person who asked for quiet asked for this.
+    let check = crate::registry::one_named(name, ctx.manifest);
+    let run = |ctx: &Ctx| match check.filter(|_| crate::live::quiet(ctx.settings)) {
+        Some(check) => run_quiet(ctx, check),
+        None => run_check(ctx),
+    };
     if all_files {
         enter_all_files_mode();
-        return Named::Ran(run_check(ctx));
+        return Named::Ran(run(ctx));
     }
-    let is_pre_commit_check = crate::registry::one_named(name, ctx.manifest)
-        .is_some_and(|c| c.stage() == Stage::PreCommit);
+    let is_pre_commit_check = check.is_some_and(|c| c.stage() == Stage::PreCommit);
     if !is_pre_commit_check {
-        return Named::Ran(run_check(ctx));
+        return Named::Ran(run(ctx));
     }
     let held = match hold_unstaged() {
         Ok(guard) => guard,
         Err(verdict) => return Named::Ran(verdict),
     };
-    let verdict = run_check(ctx);
+    let verdict = run(ctx);
     drop(held);
     Named::Ran(verdict)
+}
+
+/// One check by name, in a one-slot stage. The verdict is the one
+/// `registry::lookup` gives a check: blocking only a failed `block` check.
+fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
+    let stage = crate::live::Stage::begin(ctx.settings, &[check.name()]);
+    stage.named();
+    let _sink = stage.enter(0);
+    let flush = crate::live::FinishOnDrop::new(ctx.settings, &stage, 0);
+    let outcome = {
+        let _slot = crate::host_slots::enter_check(check.name());
+        check.run(ctx)
+    };
+    flush.outcome(outcome);
+    // The block prints here, before anything the caller says after it.
+    drop(flush);
+    // The same rule `registry::lookup` applies, with every variant named.
+    let blocks = match outcome {
+        Outcome::Failed => match crate::registry::severity_of(ctx.settings, check) {
+            Severity::Block => true,
+            Severity::Warn => false,
+        },
+        Outcome::Passed
+        | Outcome::Warned
+        | Outcome::Fixed
+        | Outcome::Unavailable
+        | Outcome::Inert => false,
+    };
+    Verdict::blocking(blocks)
 }
 
 /// What `run_named` resolved a name to.
@@ -1013,7 +1052,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             continue;
         }
         let _sink = stage.as_ref().map(|s| s.enter(idx));
-        let _flush = stage
+        let flush = stage
             .as_ref()
             .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, idx));
         // A declared pre-push external whose NAME is also declared at
@@ -1128,6 +1167,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let started = std::time::Instant::now();
         let slot = crate::host_slots::enter_check(check.name());
         let outcome = check.run(&sub);
+        if let Some(f) = &flush {
+            f.outcome(outcome);
+        }
         let ran = started.elapsed().saturating_sub(slot.queued());
         drop(slot);
         evidence.push(crate::gate_stamp::Run {

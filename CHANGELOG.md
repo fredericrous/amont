@@ -10,6 +10,27 @@ missing here.
 
 ### Added
 
+- **A quiet check's tool output goes to a log, not into the result.**
+  Under quiet (`amont.quiet auto`, the default when nobody is at a
+  terminal — an agent, a pipe), a captured check's tool output is written
+  to `<git-dir>/amont/logs/<check>.<pid>.log` as it arrives, tailable as
+  `.log.tmp` while it runs, and only a bounded excerpt is kept in memory
+  (64 KB, whatever the tool prints). A check that fails, warns, fixes or
+  cannot run prints its own messages, each failure block of the tool's
+  output in full (cargo's `failures:` section, a pytest traceback, a
+  vitest or eslint failure), the runner's exit code and `full log:
+  <path>`; inside a stage a passing check prints nothing, as before. Under
+  `CI` a failure prints its whole log, which would otherwise go away with
+  the runner. A log that cannot be written never changes the verdict: the
+  excerpt and `log not written: <reason>` print instead. A passing
+  `amont run clippy` printed 3.4 KB of download lines; it now prints
+  `ok clippy 17.3s log=<path>`. The excerpt is shared with `amont-agent
+  quiet`, held together by golden fixtures and a CI cross-check.
+- **`amont run <check>` is captured whatever `amont.progress` says, and
+  `--quiet` / `--raw` decide for one run.** A check run by name prints
+  `ok <check> <N>s log=<path>` on a pass, and `running <check>, log <path>`
+  once it has written output and run 5 seconds.
+
 - **A snapshot installs yarn dependencies.** A directory holding a tracked
   `yarn.lock` is a unit like npm's and pnpm's: yarn 1 installs with
   `yarn install --frozen-lockfile --non-interactive --prefer-offline`,

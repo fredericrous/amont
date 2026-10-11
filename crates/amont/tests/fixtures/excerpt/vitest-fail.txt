@@ -1,0 +1,26 @@
+
+ RUN  v1.6.0 /work/app
+
+ ✓ src/sum.test.ts (2)
+ ❯ src/format.test.ts (3)
+   ✓ pads numbers
+   × formats currency
+   ✓ trims
+
+⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/format.test.ts > formats currency
+AssertionError: expected '$1,000.00' to be '$1.000,00'
+
+Expected: "$1.000,00"
+Received: "$1,000.00"
+
+ ❯ src/format.test.ts:12:31
+     10|   it('formats currency', () => {
+     11|     const out = format(1000, 'EUR')
+     12|     expect(out).toBe('$1.000,00')
+       |                 ^
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 4 passed (5)
+   Duration  1.20s
