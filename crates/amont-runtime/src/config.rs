@@ -228,8 +228,13 @@ impl Settings {
     /// a read first would have fixed the answer, and the flag would do
     /// nothing; that is a bug in the caller, not a configuration.
     pub fn override_quiet(&self, mode: QuietOverride) {
-        let decided = self.quiet.set(matches!(mode, QuietOverride::Quiet));
-        debug_assert!(decided.is_ok(), "amont.quiet was read before --quiet/--raw");
+        let quiet = match mode {
+            QuietOverride::Quiet => true,
+            QuietOverride::Raw => false,
+        };
+        self.quiet
+            .set(quiet)
+            .expect("amont.quiet was read before --quiet/--raw could decide it");
     }
 
     /// The policy a trusted manifest declared — empty when nothing was
