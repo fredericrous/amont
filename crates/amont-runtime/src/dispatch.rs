@@ -886,6 +886,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 /// `registry::lookup` gives a check: blocking only a failed `block` check.
 fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
     let stage = crate::live::Stage::begin(ctx.settings, &[check.name()]);
+    stage.named();
     let _sink = stage.enter(0);
     let flush = crate::live::FinishOnDrop::new(ctx.settings, &stage, 0);
     let outcome = {

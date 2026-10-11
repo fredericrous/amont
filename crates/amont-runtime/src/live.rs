@@ -109,6 +109,10 @@ pub struct Stage {
     /// a passing check prints one line.
     quiet: bool,
     log_dir: Option<std::path::PathBuf>,
+    /// A check run by name (`amont run <check>`): its pass is one `ok` line.
+    /// Inside a stage a pass prints nothing, like every other success line
+    /// under quiet — the stage's tally speaks for it — and its log stays.
+    named: AtomicBool,
     stop: AtomicBool,
 }
 
@@ -156,6 +160,7 @@ impl Stage {
             // stage can answer this without dispatch passing anything in.
             on_push: names.iter().any(|n| n.starts_with("pre-push-")),
             quiet: quiet(settings),
+            named: AtomicBool::new(false),
             log_dir: if quiet(settings) {
                 crate::capture::log_dir()
             } else {
@@ -249,6 +254,11 @@ impl Stage {
         }
     }
 
+    /// This stage is one check run by name: its pass prints an `ok` line.
+    pub fn named(&self) {
+        self.named.store(true, Ordering::Relaxed);
+    }
+
     /// The exit code of the tool slot `idx` just ran (`None`: killed).
     pub fn runner_exit(&self, idx: usize, code: Option<i32>) {
         let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
@@ -302,6 +312,7 @@ impl Stage {
                     capture,
                     runner_exit: slot.runner_exit,
                     ci: in_ci(),
+                    ok_line: self.named.load(Ordering::Relaxed),
                 }),
             }
         };
@@ -641,6 +652,8 @@ struct QuietEnd<'a> {
     capture: crate::capture::Capture,
     runner_exit: Option<i32>,
     ci: bool,
+    /// Print `ok <check> …` on a pass (a check run by name).
+    ok_line: bool,
 }
 
 /// `CI` set to anything but empty, `false` or `0`. Under CI a failure prints
@@ -687,6 +700,11 @@ fn quiet_block(mut end: QuietEnd) -> Vec<u8> {
     }
     let path = stored.path().map(|p| p.display().to_string());
     let mut out = String::new();
+    if end.outcome == Some(Outcome::Passed) && !end.ok_line {
+        // In a stage: silent, like every passing check under quiet; the log
+        // stays on disk for whoever wants it.
+        return end.said;
+    }
     if end.outcome == Some(Outcome::Passed) {
         out.push_str(&format!("ok {} {:.1}s", end.name, end.secs));
         if let (crate::capture::Stored::Saved(_), Some(p)) = (&stored, &path) {
@@ -745,9 +763,11 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
             let mut due = Vec::new();
             for s in slots.iter_mut().filter(|s| s.running && !s.done) {
                 let elapsed = now.duration_since(s.started).as_secs();
+                // Only a log the tool has written to: a check that prints
+                // nothing keeps no log, and the line would point at nothing.
                 if !s.announced && elapsed >= ANNOUNCE_SECS {
-                    s.announced = true;
-                    if let Some(c) = s.capture.as_ref().filter(|c| c.writing()) {
+                    if let Some(c) = s.capture.as_ref().filter(|c| c.writing() && c.seen > 0) {
+                        s.announced = true;
                         announce.push(format!("running {}, log {}\n", s.name, c.tmp.display()));
                     }
                 }

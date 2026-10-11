@@ -172,3 +172,25 @@ fn a_failing_check_that_prints_nothing_says_so() {
     assert!(stdout.contains("(no output)"), "{stdout}");
     assert!(stdout.contains("probe failed, runner exit 4"), "{stdout}");
 }
+
+#[test]
+fn in_a_stage_a_pass_is_silent_and_a_failure_shows_its_excerpt() {
+    let r = repo_with("block", CHATTY_PASS);
+    let (code, stdout, _) = run(&r, &[], &[]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(!stdout.contains("Compiling crate"), "{stdout}");
+    assert!(
+        !stdout.contains("ok probe"),
+        "the stage tally speaks for a pass:\n{stdout}"
+    );
+
+    let r = repo_with("block", PANIC);
+    let (code, stdout, _) = run(&r, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("panicked at src/render.rs:88:9"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("full log: "), "{stdout}");
+    assert!(!stdout.contains("Compiling widget-0 "), "{stdout}");
+}
