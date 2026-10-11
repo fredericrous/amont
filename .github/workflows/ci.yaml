@@ -36,6 +36,33 @@ defaults:
     shell: bash
 
 jobs:
+  excerpt-fixtures:
+    name: excerpt fixtures match amont-agent's
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The quiet excerpt is duplicated in amont-agent (a shared crate for one
+      # function would couple more than it saves), so the two copies are held
+      # together by their golden fixtures. amont-agent owns them; this is the
+      # follower, so the check lives here and merge order cannot deadlock it.
+      # A fetch that fails fails the step: a cross-check that could not look
+      # has checked nothing.
+      - name: Compare MANIFEST.sha256 with amont-agent's
+        run: |
+          set -euo pipefail
+          url=https://raw.githubusercontent.com/fredericrous/amont-agent/main/tests/fixtures/excerpt/MANIFEST.sha256
+          ours=crates/amont/tests/fixtures/excerpt/MANIFEST.sha256
+          if ! curl -fsSL --retry 3 --max-time 30 "$url" -o /tmp/theirs.sha256; then
+            echo "::error::could not fetch amont-agent's MANIFEST.sha256 from $url"
+            exit 1
+          fi
+          if ! diff -u /tmp/theirs.sha256 "$ours"; then
+            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/excerpt_golden.rs"
+            exit 1
+          fi
+          echo "excerpt fixtures match amont-agent's"
+
   adr:
     name: architecture decisions resolve
     runs-on: ubuntu-latest

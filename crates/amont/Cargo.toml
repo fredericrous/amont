@@ -14,6 +14,10 @@ keywords = ["git", "git-hooks", "pre-commit", "hooks", "lint"]
 categories = ["development-tools", "command-line-utilities"]
 
 # Only the runtime, which itself has none. See crates/amont-runtime.
+[features]
+# Forwards the runtime's failure injection to the binary the tests spawn.
+test-hooks = ["amont-runtime/test-hooks"]
+
 [dependencies]
 # `version` beside `path`: cargo uses the path locally and crates.io uses the
 # version, so publishing without it produces a crate nobody can build.

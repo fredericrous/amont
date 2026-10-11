@@ -20,3 +20,7 @@ crates/amont-runtime/templates/hooks/* text eol=lf
 
 # The installers people pipe into a shell, for the same reason.
 install/install.sh text eol=lf
+
+# The excerpt fixtures are hashed (MANIFEST.sha256) and the hash is compared
+# with amont-agent's copy: any line-ending conversion would change the bytes.
+crates/amont/tests/fixtures/excerpt/* -text
