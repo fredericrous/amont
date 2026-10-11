@@ -896,10 +896,19 @@ fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
     flush.outcome(outcome);
     // The block prints here, before anything the caller says after it.
     drop(flush);
-    Verdict::blocking(matches!(
-        (outcome, crate::registry::severity_of(ctx.settings, check)),
-        (Outcome::Failed, Severity::Block)
-    ))
+    // The same rule `registry::lookup` applies, with every variant named.
+    let blocks = match outcome {
+        Outcome::Failed => match crate::registry::severity_of(ctx.settings, check) {
+            Severity::Block => true,
+            Severity::Warn => false,
+        },
+        Outcome::Passed
+        | Outcome::Warned
+        | Outcome::Fixed
+        | Outcome::Unavailable
+        | Outcome::Inert => false,
+    };
+    Verdict::blocking(blocks)
 }
 
 /// What `run_named` resolved a name to.

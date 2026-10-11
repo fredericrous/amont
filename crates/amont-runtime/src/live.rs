@@ -303,7 +303,7 @@ impl Stage {
             slot.running = false;
             let said = std::mem::take(&mut slot.buf);
             match slot.capture.take() {
-                None => said,
+                None => QuietOut::plain(said),
                 Some(capture) => quiet_block(QuietEnd {
                     name: &slot.name,
                     secs: slot.started.elapsed().as_secs_f64(),
@@ -329,7 +329,7 @@ impl Stage {
             }
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
-            let _ = handle.write_all(&block);
+            block.write(&mut handle);
             let _ = handle.flush();
         }
         self.repaint(settings, &mut drawn);
@@ -665,19 +665,10 @@ fn in_ci() -> bool {
 /// A quiet slot's block: one line for a pass; for anything else the check's
 /// own messages, then each failure block of the tool's output in full and
 /// the log's path. Pure but for the log file it closes and renames.
-fn quiet_block(mut end: QuietEnd) -> Vec<u8> {
-    use crate::check::Outcome;
+fn quiet_block(mut end: QuietEnd) -> QuietOut {
     let stored = end.capture.finish();
-    let failed = !matches!(
-        end.outcome,
-        Some(
-            Outcome::Passed
-                | Outcome::Warned
-                | Outcome::Fixed
-                | Outcome::Unavailable
-                | Outcome::Inert
-        )
-    );
+    let failed = is_failure(end.outcome);
+    let passed = end.outcome == Some(crate::check::Outcome::Passed);
     if end.capture.seen == 0 {
         // No tool output: a check that runs no tool (ban-terms, secrets), or
         // one the push stage skipped before it ran. Exactly what it printed
@@ -687,26 +678,25 @@ fn quiet_block(mut end: QuietEnd) -> Vec<u8> {
         if let Some(p) = stored.path() {
             let _ = std::fs::remove_file(p);
         }
-        let mut bytes = end.said;
+        let mut head = end.said;
         if failed && end.runner_exit.is_some() {
-            bytes.extend_from_slice(b"(no output)\n");
+            head.extend_from_slice(b"(no output)\n");
             if let Some(code) = end.runner_exit.filter(|c| *c != 0) {
-                bytes.extend_from_slice(
+                head.extend_from_slice(
                     format!("{} failed, runner exit {code}\n", end.name).as_bytes(),
                 );
             }
         }
-        return bytes;
+        return QuietOut::plain(head);
     }
-    let path = stored.path().map(|p| p.display().to_string());
-    let mut out = String::new();
-    if end.outcome == Some(Outcome::Passed) && !end.ok_line {
+    if passed && !end.ok_line {
         // In a stage: silent, like every passing check under quiet; the log
         // stays on disk for whoever wants it.
-        return end.said;
+        return QuietOut::plain(end.said);
     }
-    if end.outcome == Some(Outcome::Passed) {
-        out.push_str(&format!("ok {} {:.1}s", end.name, end.secs));
+    let path = stored.path().map(|p| p.display().to_string());
+    if passed {
+        let mut out = format!("ok {} {:.1}s", end.name, end.secs);
         if let (crate::capture::Stored::Saved(_), Some(p)) = (&stored, &path) {
             out.push_str(&format!(" log={p}"));
         }
@@ -715,38 +705,93 @@ fn quiet_block(mut end: QuietEnd) -> Vec<u8> {
             out.push_str(&note);
             out.push('\n');
         }
-        return out.into_bytes();
+        return QuietOut::plain(out.into_bytes());
     }
-    let mut bytes = end.said;
-    {
-        let whole = match (&stored, end.ci && failed) {
-            (crate::capture::Stored::Saved(p), true) => std::fs::read(p).ok(),
-            _ => None,
-        };
-        match whole {
-            Some(log) => {
-                out.push_str(&String::from_utf8_lossy(&log));
-                if !out.ends_with('\n') && !out.is_empty() {
-                    out.push('\n');
-                }
-            }
-            None => out.push_str(&end.capture.acc.finish(path.as_deref().unwrap_or("-"))),
+    let excerpt = end.capture.acc.finish(path.as_deref().unwrap_or("-"));
+    let mut tail = String::new();
+    if failed {
+        if let Some(code) = end.runner_exit.filter(|c| *c != 0) {
+            tail.push_str(&format!("{} failed, runner exit {code}\n", end.name));
         }
-        if failed {
-            if let Some(code) = end.runner_exit.filter(|c| *c != 0) {
-                out.push_str(&format!("{} failed, runner exit {code}\n", end.name));
-            }
-        }
-        if let Some(p) = &path {
-            out.push_str(&format!("full log: {p}\n"));
-        }
+    }
+    if let Some(p) = &path {
+        tail.push_str(&format!("full log: {p}\n"));
     }
     if let Some(note) = stored.note() {
-        out.push_str(&note);
-        out.push('\n');
+        tail.push_str(&note);
+        tail.push('\n');
     }
-    bytes.extend_from_slice(out.as_bytes());
-    bytes
+    // Under CI a failure prints its whole log, copied from the file when the
+    // block is written: the file goes away with the runner. The excerpt is
+    // what prints if the copy cannot be made.
+    match (&stored, end.ci && failed) {
+        (crate::capture::Stored::Saved(p), true) => QuietOut {
+            head: end.said,
+            stream: Some((p.clone(), excerpt)),
+            tail: tail.into_bytes(),
+        },
+        _ => {
+            let mut head = end.said;
+            head.extend_from_slice(excerpt.as_bytes());
+            QuietOut {
+                head,
+                stream: None,
+                tail: tail.into_bytes(),
+            }
+        }
+    }
+}
+
+/// A finished slot's block: `head`, then a log file copied out whole (with
+/// the excerpt to print if the copy fails), then `tail`.
+struct QuietOut {
+    head: Vec<u8>,
+    stream: Option<(std::path::PathBuf, String)>,
+    tail: Vec<u8>,
+}
+
+impl QuietOut {
+    fn plain(head: Vec<u8>) -> QuietOut {
+        QuietOut {
+            head,
+            stream: None,
+            tail: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.head.is_empty() && self.stream.is_none() && self.tail.is_empty()
+    }
+
+    fn write(self, to: &mut impl Write) {
+        let _ = to.write_all(&self.head);
+        if let Some((path, excerpt)) = self.stream {
+            let copied = std::fs::File::open(&path).and_then(|mut f| std::io::copy(&mut f, to));
+            if let Err(e) = copied {
+                let _ = to.write_all(excerpt.as_bytes());
+                let _ = writeln!(to, "log not read: {e}");
+            }
+        }
+        let _ = to.write_all(&self.tail);
+    }
+}
+
+/// Whether an outcome is a failure for the quiet block: the failure line
+/// and, under CI, the whole log. A check whose thread died (`None`) has not
+/// passed. Every variant named, so a new one is a compile error here.
+fn is_failure(outcome: Option<crate::check::Outcome>) -> bool {
+    use crate::check::Outcome;
+    match outcome {
+        None => true,
+        Some(Outcome::Failed) => true,
+        Some(
+            Outcome::Passed
+            | Outcome::Warned
+            | Outcome::Fixed
+            | Outcome::Unavailable
+            | Outcome::Inert,
+        ) => false,
+    }
 }
 
 fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {

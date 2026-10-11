@@ -215,11 +215,21 @@ pub struct Settings {
     pub(crate) fixing: OnceLock<bool>,
 }
 
+/// `amont run --quiet` or `--raw`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuietOverride {
+    Quiet,
+    Raw,
+}
+
 impl Settings {
     /// Decide `amont.quiet` for this run, ahead of the configuration:
-    /// `amont run --quiet` / `--raw`. Only before anything has read it.
-    pub fn force_quiet(&self, on: bool) {
-        let _ = self.quiet.set(on);
+    /// `amont run --quiet` / `--raw`. Only before anything has read it —
+    /// a read first would have fixed the answer, and the flag would do
+    /// nothing; that is a bug in the caller, not a configuration.
+    pub fn override_quiet(&self, mode: QuietOverride) {
+        let decided = self.quiet.set(matches!(mode, QuietOverride::Quiet));
+        debug_assert!(decided.is_ok(), "amont.quiet was read before --quiet/--raw");
     }
 
     /// The policy a trusted manifest declared — empty when nothing was

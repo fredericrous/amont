@@ -827,7 +827,11 @@ fn run_mode(args: &[OsString]) -> i32 {
     // `--quiet` / `--raw` decide `amont.quiet` for this run only; the last
     // one given wins, like any repeated flag.
     if let Some(flag) = args.iter().rev().find(|a| *a == "--quiet" || *a == "--raw") {
-        settings.force_quiet(flag == "--quiet");
+        settings.override_quiet(if flag == "--quiet" {
+            amont_runtime::config::QuietOverride::Quiet
+        } else {
+            amont_runtime::config::QuietOverride::Raw
+        });
     }
     // Resolve a short name to its full id BEFORE the push-ref decision:
     // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`

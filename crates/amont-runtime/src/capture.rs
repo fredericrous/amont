@@ -14,6 +14,14 @@
 //! Storage is never allowed to change the verdict: a log that cannot be
 //! created, written or renamed stops being written, the accumulator keeps
 //! being fed, and the result says where the log is not.
+//!
+//! holds-until: amont installs no SIGINT/SIGTERM handler of its own for
+//! this. `staged_only` already does, to bring back the user's parked
+//! unstaged changes during the index-fidelity hold, and a second handler on
+//! the commit path would compete with it. So an interrupted run leaves its
+//! `<check>.<pid>.log.tmp` — complete up to the interrupt, and named by the
+//! running line — and pruning never removes a `.tmp`. Revisit when amont
+//! has one signal path that both can register with.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -76,6 +84,22 @@ impl Capture {
     /// Open `<dir>/<check>.<pid>.log.tmp`. A failure is remembered, not
     /// returned: the excerpt still works without a file.
     pub fn open(dir: Option<PathBuf>, check: &str) -> Capture {
+        #[cfg(feature = "test-hooks")]
+        let fail_after = std::env::var("AMONT_TEST_LOG_FAIL_AFTER")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        #[cfg(not(feature = "test-hooks"))]
+        let fail_after = None;
+        Capture::open_failing_after(dir, check, fail_after)
+    }
+
+    /// [`Capture::open`], with the write failure the tests inject passed in
+    /// (only honoured under the `test-hooks` feature).
+    pub fn open_failing_after(
+        dir: Option<PathBuf>,
+        check: &str,
+        #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))] fail_after: Option<u64>,
+    ) -> Capture {
         let name = file_name(check);
         let pid = std::process::id();
         let (tmp, done, file, err) = match dir {
@@ -102,9 +126,7 @@ impl Capture {
             written: 0,
             seen: 0,
             #[cfg(feature = "test-hooks")]
-            fail_after: std::env::var("AMONT_TEST_LOG_FAIL_AFTER")
-                .ok()
-                .and_then(|v| v.parse().ok()),
+            fail_after,
             acc: Accumulator::new(crate::excerpt::DEFAULT_BOUND),
         }
     }
@@ -317,10 +339,8 @@ mod tests {
     #[cfg(feature = "test-hooks")]
     #[test]
     fn a_failed_write_keeps_the_excerpt() {
-        std::env::set_var("AMONT_TEST_LOG_FAIL_AFTER", "10");
         let dir = scratch("inject");
-        let mut c = Capture::open(Some(dir), "x");
-        std::env::remove_var("AMONT_TEST_LOG_FAIL_AFTER");
+        let mut c = Capture::open_failing_after(Some(dir), "x", Some(10));
         c.take(b"0123456789abcdef\nthread 'a' panicked at src/a.rs:1:1:\n");
         let stored = c.finish();
         assert!(stored.note().unwrap().contains("injected write failure"));

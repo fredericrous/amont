@@ -61,6 +61,7 @@ test: chmodx
 	@# The quiet capture's injected write failure exists only behind this
 	@# feature (crates/amont-runtime/Cargo.toml); nothing else needs it.
 	@$(if $(RUN),true,cargo test -p amont-runtime --lib --features test-hooks -- capture::)
+	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test quiet_run)
 
 # EXACTLY what CI's `rust` job runs, in the same order, with the same flags.
 # Keep them identical: the point of this target is that a contributor can

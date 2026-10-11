@@ -194,3 +194,54 @@ fn in_a_stage_a_pass_is_silent_and_a_failure_shows_its_excerpt() {
     assert!(stdout.contains("full log: "), "{stdout}");
     assert!(!stdout.contains("Compiling widget-0 "), "{stdout}");
 }
+
+#[test]
+fn a_long_run_names_its_log_after_five_seconds() {
+    let r = repo_with("block", "echo started\nsleep 6\necho done\n");
+    let (code, stdout, stderr) = run(&r, &["probe"], &[]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stderr.contains("running probe, log "), "{stderr}");
+    assert!(
+        stderr.contains(".log.tmp"),
+        "the line names the file being written:\n{stderr}"
+    );
+    assert!(stdout.starts_with("ok probe "), "{stdout}");
+}
+
+#[test]
+fn a_check_whose_tool_is_missing_says_so_and_does_not_block() {
+    let r = Repo::new();
+    r.git(&["config", "amont.quiet", "auto"]);
+    declare(&r, "block", "no-such-tool.sh");
+    r.stage("a.txt", "a\n");
+    let (code, stdout, stderr) = run(&r, &["probe"], &[]);
+    assert_eq!(code, 0, "an unavailable check warns:\n{stdout}{stderr}");
+    assert!(!stdout.contains("ok probe"), "{stdout}");
+    assert!(
+        format!("{stdout}{stderr}").contains("no-such-tool.sh"),
+        "the message names what is missing:\n{stdout}{stderr}"
+    );
+}
+
+/// Under CI a failure prints its whole log; when the log could not be
+/// written there is nothing to copy, so the excerpt prints, and says why.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn in_ci_a_failure_whose_log_was_not_written_prints_the_excerpt() {
+    let r = repo_with("block", PANIC);
+    let (code, stdout, _) = run(
+        &r,
+        &["probe"],
+        &[("CI", "true"), ("AMONT_TEST_LOG_FAIL_AFTER", "40")],
+    );
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("panicked at src/render.rs:88:9"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("log not written: injected write failure"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("full log: "), "{stdout}");
+}
