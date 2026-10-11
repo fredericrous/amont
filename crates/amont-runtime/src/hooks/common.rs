@@ -1256,6 +1256,7 @@ pub fn status_streamed(
         },
         None,
     );
+    stage.runner_exit(idx, exit_of(&first));
     let Ok(Ran::TimedOut(k)) = &first else {
         return first;
     };
@@ -1275,12 +1276,26 @@ pub fn status_streamed(
             None => String::new(),
         }
     ));
-    run_observed(
+    let second = run_observed(
         settings,
         cmd,
-        move |bytes| stage.append_raw(idx, bytes),
+        {
+            let stage = std::sync::Arc::clone(&stage);
+            move |bytes| stage.append_raw(idx, bytes)
+        },
         left,
-    )
+    );
+    stage.runner_exit(idx, exit_of(&second));
+    second
+}
+
+/// The tool's exit code, for a quiet slot's failure line; `None` when it was
+/// killed or never ran.
+fn exit_of(ran: &std::io::Result<Ran>) -> Option<i32> {
+    match ran {
+        Ok(Ran::Status(s)) => s.code(),
+        _ => None,
+    }
 }
 
 /// Whether a check's tool may be run once more after a kill (ADR-0009).

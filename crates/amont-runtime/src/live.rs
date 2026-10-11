@@ -77,7 +77,19 @@ struct Slot {
     /// Waiting for a host slot since, and how many slots there are
     /// (ADR-0009).
     queued: Option<(Instant, u64)>,
+    /// Under quiet: where the tool's output goes instead of `buf` (the whole
+    /// of it to a log, a bounded excerpt in memory). `buf` keeps the check's
+    /// own messages. See [`crate::capture`].
+    capture: Option<crate::capture::Capture>,
+    /// The exit code of the last tool the check ran, for the failure line.
+    runner_exit: Option<i32>,
+    /// The `running <check>, log <path>` line has been printed.
+    announced: bool,
 }
+
+/// A quiet run says where its log is only once it has taken this long, so a
+/// quick pass is exactly one line even under `2>&1`.
+const ANNOUNCE_SECS: u64 = 5;
 
 /// A running stage: the slots, and the one lock every terminal write inside
 /// the stage goes through.
@@ -93,6 +105,10 @@ pub struct Stage {
     /// time — see [`beat_line`]. Derived from the names, which already
     /// carry the trigger.
     on_push: bool,
+    /// [`quiet`], decided once at begin: tool output is captured to a log and
+    /// a passing check prints one line.
+    quiet: bool,
+    log_dir: Option<std::path::PathBuf>,
     stop: AtomicBool,
 }
 
@@ -127,6 +143,9 @@ impl Stage {
                         done: false,
                         activity: None,
                         queued: None,
+                        capture: None,
+                        runner_exit: None,
+                        announced: false,
                     })
                     .collect(),
             ),
@@ -136,6 +155,12 @@ impl Stage {
             // already had to strip the trigger to display them, so the
             // stage can answer this without dispatch passing anything in.
             on_push: names.iter().any(|n| n.starts_with("pre-push-")),
+            quiet: quiet(settings),
+            log_dir: if quiet(settings) {
+                crate::capture::log_dir()
+            } else {
+                None
+            },
             stop: AtomicBool::new(false),
         });
         if stage.live {
@@ -146,7 +171,7 @@ impl Stage {
             let _ = std::thread::Builder::new()
                 .name("amont-live".into())
                 .spawn(move || tick(own, weak));
-        } else if enabled(settings) {
+        } else if enabled(settings) || stage.quiet {
             // Nobody is watching a terminal — an agent, CI, a pipe — and a
             // captured check shows nothing until it finishes. The heartbeat
             // is the one line a minute that says it is alive, which is the
@@ -172,6 +197,12 @@ impl Stage {
                 slot.started = Instant::now();
                 slot.last_output = slot.started;
                 slot.next_beat = HEARTBEAT_SECS;
+                if self.quiet {
+                    slot.capture = Some(crate::capture::Capture::open(
+                        self.log_dir.clone(),
+                        &slot.name,
+                    ));
+                }
             }
         }
         SINK.with(|s| *s.borrow_mut() = Some((Arc::clone(self), idx)));
@@ -209,9 +240,20 @@ impl Stage {
         let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(slot) = slots.get_mut(idx) {
             if !slot.done {
-                slot.buf.extend_from_slice(bytes);
+                match slot.capture.as_mut() {
+                    Some(capture) => capture.take(bytes),
+                    None => slot.buf.extend_from_slice(bytes),
+                }
                 slot.last_output = Instant::now();
             }
+        }
+    }
+
+    /// The exit code of the tool slot `idx` just ran (`None`: killed).
+    pub fn runner_exit(&self, idx: usize, code: Option<i32>) {
+        let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = slots.get_mut(idx) {
+            slot.runner_exit = code;
         }
     }
 
@@ -233,7 +275,15 @@ impl Stage {
     /// Called by the dispatcher after `check.run` returns (still on the
     /// check's thread, so a torn-down thread cannot strand a buffer — the
     /// same `catch_unwind` that feeds the dead-check outcome runs first).
-    pub fn finish(&self, settings: &crate::config::Settings, idx: usize) {
+    ///
+    /// `outcome` is the check's, when it returned one; `None` is a check
+    /// whose thread died, which has not passed. Only a quiet slot reads it.
+    pub fn finish(
+        &self,
+        settings: &crate::config::Settings,
+        idx: usize,
+        outcome: Option<crate::check::Outcome>,
+    ) {
         let block = {
             let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
             let Some(slot) = slots.get_mut(idx) else {
@@ -241,7 +291,19 @@ impl Stage {
             };
             slot.done = true;
             slot.running = false;
-            std::mem::take(&mut slot.buf)
+            let said = std::mem::take(&mut slot.buf);
+            match slot.capture.take() {
+                None => said,
+                Some(capture) => quiet_block(QuietEnd {
+                    name: &slot.name,
+                    secs: slot.started.elapsed().as_secs_f64(),
+                    outcome,
+                    said,
+                    capture,
+                    runner_exit: slot.runner_exit,
+                    ci: in_ci(),
+                }),
+            }
         };
         if block.is_empty() && !self.live {
             return;
@@ -569,6 +631,106 @@ fn region(entries: &[Row], width: usize, budgets: Budgets) -> String {
 /// docs. Written under the same `out` lock as the blocks, so a beat never
 /// lands inside one.
 /// Owns its `Settings` for the same reason [`tick`] does.
+/// What a quiet slot knows when its check ends.
+struct QuietEnd<'a> {
+    name: &'a str,
+    secs: f64,
+    outcome: Option<crate::check::Outcome>,
+    /// The check's own messages, as today.
+    said: Vec<u8>,
+    capture: crate::capture::Capture,
+    runner_exit: Option<i32>,
+    ci: bool,
+}
+
+/// `CI` set to anything but empty, `false` or `0`. Under CI a failure prints
+/// its whole log: the log file goes away with the runner.
+fn in_ci() -> bool {
+    std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "false" && v != "0")
+}
+
+/// A quiet slot's block: one line for a pass; for anything else the check's
+/// own messages, then each failure block of the tool's output in full and
+/// the log's path. Pure but for the log file it closes and renames.
+fn quiet_block(mut end: QuietEnd) -> Vec<u8> {
+    use crate::check::Outcome;
+    let stored = end.capture.finish();
+    let failed = !matches!(
+        end.outcome,
+        Some(
+            Outcome::Passed
+                | Outcome::Warned
+                | Outcome::Fixed
+                | Outcome::Unavailable
+                | Outcome::Inert
+        )
+    );
+    if end.capture.seen == 0 {
+        // No tool output: a check that runs no tool (ban-terms, secrets), or
+        // one the push stage skipped before it ran. Exactly what it printed
+        // before quiet captured anything — under quiet, nothing on a pass —
+        // and no empty log left behind. A tool that ran and printed nothing
+        // on a failure says so.
+        if let Some(p) = stored.path() {
+            let _ = std::fs::remove_file(p);
+        }
+        let mut bytes = end.said;
+        if failed && end.runner_exit.is_some() {
+            bytes.extend_from_slice(b"(no output)\n");
+            if let Some(code) = end.runner_exit.filter(|c| *c != 0) {
+                bytes.extend_from_slice(
+                    format!("{} failed, runner exit {code}\n", end.name).as_bytes(),
+                );
+            }
+        }
+        return bytes;
+    }
+    let path = stored.path().map(|p| p.display().to_string());
+    let mut out = String::new();
+    if end.outcome == Some(Outcome::Passed) {
+        out.push_str(&format!("ok {} {:.1}s", end.name, end.secs));
+        if let (crate::capture::Stored::Saved(_), Some(p)) = (&stored, &path) {
+            out.push_str(&format!(" log={p}"));
+        }
+        out.push('\n');
+        if let Some(note) = stored.note() {
+            out.push_str(&note);
+            out.push('\n');
+        }
+        return out.into_bytes();
+    }
+    let mut bytes = end.said;
+    {
+        let whole = match (&stored, end.ci && failed) {
+            (crate::capture::Stored::Saved(p), true) => std::fs::read(p).ok(),
+            _ => None,
+        };
+        match whole {
+            Some(log) => {
+                out.push_str(&String::from_utf8_lossy(&log));
+                if !out.ends_with('\n') && !out.is_empty() {
+                    out.push('\n');
+                }
+            }
+            None => out.push_str(&end.capture.acc.finish(path.as_deref().unwrap_or("-"))),
+        }
+        if failed {
+            if let Some(code) = end.runner_exit.filter(|c| *c != 0) {
+                out.push_str(&format!("{} failed, runner exit {code}\n", end.name));
+            }
+        }
+        if let Some(p) = &path {
+            out.push_str(&format!("full log: {p}\n"));
+        }
+    }
+    if let Some(note) = stored.note() {
+        out.push_str(&note);
+        out.push('\n');
+    }
+    bytes.extend_from_slice(out.as_bytes());
+    bytes
+}
+
 fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -576,12 +738,19 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
         if stage.stop.load(Ordering::Relaxed) {
             return;
         }
+        let mut announce: Vec<String> = Vec::new();
         let due: Vec<(Row, bool)> = {
             let mut slots = stage.slots.lock().unwrap_or_else(|p| p.into_inner());
             let now = Instant::now();
             let mut due = Vec::new();
             for s in slots.iter_mut().filter(|s| s.running && !s.done) {
                 let elapsed = now.duration_since(s.started).as_secs();
+                if !s.announced && elapsed >= ANNOUNCE_SECS {
+                    s.announced = true;
+                    if let Some(c) = s.capture.as_ref().filter(|c| c.writing()) {
+                        announce.push(format!("running {}, log {}\n", s.name, c.tmp.display()));
+                    }
+                }
                 if elapsed >= s.next_beat {
                     let first = s.next_beat == HEARTBEAT_SECS;
                     s.next_beat += HEARTBEAT_SECS;
@@ -590,13 +759,14 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
             }
             due
         };
-        if due.is_empty() {
+        if due.is_empty() && announce.is_empty() {
             continue;
         }
-        let text: String = due
-            .iter()
-            .map(|(row, first)| beat_line(row, *first, budgets(&settings), stage.on_push))
-            .collect();
+        let text: String = announce.concat()
+            + &due
+                .iter()
+                .map(|(row, first)| beat_line(row, *first, budgets(&settings), stage.on_push))
+                .collect::<String>();
         let _guard = stage.out.lock().unwrap_or_else(|p| p.into_inner());
         let mut err = std::io::stderr().lock();
         let _ = err.write_all(text.as_bytes());
@@ -752,6 +922,8 @@ pub fn term_width() -> usize {
 pub struct FinishOnDrop<'a> {
     stage: &'a Stage,
     idx: usize,
+    /// The check's outcome once it has one; `None` when its thread died.
+    outcome: std::cell::Cell<Option<crate::check::Outcome>>,
     /// Carried, because `Drop` takes no arguments and the finish paint
     /// needs the budgets. Same lifetime as the stage it belongs to.
     settings: &'a crate::config::Settings,
@@ -766,14 +938,21 @@ impl<'a> FinishOnDrop<'a> {
         FinishOnDrop {
             stage,
             idx,
+            outcome: std::cell::Cell::new(None),
             settings,
         }
+    }
+
+    /// Record what the check returned, for the quiet block.
+    pub fn outcome(&self, outcome: crate::check::Outcome) {
+        self.outcome.set(Some(outcome));
     }
 }
 
 impl Drop for FinishOnDrop<'_> {
     fn drop(&mut self) {
-        self.stage.finish(self.settings, self.idx);
+        self.stage
+            .finish(self.settings, self.idx, self.outcome.get());
     }
 }
 
@@ -977,7 +1156,7 @@ mod tests {
     fn a_finished_slot_takes_no_more_writes() {
         let stage = Stage::begin(&test_settings(), &["a"]);
         stage.append_raw(0, b"before\n");
-        stage.finish(&test_settings(), 0);
+        stage.finish(&test_settings(), 0, None);
         stage.append_raw(0, b"after\n");
         let slots = stage.slots.lock().unwrap();
         assert!(slots[0].buf.is_empty(), "a write landed after finish");

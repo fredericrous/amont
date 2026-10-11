@@ -216,6 +216,12 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Decide `amont.quiet` for this run, ahead of the configuration:
+    /// `amont run --quiet` / `--raw`. Only before anything has read it.
+    pub fn force_quiet(&self, on: bool) {
+        let _ = self.quiet.set(on);
+    }
+
     /// The policy a trusted manifest declared — empty when nothing was
     /// declared or the manifest was not trusted. `manifest::load` decides
     /// that and hands the answer here.
