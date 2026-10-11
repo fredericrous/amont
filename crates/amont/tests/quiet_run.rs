@@ -35,10 +35,14 @@ fn declare(r: &Repo, severity: &str, script_name: &str) {
 
 fn run(r: &Repo, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    // Entries go to the repo's own scratch dir, never the person's real state
+    // dir, and carry no session a live relais pane would draw.
     cmd.arg("run")
         .args(args)
         .current_dir(&r.dir)
-        .env_remove("CI");
+        .env_remove("CI")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env("QUIET_ACTIVE_DIR", active_dir(r));
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -48,6 +52,10 @@ fn run(r: &Repo, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+fn active_dir(r: &Repo) -> std::path::PathBuf {
+    r.dir.join(".git").join("quiet-active-test")
 }
 
 fn logged(stdout: &str, prefix: &str) -> String {
@@ -244,4 +252,31 @@ fn in_ci_a_failure_whose_log_was_not_written_prints_the_excerpt() {
         "{stdout}"
     );
     assert!(!stdout.contains("full log: "), "{stdout}");
+}
+
+#[test]
+fn a_quiet_run_leaves_an_ended_entry_with_its_result() {
+    let r = repo_with("block", PANIC);
+    let (code, stdout, _) = run(&r, &["probe"], &[("CLAUDE_CODE_SESSION_ID", "s-test")]);
+    assert_eq!(code, 1, "{stdout}");
+    let entries: Vec<_> = std::fs::read_dir(active_dir(&r))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let e = &entries[0];
+    for must in [
+        "\"tool\":\"amont\"",
+        "\"session\":\"s-test\"",
+        "\"check\":\"probe\"",
+        "\"exit\":101",
+        "\"ended\":",
+    ] {
+        assert!(e.contains(must), "missing {must} in {e}");
+    }
+    assert!(
+        e.contains(".log\""),
+        "the ended entry names the renamed log: {e}"
+    );
 }
