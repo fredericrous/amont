@@ -323,7 +323,8 @@ mod tests {
         )
         .unwrap();
         let _live = Entry::start_for(&dir, "live", "/r", &dir.join("l.log"), "s-test").unwrap();
-        assert!(!dir.join("dead.json").exists());
+        // Off unix every pid counts as alive, so only an ended entry goes.
+        assert_eq!(dir.join("dead.json").exists(), !cfg!(unix));
         assert!(
             dir.join("other-tool-dead.json").exists(),
             "another tool's live-looking entry is its own"
