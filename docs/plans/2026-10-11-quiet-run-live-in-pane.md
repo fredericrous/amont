@@ -21,5 +21,5 @@ Verified:
 ## Implementation review
 
 approve-with-changes, delta on c66d6af (89k, 43 s). Round 1's five findings are resolved. The delta's two findings are carried: the entry contract wording and phase 1 tick go in relais's closing commit (the canonical plan); the session line in the CHANGELOG goes in the 1.51.0 release PR.
-Delta 2 on 9d2af79: the Windows sweep test now asserts that off unix a dead pid's entry stays (resolved). The `holds-until:` comment at `alive()`'s non-unix branch goes in the 1.51.0 release PR.
+Delta 2 on 9d2af79: the Windows sweep test now asserts that off unix a dead pid's entry stays (resolved). Delta 3 on 43221f8, **approve**: the repo is looked up only when an entry is written, so a hook with no session runs no extra `git rev-parse` (macOS CI's rehearsal race tests failed twice with that call in place). The holds-until comment and the CHANGELOG session line landed here, not in the release PR.
 
