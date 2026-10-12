@@ -6,7 +6,6 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-
 ## Unreleased
 
 ### Added
@@ -19,6 +18,7 @@ missing here.
   relais's watcher, which shows the run live in its pane (relais
   `docs/quiet-runs.md`). Writing it never changes a check's output or
   verdict.
+
 ## v1.50.0
 
 ### Added

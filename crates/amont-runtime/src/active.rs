@@ -73,17 +73,23 @@ pub struct Entry {
 impl Entry {
     /// Sweep stale entries, then write this run's. `None` on any failure.
     pub fn start(dir: &Path, check: &str, repo: &str, log: &Path) -> Option<Entry> {
+        // Only a run inside a Claude Code session is ever drawn: without
+        // one, an entry would be litter (and a test suite's fixtures).
+        let session = std::env::var("CLAUDE_CODE_SESSION_ID")
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Entry::start_for(dir, check, repo, log, &session)
+    }
+
+    fn start_for(dir: &Path, check: &str, repo: &str, log: &Path, session: &str) -> Option<Entry> {
         create_dir(dir).ok()?;
         sweep(dir);
         let pid = std::process::id();
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-            .ok()
-            .filter(|s| !s.is_empty());
         let fields = vec![
             "\"v\":1".to_string(),
             json::string_field("tool", "amont"),
-            json::opt_string_field("session", session.as_deref()),
+            json::string_field("session", session),
             json::string_field("check", check),
             json::string_field("repo", repo),
             json::int_field("pid", i64::from(pid)),
@@ -120,6 +126,9 @@ impl Entry {
         if let Some(p) = final_log {
             self.log = p.to_path_buf();
         }
+        // A failed rewrite leaves the entry live-looking; the watcher then
+        // ends it when the pid dies (relais plan: storage never changes a
+        // check's verdict).
         let _ = write_atomic(&self.path, &self.body(Some((exit, now_ms()))));
     }
 }
@@ -133,12 +142,14 @@ impl Drop for Entry {
     }
 }
 
+/// The entry directory, private. A directory that cannot be made 0700 gets
+/// no entry: its contents would be readable by other users.
 fn create_dir(dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
@@ -185,10 +196,12 @@ fn sweep(dir: &Path) {
             Some(ended) => now.saturating_sub(ended) > ENDED_KEEP_MS,
             None => {
                 v.get("tool").and_then(|t| t.as_str()) == Some("amont")
-                    && num("pid").is_some_and(|pid| !alive(pid as u32))
+                    // A pid that does not fit is no process.
+                    && num("pid").is_some_and(|pid| u32::try_from(pid).map_or(true, |p| !alive(p)))
             }
         };
         if stale {
+            // Best-effort, like the rest of the sweep: the next one retries.
             let _ = fs::remove_file(&path);
         }
     }
@@ -236,7 +249,7 @@ mod tests {
     fn an_entry_carries_the_documented_fields_and_ends_in_place() {
         let dir = scratch("fields");
         let log = dir.join("a \"quoted\" \\ path.log.tmp");
-        let mut e = Entry::start(&dir, "clippy", "/r/repo", &log).unwrap();
+        let mut e = Entry::start_for(&dir, "clippy", "/r/repo", &log, "s-test").unwrap();
         let v = read(&e.path);
         for k in [
             "v", "tool", "session", "check", "repo", "log", "pid", "started",
@@ -264,8 +277,8 @@ mod tests {
     #[test]
     fn two_entries_in_one_process_get_two_files() {
         let dir = scratch("two");
-        let a = Entry::start(&dir, "a", "/r", &dir.join("a.log")).unwrap();
-        let b = Entry::start(&dir, "b", "/r", &dir.join("b.log")).unwrap();
+        let a = Entry::start_for(&dir, "a", "/r", &dir.join("a.log"), "s-test").unwrap();
+        let b = Entry::start_for(&dir, "b", "/r", &dir.join("b.log"), "s-test").unwrap();
         assert_ne!(a.path, b.path);
         assert!(a.path.exists() && b.path.exists());
     }
@@ -274,7 +287,7 @@ mod tests {
     fn dropping_without_end_records_no_exit() {
         let dir = scratch("drop");
         let path = {
-            let e = Entry::start(&dir, "x", "/r", &dir.join("x.log")).unwrap();
+            let e = Entry::start_for(&dir, "x", "/r", &dir.join("x.log"), "s-test").unwrap();
             e.path.clone()
         };
         let v = read(&path);
@@ -309,7 +322,7 @@ mod tests {
             format!(r#"{{"tool":"amont","ended":{recent}}}"#),
         )
         .unwrap();
-        let _live = Entry::start(&dir, "live", "/r", &dir.join("l.log")).unwrap();
+        let _live = Entry::start_for(&dir, "live", "/r", &dir.join("l.log"), "s-test").unwrap();
         assert!(!dir.join("dead.json").exists());
         assert!(
             dir.join("other-tool-dead.json").exists(),
@@ -319,12 +332,21 @@ mod tests {
         assert!(dir.join("recent.json").exists());
     }
 
+    #[test]
+    fn quiet_entries_never_reach_the_real_state_dir() {
+        // .cargo/config.toml: an agent running this suite must not put its
+        // fixtures in the person's live relais pane.
+        assert_eq!(std::env::var("CLAUDE_CODE_SESSION_ID").as_deref(), Ok(""));
+        assert!(std::env::var("QUIET_ACTIVE_DIR").is_ok_and(|d| d.contains("target")));
+        assert!(Entry::start(&scratch("nosession"), "x", "/r", Path::new("/l")).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_entry_and_its_dir_are_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("mode");
-        let e = Entry::start(&dir, "x", "/r", &dir.join("x.log")).unwrap();
+        let e = Entry::start_for(&dir, "x", "/r", &dir.join("x.log"), "s-test").unwrap();
         assert_eq!(
             fs::metadata(&e.path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -339,6 +361,8 @@ mod tests {
     fn an_unwritable_dir_gives_no_entry_and_no_error() {
         let file = scratch("blocked");
         fs::write(&file, "not a dir").unwrap();
-        assert!(Entry::start(&file.join("sub"), "x", "/r", Path::new("/l")).is_none());
+        assert!(
+            Entry::start_for(&file.join("sub"), "x", "/r", Path::new("/l"), "s-test").is_none()
+        );
     }
 }
