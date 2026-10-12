@@ -38,6 +38,7 @@
 #[cfg(test)]
 pub(crate) static TEST_CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub mod active;
 pub mod agents_md;
 pub mod attest;
 pub mod bypass;

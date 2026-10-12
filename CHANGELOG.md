@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **A quiet check says it is running, for relais's pane.** While a captured
+  check runs under quiet, amont writes one small active-run entry
+  (`$QUIET_ACTIVE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/quiet/active`,
+  0600) naming the check, its session (`CLAUDE_CODE_SESSION_ID`) and its
+  log; when it ends the entry gains `exit` and `ended` and is left for
+  relais's watcher, which shows the run live in its pane (relais
+  `docs/quiet-runs.md`). It is written only inside a Claude Code session
+  (`CLAUDE_CODE_SESSION_ID` set), and never changes a check's output or
+  verdict.
+
 ## v1.50.0
 
 ### Added

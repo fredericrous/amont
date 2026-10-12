@@ -72,6 +72,22 @@ pub struct Capture {
     #[cfg(feature = "test-hooks")]
     fail_after: Option<u64>,
     pub acc: Accumulator,
+    /// The active-run entry relais's pane tails this log from, while the run
+    /// is live (see [`crate::active`]). `None` when it could not be written.
+    entry: Option<crate::active::Entry>,
+}
+
+/// The repository's top level, asked of git once per process: an entry is
+/// written per check, and a pre-commit runs twenty of them.
+fn repo() -> &'static str {
+    static TOP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOP.get_or_init(|| {
+        crate::git::stdout(&["rev-parse", "--show-toplevel"]).unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
+        })
+    })
 }
 
 /// `<git-dir>/amont/logs`, created 0700. `None` outside a repository.
@@ -118,6 +134,10 @@ impl Capture {
                 }
             }
         };
+        // Only a log that exists can be tailed.
+        let entry = file
+            .as_ref()
+            .and_then(|_| crate::active::Entry::start(&crate::active::dir()?, check, repo, &tmp));
         Capture {
             tmp,
             done,
@@ -128,6 +148,16 @@ impl Capture {
             #[cfg(feature = "test-hooks")]
             fail_after,
             acc: Accumulator::new(crate::excerpt::DEFAULT_BOUND),
+            entry,
+        }
+    }
+
+    /// End the active-run entry: `exit` is the check's result (`Some(0)` for
+    /// anything but a failure, `None` when the check died), and `log` where
+    /// the log now is. A capture dropped without this ends with no exit.
+    pub fn end_entry(&mut self, exit: Option<i32>, log: Option<&Path>) {
+        if let Some(entry) = self.entry.as_mut() {
+            entry.end(exit, log);
         }
     }
 

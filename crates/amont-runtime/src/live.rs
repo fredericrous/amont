@@ -668,6 +668,14 @@ fn in_ci() -> bool {
 fn quiet_block(mut end: QuietEnd) -> QuietOut {
     let stored = end.capture.finish();
     let failed = is_failure(end.outcome);
+    // The active-run entry carries the check's result, not the tool's: a
+    // failure with a runner exit of 0 is still a failure in relais's pane.
+    let exit = match (end.outcome, failed) {
+        (None, _) => None,
+        (Some(_), true) => Some(end.runner_exit.filter(|c| *c != 0).unwrap_or(1)),
+        (Some(_), false) => Some(0),
+    };
+    end.capture.end_entry(exit, stored.path());
     let passed = end.outcome == Some(crate::check::Outcome::Passed);
     if end.capture.seen == 0 {
         // No tool output: a check that runs no tool (ban-terms, secrets), or
