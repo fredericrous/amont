@@ -137,7 +137,7 @@ impl Capture {
         // Only a log that exists can be tailed.
         let entry = file
             .as_ref()
-            .and_then(|_| crate::active::Entry::start(&crate::active::dir()?, check, repo(), &tmp));
+            .and_then(|_| crate::active::Entry::start(&crate::active::dir()?, check, repo, &tmp));
         Capture {
             tmp,
             done,

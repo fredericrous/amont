@@ -16,7 +16,8 @@ missing here.
   0600) naming the check, its session (`CLAUDE_CODE_SESSION_ID`) and its
   log; when it ends the entry gains `exit` and `ended` and is left for
   relais's watcher, which shows the run live in its pane (relais
-  `docs/quiet-runs.md`). Writing it never changes a check's output or
+  `docs/quiet-runs.md`). It is written only inside a Claude Code session
+  (`CLAUDE_CODE_SESSION_ID` set), and never changes a check's output or
   verdict.
 
 ## v1.50.0

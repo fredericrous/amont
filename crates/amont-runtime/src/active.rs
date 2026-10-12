@@ -72,13 +72,20 @@ pub struct Entry {
 
 impl Entry {
     /// Sweep stale entries, then write this run's. `None` on any failure.
-    pub fn start(dir: &Path, check: &str, repo: &str, log: &Path) -> Option<Entry> {
+    /// `repo` is asked only when an entry is written: outside a session a
+    /// hook pays nothing, not even the git call behind it.
+    pub fn start<'a>(
+        dir: &Path,
+        check: &str,
+        repo: impl FnOnce() -> &'a str,
+        log: &Path,
+    ) -> Option<Entry> {
         // Only a run inside a Claude Code session is ever drawn: without
         // one, an entry would be litter (and a test suite's fixtures).
         let session = std::env::var("CLAUDE_CODE_SESSION_ID")
             .ok()
             .filter(|s| !s.is_empty())?;
-        Entry::start_for(dir, check, repo, log, &session)
+        Entry::start_for(dir, check, repo(), log, &session)
     }
 
     fn start_for(dir: &Path, check: &str, repo: &str, log: &Path, session: &str) -> Option<Entry> {
@@ -226,6 +233,9 @@ fn alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
+        // holds-until: this crate takes a Windows process check; until then a
+        // killed run's entry stays here and relais's watcher removes it after
+        // an hour.
         let _ = pid;
         true
     }
@@ -339,7 +349,7 @@ mod tests {
         // fixtures in the person's live relais pane.
         assert_eq!(std::env::var("CLAUDE_CODE_SESSION_ID").as_deref(), Ok(""));
         assert!(std::env::var("QUIET_ACTIVE_DIR").is_ok_and(|d| d.contains("target")));
-        assert!(Entry::start(&scratch("nosession"), "x", "/r", Path::new("/l")).is_none());
+        assert!(Entry::start(&scratch("nosession"), "x", || "/r", Path::new("/l")).is_none());
     }
 
     #[cfg(unix)]
