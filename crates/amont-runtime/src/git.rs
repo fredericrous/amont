@@ -481,6 +481,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn probe_remote_stdout_returns_what_git_printed_and_the_exit_code() {
+        let dir = std::env::temp_dir().join(format!("amont-probe-stdout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q", "--initial-branch=main", "."]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        let url = dir.to_string_lossy().to_string();
+
+        let (probe, out) = probe_remote_stdout(&["ls-remote", &url, "refs/heads/main"], 30);
+        assert!(matches!(probe, Probe::Exit(0)));
+        assert!(out.starts_with(&sha), "{out}");
+
+        // Connected, and no such ref: success with nothing on stdout.
+        let (probe, out) = probe_remote_stdout(&["ls-remote", &url, "refs/heads/nope"], 30);
+        assert!(matches!(probe, Probe::Exit(0)));
+        assert!(out.trim().is_empty());
+
+        // Could not connect: the exit code stays visible, stdout is empty.
+        let (probe, out) = probe_remote_stdout(&["ls-remote", "/nonexistent/repo.git"], 30);
+        assert!(matches!(probe, Probe::Exit(c) if c != 0));
+        assert!(out.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn splits_on_nul_and_drops_the_trailing_empty_segment() {
         assert_eq!(
             split_nul_paths(b"src/main.rs\0Cargo.toml\0"),

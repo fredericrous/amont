@@ -449,9 +449,10 @@ pub fn vouched_for_staged_tree() -> HashSet<String> {
     }
     // The tree note: `notes show` fails loudly on an absent note, and a
     // failure here is simply "no note" — the marker's answer stands alone.
-    // Commit-time tokens are script names; push-time ones are full ids
-    // (`pre-push-…`), which no pre-commit declaration is named after —
-    // harmless in the set. The note's `run` lines are evidence and are not
+    // Tokens are `<name>@<identity>` (`gate_identity`): commit-time ones are
+    // named by script, push-time ones by full id (`pre-push-…`), which no
+    // pre-commit declaration is named after — harmless in the set, and a
+    // reader skips only on the complete token. The note's `run` lines are evidence and are not
     // tokens: `Note` keeps the two apart so nothing here can be skipped by a
     // line that only records how long something took.
     out.extend(note_at(&tree).tokens);

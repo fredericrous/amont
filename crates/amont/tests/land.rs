@@ -165,10 +165,16 @@ fn shim(fx: &Fx, answer: &str, real_first: bool) -> PathBuf {
     } else {
         String::new()
     };
+    // `FAIL` stands for a remote that stops answering.
+    let reply = if answer == "FAIL" {
+        "exit 128".to_string()
+    } else {
+        format!("printf '%s\\trefs/heads/%s\\n' '{answer}' feat; exit 0")
+    };
     common::fixture_exec(
         &dir.join("git"),
         &format!(
-            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = ls-remote ]; then\n{first}    printf '%s\\trefs/heads/%s\\n' '{answer}' feat; exit 0\n  fi\ndone\nexec {real} \"$@\"\n"
+            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = ls-remote ]; then\n{first}    {reply}\n  fi\ndone\nexec {real} \"$@\"\n"
         ),
     );
     dir
@@ -560,4 +566,62 @@ fn a_second_failure_after_the_retry_is_final() {
         2,
         "one retry and no third try"
     );
+}
+
+#[test]
+fn an_accepted_push_that_cannot_be_read_back_is_unverified() {
+    let fx = fixture("feat");
+    let shim = ls_remote_shim_after_first(&fx, "FAIL");
+    let ran = land_with(&fx, &["--json"], Some(&shim));
+    assert_eq!(ran.code, 3, "{}", ran.stderr);
+    assert_eq!(status_of(&ran), "unverified");
+    assert_eq!(tip(&fx, "feat"), head(&fx), "the push itself did land");
+    assert!(
+        ran.stderr.contains("could not be read back"),
+        "{}",
+        ran.stderr
+    );
+    let tracking =
+        fx.r.git(&["rev-parse", "--verify", "-q", "refs/remotes/origin/feat"]);
+    assert!(
+        !tracking.status.success(),
+        "an unverified landing moves no tracking ref"
+    );
+}
+
+#[test]
+fn the_push_has_no_land_deadline_so_a_slow_gate_still_lands() {
+    let fx = fixture("feat");
+    // The probe budget follows `amont.timeout`; a gate that outlasts twice
+    // that budget must not be killed by land.
+    fx.r.git(&["config", "amont.timeout", "2"]);
+    hook(&fx, "sleep 5");
+    let started = std::time::Instant::now();
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(5));
+    assert_eq!(tip(&fx, "feat"), head(&fx));
+}
+
+#[test]
+fn a_renamed_upstream_is_the_branch_that_is_pushed_leased_and_tracked() {
+    let fx = fixture("feat");
+    fx.r.git(&["config", "branch.feat.remote", "origin"]);
+    fx.r.git(&["config", "branch.feat.merge", "refs/heads/feature-x"]);
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(tip(&fx, "feature-x"), head(&fx));
+    assert!(
+        !plain_git(&fx.bare, &["branch", "--list", "feat"]).contains("feat"),
+        "the local name must not be created on the remote"
+    );
+    assert_eq!(
+        plain_git(&fx.r.dir, &["rev-parse", "refs/remotes/origin/feature-x"]),
+        head(&fx)
+    );
+    // A forced rewrite leases on the REMOTE name.
+    fx.r.git(&["commit", "-q", "--no-verify", "--amend", "-m", "reworded"]);
+    let forced = land(&fx, &["--force", "--json"]);
+    assert_eq!(forced.code, 0, "{}", forced.stderr);
+    assert_eq!(tip(&fx, "feature-x"), head(&fx));
 }

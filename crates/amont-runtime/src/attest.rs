@@ -1086,9 +1086,20 @@ pub fn classify_push_stderr(err: &str) -> PushFailure {
         "unable to access",
         "Could not read from remote repository",
     ];
+    // A hook's own output rides the same stream, and a gate log that happens
+    // to say "Connection refused" is not the remote being down. Unreachable
+    // is read only from the lines git and ssh themselves print.
+    let own = |l: &&str| {
+        let l = l.trim_start();
+        l.starts_with("fatal:") || l.starts_with("ssh:") || l.starts_with("error:")
+    };
     if RACED.iter().any(|m| err.contains(m)) {
         PushFailure::Raced
-    } else if UNREACHABLE.iter().any(|m| err.contains(m)) {
+    } else if err
+        .lines()
+        .filter(own)
+        .any(|l| UNREACHABLE.iter().any(|m| l.contains(m)))
+    {
         PushFailure::Unreachable
     } else {
         PushFailure::Refused
@@ -1116,6 +1127,44 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_stderr_is_sorted_into_raced_unreachable_and_refused() {
+        assert_eq!(
+            classify_push_stderr(" ! [rejected] feat -> feat (non-fast-forward)"),
+            PushFailure::Raced
+        );
+        assert_eq!(
+            classify_push_stderr("error: failed to lock ref"),
+            PushFailure::Raced
+        );
+        for line in [
+            "fatal: unable to access 'https://h/x.git/': Could not resolve host: h",
+            "ssh: connect to host h port 22: Connection refused",
+            "fatal: Could not read from remote repository.",
+            "fatal: unable to access 'u': Connection timed out after 10001 ms",
+        ] {
+            assert_eq!(
+                classify_push_stderr(line),
+                PushFailure::Unreachable,
+                "{line}"
+            );
+        }
+        assert_eq!(
+            classify_push_stderr("remote: permission denied"),
+            PushFailure::Refused
+        );
+        assert_eq!(classify_push_stderr(""), PushFailure::Refused);
+    }
+
+    #[test]
+    fn a_hooks_own_words_do_not_make_the_remote_unreachable() {
+        // A gate log that mentions a refused connection is the gate's news.
+        assert_eq!(
+            classify_push_stderr("integration: Connection refused by the fixture\nhook failed"),
+            PushFailure::Refused
+        );
+    }
 
     /// `amont.attest` and the key path come from git config, which each test
     /// sets on its own repo; no policy is in play.

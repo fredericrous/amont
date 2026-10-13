@@ -85,8 +85,12 @@ tree note's push-time tokens, and the push gate ran again for no reason.
 - A rebase, an amend or a reword that keeps the tree no longer re-runs a gate
   that already passed for it; a changed command or tool does.
 - Stamps written before this version cost one re-run each.
-- `amont run` for pre-commit checks writes no marker; `hooks.fix-outcome`
-  covers fixing and restaging, not stamping, so this stays a separate,
-  recorded gap (see the plan, Part A.3).
+- `amont run` for pre-commit checks writes no marker, on purpose. The marker
+  is one-shot state bound to `git write-tree` of the index and consumed by the
+  commit that follows. A rehearsal is not that commit, and `--all-files`
+  judges the working tree, which is not the tree the marker would name; a
+  marker left by a rehearsal would sit until some unrelated commit of the same
+  tree. The hook path stamps, and a test pins the difference
+  (`amont_run_leaves_no_marker_but_the_pre_commit_hook_does`).
 - A push on a TTY can block on a credential prompt or a stalled hook with no
   deadline; that is deliberate, since the same hook legitimately runs minutes.

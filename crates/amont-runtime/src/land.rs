@@ -43,6 +43,16 @@ use crate::json;
 const REREADS: u32 = 3;
 const REREAD_PAUSE: Duration = Duration::from_secs(2);
 
+/// Whether a non-fast-forward may replace the remote ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// A plain push: the server refuses anything but a fast-forward.
+    Plain,
+    /// `--force`: replace the ref, but only if it still holds the tip that
+    /// was read (`--force-with-lease` on that exact sha).
+    Force,
+}
+
 /// How the run ended. One value per exit code family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -195,7 +205,11 @@ fn read_tip(url: &str, rb: &str, budget: u64) -> Seen {
 /// `amont land [--force] [--json]`.
 pub fn command(args: &[OsString]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
-    let force = args.iter().any(|a| a == "--force");
+    let mode = if args.iter().any(|a| a == "--force") {
+        Mode::Force
+    } else {
+        Mode::Plain
+    };
     let report = if args.iter().any(|a| {
         let a = a.to_string_lossy();
         a != "--force" && a != "--json"
@@ -203,7 +217,7 @@ pub fn command(args: &[OsString]) -> i32 {
         eprintln!("amont: `land` takes no arguments, only [--force] [--json]");
         Report::new(Status::Usage)
     } else {
-        land(force)
+        land(mode)
     };
     finish(&report, json_out)
 }
@@ -240,7 +254,7 @@ fn refuse(mut report: Report, why: &str, next: &[&str]) -> Report {
     report
 }
 
-fn land(force: bool) -> Report {
+fn land(mode: Mode) -> Report {
     let settings = crate::config::Settings::default();
     let budget = crate::hooks::common::network_probe_budget(&settings);
     let mut report = Report::new(Status::Refused);
@@ -324,7 +338,11 @@ fn land(force: bool) -> Report {
             return refuse(report, "cannot resolve HEAD", &[]);
         };
         report.pushed = sha.clone();
-        let run = push(&url, &sha, &rb, force.then_some(expected_old.as_str()));
+        let lease = match mode {
+            Mode::Force => Some(expected_old.as_str()),
+            Mode::Plain => None,
+        };
+        let run = push(&url, &sha, &rb, lease);
         match run.outcome {
             PushOutcome::Done => break sha,
             PushOutcome::Signal(sig) => {
@@ -381,13 +399,16 @@ fn land(force: bool) -> Report {
         Seen::Tip(t) if t == pushed => {
             report.remote_after = t;
             report.status = Status::Landed;
-            track(&remote, &rb, &pushed, has_upstream);
+            move_tracking_ref(&remote, &rb, &pushed);
+            if !has_upstream {
+                set_upstream(&remote, &rb);
+            }
         }
         Seen::Tip(t) => {
             report.remote_after = t;
             report.status = Status::NotObserved;
             eprintln!(
-                "amont: land: the remote accepted the push but {rb} reads {} , not {}",
+                "amont: land: the remote accepted the push but {rb} reads {}, not {}",
                 short(&report.remote_after),
                 short(&pushed)
             );
@@ -407,14 +428,23 @@ fn is_protected(branch: &str) -> bool {
 }
 
 /// A push to a URL updates no tracking ref, so after a verified landing the
-/// local view of the remote is moved to what was just proven, and an
-/// upstream is set the first time. Failures here are cosmetic, not fatal:
-/// the landing already happened.
-fn track(remote: &str, rb: &str, sha: &str, has_upstream: bool) {
+/// local view of the remote is moved to what was just proven. The landing
+/// already happened, so a failure here is a warning, not an exit code.
+fn move_tracking_ref(remote: &str, rb: &str, sha: &str) {
     let tracking = format!("refs/remotes/{remote}/{rb}");
-    let _ = git::succeeds(&["update-ref", &tracking, sha]);
-    if !has_upstream {
-        let _ = git::succeeds(&["branch", "--set-upstream-to", &format!("{remote}/{rb}")]);
+    if !git::succeeds(&["update-ref", &tracking, sha]) {
+        eprintln!(
+            "amont: land: landed, but could not move {tracking} to {}",
+            short(sha)
+        );
+    }
+}
+
+/// The first landing of a branch with no upstream sets one.
+fn set_upstream(remote: &str, rb: &str) {
+    let upstream = format!("{remote}/{rb}");
+    if !git::succeeds(&["branch", "--set-upstream-to", &upstream]) {
+        eprintln!("amont: land: landed, but could not set the upstream to {upstream}");
     }
 }
 
@@ -458,12 +488,17 @@ fn push(url: &str, sha: &str, rb: &str, lease: Option<&str>) -> PushRun {
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let Ok(mut child) = cmd.spawn() else {
-        return PushRun {
-            outcome: PushOutcome::Failed,
-            stderr: String::new(),
-            seen: String::new(),
-        };
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let why = format!("could not run git push: {e}\n");
+            eprint!("amont: land: {why}");
+            return PushRun {
+                outcome: PushOutcome::Failed,
+                stderr: why.clone(),
+                seen: why,
+            };
+        }
     };
     let tee = |mut from: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
