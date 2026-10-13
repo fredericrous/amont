@@ -1049,20 +1049,49 @@ fn push_notes(remote: &str, refspec: &str) -> Push {
     if out.status.success() {
         return Push::Done;
     }
-    let err = String::from_utf8_lossy(&out.stderr);
-    if [
+    match classify_push_stderr(&String::from_utf8_lossy(&out.stderr)) {
+        PushFailure::Raced => Push::Raced,
+        PushFailure::Unreachable | PushFailure::Refused => Push::Refused,
+    }
+}
+
+/// Why a push that exited non-zero failed, read from git's stderr.
+///
+/// Three classes, because the callers act differently on each: a lost race
+/// is worth one more fetch-and-try, an unreachable remote says nothing about
+/// the push itself, and everything else is a refusal to report verbatim.
+/// An unrecognised message is `Refused` — the direction that never claims a
+/// push was merely unlucky.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushFailure {
+    Raced,
+    Unreachable,
+    Refused,
+}
+
+/// The markers behind [`PushFailure`]. Raced wins over Unreachable: a
+/// message naming both is a race that happened on a reachable remote.
+pub fn classify_push_stderr(err: &str) -> PushFailure {
+    const RACED: [&str; 5] = [
         "non-fast-forward",
         "fetch first",
         "stale info",
         "cannot lock ref",
         "failed to lock",
-    ]
-    .iter()
-    .any(|m| err.contains(m))
-    {
-        Push::Raced
+    ];
+    const UNREACHABLE: [&str; 5] = [
+        "Could not resolve host",
+        "Connection refused",
+        "Connection timed out",
+        "unable to access",
+        "Could not read from remote repository",
+    ];
+    if RACED.iter().any(|m| err.contains(m)) {
+        PushFailure::Raced
+    } else if UNREACHABLE.iter().any(|m| err.contains(m)) {
+        PushFailure::Unreachable
     } else {
-        Push::Refused
+        PushFailure::Refused
     }
 }
 

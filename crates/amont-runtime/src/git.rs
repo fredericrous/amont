@@ -290,32 +290,78 @@ pub fn probe_remote(args: &[&str], budget_secs: u64) -> Probe {
 
 /// [`probe`], with extra environment for the child.
 pub fn probe_env(args: &[&str], budget_secs: u64, env: &[(&str, &str)]) -> Probe {
+    probe_run(args, budget_secs, env, false).0
+}
+
+/// [`probe_remote`], keeping what git printed on stdout.
+///
+/// For the callers that need the ANSWER and not only the exit code: `land`
+/// reads a remote tip with `ls-remote`, and a probe that discards stdout
+/// could say "connected" but never which commit. Same environment, same
+/// deadline, same separation of exit codes. The output is small by
+/// construction (one ref), so it is read after the child ends rather than
+/// beside it; a caller asking for a large stream wants a different tool.
+pub fn probe_remote_stdout(args: &[&str], budget_secs: u64) -> (Probe, String) {
+    let (pre, env) = remote_env(configured_ssh());
+    let mut all: Vec<&str> = pre;
+    all.extend_from_slice(args);
+    probe_run(&all, budget_secs, &env, true)
+}
+
+fn probe_run(
+    args: &[&str],
+    budget_secs: u64,
+    env: &[(&str, &str)],
+    capture: bool,
+) -> (Probe, String) {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .envs(env.iter().copied())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(if capture {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::null());
-    if budget_secs == 0 {
+    let read_out = |child: &mut std::process::Child| -> String {
+        use std::io::Read;
+        let mut text = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            let _ = out.read_to_string(&mut text);
+        }
+        text
+    };
+    if budget_secs == 0 && !capture {
         return match retrying(|| cmd.status()) {
-            Ok(s) => s.code().map(Probe::Exit).unwrap_or(Probe::Failed),
-            Err(_) => Probe::Failed,
+            Ok(s) => (
+                s.code().map(Probe::Exit).unwrap_or(Probe::Failed),
+                String::new(),
+            ),
+            Err(_) => (Probe::Failed, String::new()),
         };
     }
     let Ok(mut child) = retrying(|| cmd.spawn()) else {
-        return Probe::Failed;
+        return (Probe::Failed, String::new());
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget_secs);
+    // No deadline (`budget_secs == 0`) is an hour here, not forever: the
+    // capture path polls like the bounded one and a poll with no end is the
+    // unbounded wait this module exists to avoid.
+    let budget = if budget_secs == 0 { 3600 } else { budget_secs };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(budget);
     loop {
         match child.try_wait() {
-            Ok(Some(s)) => return s.code().map(Probe::Exit).unwrap_or(Probe::Failed),
+            Ok(Some(s)) => {
+                let text = read_out(&mut child);
+                return (s.code().map(Probe::Exit).unwrap_or(Probe::Failed), text);
+            }
             Ok(None) => {}
-            Err(_) => return Probe::Failed,
+            Err(_) => return (Probe::Failed, String::new()),
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Probe::TimedOut(budget_secs);
+            return (Probe::TimedOut(budget), String::new());
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }

@@ -227,6 +227,52 @@ default is that a long-running tool's output arrives when the check ends
 rather than as it happens; this key is the way back if you want to watch a
 test suite scroll.
 
+## `amont land` — push, then prove the ref moved
+
+```sh
+amont land            # push this branch, read the remote back
+amont land --force    # a non-fast-forward, leased on the tip it just read
+amont land --json     # one JSON document on stdout, everything else on stderr
+```
+
+Not a setting, but the place its contract is written down. It pushes the
+current branch (never `main` or `master`, and never with uncommitted tracked
+changes) to the one URL `git remote get-url --push` names, as an explicit
+`<sha>:refs/heads/<branch>`, with the pre-push hooks running as for any push.
+It then reads the same URL back, re-reading up to three times two seconds
+apart on a mismatch.
+
+| exit | `status` | meaning |
+| --- | --- | --- |
+| 0 | `landed` | the remote ref equals the pushed sha |
+| 1 | `refused` | a hook, the server, or a precondition said no (including more than one push destination) |
+| 2 | `usage` | wrong invocation (also printed as a status under `--json`) |
+| 3 | `unreachable`, `unverified` | the remote could not be read, or the push was accepted and could not be read back |
+| 4 | `not-observed` | accepted, but the expected tip was not observed; `remote_after` holds what was |
+| 128+n | `interrupted` | killed by signal n; no retry |
+
+`4` does not say an update was lost: another writer may have advanced or
+replaced the ref after your push. Look at `remote_after` before pushing again,
+and think twice before `--force`.
+
+The last line on stderr is always a plain-text verdict, at most 80 columns
+wide whatever the branch is called; any commands worth running next are
+printed in full on the lines before it. `--json` prints
+`{branch, remote, push_url, pushed, remote_before, remote_after, retried,
+status}` on stdout and nothing else.
+
+There is exactly one retry: when the pre-push hook rebased or fast-forwarded
+HEAD and said `push again`, the new HEAD descends from the tip that was read,
+and the first push failed. The hook only brings a strictly-behind branch up to
+date, so the retry lands nothing new; a diverged branch is a refusal.
+
+The push has no deadline of its own, because its hook runs the whole gate.
+Without a terminal it runs with the no-prompt environment, which bounds the
+network legs only; a custom ssh command, a credential helper or an
+established session can still stall, and Ctrl-C ends it (exit 128+signal).
+After a verified landing the remote-tracking ref is moved to the proven sha,
+and the upstream is set the first time.
+
 ## `amont.quiet` — say it once, or once per check
 
 ```sh

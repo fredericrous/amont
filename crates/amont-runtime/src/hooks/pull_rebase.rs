@@ -12,6 +12,13 @@ use crate::check::Outcome;
 use crate::git;
 use crate::ui::{error_sign, highlight, warning_sign};
 
+/// The words a pull-rebase that moved HEAD ends its message with.
+///
+/// `amont land` reads the hook's output for exactly this, to tell "the hook
+/// brought the branch up to date and wants a second push" from every other
+/// refusal. One constant, so the sentence and its reader cannot drift.
+pub const PUSH_AGAIN: &str = "push again";
+
 /// `ahead[[:space:]]+N,[[:space:]]*behind[[:space:]]+M` over `git status -sb`.
 ///
 /// Both counts present means the branch and its upstream have diverged, and an
@@ -275,7 +282,7 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
                 // server refuses the stale objects as non-fast-forward
                 // regardless. Fail fast, with the good news first.
                 crate::say!(
-                    "{} Rebased onto {upstream}. This push's refs predate the rebase — push again.",
+                    "{} Rebased onto {upstream}. This push's refs predate the rebase — {PUSH_AGAIN}.",
                     warning_sign()
                 );
                 return Outcome::Failed;

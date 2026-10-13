@@ -91,6 +91,10 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
+  land           push this branch, then read the remote back to prove the ref
+                 moved. Exits 0 landed, 1 refused, 3 unreachable or unverified,
+                 4 accepted but the expected tip was not observed (2 is usage)
+                 [--force: lease on the tip it just read] [--json: stdout]
   warm           fill the cache of every cold `tree` gate, so the next commit
                  can prove it within its slack (after a cold commit this
                  runs in the background by itself) [--worker]
@@ -133,6 +137,7 @@ enum Sub {
     Rehearse,
     TreeParity,
     Warm,
+    Land,
 }
 
 impl Sub {
@@ -166,6 +171,7 @@ impl Sub {
             Sub::Rehearse => 13,
             Sub::TreeParity => 14,
             Sub::Warm => 15,
+            Sub::Land => 16,
         }
     }
 }
@@ -175,7 +181,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 16] = [
+const SUBCOMMANDS: [(&str, Sub); 17] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -192,6 +198,7 @@ const SUBCOMMANDS: [(&str, Sub); 16] = [
     ("rehearse", Sub::Rehearse),
     ("tree-parity", Sub::TreeParity),
     ("warm", Sub::Warm),
+    ("land", Sub::Land),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -376,6 +383,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
+        Sub::Land => (&["--force", "--json"], &[]),
     }
 }
 
@@ -439,6 +447,11 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
     if let Some(bad) = unknown_flag(args, flags, valued) {
         eprintln!("amont: unknown flag {bad:?} for `{}`", verb_name(sub));
         eprint!("{USAGE}");
+        // A script that parses stdout under `--json` gets a document for the
+        // usage error too, so exit 2 needs no special case on its side.
+        if sub == Sub::Land && args.iter().any(|a| a == "--json") {
+            println!("{}", amont_runtime::land::usage_json());
+        }
         return 2;
     }
     match sub {
@@ -508,6 +521,8 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let root = amont_runtime::hooks::common::repo_root();
             amont_runtime::tree_lint::warm(std::path::Path::new(&root))
         }
+        // `amont land` — push the branch, then prove the remote ref moved.
+        Sub::Land => amont_runtime::land::command(args),
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one

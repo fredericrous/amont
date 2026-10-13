@@ -69,6 +69,7 @@ amont run                  # would my commit pass? (the staged set)
 amont run --all-files      # does my working tree pass?
 amont check src/main.rs    # these files, in the format editors already parse
 amont rehearse --wait      # the push gate on a snapshot of HEAD, before you push
+amont land                 # push this branch, then read the remote back to prove it moved
 amont trust                # review what this repository's amont.conf declares
 git config amont.severity.clippy warn   # runs, reports, does not block
 git config hook.skip clippy             # does not run at all
