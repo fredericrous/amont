@@ -118,6 +118,58 @@ fn a_passed_gate_is_not_repeated_on_the_next_push_of_the_same_tree() {
 }
 
 /// A stamp is a statement about ONE tree. New content runs the gate.
+/// The amend that kept the tree: the new commit carries a note of its own
+/// (post-commit writes the commit-time scripts there), and that note used to
+/// hide the tree note holding the push-time stamp, so the gate ran again for
+/// content it had already judged.
+#[test]
+fn an_amend_with_its_own_commit_note_still_reads_the_trees_push_stamp() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1, "the gate ran once");
+
+    // Same tree, new commit.
+    r.git(&[
+        "commit",
+        "-q",
+        "--no-verify",
+        "--amend",
+        "-m",
+        "feat: reworded",
+    ]);
+    // What post-commit leaves on a commit whose pre-commit gates ran.
+    r.git(&[
+        "notes",
+        "--ref",
+        "amont-gate",
+        "add",
+        "-f",
+        "-m",
+        "amont-gate-v1 typecheck",
+        "HEAD",
+    ]);
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    for key in ["HEAD", tree.as_str()] {
+        let shown = r.git(&["notes", "--ref", "amont-gate", "show", key]);
+        assert!(shown.status.success(), "a note must exist on {key}");
+    }
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        runs(&r),
+        1,
+        "the push-time stamp on the tree still counts:\n{out}"
+    );
+    assert!(out.contains(SKIP), "{out}");
+}
+
 #[test]
 fn a_changed_tree_runs_the_gate_again() {
     if missing("node") {

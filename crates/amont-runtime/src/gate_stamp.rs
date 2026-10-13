@@ -618,24 +618,39 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
     }
 
     for commit in commits {
-        // The commit's own note first, then its TREE's. A squash-merge
-        // produces a commit this machine never saw — no note — while the
-        // content, and therefore the tree, is the one the gates ran on.
-        // Falling through to the tree is what lets a tag push on a merged
-        // commit skip work the branch already proved.
+        // The commit's own note AND its TREE's, merged. Both are written only
+        // for that tree (`bind_to_head` checks `HEAD^{tree}`, `stamp_push` is
+        // handed the commit's own tree), so every token on either vouches for
+        // exactly this content.
+        //
+        // Not "the commit's note, else the tree's". A squash-merge produces a
+        // commit this machine never saw — no note — while the content, and
+        // therefore the tree, is the one the gates ran on, and falling through
+        // to the tree is what lets a tag push on a merged commit skip work the
+        // branch already proved. But the same preference hid the tree's push
+        // tokens behind a commit note after an AMEND that kept the tree:
+        // post-commit wrote a commit note holding only the commit-time
+        // scripts, `stamps_for` then stopped there, and the push gate ran
+        // again for content it had already judged.
         //
         // The direction of failure is unchanged: no note on either, an
         // unparseable one, or a git that would not answer all mean "no
         // stamp", and no stamp runs the gate.
-        let key: &str = if noted.contains(commit.as_str()) {
-            commit
-        } else {
-            match trees.get(commit).filter(|t| noted.contains(t.as_str())) {
-                Some(tree) => tree,
-                None => continue,
+        let mut tokens: Vec<String> = Vec::new();
+        let mut keys: Vec<&str> = Vec::new();
+        if noted.contains(commit.as_str()) {
+            keys.push(commit);
+        }
+        if let Some(tree) = trees.get(commit).filter(|t| noted.contains(t.as_str())) {
+            keys.push(tree);
+        }
+        for key in keys {
+            for t in note_at(key).tokens {
+                if !tokens.contains(&t) {
+                    tokens.push(t);
+                }
             }
-        };
-        let tokens = note_at(key).tokens;
+        }
         if tokens.is_empty() {
             continue;
         }
@@ -714,6 +729,89 @@ mod tests {
         let r = f();
         std::env::set_current_dir(prev).unwrap();
         r
+    }
+
+    #[test]
+    fn the_commit_note_does_not_hide_the_tree_notes_push_tokens() {
+        let dir = repo("union");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            record(&["test"]);
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            bind_to_head();
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            // A push-time stamp lands on the TREE only (the shape a rehearsal
+            // leaves), while the commit note keeps just the commit-time script.
+            assert!(stamp_tree(&tree, &["pre-push-cargo-test".to_string()]));
+            assert_eq!(note_at(&head).tokens, vec!["test".to_string()]);
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["test".to_string(), "pre-push-cargo-test".to_string()][..]),
+                "both notes speak for the same tree"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_with_only_a_tree_note_still_reads_the_tree_tokens() {
+        let dir = repo("tree-only");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "chore: a"]);
+        in_repo(&dir, || {
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["pre-push-cargo-test".to_string()]));
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["pre-push-cargo-test".to_string()][..])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_with_only_a_commit_note_still_reads_its_tokens() {
+        let dir = repo("commit-only");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "chore: a"]);
+        in_repo(&dir, || {
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let mut note = Note::default();
+            note.add_tokens(&["typecheck".to_string()]);
+            assert!(write_note(&head, &note));
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["typecheck".to_string()][..])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_token_on_both_notes_is_read_once() {
+        let dir = repo("dedup");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        in_repo(&dir, || {
+            record(&["test"]);
+            git(&dir, &["commit", "-qm", "chore: a"]);
+            bind_to_head(); // writes `test` on the commit AND the tree
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["test".to_string()][..])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
