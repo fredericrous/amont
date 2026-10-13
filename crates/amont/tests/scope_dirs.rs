@@ -132,7 +132,9 @@ fn docs_skip_earns_no_stamp_and_a_real_run_does() {
     assert!(run.says("skipped"), "must be skipped: {}", run.output());
     let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        !stamped.lines().any(|l| l == "gate"),
+        !stamped
+            .lines()
+            .any(|l| l == "gate" || l.starts_with("gate@")),
         "a skipped gate must not be stamped: {stamped:?}"
     );
     r.git(&["reset", "-q", "--hard", "HEAD"]);
@@ -142,7 +144,8 @@ fn docs_skip_earns_no_stamp_and_a_real_run_does() {
     assert!(run.passed(), "{}", run.output());
     let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        stamped.lines().any(|l| l == "gate"),
-        "a gate that ran clean must be stamped: {stamped:?}"
+        // The complete token: the name AND the identity of what ran.
+        stamped.lines().any(|l| l.starts_with("gate@")),
+        "a gate that ran clean must be stamped under its identity: {stamped:?}"
     );
 }

@@ -24,6 +24,19 @@ missing here.
   at most 80 columns. One retry, only when the hook rebased HEAD and said
   `push again`. See `docs/configuration.md#amont-land`.
 
+### Changed
+
+- **A gate stamp now names what ran, and only the complete token skips.**
+  Stamps were keyed by the tree alone, so a pass made by one binary still
+  skipped the run of the tool that replaced it. A token is now
+  `<name>@<identity>`: the full command plus the resolved program's path,
+  size and modification time (a built-in: its name and amont's version).
+  A program that cannot be found earns no stamp and is never skipped on one.
+  Stamps from earlier versions are bare names and are not honoured, so each
+  costs one re-run; the notes still parse in either direction
+  (`amont-gate-v1` is unchanged), though an older amont still matches a bare
+  token by its own rules.
+
 ### Fixed
 
 - **A commit note no longer hides the tree's push stamps.** After an amend

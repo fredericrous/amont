@@ -52,6 +52,7 @@ pub mod downgrade;
 pub mod excerpt;
 pub mod finding;
 pub mod gate_evidence;
+pub mod gate_identity;
 pub mod gate_stamp;
 pub mod git;
 pub mod hookfile;

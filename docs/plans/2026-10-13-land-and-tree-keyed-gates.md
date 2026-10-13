@@ -80,4 +80,9 @@ Docs and records: new ADR in `adr/` (decision keys for `hooks.gate-stamp-key` an
 - Full local loop as CI runs it: `amont run` pre-commit and pre-push, `cargo test --locked`, clippy. Then a scratch Forgejo repo: `amont land` on a branch gives exit 0 with `remote_after` == `git rev-parse HEAD` == `git ls-remote origin refs/heads/<b>`.
 - Release: `tag-release`, then verify the published artifact version, `brew upgrade`, `amont --version`.
 
+
+## Decision log
+
+- 2026-10-14 — A.2's `tree_cache::namespace_for` (an `ls-tree -r` hash of the tree) was dropped, because the note is already keyed by the tree, which holds the manifest, lockfiles and config; hashing them again adds nothing. The identity covers only what lives outside it: the command and the program binary's resolved path, size and mtime (no `--version` run, so no repository script is executed and nothing depends on a tool supporting the flag). A relais run for A.1 ended `baseline_unrunnable` (its `make check` hit the 1200 s limit on a contended machine), so A.1 was done in the session.
+
 <!-- panel: repos=amont adds= reviewers=backend,rust,tui,unix body-sha=2ed23773fa21 -->

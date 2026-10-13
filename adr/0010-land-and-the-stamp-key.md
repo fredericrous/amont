@@ -4,7 +4,7 @@ status: accepted
 decisions:
   - key: hooks.gate-stamp-key
     scope: pre-push
-    choice: A stamped gate result is keyed by the git tree and, per token, by the gate's identity (full command, resolved program, tool version, declared inputs; for a built-in, its name and amont's version); only a complete namespaced token authorizes a skip, and an identity that cannot be computed is a cache miss
+    choice: A stamped gate result is keyed by the git tree and, per token, by the gate's identity (the full command and the resolved program binary's path, size and modification time; for a built-in, its name and amont's version); only a complete namespaced token authorizes a skip, and an identity that cannot be computed is a cache miss
     first: true
     reason: The tree alone said the content was unchanged but not that the same check had judged it, so a changed command or tool kept a stale pass, and a commit note hid the tree note after an amend
   - key: cli.land-verb
@@ -38,13 +38,19 @@ tree note's push-time tokens, and the push gate ran again for no reason.
 
 - `stamps_for` returns the union of the commit's note and its tree's note.
   Both are written only for that tree.
-- Each token is `<script>@<identity-hash>`. The identity is the full command
-  line, the resolved program, the output of its bounded version probe and the
-  blobs of its declared `inputs=` for a declared check; the gate name, amont's
-  own version and its declared inputs for a built-in. Version probe failing,
-  timing out or the program missing means no token is written and none is
-  honoured: a miss, never a skip. This is `ci.skip-needs-the-same-command`
-  applied to the local stamp.
+- Each token is `<name>@<identity-hash>`. For a declared check the identity
+  is the full command line and the identity of the program it runs: a program
+  found on `PATH` by its resolved binary's path, size and modification time
+  (a package manager's upgrade changes them, and nothing is executed to find
+  out, so there is no `--version` to be unsupported or to run a repository
+  script's body); a program named by a path inside the repository is the
+  tree's business. For a built-in it is the gate name and amont's own
+  version. A program that cannot be found, or material git will not hash,
+  means no token is written and none is honoured: a miss, never a skip. This
+  is `ci.skip-needs-the-same-command` applied to the local stamp.
+- The identity covers only what lives outside the tree. The note is already
+  keyed by the tree, which holds the manifest, the lockfiles and every
+  config the check reads, so hashing them again would add nothing.
 - Every reader that authorizes a skip compares the complete token. A bare
   name is for display and accounting only. A legacy bare token is not
   honoured by this version.
@@ -53,8 +59,6 @@ tree note's push-time tokens, and the push gate ran again for no reason.
   An older binary keeps the new tokens but still matches legacy bare tokens by
   its own rules; compatibility is claimed for parsing and preservation, not
   for invalidation.
-- The identity hash reads `ls-tree -r <tree>`, not the index, so the key
-  describes the commit being pushed.
 
 **Landing** (`cli.land-verb`).
 

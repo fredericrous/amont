@@ -182,6 +182,17 @@ pub(crate) fn pair_verdict(
     if !repo_opted_in(&pair.scope) {
         return PairVerdict::NotPaired;
     }
+    // The complete token of the commit-time declaration. Unknown identity (its
+    // program cannot be found) means its stamps vouch for nothing: the push
+    // side runs on its own word, quietly, as if there were no pair.
+    let Some(pair_token) = manifest
+        .externals
+        .iter()
+        .find(|e| e.id == pair.id)
+        .and_then(|e| crate::gate_identity::external_token(e, &pair.script))
+    else {
+        return PairVerdict::NotPaired;
+    };
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
         .unwrap_or_else(|| "0".repeat(40));
@@ -233,7 +244,7 @@ pub(crate) fn pair_verdict(
         unstamped += per_commit
             .iter()
             .filter(|(_, files)| pair.scope.touches(files))
-            .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair.script)))
+            .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair_token)))
             .count();
     }
     if !judged_any {
@@ -591,11 +602,19 @@ pub fn run(
             let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
             let stamps = crate::gate_stamp::stamps_for(&ids);
             for d in candidates {
+                // Complete token or no vouching: a declaration whose program
+                // cannot be identified has every commit counted unstamped.
+                let token = declared
+                    .iter()
+                    .find(|e| e.id == d.id)
+                    .and_then(|e| crate::gate_identity::external_token(e, &d.script));
                 let unstamped = per_commit
                     .iter()
                     .filter(|(_, files)| d.scope.touches(files))
                     .filter(|(commit, _)| {
-                        !stamps.get(commit).is_some_and(|s| s.contains(&d.script))
+                        !token
+                            .as_ref()
+                            .is_some_and(|t| stamps.get(commit).is_some_and(|s| s.contains(t)))
                     })
                     .count();
                 if unstamped == 0 {

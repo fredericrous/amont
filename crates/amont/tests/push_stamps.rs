@@ -170,6 +170,166 @@ fn an_amend_with_its_own_commit_note_still_reads_the_trees_push_stamp() {
     assert!(out.contains(SKIP), "{out}");
 }
 
+/// A repo whose one pre-push gate runs `tool` from a directory this test
+/// controls, so "the tool changed" can be staged without touching the machine.
+fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
+    let r = Repo::new();
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-push    suite  *.txt  block  mytool gate.js\n",
+    );
+    r.commit("chore: the gate");
+    trust_and_install(&r);
+    r.stage("a.txt", "hello\n");
+    r.commit("feat: something to push");
+    let bin = r.path(".git/toolbin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    common::fixture_exec(&bin.join("mytool"), "#!/bin/sh\nexec node \"$@\"\n");
+    (r, base, bin)
+}
+
+fn push_with_path(r: &Repo, from: &str, to: &str, bin: &std::path::Path) -> (i32, String) {
+    let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push")
+        .current_dir(&r.dir)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(line.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// The tree says the content is unchanged; it cannot say the tool that judged
+/// it is. A pass made by one binary is not a pass for the one that replaced it.
+#[test]
+fn a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not() {
+    if missing("node") {
+        return;
+    }
+    let (r, base, bin) = tooled_repo();
+    let (code, out) = push_with_path(&r, &base, &head(&r), &bin);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1);
+
+    let (code, out) = push_with_path(&r, &base, &head(&r), &bin);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1, "same tree, same tool: skipped\n{out}");
+    assert!(out.contains(SKIP), "{out}");
+
+    // Same tree, a different binary behind the same name.
+    common::fixture_exec(
+        &bin.join("mytool"),
+        "#!/bin/sh\n# a newer build\nexec node \"$@\"\n",
+    );
+    let (code, out) = push_with_path(&r, &base, &head(&r), &bin);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        runs(&r),
+        2,
+        "the tool changed, so the stamp is not its pass\n{out}"
+    );
+}
+
+/// A tool nobody can identify is never skipped on a stamp: no token is
+/// written for it, so the next push runs it again.
+#[test]
+fn a_gate_whose_tool_cannot_be_identified_earns_no_stamp() {
+    if missing("node") {
+        return;
+    }
+    let (r, base, bin) = tooled_repo();
+    // `mytool` is not on PATH here, so the gate is unavailable and its
+    // identity unknown.
+    let (_, out) = push_out(&r, &base, &head(&r));
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    for key in ["HEAD", tree.as_str()] {
+        // A note may exist (evidence lines record that the gate could not
+        // run); what must not exist is a TOKEN vouching for it.
+        let shown = r.git(&["notes", "--ref", "amont-gate", "show", key]);
+        let text = String::from_utf8_lossy(&shown.stdout).to_string();
+        assert!(
+            !text.lines().next().unwrap_or("").contains("pre-push-suite"),
+            "no stamp token for a gate that could not be identified on {key}:\n{text}\n{out}"
+        );
+    }
+    let _ = bin;
+}
+
+/// Stamps written before tokens carried an identity are bare names. They are
+/// not honoured (one re-run), they do not break parsing, and the note that
+/// results holds both kinds side by side without confusing them.
+#[test]
+fn a_legacy_bare_token_costs_one_run_and_then_the_namespaced_one_is_honoured() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = gated_repo();
+    let tip = head(&r);
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    for key in [tip.as_str(), tree.as_str()] {
+        r.git(&[
+            "notes",
+            "--ref",
+            "amont-gate",
+            "add",
+            "-f",
+            "-m",
+            "amont-gate-v1 pre-push-suite",
+            key,
+        ]);
+    }
+    let (code, out) = push_out(&r, &base, &tip);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1, "a bare token vouches for nothing:\n{out}");
+    assert!(!out.contains(SKIP), "{out}");
+
+    let shown = String::from_utf8_lossy(
+        &r.git(&["notes", "--ref", "amont-gate", "show", &tip])
+            .stdout,
+    )
+    .to_string();
+    assert!(shown.contains("pre-push-suite@"), "mixed note: {shown}");
+    assert!(shown.starts_with("amont-gate-v1"), "{shown}");
+
+    let (code, out) = push_out(&r, &base, &tip);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r), 1, "the namespaced token is honoured:\n{out}");
+    assert!(out.contains(SKIP), "{out}");
+}
+
 #[test]
 fn a_changed_tree_runs_the_gate_again() {
     if missing("node") {

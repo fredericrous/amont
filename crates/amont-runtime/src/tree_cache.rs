@@ -179,7 +179,7 @@ pub fn namespace(gate: &TreeGate, version: &str) -> Option<String> {
     hash(&material)
 }
 
-fn hash(material: &str) -> Option<String> {
+pub(crate) fn hash(material: &str) -> Option<String> {
     use std::io::Write;
     let mut child = Command::new("git")
         .args(["hash-object", "--stdin"])

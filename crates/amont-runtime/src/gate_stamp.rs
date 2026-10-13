@@ -536,7 +536,12 @@ pub fn bind_to_head() -> Vec<String> {
         );
         return Vec::new();
     }
+    // The ledger counts NAMES: what the commit dodged is judged against what
+    // the manifest declares, and the identity is the stamp's business alone.
     scripts
+        .iter()
+        .map(|s| crate::gate_identity::base(s).to_string())
+        .collect()
 }
 
 /// pre-push, after every block gate passed: record that `gates` passed
