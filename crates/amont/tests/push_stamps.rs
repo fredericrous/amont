@@ -170,6 +170,7 @@ fn an_amend_with_its_own_commit_note_still_reads_the_trees_push_stamp() {
     assert!(out.contains(SKIP), "{out}");
 }
 
+#[cfg(unix)]
 /// A repo whose one pre-push gate runs `tool` from a directory this test
 /// controls, so "the tool changed" can be staged without touching the machine.
 fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
@@ -191,6 +192,7 @@ fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
     (r, base, bin)
 }
 
+#[cfg(unix)]
 fn push_with_path(r: &Repo, from: &str, to: &str, bin: &std::path::Path) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
     let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
@@ -231,6 +233,7 @@ fn push_with_path(r: &Repo, from: &str, to: &str, bin: &std::path::Path) -> (i32
 /// The tree says the content is unchanged; it cannot say the tool that judged
 /// it is. A pass made by one binary is not a pass for the one that replaced it.
 #[test]
+#[cfg(unix)]
 fn a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not() {
     if missing("node") {
         return;
@@ -262,6 +265,7 @@ fn a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not() {
 /// A tool nobody can identify is never skipped on a stamp: no token is
 /// written for it, so the next push runs it again.
 #[test]
+#[cfg(unix)]
 fn a_gate_whose_tool_cannot_be_identified_earns_no_stamp() {
     if missing("node") {
         return;

@@ -5,6 +5,10 @@
 //! its own `.git`, so nothing here touches the network or the machine's
 //! hooks. Hooks a test wants are written by hand as `.git/hooks/pre-push`.
 
+// Every fixture is a shell script (a hook, a `git` shim): unix only, like the
+// other tests built on `common::fixture_exec`.
+#![cfg(unix)]
+
 mod common;
 
 use common::Repo;

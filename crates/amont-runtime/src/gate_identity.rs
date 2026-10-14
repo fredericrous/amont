@@ -185,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_program_on_path_is_identified_by_its_binary() {
         let a = binary_identity("sh").expect("sh is on every PATH");
         assert!(a.contains("sh"), "{a}");
