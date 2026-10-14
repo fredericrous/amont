@@ -16,7 +16,10 @@ effort = "medium"
 [execution]
 max_attempts = 3
 max_repairs_before_escalation = 1
-max_wall_seconds = 1200
+# One attempt may run a cold baseline `make check` and a cold candidate one,
+# plus the worker's own time. Two loaded cold checks measured ~100 min
+# together here, so 2.5 h; at 1200 s every run ended baseline_unrunnable.
+max_wall_seconds = 9000
 allow_nested_agents = true
 max_agent_depth = 3
 max_agents_total = 24
@@ -39,7 +42,10 @@ amont_agent = "required"
 
 [[verification.profiles.default.commands]]
 argv = ["make", "check"]
-timeout_seconds = 1200
+# A verification worktree starts with an empty `target/`. A cold `make
+# check` took 2995 s on 2026-10-14 under load ~100 on 12 cores, and more
+# than 1200 s even near idle (two relais runs ended baseline_unrunnable).
+timeout_seconds = 3600
 
 # A candidate that touches what the profile's verdict depends on — build
 # manifests, lockfiles, the test tree, fixtures, or a program the profile
