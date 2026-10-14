@@ -1,0 +1,4 @@
+# Who may change what CI trusts: the workflow, the signers, and which files each
+# gate declares as its inputs (attest SPEC, "Principal"). Enforced only if a
+# ruleset requires code-owner review; it states the intent either way.
+/.github/ @fredericrous

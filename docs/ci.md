@@ -235,6 +235,80 @@ did not happen. `--no-verify` skips pre-push entirely, mints nothing, and
 CI quietly does the full job — which is the backstop doing exactly what it
 is for.
 
+## Reusing a result when only plans changed: declared inputs
+
+Every cache above is keyed by the whole tree, so a commit that changes only
+`docs/plans/*.md` — the plan that opens a branch and the closing commit that
+records its verification — misses all of them. `.github/attest-inputs` lets a
+repository say what each gate reads; a result is then reused on any tree whose
+declared paths are byte-identical to the ones it passed on (attest's
+[input fingerprints](https://github.com/fredericrous/attest/blob/main/SPEC.md)).
+Both halves use the same fingerprint, from one module
+(`crates/amont-runtime/src/attest_inputs.rs`):
+
+- **CI** verifies the signature as before, but on the fingerprint.
+- **The local hooks** file each gate's stamp under its fingerprint too, in
+  `refs/notes/amont-gate-inputs`, and honour it at pre-commit (judged on the
+  *staged* tree, so partial staging is judged on what is committed) and
+  pre-push. Never run `git notes prune` on that ref: its keys are not objects.
+  A gate the spec does not declare keeps the whole-tree behaviour, and so does
+  every gate when the spec is missing, invalid or ambiguous. The token's
+  identity (command, tool, amont version) still has to match.
+
+The grammar cannot exclude paths, so a declaration is only as good as its
+completeness: a gate that omits something it reads is skipped wrongly the day
+that something changes. `amont attest check-inputs --require <gate>…` (run by
+`make check`, gates listed in the Makefile's `ATTEST_GATES`) fails unless each
+named gate declares every tracked file, by real ancestry: `crates/foo` never
+stands for `crates`, and one gate is never rescued by another. Only
+`docs/plans/` is exempt, and the spec itself, `.gitattributes` and
+`.gitmodules` are always part of a fingerprint. Exit 0 covered, 1 something is
+not covered, 2 no usable spec; it is the opposite of `covered`, which fails
+open. A new top-level path or `docs/` child therefore fails the check until it
+is declared for every gate — a deliberate cost of a skip nobody has to trust.
+
+### In CI: verify, run what is uncovered, sign what passed
+
+`ci.yaml` splits the work in three so that no job that runs the test suite
+holds the key:
+
+1. **`verify`** always runs `make attest-inputs` (an undeclared new file
+   changes no fingerprint, so only this catches it), then asks attest's
+   verifier once per platform which gates a signature covers, and prints one
+   plain line per gate: `<gate>: skipped, a signature covers this tree's
+   declared inputs (ADR-0024)` or `<gate>: running, no valid signature`. It
+   names no commit: a signed payload identifies a tree. A `schedule` run
+   covers nothing.
+2. **The heavy jobs** (`rust`, `msrv`, `deps`, the `test` legs, the Windows
+   `cargo test` step) run only when uncovered. `test` takes its matrix from
+   `verify`, because a job-level `if` cannot see the matrix. The Windows
+   installer and end-to-end steps always run: they install the latest
+   published release, an external input no fingerprint captures. A job that
+   passed writes a result file (gate, platform, tree) and uploads it.
+3. **`sign`** is the only job with the key. It signs a result only when it
+   succeeded, names the tree `sign` itself is standing on, and names the
+   platform the workflow declares for that gate (`scripts/ci-attest-sign-plan.sh`),
+   one block per platform. It runs on `push` and on same-repository pull
+   requests, never for a fork (no secret) and never on `schedule`. A branch
+   push runs through `pull_request`, so that is where a branch's signatures are
+   made; the merge to `main` finds them again because the declared inputs are
+   unchanged.
+
+The trust is the trust of write access: the workflow and the scripts `sign`
+runs come from the ref under test, so whoever can push a branch can edit them,
+and `allowed_signers`, and any job running that code could upload an artifact
+under any name. The split is separation of duties (a test job holds no key and
+signs nothing); against a hostile pull request the guarantee is write access. `.github/CODEOWNERS` states that intent.
+A signature made with a key added in a pull request covers nothing on `main`,
+whose own `allowed_signers` decides.
+
+A tracked file that configures a gate (`amont.conf`) must be a declared input
+of that gate, or a change to its scope would be invisible to the fingerprint:
+a gate whose declaration omits a tracked `amont.conf` is not offered the
+fingerprint route at all, and keeps the whole-tree behaviour.
+Settings outside tracked files are not in any fingerprint; they were not in the
+whole-tree key either.
+
 ## Skipping lint: tree gates
 
 Test gates are signed from `pre-push`. Lint and format are different: the

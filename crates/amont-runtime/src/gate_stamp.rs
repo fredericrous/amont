@@ -84,6 +84,16 @@ pub const NOTES_REF: &str = "amont-gate";
 /// The same ref, fully qualified — what `git update-ref -d` needs.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 
+/// The second ref: stamps keyed by a gate's declared-input fingerprint
+/// (`.github/attest-inputs`, see [`crate::attest_inputs`]) instead of by the
+/// whole tree. A gate whose inputs a repository declares is reused on any tree
+/// where those inputs are byte-identical — the closing plan commit changes the
+/// tree and none of them. Every key there is an oid that is not an object, as
+/// in attest's own inputs ref, so `git notes prune` on it would drop
+/// everything: never run it, and never merge the ref with `cat_sort_uniq`.
+pub const INPUTS_REF: &str = "amont-gate-inputs";
+pub const INPUTS_FULL_REF: &str = "refs/notes/amont-gate-inputs";
+
 /// The marker's filename inside `$GIT_DIR`.
 const MARKER: &str = "amont-gate";
 
@@ -309,16 +319,111 @@ impl Note {
 /// would not answer are all an empty note — the same direction everything
 /// here fails in.
 fn note_at(key: &str) -> Note {
-    crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", key])
+    note_in(NOTES_REF, key)
+}
+
+fn note_in(notes_ref: &str, key: &str) -> Note {
+    crate::git::stdout(&["notes", "--ref", notes_ref, "show", key])
         .map(|body| Note::parse(&body))
         .unwrap_or_default()
+}
+
+/// The tokens of the gates `tree`'s declared inputs vouch for: for each gate
+/// the spec at `tree` declares, the note filed under `K(gate, fingerprint)`.
+///
+/// Only a token written under that gate's own name is honoured from the note
+/// at its key: a note somebody else wrote into the ref cannot vouch for a
+/// gate it was not filed under. No spec, an invalid or ambiguous one, a gate
+/// with no fingerprint on `tree` (a required path missing), a git that would
+/// not answer: all contribute nothing, and nothing means the gate runs.
+fn input_tokens(tree: &str) -> Vec<String> {
+    let Some(spec) = crate::attest_inputs::spec_at(tree) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (gate, paths) in spec {
+        if !manifest_is_an_input(tree, &paths) {
+            continue;
+        }
+        let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
+            continue;
+        };
+        let Some(key) = crate::attest_inputs::input_key(&gate, &fp) else {
+            continue;
+        };
+        for t in note_in(INPUTS_REF, &key).tokens {
+            if crate::gate_identity::base(&t) == gate && !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// File `tokens` under the fingerprint keys of the gates `tree` declares, in
+/// addition to wherever the caller put them by tree. Best-effort, silent, and
+/// merged: a miss here is one redundant gate run, which is the safe direction.
+fn file_inputs(tree: &str, tokens: &[String]) {
+    if tokens.is_empty() {
+        return;
+    }
+    let Some(spec) = crate::attest_inputs::spec_at(tree) else {
+        return;
+    };
+    for (gate, paths) in spec {
+        let mine: Vec<String> = tokens
+            .iter()
+            .filter(|t| crate::gate_identity::base(t) == gate)
+            .cloned()
+            .collect();
+        if mine.is_empty() || !manifest_is_an_input(tree, &paths) {
+            continue;
+        }
+        let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
+            continue;
+        };
+        let Some(key) = crate::attest_inputs::input_key(&gate, &fp) else {
+            continue;
+        };
+        let mut note = note_in(INPUTS_REF, &key);
+        note.add_tokens(&mine);
+        let _ = write_note_in(INPUTS_REF, &key, &note);
+    }
+}
+
+/// May a gate's stamp travel by fingerprint on `tree`? A gate's scope and its
+/// opt-ins live in the manifest, and under a whole-tree key a manifest change
+/// was a tree change; under a fingerprint it is one only if the gate declares
+/// the manifest. So a tree that tracks `amont.conf` offers the route only to a
+/// gate whose declared inputs cover it, and a scope-only edit then misses.
+fn manifest_is_an_input(tree: &str, paths: &[crate::attest_inputs::PathTok]) -> bool {
+    let tracked = crate::git::succeeds(&[
+        "cat-file",
+        "-e",
+        &format!("{tree}:{}", crate::manifest::MANIFEST),
+    ]);
+    !tracked || crate::attest_inputs::declares(paths, crate::manifest::MANIFEST)
+}
+
+/// Does the inputs ref exist here? One spawn that lets a repository which
+/// declares nothing skip the fingerprint route entirely on the push path.
+fn inputs_ref_exists() -> bool {
+    crate::git::succeeds(&["rev-parse", "-q", "--verify", INPUTS_FULL_REF])
 }
 
 /// The stamp tokens on `tree` (a tree object id). Tree gates are read here
 /// and only here (ADR-0024): `tree:<name>` on the pushed tree proves the gate
 /// on exactly that content, whichever commit carried it.
 pub fn tree_tokens(tree: &str) -> Vec<String> {
-    note_at(tree).tokens
+    let mut tokens = note_at(tree).tokens;
+    if inputs_ref_exists() {
+        for t in input_tokens(tree) {
+            if !tokens.contains(&t) {
+                tokens.push(t);
+            }
+        }
+    }
+    tokens
 }
 
 /// Add `tokens` to the gate note on `tree` — how a rehearsal records tree
@@ -327,13 +432,19 @@ pub fn tree_tokens(tree: &str) -> Vec<String> {
 pub fn stamp_tree(tree: &str, tokens: &[String]) -> bool {
     let mut note = note_at(tree);
     note.add_tokens(tokens);
-    write_note(tree, &note)
+    let ok = write_note(tree, &note);
+    file_inputs(tree, tokens);
+    ok
 }
 
 /// Write `note` at `key`. Best-effort, like every writer here.
 fn write_note(key: &str, note: &Note) -> bool {
+    write_note_in(NOTES_REF, key, note)
+}
+
+fn write_note_in(notes_ref: &str, key: &str, note: &Note) -> bool {
     let body = note.render();
-    crate::git::succeeds(&["notes", "--ref", NOTES_REF, "add", "-f", "-m", &body, key])
+    crate::git::succeeds(&["notes", "--ref", notes_ref, "add", "-f", "-m", &body, key])
 }
 
 /// Record what a gate run COST and how it ENDED, against the content it ran
@@ -433,7 +544,9 @@ pub fn record(scripts: &[&str]) {
 ///
 /// Repo-controlled inputs to the gate (its command line, its scope) live in
 /// the manifest, which is part of the tree: a changed declaration is a
-/// changed tree, and nothing is reused.
+/// changed tree, and nothing is reused by tree. A gate reused by fingerprint
+/// gets the same guarantee only if it declares the manifest as an input
+/// ([`manifest_is_an_input`]); otherwise it is not offered the route at all.
 pub fn vouched_for_staged_tree() -> HashSet<String> {
     let mut out = HashSet::new();
     let Some(tree) = crate::git::stdout(&["write-tree"]) else {
@@ -456,6 +569,14 @@ pub fn vouched_for_staged_tree() -> HashSet<String> {
     // tokens: `Note` keeps the two apart so nothing here can be skipped by a
     // line that only records how long something took.
     out.extend(note_at(&tree).tokens);
+    // A gate the repository declares inputs for is also vouched for by any
+    // earlier tree whose declared inputs are byte-identical to this staged
+    // tree's: a plan-only commit changes the tree and none of them. The tree
+    // here is the INDEX's (`write-tree`), so partial staging is judged on what
+    // is about to be committed, not on the working copy.
+    if inputs_ref_exists() {
+        out.extend(input_tokens(&tree));
+    }
     out
 }
 
@@ -527,6 +648,7 @@ pub fn bind_to_head() -> Vec<String> {
     let mut tree_note = note_at(&head_tree);
     tree_note.add_tokens(&scripts);
     let _ = write_note(&head_tree, &tree_note);
+    file_inputs(&head_tree, &scripts);
     let mut head_note = note_at("HEAD");
     head_note.add_tokens(&scripts);
     if !write_note("HEAD", &head_note) {
@@ -566,6 +688,7 @@ pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
             written = ok;
         }
     }
+    file_inputs(tree, gates);
     if !written {
         crate::hooks::common::warn(
             "git refused to write the push stamp — these gates will run again on the next push",
@@ -623,6 +746,11 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
         // were stamped at all.
     }
 
+    // Declared-input stamps are keyed by fingerprint, not by tree, so a commit
+    // whose tree carries no note can still be vouched for. Asked only when the
+    // ref exists: a repository that declares nothing pays one spawn.
+    let by_inputs = inputs_ref_exists();
+
     for commit in commits {
         // The commit's own note AND its TREE's, merged. Both are written only
         // for that tree (`bind_to_head` checks `HEAD^{tree}`, `stamp_push` is
@@ -657,6 +785,15 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
                 }
             }
         }
+        if by_inputs {
+            if let Some(tree) = trees.get(commit) {
+                for t in input_tokens(tree) {
+                    if !tokens.contains(&t) {
+                        tokens.push(t);
+                    }
+                }
+            }
+        }
         if tokens.is_empty() {
             continue;
         }
@@ -672,7 +809,8 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 pub fn forget() -> bool {
     let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());
     let notes = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
-    marker || notes
+    let inputs = crate::git::succeeds(&["update-ref", "-d", INPUTS_FULL_REF]);
+    marker || notes || inputs
 }
 
 /// The same, for a repository this process is not standing in.
@@ -680,7 +818,8 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
     let marker = crate::git::stdout_in(repo, &["rev-parse", "--absolute-git-dir"])
         .is_some_and(|dir| std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok());
     let notes = crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF]);
-    marker || notes
+    let inputs = crate::git::succeeds_in(repo, &["update-ref", "-d", INPUTS_FULL_REF]);
+    marker || notes || inputs
 }
 
 #[cfg(test)]
@@ -1206,6 +1345,345 @@ mod tests {
                 stamps_for(std::slice::from_ref(&unstamped)).is_empty(),
                 "a tree nobody stamped must not inherit one"
             );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- declared-input reuse (`.github/attest-inputs`) -------------------
+
+    /// A repository declaring that gate `test` reads only `a.ts`, with one
+    /// commit stamped `test@abc`. The plans directory is where a later,
+    /// plan-only commit will change the tree without touching any input.
+    fn declared(name: &str, spec: &str) -> PathBuf {
+        let dir = repo(name);
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "plan v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), spec).unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            assert_eq!(bind_to_head(), vec!["test".to_string()]);
+        });
+        dir
+    }
+
+    /// Change only the plan and commit it WITHOUT a marker: nothing was
+    /// judged for this tree, so only the fingerprint route can speak.
+    fn plan_only_commit(dir: &Path) -> String {
+        std::fs::write(dir.join("docs/plans/p.md"), "plan v2, closing").unwrap();
+        git(dir, &["add", "docs/plans/p.md"]);
+        git(dir, &["commit", "-qm", "docs(plan): done"]);
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn a_plan_only_commit_reuses_the_stamp_of_a_declared_gate() {
+        let dir = declared("plan-only", "test a.ts\n");
+        in_repo(&dir, || {
+            let head = plan_only_commit(&dir);
+            let stamps = stamps_for(std::slice::from_ref(&head));
+            assert_eq!(
+                stamps.get(&head).map(Vec::as_slice),
+                Some(&["test@abc".to_string()][..]),
+                "the closing commit changed the tree and none of the declared inputs"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_staged_tree_of_a_plan_only_commit_is_vouched_for() {
+        let dir = declared("staged", "test a.ts\n");
+        in_repo(&dir, || {
+            std::fs::write(dir.join("docs/plans/p.md"), "plan v2").unwrap();
+            git(&dir, &["add", "docs/plans/p.md"]);
+            assert!(vouched_for_staged_tree().contains("test@abc"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_staging_is_judged_on_the_index_not_the_working_copy() {
+        let dir = declared("partial", "test a.ts\n");
+        in_repo(&dir, || {
+            // The plan is staged; an unstaged edit to a declared input sits in
+            // the working copy. The commit would carry only the plan.
+            std::fs::write(dir.join("docs/plans/p.md"), "plan v2").unwrap();
+            git(&dir, &["add", "docs/plans/p.md"]);
+            std::fs::write(dir.join("a.ts"), "unstaged edit").unwrap();
+            assert!(vouched_for_staged_tree().contains("test@abc"));
+
+            // The other way round: the input IS staged, so it misses even
+            // though the working copy was put back.
+            std::fs::write(dir.join("a.ts"), "staged edit").unwrap();
+            git(&dir, &["add", "a.ts"]);
+            std::fs::write(dir.join("a.ts"), "x").unwrap();
+            assert!(!vouched_for_staged_tree().contains("test@abc"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_changed_declared_input_misses() {
+        let dir = declared("input-changed", "test a.ts\n");
+        in_repo(&dir, || {
+            std::fs::write(dir.join("a.ts"), "changed").unwrap();
+            git(&dir, &["add", "a.ts"]);
+            git(&dir, &["commit", "-qm", "feat: unjudged"]);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_changed_declaration_misses() {
+        let dir = declared("declaration-changed", "test a.ts\n");
+        in_repo(&dir, || {
+            // The spec's own blob is in every fingerprint: widening what the
+            // gate reads is a different declaration, so nothing is reused.
+            std::fs::write(dir.join("b.ts"), "y").unwrap();
+            std::fs::write(dir.join(".github/attest-inputs"), "test a.ts b.ts\n").unwrap();
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-qm", "chore: widen the declaration"]);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_declared_config_file_is_an_input_like_any_other() {
+        // A gate's scope lives in a tracked file (`amont.conf`). Declared, a
+        // scope-only edit changes the fingerprint and the stamp misses.
+        let dir = declared("config", "test a.ts amont.conf\n");
+        in_repo(&dir, || {
+            // `declared` ran before amont.conf existed: it is a required path,
+            // so that first commit had no fingerprint and filed nothing.
+            assert!(!inputs_ref_exists());
+
+            std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
+            git(&dir, &["add", "amont.conf"]);
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "chore: config"]);
+            assert_eq!(bind_to_head(), vec!["test".to_string()]);
+
+            std::fs::write(dir.join("docs/plans/p.md"), "plan v2").unwrap();
+            git(&dir, &["add", "docs/plans/p.md"]);
+            git(&dir, &["commit", "-qm", "docs(plan): done"]);
+            let plan = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(stamps_for(std::slice::from_ref(&plan)).contains_key(&plan));
+
+            std::fs::write(dir.join("amont.conf"), "scope = lib\n").unwrap();
+            git(&dir, &["add", "amont.conf"]);
+            git(&dir, &["commit", "-qm", "chore: scope-only change"]);
+            let scope = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(
+                stamps_for(std::slice::from_ref(&scope)).is_empty(),
+                "a scope-only change must miss"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_declared_stamp_is_read_back_as_its_complete_token() {
+        // The identity comparison lives in the readers (`pair_verdict`, the
+        // push gate): they skip only on the complete token they compute. This
+        // pins what the new route owes them: tokens come back verbatim, never
+        // widened to the gate's name, and a second identity under the same key
+        // is kept apart from the first.
+        let dir = declared("identity", "test a.ts\n");
+        in_repo(&dir, || {
+            let head = plan_only_commit(&dir);
+            let tokens = stamps_for(std::slice::from_ref(&head))
+                .remove(&head)
+                .unwrap_or_default();
+            assert_eq!(tokens, vec!["test@abc".to_string()]);
+
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["test@def".to_string()]));
+            let tokens = tree_tokens(&tree);
+            assert!(tokens.contains(&"test@abc".to_string()));
+            assert!(tokens.contains(&"test@def".to_string()));
+            assert!(!tokens.contains(&"test@zzz".to_string()));
+            assert!(!tokens.contains(&"test".to_string()));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gate_that_does_not_declare_the_manifest_is_not_offered_the_route() {
+        // `amont.conf` is tracked but the gate's declaration omits it: a
+        // scope-only edit would be invisible to the fingerprint, so the route
+        // is refused outright. Nothing is filed and nothing is reused.
+        let dir = repo("manifest-undeclared");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists(), "the route must not open");
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gate_declaring_the_manifest_opens_the_route() {
+        // The counterpart: with `amont.conf` among its declared inputs the
+        // gate is filed by fingerprint again.
+        let dir = declared("manifest-declared", "test a.ts amont.conf\n");
+        in_repo(&dir, || {
+            std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
+            git(&dir, &["add", "amont.conf"]);
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "chore: config"]);
+            bind_to_head();
+            assert!(inputs_ref_exists());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_undeclared_gate_keeps_whole_tree_behaviour() {
+        let dir = declared("undeclared", "test a.ts\n");
+        in_repo(&dir, || {
+            // `lint` passed on the first tree but the spec declares only
+            // `test`: the plan-only commit is a new tree for `lint`.
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["lint@zzz".to_string()]));
+            let head = plan_only_commit(&dir);
+            let tokens = stamps_for(std::slice::from_ref(&head))
+                .remove(&head)
+                .unwrap_or_default();
+            assert!(tokens.contains(&"test@abc".to_string()));
+            assert!(!tokens.iter().any(|t| t.starts_with("lint@")));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_invalid_or_ambiguous_spec_falls_back_to_whole_tree_behaviour() {
+        // A glob invalidates the whole spec.
+        let dir = declared("invalid", "test src/*\n");
+        in_repo(&dir, || {
+            assert!(!inputs_ref_exists(), "no valid spec, nothing is filed");
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Both locations present: ambiguous, the route is off.
+        let dir = repo("ambiguous");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join(".forgejo")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        std::fs::write(dir.join(".forgejo/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists());
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gate_that_did_not_pass_leaves_no_declared_input_stamp() {
+        let dir = repo("failed");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            // pre-commit blocked or ran nothing: an empty record, no marker.
+            record(&[]);
+            git(&dir, &["commit", "-qm", "feat: unjudged"]);
+            assert!(bind_to_head().is_empty());
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            assert!(!stamp_push(&head, &tree, &[]));
+            assert!(!inputs_ref_exists());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stamp_tree_and_tree_tokens_use_the_inputs_ref() {
+        let dir = declared("rehearsal", "test a.ts\n");
+        in_repo(&dir, || {
+            // A rehearsal proves a gate in a snapshot of this tree …
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["test@rehearsed".to_string()]));
+            // … and a later tree with identical declared inputs reads it back.
+            plan_only_commit(&dir);
+            let later = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert_ne!(later, tree);
+            assert!(tree_tokens(&later).contains(&"test@rehearsed".to_string()));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_inputs_ref_is_keyed_the_way_attest_keys_its_own() {
+        let dir = declared("key", "test a.ts\n");
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
+            let fp = crate::attest_inputs::fingerprint(&tree, &spec[0].1).expect("fp");
+            let key = crate::attest_inputs::input_key("test", &fp).expect("key");
+            let listed = git(&dir, &["notes", "--ref", INPUTS_REF, "list"]);
+            assert!(
+                listed
+                    .lines()
+                    .any(|l| l.split_whitespace().nth(1) == Some(key.as_str())),
+                "{listed}"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_foreign_token_in_the_inputs_ref_vouches_for_nothing() {
+        let dir = declared("foreign", "test a.ts\n");
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
+            let fp = crate::attest_inputs::fingerprint(&tree, &spec[0].1).expect("fp");
+            let key = crate::attest_inputs::input_key("test", &fp).expect("key");
+            // Somebody files a token for ANOTHER gate under `test`'s key.
+            let mut note = note_in(INPUTS_REF, &key);
+            note.add_tokens(&["publish@evil".to_string()]);
+            assert!(write_note_in(INPUTS_REF, &key, &note));
+            assert!(!tree_tokens(&tree).contains(&"publish@evil".to_string()));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forget_removes_the_inputs_ref_too() {
+        let dir = declared("forget-inputs", "test a.ts\n");
+        in_repo(&dir, || {
+            assert!(inputs_ref_exists());
+            assert!(forget());
+            assert!(!inputs_ref_exists());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }

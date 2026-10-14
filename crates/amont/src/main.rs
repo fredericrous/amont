@@ -81,6 +81,10 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  [--platform <arch-os>|any: which leg is asking; defaults
                  to this machine's, so a matrix leg only skips work that
                  really ran on ITS platform]
+                 `attest check-inputs --require <gate>...` — prove the
+                 named gates declare, in .github/attest-inputs, every file
+                 the tree tracks (exit 1 uncovered, 2 no usable spec)
+                 [--tree <rev>, default HEAD]
 
   check          what is wrong with these FILES — no index, no staging, no
                  commit. The content checks only (ban-terms, secrets,
@@ -378,7 +382,10 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
-        Sub::Attest => (&[], &["--signers", "--principal", "--platform"]),
+        Sub::Attest => (
+            &["--require"],
+            &["--signers", "--principal", "--platform", "--tree"],
+        ),
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
         Sub::Add => (&["--dry-run"], &[]),
         Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
@@ -742,10 +749,14 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             )
         }
         Sub::Attest => {
-            if args.first().map(|a| a != "covered").unwrap_or(true) {
-                eprintln!("amont: attest takes the subaction `covered`");
-                eprint!("{USAGE}");
-                return 2;
+            match args.first().and_then(|a| a.to_str()) {
+                Some("covered") => {}
+                Some("check-inputs") => return attest_check_inputs(&args[1..]),
+                _ => {
+                    eprintln!("amont: attest takes the subactions `covered` and `check-inputs`");
+                    eprint!("{USAGE}");
+                    return 2;
+                }
             }
             let (signers, principal, platform) = match (
                 flag_value(args, "--signers"),
@@ -786,6 +797,45 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 println!("{gates}");
             }
             0
+        }
+    }
+}
+
+/// `amont attest check-inputs --require <gate>... [--tree <rev>]`: do the
+/// named gates declare, completely, everything the tree tracks? Exit 0 yes,
+/// 1 something is not covered, 2 the spec (or git) cannot answer: a guard
+/// that cannot answer fails, unlike `covered`, whose contract is fail-open.
+fn attest_check_inputs(rest: &[OsString]) -> i32 {
+    let tree = match flag_value(rest, "--tree") {
+        Ok(t) => t.unwrap_or_else(|| "HEAD".to_string()),
+        Err(msg) => {
+            eprintln!("amont: {msg}");
+            return 2;
+        }
+    };
+    let required: Vec<String> = rest
+        .iter()
+        .skip_while(|a| *a != "--require")
+        .skip(1)
+        .map_while(|a| a.to_str().filter(|s| !s.starts_with("--")))
+        .map(String::from)
+        .collect();
+    if required.is_empty() {
+        eprintln!("amont: attest check-inputs needs --require <gate>...");
+        return 2;
+    }
+    match amont_runtime::attest_inputs::check(&tree, &required) {
+        Err(e) => {
+            eprintln!("{}", e.render(&tree));
+            2
+        }
+        Ok(f) if f.is_empty() => {
+            println!("check-attest-inputs: ok");
+            0
+        }
+        Ok(f) => {
+            eprint!("{}", f.render());
+            1
         }
     }
 }

@@ -41,6 +41,7 @@ pub(crate) static TEST_CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod active;
 pub mod agents_md;
 pub mod attest;
+pub mod attest_inputs;
 pub mod bypass;
 pub mod capture;
 pub mod check;
