@@ -170,10 +170,10 @@ fn an_amend_with_its_own_commit_note_still_reads_the_trees_push_stamp() {
     assert!(out.contains(SKIP), "{out}");
 }
 
-#[cfg(unix)]
-/// A repo whose one pre-push gate runs `tool` from a directory this test
-/// controls, so "the tool changed" can be staged without touching the machine.
-fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
+/// A repo whose one pre-push gate runs `mytool`, and the directory a test may
+/// put it in. Nothing is put there: on its own this is the repository whose
+/// gate names a program nobody can find, which runs on every platform.
+fn tooled_repo_without_tool() -> (Repo, String, std::path::PathBuf) {
     let r = Repo::new();
     r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     r.commit("chore: base");
@@ -188,6 +188,15 @@ fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
     r.commit("feat: something to push");
     let bin = r.path(".git/toolbin");
     std::fs::create_dir_all(&bin).expect("mkdir");
+    (r, base, bin)
+}
+
+/// The same repository with `mytool` written into that directory, so "the
+/// tool changed" can be staged without touching the machine. The tool is a
+/// shell script, hence unix-only.
+#[cfg(unix)]
+fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
+    let (r, base, bin) = tooled_repo_without_tool();
     common::fixture_exec(&bin.join("mytool"), "#!/bin/sh\nexec node \"$@\"\n");
     (r, base, bin)
 }
@@ -265,12 +274,11 @@ fn a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not() {
 /// A tool nobody can identify is never skipped on a stamp: no token is
 /// written for it, so the next push runs it again.
 #[test]
-#[cfg(unix)]
 fn a_gate_whose_tool_cannot_be_identified_earns_no_stamp() {
     if missing("node") {
         return;
     }
-    let (r, base, bin) = tooled_repo();
+    let (r, base, bin) = tooled_repo_without_tool();
     // `mytool` is not on PATH here, so the gate is unavailable and its
     // identity unknown.
     let (_, out) = push_out(&r, &base, &head(&r));
