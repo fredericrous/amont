@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/land-verified-push
 repos: [amont]
 adrs: [ci.skip-needs-the-same-command]
@@ -75,14 +75,25 @@ Docs and records: new ADR in `adr/` (decision keys for `hooks.gate-stamp-key` an
 
 ## Verification
 
-- Part A in `crates/amont/tests/push_stamps.rs` (count-runs-from-log pattern): (a) commit, rehearse, amend with unchanged tree, assert a commit note and a tree note both exist, push: push gate runs 0 times; (b) change the declared command or tool version: gate runs once; (c) a legacy bare-token note: gate runs once, no error, and the note still parses; (d) stage an edit to a config file without committing it, then push: the stamp from the committed tree still hits; switching between two binaries costs at most one re-run. A.3: a test pins whichever choice is made.
-- Part B in a new `tests/land.rs` with a local bare remote: landed (0), hook refusal (1), non-ff without `--force` (1), `--force` with a stale lease (1), closed-port remote (3, from the probe, within its budget), unchanged old sha via `ls-remote` shim (4, within about 6 s, `remote_after` = old sha), a concurrent third sha (4, `remote_after` = the third sha, no retry advice), separate fetch URL and `pushurl` (verifies the push URL), two `pushurl`s (1), retry fixtures: behind-only branch with `amont.autoRebase` on (the hook rebases only when strictly behind, `pull_rebase.rs:231`; retry, exit 0, `ls-remote` equals the fast-forwarded HEAD); first-landing fixture: exit 0 and `git rev-parse <remote>/<b>` equals the pushed sha, diverged branch (1, no retry), unrelated hook refusal that moves HEAD (1, no retry), second failure (1, one retry only). A pre-push gate sleeping 2x `network_probe_budget` still lands (0). `amont land --bogus` exits 2. `--json 2>/dev/null | jq .status` parses with the expected status for every exit code. Verdict line at most 80 columns for a 120-character branch name, recovery commands on their own lines. Hook refusal text still reaches the user. Part A mixed bare/namespaced tokens and an unknown-identity gate (version probe fails: runs, writes no token).
-- Full local loop as CI runs it: `amont run` pre-commit and pre-push, `cargo test --locked`, clippy. Then a scratch Forgejo repo: `amont land` on a branch gives exit 0 with `remote_after` == `git rev-parse HEAD` == `git ls-remote origin refs/heads/<b>`.
-- Release: `tag-release`, then verify the published artifact version, `brew upgrade`, `amont --version`.
+Observed on commit 9d96787 (workspace `cargo test --locked` and `cargo clippy --locked --workspace --all-targets -- -D warnings` green; the commit gate, 28 checks, passed on every commit).
 
+- **Part A, `push_stamps.rs`.** (a) amend with unchanged tree, commit note and tree note both present, push: expected 0 gate runs, actual 1 total across both pushes (`an_amend_with_its_own_commit_note_still_reads_the_trees_push_stamp`); the same test fails on the old `stamps_for`. (b) the tool behind a declared command replaced: expected one more run, actual 2 (`a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not`); an unchanged tool is skipped. (c) a legacy bare-token note: expected one run, no error, a mixed note afterwards, then honoured; actual as expected (`a_legacy_bare_token_costs_one_run...`). An unidentifiable tool earns no token (`a_gate_whose_tool_cannot_be_identified_earns_no_stamp`). (d) a staged config edit: not applicable, the `namespace_for` design that read the index was dropped (Decision log). A.3: `amont_run_leaves_no_marker_but_the_pre_commit_hook_does` pins "no marker from `amont run`".
+- **Part B, `land.rs`** (20 tests): landed (0), hook refusal text reaches the user (1), non-ff refused and `--force` leased (1/0), lease lost to another writer (1), closed-port remote (3), unchanged old sha via `ls-remote` shim (4, `remote_after` = old sha), concurrent third sha (4, `remote_after` = third), accepted but unreadable (3, `unverified`, no tracking ref), `pushurl` verified (0), two `pushurl`s (1), `main` and a dirty tree refused with the fix named, usage error (2, JSON `usage`), 80-column verdict for a 120-char branch, retry fixtures (behind-only: exit 0, one retry; diverged: 1, none; hook moves HEAD for another reason: 1, none; second failure: 1, exactly 2 hook runs), a gate outlasting twice the probe budget still lands, a renamed upstream (`feat` to `feature-x`) is pushed, tracked and leased under its remote name.
+- **Piloted run**, real binary, scratch bare remote (the substitute for a scratch Forgejo repo, which was not used): `amont land` on `feat/demo` printed `landed -------..7ddb91a feat/demo`, exit 0; with `--json`, stdout was one document and `remote_after` equalled `git rev-parse HEAD` and `git ls-remote`; on `main` it printed the refusal and `git switch -c <name>`, exit 1.
+- **Release**: not part of this branch; cut on request (`work.release-on-request`).
 
 ## Decision log
 
 - 2026-10-14 — A.2's `tree_cache::namespace_for` (an `ls-tree -r` hash of the tree) was dropped, because the note is already keyed by the tree, which holds the manifest, lockfiles and config; hashing them again adds nothing. The identity covers only what lives outside it: the command and the program binary's resolved path, size and mtime (no `--version` run, so no repository script is executed and nothing depends on a tool supporting the flag). A relais run for A.1 ended `baseline_unrunnable` (its `make check` hit the 1200 s limit on a contended machine), so A.1 was done in the session.
+
+- 2026-10-14 — Two promised tests were not written, on purpose: "gates do not re-run on the stamped tree after a retry" (the retried push runs the same hook, and skipping on a stamp is the behaviour `push_stamps.rs` already pins), and Part A (d), the staged config edit (it existed for the index-reading `namespace_for`, which was dropped).
+- 2026-10-14 — Kept as deliberate: `classify_push_stderr` reads Unreachable from `fatal:`, `ssh:` and `error:` lines only, so a gate that prints `error: ... Connection refused` is still classed unreachable (exit 3, not 1). If it shows up, require `error:` together with git's `unable to access` or `failed to push`.
+- 2026-10-14 — Ctrl-C: amont installs no signal handler (`cli.signals.ctrl-c-exits`: stop at once). The terminal signals the whole process group, so git dies with amont and the shell reports 130; the `Interrupted` status covers git killed alone.
+
+## Implementation review
+
+approve-with-changes (round 1), then approve-with-changes on the Delta with every finding resolved or named deliberate above.
+Fixed: results recorded in Verification; seven missing tests added; A.3 reason and pin; swallowed errors now warn; Unreachable limited to git's own lines; `Mode` enum and split `track`; stale comment; typo.
+88k + 98k tokens, about 2 and 1 minutes; reviewed tree 195fddc (the closing commit changes only `docs/plans`).
 
 <!-- panel: repos=amont adds= reviewers=backend,rust,tui,unix body-sha=2ed23773fa21 -->
