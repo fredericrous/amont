@@ -602,12 +602,47 @@ fn an_accepted_push_that_cannot_be_read_back_is_unverified() {
         "{}",
         ran.stderr
     );
+    // land never moves the tracking ref for a landing it could not verify.
+    // git itself may: from 2.56, a push to a URL that matches a configured
+    // remote updates that remote's tracking ref (RelNotes 2.56.0), so on a
+    // newer git the ref exists, and then it can only be the pushed sha.
+    // Below 2.56 nothing but land could have written it, so it must be
+    // absent: the full proof. From 2.56 it may exist, and only as the pushed
+    // sha.
     let tracking =
         fx.r.git(&["rev-parse", "--verify", "-q", "refs/remotes/origin/feat"]);
-    assert!(
-        !tracking.status.success(),
-        "an unverified landing moves no tracking ref"
-    );
+    if git_at_least(2, 56) {
+        if tracking.status.success() {
+            assert_eq!(
+                String::from_utf8_lossy(&tracking.stdout).trim(),
+                head(&fx),
+                "only git's own update may have moved it, to what was pushed"
+            );
+        }
+    } else {
+        assert!(
+            !tracking.status.success(),
+            "an unverified landing moves no tracking ref"
+        );
+    }
+}
+
+/// Is the `git` these tests run at least `major.minor`?
+#[cfg(unix)]
+fn git_at_least(major: u32, minor: u32) -> bool {
+    let out = Command::new("git")
+        .arg("--version")
+        .output()
+        .expect("git --version");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text
+        .split_whitespace()
+        .nth(2)
+        .unwrap_or("")
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    let (a, b) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (a, b) >= (major, minor)
 }
 
 #[test]
