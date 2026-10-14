@@ -90,10 +90,13 @@ Observed on commit 9d96787 (workspace `cargo test --locked` and `cargo clippy --
 - 2026-10-14 — Kept as deliberate: `classify_push_stderr` reads Unreachable from `fatal:`, `ssh:` and `error:` lines only, so a gate that prints `error: ... Connection refused` is still classed unreachable (exit 3, not 1). If it shows up, require `error:` together with git's `unable to access` or `failed to push`.
 - 2026-10-14 — Ctrl-C: amont installs no signal handler (`cli.signals.ctrl-c-exits`: stop at once). The terminal signals the whole process group, so git dies with amont and the shell reports 130; the `Interrupted` status covers git killed alone.
 
+- 2026-10-14 — PR #320's `windows` job failed to compile the `land` tests (`common::fixture_exec` is unix-only), so the shell-script fixtures were gated to unix (d8574e8). Deliberate, for now: `amont land` has no Windows integration coverage, including the five `land.rs` tests that use no hook or shim, and `a_gate_whose_tool_cannot_be_identified_earns_no_stamp` is unix-only because it shares `tooled_repo`. Opening them on Windows cannot be verified from this machine; the follow-up is to split the fixture helpers and watch them run on a Windows runner.
+
 ## Implementation review
 
 approve-with-changes (round 1), then approve-with-changes on the Delta with every finding resolved or named deliberate above.
 Fixed: results recorded in Verification; seven missing tests added; A.3 reason and pin; swallowed errors now warn; Unreachable limited to git's own lines; `Mode` enum and split `track`; stale comment; typo.
-88k + 98k tokens, about 2 and 1 minutes; reviewed tree 195fddc (the closing commit changes only `docs/plans`).
+88k + 98k tokens, about 2 and 1 minutes; reviewed tree 195fddc.
+After the Windows CI fix, a fresh round on tree 74e7fb5: approve-with-changes, gating confirmed complete, two lows kept as deliberate (Decision log). The closing commit changes only `docs/plans`.
 
 <!-- panel: repos=amont adds= reviewers=backend,rust,tui,unix body-sha=2ed23773fa21 -->
