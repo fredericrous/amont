@@ -869,3 +869,29 @@ fn a_retry_with_a_locked_tracking_ref_still_lands_and_the_receipt_names_the_retr
     assert_eq!(receipt_field(retried, "status"), "landed");
     assert_eq!(tip(&fx, "feat"), head(&fx));
 }
+
+/// `git worktree add -b <b> origin/main`, the way every task branch starts,
+/// leaves the branch tracking `main`. That is its base, not its target: land
+/// publishes it under its own name, leaves `main` alone, and moves the
+/// upstream to the branch, like `git push -u origin <b>`.
+#[test]
+fn a_branch_tracking_main_lands_under_its_own_name() {
+    let fx = fixture("feat");
+    fx.r.git(&["config", "branch.feat.remote", "origin"]);
+    fx.r.git(&["config", "branch.feat.merge", "refs/heads/main"]);
+    let main_before = tip(&fx, "main");
+
+    let dry = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(dry.code, 0, "{}", dry.stderr);
+    assert_eq!(status_of(&dry), "would-land");
+    assert_eq!(field(&dry, "dst"), "refs/heads/feat");
+
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(tip(&fx, "feat"), head(&fx));
+    assert_eq!(tip(&fx, "main"), main_before, "main is never written");
+    assert_eq!(
+        plain_git(&fx.r.dir, &["rev-parse", "--abbrev-ref", "feat@{u}"]),
+        "origin/feat"
+    );
+}

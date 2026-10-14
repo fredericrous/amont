@@ -302,6 +302,16 @@ fn resolve() -> Result<(Resolved, Report), Box<Report>> {
         Some(".") => (None, None),
         _ => (upstream_remote, upstream_merge),
     };
+    // A branch cut from `main` tracks `main` (`git worktree add -b <b>
+    // origin/main` does that): its base, not where it publishes. Following
+    // it would refuse every such branch as a push to `main`; plain `git
+    // push` refuses the name mismatch too. So it lands under its own name on
+    // that remote, and the upstream is set to it afterwards, as `git push -u`
+    // would. A renamed upstream that is not `main` or `master` still decides.
+    let upstream_merge = upstream_merge.filter(|m| {
+        let tracked = m.strip_prefix("refs/heads/").unwrap_or(m);
+        !is_protected(tracked) || is_protected(&branch)
+    });
     let has_upstream = upstream_remote.is_some() && upstream_merge.is_some();
     let remote = upstream_remote.unwrap_or_else(|| "origin".to_string());
     let rb = upstream_merge

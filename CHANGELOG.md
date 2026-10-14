@@ -20,6 +20,14 @@ missing here.
   the tracking ref. Receipts older than seven days are deleted by the next
   land.
 
+### Fixed
+
+- **A branch tracking `main` lands under its own name.** `git worktree add
+  -b <b> origin/main` leaves the branch tracking `main`, and land used to
+  follow that and refuse it as a push to `main`. A branch whose upstream is
+  `main` or `master` under another name now lands under its own name on
+  that remote, and its upstream moves there, as `git push -u` would.
+
 ## v1.53.0
 
 ### Added

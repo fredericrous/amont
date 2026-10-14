@@ -271,7 +271,9 @@ The push has no deadline of its own, because its hook runs the whole gate.
 Without a terminal it runs with the no-prompt environment, which bounds the
 network legs only; a custom ssh command, a credential helper or an
 established session can still stall, and Ctrl-C ends it (exit 128+signal).
-After a verified landing the remote-tracking ref is moved to the proven sha,
+A branch whose upstream is `main` or `master` under another name (what
+`git worktree add -b <b> origin/main` sets up) lands under its own name: that
+upstream is its base, not where it publishes. After a verified landing the remote-tracking ref is moved to the proven sha,
 and the upstream is set the first time.
 
 ### Dry run and landing receipts
