@@ -49,7 +49,11 @@ about.
 ```sh
 git -c hook.skip=clippy commit -m "fix: …"
 git -c hook.skip=clippy -c hook.skip=prettier commit -m "fix: …"
+git -c hook.skip=clippy,prettier commit -m "fix: …"    # the same, joined by commas
 ```
+
+A comma only separates names; each one is still matched exactly, never as a
+glob. A check name cannot contain a comma, so there is nothing to escape.
 
 Nothing is written to config, so there is nothing to remember to undo.
 

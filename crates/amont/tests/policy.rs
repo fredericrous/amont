@@ -186,6 +186,23 @@ fn machine_and_policy_skips_are_two_lines() {
     );
 }
 
+/// One `hook.skip` value may name several checks, joined by commas, exactly as
+/// several `-c hook.skip=` would: both are skipped and both are announced.
+#[test]
+fn a_comma_joined_skip_skips_every_name_in_it() {
+    let r = Repo::new();
+    r.git(&["config", "--add", "hook.skip", "ban-terms, lint-json-yaml"]);
+    stage_bad_json(&r);
+    r.stage("f.ts", "debugger;\n");
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.stdout);
+    assert!(
+        run.says("pre-commit-ban-terms") && run.says("pre-commit-lint-json-yaml"),
+        "{}",
+        run.stdout
+    );
+}
+
 /// A typo'd target is a positioned note, and nothing else changes.
 #[test]
 fn an_unmatched_target_is_a_note_with_a_position() {
