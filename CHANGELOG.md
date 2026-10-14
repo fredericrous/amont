@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.52.0
 
 ### Added
 
@@ -43,6 +43,11 @@ missing here.
   that kept the tree, the commit's own note (commit-time scripts only)
   shadowed the tree note, and the push gate ran again for content it had
   already judged. `stamps_for` now reads both.
+- **A refused fork no longer makes a gate's identity unknown.** The hash
+  behind a stamp identity now retries a spawn the scheduler refused, like
+  every other git call on the stamp path, and a failed hash is no longer
+  remembered for the rest of the process. Both used to fail toward a cache
+  miss, never a wrong skip.
 
 ## v1.51.0
 
