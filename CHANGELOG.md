@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.52.0
+## v1.53.0
 
 ### Added
 
@@ -19,6 +19,10 @@ missing here.
   ambiguous, and joining never turns a name into a glob). `amont-fleet`
   lists each name separately and refuses to toggle one that sits in a joined
   value, since no single `git config --unset` can remove it.
+
+## v1.52.0
+
+### Added
 
 - **`amont land` pushes a branch and proves the remote ref moved.** A push
   that exits 0 says the remote accepted something, not that the branch now
