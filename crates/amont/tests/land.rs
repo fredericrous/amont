@@ -4,10 +4,10 @@
 //! Every fixture is a clone whose `origin` is a bare repository kept inside
 //! its own `.git`, so nothing here touches the network or the machine's
 //! hooks. Hooks a test wants are written by hand as `.git/hooks/pre-push`.
-
-// Every fixture is a shell script (a hook, a `git` shim): unix only, like the
-// other tests built on `common::fixture_exec`.
-#![cfg(unix)]
+//!
+//! A hook or a `git` shim is a shell script, so the tests that need one are
+//! unix-only (like every test built on `common::fixture_exec`). The rest run
+//! everywhere, Windows included: `land` ships there too.
 
 mod common;
 
@@ -91,14 +91,12 @@ fn land_with(fx: &Fx, args: &[&str], path_prefix: Option<&std::path::Path>) -> R
         .stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     if let Some(p) = path_prefix {
-        cmd.env(
-            "PATH",
-            format!(
-                "{}:{}",
-                p.display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        );
+        let rest = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(
+            std::iter::once(p.to_path_buf()).chain(std::env::split_paths(&rest)),
+        )
+        .expect("PATH");
+        cmd.env("PATH", joined);
     }
     let out = cmd.output().expect("run amont land");
     Ran {
@@ -126,15 +124,22 @@ fn status_of(ran: &Ran) -> String {
 fn field(ran: &Ran, key: &str) -> String {
     let marker = format!("\"{key}\":\"");
     let i = ran.stdout.find(&marker).expect("field") + marker.len();
-    ran.stdout[i..].split('"').next().unwrap_or("").to_string()
+    // JSON escapes a backslash, and a Windows path is full of them.
+    ran.stdout[i..]
+        .split('"')
+        .next()
+        .unwrap_or("")
+        .replace("\\\\", "\\")
 }
 
+#[cfg(unix)]
 fn hook(fx: &Fx, body: &str) {
     let dir = fx.r.path(".git/hooks");
     std::fs::create_dir_all(&dir).expect("hooks dir");
     common::fixture_exec(&dir.join("pre-push"), &format!("#!/bin/sh\n{body}\n"));
 }
 
+#[cfg(unix)]
 /// A `git` that answers every `ls-remote` with `answer` and lets the rest
 /// through. The shim scans its arguments because the probe puts `-c` options
 /// in front of the verb.
@@ -142,12 +147,14 @@ fn ls_remote_shim(fx: &Fx, answer: &str) -> PathBuf {
     shim(fx, answer, false)
 }
 
+#[cfg(unix)]
 /// Like [`ls_remote_shim`], but the FIRST `ls-remote` is the real one: the
 /// remote is read truthfully before the push and lies after it.
 fn ls_remote_shim_after_first(fx: &Fx, answer: &str) -> PathBuf {
     shim(fx, answer, true)
 }
 
+#[cfg(unix)]
 fn shim(fx: &Fx, answer: &str, real_first: bool) -> PathBuf {
     let real = String::from_utf8(
         Command::new("sh")
@@ -206,6 +213,7 @@ fn a_branch_lands_and_the_remote_is_proven() {
 }
 
 #[test]
+#[cfg(unix)]
 fn stdout_is_the_json_document_alone() {
     let fx = fixture("feat");
     hook(&fx, "echo 'hook says hello'");
@@ -223,6 +231,7 @@ fn stdout_is_the_json_document_alone() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_hook_refusal_reaches_the_user_and_moves_nothing() {
     let fx = fixture("feat");
     hook(&fx, "echo 'gate says no' >&2; exit 1");
@@ -263,6 +272,7 @@ fn a_non_fast_forward_needs_force_and_force_leases_on_what_it_read() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_lease_is_lost_when_someone_else_pushes_between_the_read_and_the_push() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -314,6 +324,7 @@ fn an_unreachable_remote_is_exit_3_from_the_probe_within_its_budget() {
 }
 
 #[test]
+#[cfg(unix)]
 fn an_unchanged_old_tip_after_an_accepted_push_is_exit_4() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -339,6 +350,7 @@ fn an_unchanged_old_tip_after_an_accepted_push_is_exit_4() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_concurrent_third_sha_is_reported_as_observed_not_as_a_lost_update() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -440,6 +452,7 @@ fn the_verdict_line_fits_eighty_columns_for_a_long_branch() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_hook_that_fast_forwards_head_gets_exactly_one_retry() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -482,6 +495,7 @@ fn a_hook_that_fast_forwards_head_gets_exactly_one_retry() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_diverged_branch_is_refused_without_a_retry() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -515,6 +529,7 @@ fn a_diverged_branch_is_refused_without_a_retry() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_hook_that_moves_head_for_another_reason_is_not_retried() {
     let fx = fixture("feat");
     let log = fx.r.path(".git/hook-runs");
@@ -535,6 +550,7 @@ fn a_hook_that_moves_head_for_another_reason_is_not_retried() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_second_failure_after_the_retry_is_final() {
     let fx = fixture("feat");
     assert_eq!(land(&fx, &[]).code, 0);
@@ -573,6 +589,7 @@ fn a_second_failure_after_the_retry_is_final() {
 }
 
 #[test]
+#[cfg(unix)]
 fn an_accepted_push_that_cannot_be_read_back_is_unverified() {
     let fx = fixture("feat");
     let shim = ls_remote_shim_after_first(&fx, "FAIL");
@@ -594,6 +611,7 @@ fn an_accepted_push_that_cannot_be_read_back_is_unverified() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_push_has_no_land_deadline_so_a_slow_gate_still_lands() {
     let fx = fixture("feat");
     // The probe budget follows `amont.timeout`; a gate that outlasts twice
