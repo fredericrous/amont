@@ -602,12 +602,47 @@ fn an_accepted_push_that_cannot_be_read_back_is_unverified() {
         "{}",
         ran.stderr
     );
+    // land never moves the tracking ref for a landing it could not verify.
+    // git itself may: from 2.56, a push to a URL that matches a configured
+    // remote updates that remote's tracking ref (RelNotes 2.56.0), so on a
+    // newer git the ref exists, and then it can only be the pushed sha.
+    // Below 2.56 nothing but land could have written it, so it must be
+    // absent: the full proof. From 2.56 it may exist, and only as the pushed
+    // sha.
     let tracking =
         fx.r.git(&["rev-parse", "--verify", "-q", "refs/remotes/origin/feat"]);
-    assert!(
-        !tracking.status.success(),
-        "an unverified landing moves no tracking ref"
-    );
+    if git_at_least(2, 56) {
+        if tracking.status.success() {
+            assert_eq!(
+                String::from_utf8_lossy(&tracking.stdout).trim(),
+                head(&fx),
+                "only git's own update may have moved it, to what was pushed"
+            );
+        }
+    } else {
+        assert!(
+            !tracking.status.success(),
+            "an unverified landing moves no tracking ref"
+        );
+    }
+}
+
+/// Is the `git` these tests run at least `major.minor`?
+#[cfg(unix)]
+fn git_at_least(major: u32, minor: u32) -> bool {
+    let out = Command::new("git")
+        .arg("--version")
+        .output()
+        .expect("git --version");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text
+        .split_whitespace()
+        .nth(2)
+        .unwrap_or("")
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    let (a, b) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (a, b) >= (major, minor)
 }
 
 #[test]
@@ -646,4 +681,252 @@ fn a_renamed_upstream_is_the_branch_that_is_pushed_leased_and_tracked() {
     let forced = land(&fx, &["--force", "--json"]);
     assert_eq!(forced.code, 0, "{}", forced.stderr);
     assert_eq!(tip(&fx, "feature-x"), head(&fx));
+}
+
+/// Every receipt file of the fixture, parsed as text.
+fn receipts(fx: &Fx) -> Vec<String> {
+    let dir = fx.r.path(".git/amont/land");
+    let Ok(read) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .map(|e| std::fs::read_to_string(e.path()).expect("receipt"))
+        .collect()
+}
+
+fn receipt_field(receipt: &str, key: &str) -> String {
+    let marker = format!("\"{key}\":\"");
+    let i = receipt.find(&marker).expect("receipt field") + marker.len();
+    receipt[i..].split('"').next().unwrap_or("").to_string()
+}
+
+fn remote_ref_exists(fx: &Fx, name: &str) -> bool {
+    !plain_git(&fx.r.dir, &["for-each-ref", name]).is_empty()
+}
+
+#[test]
+fn a_dry_run_on_a_branch_with_no_upstream_would_land_and_touches_nothing() {
+    let fx = fixture("feat");
+    let ran = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(status_of(&ran), "would-land");
+    assert_eq!(field(&ran, "dst"), "refs/heads/feat");
+    assert_eq!(field(&ran, "pushed"), head(&fx));
+    assert_eq!(field(&ran, "branch"), "feat");
+    assert_eq!(field(&ran, "remote"), "origin");
+    assert_eq!(field(&ran, "push_url"), fx.bare.to_str().expect("utf8"));
+    assert!(ran.stdout.contains("\"retried\":false"), "{}", ran.stdout);
+    assert!(ran.stdout.contains("\"lease\":false"), "{}", ran.stdout);
+    assert!(
+        field(&ran, "receipt_dir").ends_with("amont/land")
+            || field(&ran, "receipt_dir").ends_with("amont\\land"),
+        "{}",
+        ran.stdout
+    );
+    let last = ran.stderr.lines().last().expect("a verdict line");
+    assert!(last.starts_with("would-land"), "{last}");
+    assert!(
+        !plain_git(&fx.bare, &["branch", "--list", "feat"]).contains("feat"),
+        "a dry run must not create the branch"
+    );
+    assert!(!remote_ref_exists(&fx, "refs/remotes/origin/feat"));
+    assert!(receipts(&fx).is_empty(), "a dry run writes no receipt");
+}
+
+#[test]
+fn a_dry_run_with_a_renamed_upstream_names_the_remote_branch() {
+    let fx = fixture("feat");
+    fx.r.git(&["config", "branch.feat.remote", "origin"]);
+    fx.r.git(&["config", "branch.feat.merge", "refs/heads/feature-x"]);
+    let ran = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(status_of(&ran), "would-land");
+    assert_eq!(field(&ran, "dst"), "refs/heads/feature-x");
+    assert!(!remote_ref_exists(&fx, "refs/remotes/origin/feature-x"));
+    assert!(receipts(&fx).is_empty());
+}
+
+#[test]
+fn a_dry_run_with_force_reports_the_lease() {
+    let fx = fixture("feat");
+    let ran = land(&fx, &["--dry-run", "--force", "--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(status_of(&ran), "would-land");
+    assert!(ran.stdout.contains("\"lease\":true"), "{}", ran.stdout);
+}
+
+#[test]
+fn a_dry_run_is_refused_on_main_a_dirty_tree_and_two_push_urls() {
+    let fx = fixture("feat");
+    fx.r.write("b.txt", "edited\n");
+    let dirty = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(dirty.code, 1, "{}", dirty.stderr);
+    assert_eq!(status_of(&dirty), "refused");
+    assert!(dirty.stderr.contains("git stash"), "{}", dirty.stderr);
+    fx.r.git(&["checkout", "-q", "--", "b.txt"]);
+
+    fx.r.git(&[
+        "config",
+        "--add",
+        "remote.origin.pushurl",
+        fx.bare.to_str().expect("utf8"),
+    ]);
+    fx.r.git(&[
+        "config",
+        "--add",
+        "remote.origin.pushurl",
+        "/nowhere/else.git",
+    ]);
+    let two = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(two.code, 1, "{}", two.stderr);
+    assert_eq!(status_of(&two), "refused");
+    assert!(two.stderr.contains("push destinations"), "{}", two.stderr);
+    fx.r.git(&["config", "--unset-all", "remote.origin.pushurl"]);
+
+    fx.r.git(&["switch", "-q", "main"]);
+    let main_before = tip(&fx, "main");
+    let on_main = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(on_main.code, 1, "{}", on_main.stderr);
+    assert_eq!(status_of(&on_main), "refused");
+    assert!(
+        on_main.stderr.contains("git switch -c"),
+        "{}",
+        on_main.stderr
+    );
+    let last = on_main.stderr.lines().last().expect("a verdict line");
+    assert!(last.starts_with("refused"), "{last}");
+
+    assert_eq!(tip(&fx, "main"), main_before);
+    assert!(!plain_git(&fx.bare, &["branch", "--list", "feat"]).contains("feat"));
+    assert!(!remote_ref_exists(&fx, "refs/remotes/origin/feat"));
+    assert!(receipts(&fx).is_empty(), "a dry run writes no receipt");
+}
+
+#[test]
+fn a_real_land_writes_one_receipt_naming_what_it_pushed() {
+    let fx = fixture("feat");
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let all = receipts(&fx);
+    assert_eq!(all.len(), 1, "{all:?}");
+    let r = &all[0];
+    assert_eq!(receipt_field(r, "status"), "landed");
+    assert_eq!(receipt_field(r, "pushed"), tip(&fx, "feat"));
+    assert_eq!(receipt_field(r, "branch"), "feat");
+    assert_eq!(receipt_field(r, "dst"), "refs/heads/feat");
+    assert!(r.contains("\"retried\":false"), "{r}");
+    assert!(
+        r.contains("\"started\":") && r.contains("\"ended\":"),
+        "{r}"
+    );
+    // The dry run's receipt_dir is where that receipt lives.
+    let dry = land(&fx, &["--dry-run", "--json"]);
+    let dir = PathBuf::from(field(&dry, "receipt_dir"));
+    assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 1);
+}
+
+#[test]
+fn a_refused_land_writes_a_refused_receipt() {
+    let fx = fixture("feat");
+    fx.r.write("b.txt", "edited\n");
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 1, "{}", ran.stderr);
+    let all = receipts(&fx);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(receipt_field(&all[0], "status"), "refused");
+    assert_eq!(receipt_field(&all[0], "branch"), "feat");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_not_observed_land_writes_a_not_observed_receipt() {
+    let fx = fixture("feat");
+    assert_eq!(land(&fx, &[]).code, 0);
+    let old = tip(&fx, "feat");
+    fx.r.stage("c.txt", "more\n");
+    fx.r.commit("more");
+    let shim = ls_remote_shim(&fx, &old);
+    let ran = land_with(&fx, &["--json"], Some(&shim));
+    assert_eq!(ran.code, 4, "{}", ran.stderr);
+    let all = receipts(&fx);
+    assert_eq!(all.len(), 2, "{all:?}");
+    let last = all
+        .iter()
+        .find(|r| receipt_field(r, "status") == "not-observed")
+        .expect("a not-observed receipt");
+    assert_eq!(receipt_field(last, "pushed"), head(&fx));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_retry_with_a_locked_tracking_ref_still_lands_and_the_receipt_names_the_retried_sha() {
+    let fx = fixture("feat");
+    assert_eq!(land(&fx, &[]).code, 0);
+    let other = fx.r.path(".git/other");
+    plain_git(
+        fx.r.dir.as_path(),
+        &[
+            "clone",
+            "-q",
+            fx.bare.to_str().expect("utf8"),
+            other.to_str().expect("utf8"),
+        ],
+    );
+    plain_git(&other, &["config", "user.email", "o@example.com"]);
+    plain_git(&other, &["config", "user.name", "o"]);
+    plain_git(&other, &["switch", "-q", "feat"]);
+    plain_git(&other, &["commit", "-q", "--allow-empty", "-m", "ahead"]);
+    plain_git(&other, &["push", "-q", "origin", "feat"]);
+    plain_git(&fx.r.dir, &["fetch", "-q", "origin"]);
+    let first_head = head(&fx);
+    hook(
+        &fx,
+        "if [ \"$(git rev-parse HEAD)\" != \"$(git rev-parse origin/feat)\" ]; then\n  git merge -q --ff-only origin/feat\n  echo 'Rebased onto origin/feat. This push refs predate the rebase - push again.'\n  exit 1\nfi",
+    );
+    // update-ref cannot take the tracking ref: a warning, not an exit code.
+    std::fs::write(fx.r.path(".git/refs/remotes/origin/feat.lock"), "").expect("lock");
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(status_of(&ran), "landed");
+    assert!(ran.stdout.contains("\"retried\":true"), "{}", ran.stdout);
+    assert_ne!(head(&fx), first_head, "the hook moved HEAD");
+    assert!(
+        ran.stderr.contains("could not move"),
+        "the lock is a warning:\n{}",
+        ran.stderr
+    );
+    let all = receipts(&fx);
+    let retried = all
+        .iter()
+        .find(|r| r.contains("\"retried\":true"))
+        .expect("the retried land's receipt");
+    assert_eq!(receipt_field(retried, "pushed"), head(&fx));
+    assert_eq!(receipt_field(retried, "status"), "landed");
+    assert_eq!(tip(&fx, "feat"), head(&fx));
+}
+
+/// `git worktree add -b <b> origin/main`, the way every task branch starts,
+/// leaves the branch tracking `main`. That is its base, not its target: land
+/// publishes it under its own name, leaves `main` alone, and moves the
+/// upstream to the branch, like `git push -u origin <b>`.
+#[test]
+fn a_branch_tracking_main_lands_under_its_own_name() {
+    let fx = fixture("feat");
+    fx.r.git(&["config", "branch.feat.remote", "origin"]);
+    fx.r.git(&["config", "branch.feat.merge", "refs/heads/main"]);
+    let main_before = tip(&fx, "main");
+
+    let dry = land(&fx, &["--dry-run", "--json"]);
+    assert_eq!(dry.code, 0, "{}", dry.stderr);
+    assert_eq!(status_of(&dry), "would-land");
+    assert_eq!(field(&dry, "dst"), "refs/heads/feat");
+
+    let ran = land(&fx, &["--json"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(tip(&fx, "feat"), head(&fx));
+    assert_eq!(tip(&fx, "main"), main_before, "main is never written");
+    assert_eq!(
+        plain_git(&fx.r.dir, &["rev-parse", "--abbrev-ref", "feat@{u}"]),
+        "origin/feat"
+    );
 }
