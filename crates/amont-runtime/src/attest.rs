@@ -1049,20 +1049,60 @@ fn push_notes(remote: &str, refspec: &str) -> Push {
     if out.status.success() {
         return Push::Done;
     }
-    let err = String::from_utf8_lossy(&out.stderr);
-    if [
+    match classify_push_stderr(&String::from_utf8_lossy(&out.stderr)) {
+        PushFailure::Raced => Push::Raced,
+        PushFailure::Unreachable | PushFailure::Refused => Push::Refused,
+    }
+}
+
+/// Why a push that exited non-zero failed, read from git's stderr.
+///
+/// Three classes, because the callers act differently on each: a lost race
+/// is worth one more fetch-and-try, an unreachable remote says nothing about
+/// the push itself, and everything else is a refusal to report verbatim.
+/// An unrecognised message is `Refused` — the direction that never claims a
+/// push was merely unlucky.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushFailure {
+    Raced,
+    Unreachable,
+    Refused,
+}
+
+/// The markers behind [`PushFailure`]. Raced wins over Unreachable: a
+/// message naming both is a race that happened on a reachable remote.
+pub fn classify_push_stderr(err: &str) -> PushFailure {
+    const RACED: [&str; 5] = [
         "non-fast-forward",
         "fetch first",
         "stale info",
         "cannot lock ref",
         "failed to lock",
-    ]
-    .iter()
-    .any(|m| err.contains(m))
+    ];
+    const UNREACHABLE: [&str; 5] = [
+        "Could not resolve host",
+        "Connection refused",
+        "Connection timed out",
+        "unable to access",
+        "Could not read from remote repository",
+    ];
+    // A hook's own output rides the same stream, and a gate log that happens
+    // to say "Connection refused" is not the remote being down. Unreachable
+    // is read only from the lines git and ssh themselves print.
+    let own = |l: &&str| {
+        let l = l.trim_start();
+        l.starts_with("fatal:") || l.starts_with("ssh:") || l.starts_with("error:")
+    };
+    if RACED.iter().any(|m| err.contains(m)) {
+        PushFailure::Raced
+    } else if err
+        .lines()
+        .filter(own)
+        .any(|l| UNREACHABLE.iter().any(|m| l.contains(m)))
     {
-        Push::Raced
+        PushFailure::Unreachable
     } else {
-        Push::Refused
+        PushFailure::Refused
     }
 }
 
@@ -1087,6 +1127,44 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_stderr_is_sorted_into_raced_unreachable_and_refused() {
+        assert_eq!(
+            classify_push_stderr(" ! [rejected] feat -> feat (non-fast-forward)"),
+            PushFailure::Raced
+        );
+        assert_eq!(
+            classify_push_stderr("error: failed to lock ref"),
+            PushFailure::Raced
+        );
+        for line in [
+            "fatal: unable to access 'https://h/x.git/': Could not resolve host: h",
+            "ssh: connect to host h port 22: Connection refused",
+            "fatal: Could not read from remote repository.",
+            "fatal: unable to access 'u': Connection timed out after 10001 ms",
+        ] {
+            assert_eq!(
+                classify_push_stderr(line),
+                PushFailure::Unreachable,
+                "{line}"
+            );
+        }
+        assert_eq!(
+            classify_push_stderr("remote: permission denied"),
+            PushFailure::Refused
+        );
+        assert_eq!(classify_push_stderr(""), PushFailure::Refused);
+    }
+
+    #[test]
+    fn a_hooks_own_words_do_not_make_the_remote_unreachable() {
+        // A gate log that mentions a refused connection is the gate's news.
+        assert_eq!(
+            classify_push_stderr("integration: Connection refused by the fixture\nhook failed"),
+            PushFailure::Refused
+        );
+    }
 
     /// `amont.attest` and the key path come from git config, which each test
     /// sets on its own repo; no policy is in play.

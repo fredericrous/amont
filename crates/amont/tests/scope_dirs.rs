@@ -132,7 +132,9 @@ fn docs_skip_earns_no_stamp_and_a_real_run_does() {
     assert!(run.says("skipped"), "must be skipped: {}", run.output());
     let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        !stamped.lines().any(|l| l == "gate"),
+        !stamped
+            .lines()
+            .any(|l| l == "gate" || l.starts_with("gate@")),
         "a skipped gate must not be stamped: {stamped:?}"
     );
     r.git(&["reset", "-q", "--hard", "HEAD"]);
@@ -142,7 +144,31 @@ fn docs_skip_earns_no_stamp_and_a_real_run_does() {
     assert!(run.passed(), "{}", run.output());
     let stamped = std::fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        stamped.lines().any(|l| l == "gate"),
-        "a gate that ran clean must be stamped: {stamped:?}"
+        // The complete token: the name AND the identity of what ran.
+        stamped.lines().any(|l| l.starts_with("gate@")),
+        "a gate that ran clean must be stamped under its identity: {stamped:?}"
     );
+}
+
+/// `amont run` rehearses the stage and leaves no marker, on purpose. The
+/// marker is one-shot state bound to `git write-tree` of the INDEX and
+/// consumed by the commit that follows; a rehearsal is not that commit, and
+/// `--all-files` judges the working tree, which is not the tree the marker
+/// would name. The hook path is the one that stamps.
+#[test]
+fn amont_run_leaves_no_marker_but_the_pre_commit_hook_does() {
+    let r = Repo::new();
+    manifest(&r, "pre-commit  gate  *  block  true\n");
+    r.stage("src/lib.rs", "code\n");
+    r.commit("base");
+    let marker = r.path(".git/amont-gate");
+
+    r.stage("src/lib.rs", "changed\n");
+    let run = r.run(&["run"]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(!marker.exists(), "a rehearsal must not write the marker");
+
+    let run = r.hook("pre-commit", &[]);
+    assert!(run.passed(), "{}", run.output());
+    assert!(marker.exists(), "the hook path stamps");
 }

@@ -523,7 +523,10 @@ pub fn worker() -> Result<Outcome, String> {
         return Ok(Outcome::NothingToDo);
     }
     let stamped = crate::gate_stamp::stamps_for(std::slice::from_ref(&head));
-    let vouched = |g: &String| stamped.get(&head).is_some_and(|s| s.contains(g));
+    let vouched = |g: &String| {
+        crate::gate_identity::token(&manifest.externals, g)
+            .is_some_and(|t| stamped.get(&head).is_some_and(|s| s.contains(&t)))
+    };
     if gates.iter().all(vouched) && tree_todo.is_empty() {
         println!(
             "{} {} already stamped on this tree — nothing to rehearse",

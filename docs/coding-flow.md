@@ -94,8 +94,10 @@ acceptable way to measure the mess.
 
 `amont rehearse --wait` asks the push question early: it runs the push gate on
 a snapshot of `HEAD` before git opens a connection and stamps the tree, so the
-`git push` that follows skips the suite. `amont restore` brings back unstaged
-work a killed hook left parked.
+`git push` that follows skips the suite. `amont land` is the push itself, with
+proof: it pushes the branch and reads the remote back, so a push that was
+accepted but did not move the ref is an exit code, not a green terminal.
+`amont restore` brings back unstaged work a killed hook left parked.
 
 ## For coding agents
 

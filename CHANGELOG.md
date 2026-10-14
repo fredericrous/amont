@@ -6,6 +6,44 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont land` pushes a branch and proves the remote ref moved.** A push
+  that exits 0 says the remote accepted something, not that the branch now
+  points where you pushed it. `amont land` resolves the one effective push
+  URL (`pushurl` and URL rewriting honoured; more than one destination is
+  refused), pushes an explicit `<sha>:refs/heads/<branch>` with the pre-push
+  hooks running, and reads the same URL back. Exit `0` landed, `1` refused,
+  `2` usage, `3` unreachable or accepted-but-unverifiable, `4` accepted but
+  the expected tip was not observed (the observed sha is reported; it does
+  not claim a lost update, since another writer may have moved the ref).
+  `--force` leases on the tip it just read, `--json` prints one document on
+  stdout and everything else goes to stderr, ending in a plain verdict line of
+  at most 80 columns. One retry, only when the hook rebased HEAD and said
+  `push again`. See `docs/configuration.md#amont-land`.
+
+### Changed
+
+- **A gate stamp now names what ran, and only the complete token skips.**
+  Stamps were keyed by the tree alone, so a pass made by one binary still
+  skipped the run of the tool that replaced it. A token is now
+  `<name>@<identity>`: the full command plus the resolved program's path,
+  size and modification time (a built-in: its name and amont's version).
+  A program that cannot be found earns no stamp and is never skipped on one.
+  Stamps from earlier versions are bare names and are not honoured, so each
+  costs one re-run; the notes still parse in either direction
+  (`amont-gate-v1` is unchanged), though an older amont still matches a bare
+  token by its own rules.
+
+### Fixed
+
+- **A commit note no longer hides the tree's push stamps.** After an amend
+  that kept the tree, the commit's own note (commit-time scripts only)
+  shadowed the tree note, and the push gate ran again for content it had
+  already judged. `stamps_for` now reads both.
+
 ## v1.51.0
 
 ### Added

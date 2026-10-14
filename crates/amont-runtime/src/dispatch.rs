@@ -475,7 +475,16 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
                     .zip(&outcomes)
                     .any(|(c, o)| c.name() == d.id && matches!(o, Outcome::Passed | Outcome::Fixed))
             })
-            .map(|d| d.script)
+            // The token, not the bare script: a skip is honoured only for the
+            // same command run by the same program (`gate_identity`). A
+            // declaration whose program cannot be identified earns no stamp.
+            .filter_map(|d| {
+                ctx.manifest
+                    .externals
+                    .iter()
+                    .find(|e| e.id == d.id)
+                    .and_then(|e| crate::gate_identity::external_token(e, &d.script))
+            })
             .collect()
     };
     // A rewrite means the tree the gates linted is not the one committed.
@@ -1025,12 +1034,15 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         );
     }
     let stamped_on_every_tip = |name: &str| -> bool {
+        // The complete token, or nothing: a gate whose identity cannot be
+        // worked out is never skipped on a stamp.
+        let Some(token) = crate::gate_identity::token(&ctx.manifest.externals, name) else {
+            return false;
+        };
         !tips.is_empty()
-            && tips.iter().all(|t| {
-                push_stamps
-                    .get(t)
-                    .is_some_and(|s| s.iter().any(|g| g == name))
-            })
+            && tips
+                .iter()
+                .all(|t| push_stamps.get(t).is_some_and(|s| s.contains(&token)))
     };
     // What actually RAN and passed here (as opposed to being vouched for by
     // a stamp) — the set this run may stamp in turn.
@@ -1254,7 +1266,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .filter(|c| c.scope().touches(&changed))
             .map(|c| c.name().to_string())
             .collect();
-        stamp_tips(&tips, &really_ran, &tree_at_start);
+        stamp_tips(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
     }
     // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
@@ -1355,7 +1367,12 @@ pub fn scoped_push_gates(
 /// See the comment at the call site for the two cases. Silent when nothing
 /// qualifies — a dirty working tree is the ordinary state of a machine
 /// mid-work, and a note on every push would teach people to ignore it.
-fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
+fn stamp_tips(
+    externals: &[crate::manifest::External],
+    tips: &[String],
+    gates: &[String],
+    tree_at_start: &str,
+) {
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     // TRACKED modifications only — a KNOWN gap, kept deliberately, and
     // spelled out because the comment that used to sit here argued it
@@ -1415,7 +1432,12 @@ fn stamp_tips(tips: &[String], gates: &[String], tree_at_start: &str) {
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        if crate::gate_stamp::stamp_push(tip, &tree, &vouched) {
+        // Tokens, not names; a gate with no identity is not stamped.
+        let tokens: Vec<String> = vouched
+            .iter()
+            .filter_map(|g| crate::gate_identity::token(externals, g))
+            .collect();
+        if crate::gate_stamp::stamp_push(tip, &tree, &tokens) {
             for g in vouched {
                 if !stamped.contains(&g) {
                     stamped.push(g);

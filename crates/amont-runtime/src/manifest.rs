@@ -718,7 +718,8 @@ impl Check for External {
                 // and cannot be vouched for: `gate_stamp::vouched_for_staged_tree`.
                 if self.severity() == Severity::Block
                     && crate::gate_stamp::commit_stamps_enabled(settings)
-                    && vouched_for_staged_tree().contains(&self.short_name)
+                    && crate::gate_identity::external_token(self, &self.short_name)
+                        .is_some_and(|t| vouched_for_staged_tree().contains(&t))
                 {
                     crate::say!(
                         "{} {} passed on this exact tree earlier — not repeating it here",
