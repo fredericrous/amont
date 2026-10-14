@@ -640,10 +640,14 @@ mod tests {
         std::fs::set_permissions(&eslint, std::fs::Permissions::from_mode(0o755)).unwrap();
         let ns = d.join("ns");
         std::fs::create_dir_all(&ns).unwrap();
+        // A deadline the probes can always meet: a probe that misses it reads
+        // typed and remembers nothing, by design, which would make the marker
+        // assertion below a test of machine speed. Two fresh shell scripts took
+        // 22-28 s under parallel load, past the 20 s this test used to allow.
         let typed = typed_eslint(
             &d,
             &ns,
-            std::time::Instant::now() + std::time::Duration::from_secs(20),
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
             &std::sync::atomic::AtomicBool::new(false),
         );
         assert!(typed, "one typed file must make the namespace typed");
