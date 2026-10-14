@@ -25,7 +25,6 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::manifest::{TreeGate, TreeTool};
 
@@ -179,20 +178,13 @@ pub fn namespace(gate: &TreeGate, version: &str) -> Option<String> {
     hash(&material)
 }
 
+/// Through `git::stdout_piped`, which retries a fork the scheduler refused:
+/// this used to spawn its own `git`, the one spawn on the stamp path without
+/// that retry, and under load a single refused fork made a gate's identity
+/// unknown.
 pub(crate) fn hash(material: &str) -> Option<String> {
-    use std::io::Write;
-    let mut child = Command::new("git")
-        .args(["hash-object", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(material.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    crate::git::stdout_piped(&["hash-object", "--stdin"], material)
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
