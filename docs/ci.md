@@ -269,8 +269,8 @@ is declared for every gate — a deliberate cost of a skip nobody has to trust.
 
 ### In CI: verify, run what is uncovered, sign what passed
 
-`ci.yaml` splits the work in three so that no job both runs pull-request code
-and holds the key:
+`ci.yaml` splits the work in three so that no job that runs the test suite
+holds the key:
 
 1. **`verify`** always runs `make attest-inputs` (an undeclared new file
    changes no fingerprint, so only this catches it), then asks attest's
@@ -294,13 +294,17 @@ and holds the key:
    made; the merge to `main` finds them again because the declared inputs are
    unchanged.
 
-The trust is the trust of write access: whoever can push a branch can edit
-the workflow and `allowed_signers`. `.github/CODEOWNERS` states that intent.
+The trust is the trust of write access: the workflow and the scripts `sign`
+runs come from the ref under test, so whoever can push a branch can edit them,
+and `allowed_signers`. What the split guarantees is that a compromised test job
+cannot sign. `.github/CODEOWNERS` states that intent.
 A signature made with a key added in a pull request covers nothing on `main`,
 whose own `allowed_signers` decides.
 
 A tracked file that configures a gate (`amont.conf`) must be a declared input
-of that gate, or a change to its scope would be invisible to the fingerprint.
+of that gate, or a change to its scope would be invisible to the fingerprint:
+a gate whose declaration omits a tracked `amont.conf` is not offered the
+fingerprint route at all, and keeps the whole-tree behaviour.
 Settings outside tracked files are not in any fingerprint; they were not in the
 whole-tree key either.
 

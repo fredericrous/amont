@@ -168,9 +168,19 @@ fn unreadable_input_reads_as_not_covered() {
     if missing("jq") {
         return;
     }
-    let (o, _) = verify(&[("EVENT", "push"), ("LINUX", "not json at all")]);
+    let (o, said) = verify(&[("EVENT", "push"), ("LINUX", "not json at all")]);
     assert_eq!(value(&o, "rust_covered"), "false");
     assert_eq!(value(&o, "test_any"), "true");
+    // Said as what it is, not as "no valid signature".
+    assert!(
+        said.contains("ci-rust: running, the verifier's output was unreadable"),
+        "{said}"
+    );
+    // The platform whose output WAS readable keeps its honest reason.
+    assert!(
+        said.contains("ci-hooks-macos: running, no valid signature"),
+        "{said}"
+    );
 }
 
 #[test]

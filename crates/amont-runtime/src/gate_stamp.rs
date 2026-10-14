@@ -342,6 +342,9 @@ fn input_tokens(tree: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = Vec::new();
     for (gate, paths) in spec {
+        if !manifest_is_an_input(tree, &paths) {
+            continue;
+        }
         let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
             continue;
         };
@@ -373,7 +376,7 @@ fn file_inputs(tree: &str, tokens: &[String]) {
             .filter(|t| crate::gate_identity::base(t) == gate)
             .cloned()
             .collect();
-        if mine.is_empty() {
+        if mine.is_empty() || !manifest_is_an_input(tree, &paths) {
             continue;
         }
         let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
@@ -386,6 +389,20 @@ fn file_inputs(tree: &str, tokens: &[String]) {
         note.add_tokens(&mine);
         let _ = write_note_in(INPUTS_REF, &key, &note);
     }
+}
+
+/// May a gate's stamp travel by fingerprint on `tree`? A gate's scope and its
+/// opt-ins live in the manifest, and under a whole-tree key a manifest change
+/// was a tree change; under a fingerprint it is one only if the gate declares
+/// the manifest. So a tree that tracks `amont.conf` offers the route only to a
+/// gate whose declared inputs cover it, and a scope-only edit then misses.
+fn manifest_is_an_input(tree: &str, paths: &[crate::attest_inputs::PathTok]) -> bool {
+    let tracked = crate::git::succeeds(&[
+        "cat-file",
+        "-e",
+        &format!("{tree}:{}", crate::manifest::MANIFEST),
+    ]);
+    !tracked || crate::attest_inputs::declares(paths, crate::manifest::MANIFEST)
 }
 
 /// Does the inputs ref exist here? One spawn that lets a repository which
@@ -527,7 +544,9 @@ pub fn record(scripts: &[&str]) {
 ///
 /// Repo-controlled inputs to the gate (its command line, its scope) live in
 /// the manifest, which is part of the tree: a changed declaration is a
-/// changed tree, and nothing is reused.
+/// changed tree, and nothing is reused by tree. A gate reused by fingerprint
+/// gets the same guarantee only if it declares the manifest as an input
+/// ([`manifest_is_an_input`]); otherwise it is not offered the route at all.
 pub fn vouched_for_staged_tree() -> HashSet<String> {
     let mut out = HashSet::new();
     let Some(tree) = crate::git::stdout(&["write-tree"]) else {
@@ -1444,8 +1463,7 @@ mod tests {
         in_repo(&dir, || {
             // `declared` ran before amont.conf existed: it is a required path,
             // so that first commit had no fingerprint and filed nothing.
-            let first = git(&dir, &["rev-parse", "HEAD"]);
-            assert!(stamps_for(std::slice::from_ref(&first)).len() <= 1);
+            assert!(!inputs_ref_exists());
 
             std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
             git(&dir, &["add", "amont.conf"]);
@@ -1472,18 +1490,67 @@ mod tests {
     }
 
     #[test]
-    fn only_the_identity_that_passed_is_vouched_for() {
+    fn a_declared_stamp_is_read_back_as_its_complete_token() {
+        // The identity comparison lives in the readers (`pair_verdict`, the
+        // push gate): they skip only on the complete token they compute. This
+        // pins what the new route owes them: tokens come back verbatim, never
+        // widened to the gate's name, and a second identity under the same key
+        // is kept apart from the first.
         let dir = declared("identity", "test a.ts\n");
         in_repo(&dir, || {
             let head = plan_only_commit(&dir);
             let tokens = stamps_for(std::slice::from_ref(&head))
                 .remove(&head)
                 .unwrap_or_default();
+            assert_eq!(tokens, vec!["test@abc".to_string()]);
+
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["test@def".to_string()]));
+            let tokens = tree_tokens(&tree);
             assert!(tokens.contains(&"test@abc".to_string()));
-            assert!(
-                !tokens.contains(&"test@other".to_string()),
-                "a reader skips only on the complete token it computes itself"
-            );
+            assert!(tokens.contains(&"test@def".to_string()));
+            assert!(!tokens.contains(&"test@zzz".to_string()));
+            assert!(!tokens.contains(&"test".to_string()));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gate_that_does_not_declare_the_manifest_is_not_offered_the_route() {
+        // `amont.conf` is tracked but the gate's declaration omits it: a
+        // scope-only edit would be invisible to the fingerprint, so the route
+        // is refused outright. Nothing is filed and nothing is reused.
+        let dir = repo("manifest-undeclared");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists(), "the route must not open");
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gate_declaring_the_manifest_opens_the_route() {
+        // The counterpart: with `amont.conf` among its declared inputs the
+        // gate is filed by fingerprint again.
+        let dir = declared("manifest-declared", "test a.ts amont.conf\n");
+        in_repo(&dir, || {
+            std::fs::write(dir.join("amont.conf"), "scope = src\n").unwrap();
+            git(&dir, &["add", "amont.conf"]);
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "chore: config"]);
+            bind_to_head();
+            assert!(inputs_ref_exists());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }

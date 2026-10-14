@@ -23,9 +23,18 @@ linux=${LINUX:-[]}
 macos=${MACOS:-[]}
 windows=${WINDOWS:-[]}
 
+# readable <platform-array>: is it the JSON array the verifier promises? An
+# empty or unset one is "nothing covered", not unreadable (the step may not have
+# run). Anything else that is not an array is reported as such, never as a
+# plain absence of a signature.
+readable() {
+  [ -z "$1" ] || [ "$1" = '[]' ] || printf '%s' "$1" | jq -e 'type == "array"' > /dev/null 2>&1
+}
+
 # covered <platform-array> <gate>
 covered() {
   [ "$event" != schedule ] || return 1
+  readable "$1" || return 1
   printf '%s' "$1" | jq -e --arg g "$2" 'index($g) != null' > /dev/null 2>&1
 }
 
@@ -37,12 +46,15 @@ say() {
   echo "$1" >> "$summary"
 }
 
-# report <gate> <covered?>: the log line a person reads instead of a grey icon.
+# report <gate> <covered?> <platform-array>: the log line a person reads
+# instead of a grey icon.
 report() {
   if [ "$2" = true ]; then
     say "$1: skipped, a signature covers this tree's declared inputs (ADR-0024)"
   elif [ "$event" = schedule ]; then
     say "$1: running, a scheduled run covers nothing"
+  elif ! readable "$3"; then
+    say "$1: running, the verifier's output was unreadable"
   else
     say "$1: running, no valid signature"
   fi
@@ -61,12 +73,12 @@ win=$(flag "$windows" ci-windows-test)
 ubuntu=$(flag "$linux" ci-hooks-ubuntu)
 mac=$(flag "$macos" ci-hooks-macos)
 
-report ci-rust "$rust"
-report ci-msrv "$msrv"
-report ci-deps "$deps"
-report ci-windows-test "$win"
-report ci-hooks-ubuntu "$ubuntu"
-report ci-hooks-macos "$mac"
+report ci-rust "$rust" "$linux"
+report ci-msrv "$msrv" "$linux"
+report ci-deps "$deps" "$linux"
+report ci-windows-test "$win" "$windows"
+report ci-hooks-ubuntu "$ubuntu" "$linux"
+report ci-hooks-macos "$mac" "$macos"
 
 matrix='['
 sep=

@@ -248,6 +248,12 @@ fn covers(decl: &str, file: &[u8]) -> bool {
     file == d || (file.len() > d.len() && file.starts_with(d) && file[d.len()] == b'/')
 }
 
+/// Does any declared path in `toks` cover `file`: the file itself, or a
+/// directory above it?
+pub(crate) fn declares(toks: &[PathTok], file: &str) -> bool {
+    toks.iter().any(|t| covers(&t.path, file.as_bytes()))
+}
+
 /// The pure half of [`check`]: coverage of `files` by each required gate of
 /// `spec`, with the fingerprint question answered by `can_fingerprint`.
 pub(crate) fn coverage(
