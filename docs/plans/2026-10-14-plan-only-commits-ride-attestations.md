@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/attested-plan-commits
 repos: [amont]
 adrs: [ADR-0022, ADR-0024]
@@ -203,5 +203,33 @@ rehearsal (`rehearsal.rs:509-525`).
 - `merge-when-green` merges a head whose heavy steps were skipped.
 - Rollback: deleting `.github/attest-inputs` returns every cache to whole-tree
   keys; stale notes are inert.
+
+## Decision log
+
+- 2026-10-14: the plan departs from the literal request (sign the commits) on purpose; declared-input fingerprints give the same outcome in CI and locally without a new signing concept.
+- Part B step 1 said each heavy job verifies. Shipped as one cheap `verify` job (ubuntu, asks the attest verifier once per platform) because a job-level `if` cannot see the matrix and the `test` job has about thirty conditional install steps; the `test` matrix is built from `verify`'s output. The guard (`make attest-inputs`) runs in `verify`, never skipped: an undeclared new file changes no fingerprint.
+- The relais run for commit 1 ended `blocked (baseline_unrunnable)` (cold `make check` over the 3600 s limit at load 13 to 25); the refactor was done directly and verified by the pre-commit gate. A seeded `target/` setup step is the structural fix, outside this plan.
+- `CHANGELOG.md` is untouched: the section is written by the release step, and no release was asked for.
+- Part B.2 said `sign` "runs no PR code". Superseded: it runs the scripts of the ref under test, so the trust is write access (plan Part B intro), not isolation. What the split gives is separation of duties: a test job holds no key. ci.yaml and docs/ci.md say so.
+- The guard reads the staged tree (`git write-tree`) rather than `HEAD`, so a file added in a commit is caught before it is committed; in CI the checkout is clean and that is `HEAD`'s tree.
+- An ADR extending ADR-0024 to local stamps keyed by declared inputs (`work.lasting-decisions-become-adrs`) is not written here; whether to add one is the person's call.
+- CI cannot skip until two prerequisites exist, both a person's step (Part B.4): the repository secret `ATTEST_SIGNING_KEY` (`gh secret list` shows only the three release secrets) and its public half in `.github/allowed_signers` (only the laptop principal today). Without them `sign` reports `no-key` and every run executes everything, which is the fail-open direction.
+
+## Outcome (observed before the push)
+
+- Guard: `amont attest check-inputs` passes on the real tree for all eight gates; staging an undeclared top-level file fails it for every gate with the path listed (checked, then removed).
+- Tests added and passing: 12 in `attest_check_inputs`, 14 in `ci_attest_scripts`, 14 in `gate_stamp` (declared-input reuse), and the 31 existing attest tests unchanged by the move into `attest_inputs.rs`. `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- Local reuse already seen at commit time: `cargo-test`, `adr` and `traits` printed "passed on this exact tree earlier" on a recommit.
+- `amont rehearse --wait` with this branch's binary passed (32 min cold, load 22) and stamped `pre-push-cargo-test`; `refs/notes/amont-gate-inputs` holds the fingerprint-keyed note.
+- Local end to end: a plan-only commit on top of that tip (tree changed, no declared input changed). Commit time: `adr` and `traits` skipped (documentation only), `cargo-test` not triggered (no `.rs` staged), 26 checks passed. Push time: `amont rehearse --wait` printed "pre-push-cargo-test already stamped on this tree — nothing to rehearse" in 2 s against 32 min for the code tip; the plan-only tree's own note holds only `cargo-test@…`, so the reuse came through the fingerprint route.
+- Local gates left undeclared, so still whole-tree on a plan-only commit: `adr`, `traits` (they validate the plans and the decisions, and skip on docs-only commits anyway), `audit-rust` (moving advisory data) and the built-in checks (`agents-md`, `ban-terms`, `secrets`, and the rest of the 17 pre-commit checks), which run per staged file and are cheap.
+- Pre-commit failed once on `timing::a_silent_busy_check_answers_to_the_ceiling_not_the_silence_budget` (a CPU-sampling timing test, killed at 4 s while the suite took 454 s at load about 50); unrelated to the diff, and the same commit passed at load 5.
+
+## Implementation review
+
+approve-with-changes, three passes (238k tokens, about 3.5 min); the last two on the fix commits only.
+Fixed: the manifest must be a declared input or the route is refused; an identity test that could not fail was replaced; unreadable verifier output is reported as such; a result must sit in the artifact named for its gate.
+Deliberate: `sign` is not isolated from the pull request (a script from the base ref would not help; the workflow itself is editable); the ADR is left to the person; `pair_verdict` is not driven end to end in tests (the readers are unchanged).
+Open caveat, stated in ci.yaml and docs/ci.md: any job running the ref's code can choose an artifact name; a forged earlier upload makes the real gate's upload fail, visibly.
 
 <!-- panel: repos=amont reviewers=backend body-sha=2fcd028f579a -->
