@@ -6,6 +6,46 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.55.0
+
+### Added
+
+- **A plan-only commit no longer re-runs a gate whose inputs did not change.**
+  A repository that commits `.github/attest-inputs` (or `.forgejo/…`) names
+  what each gate reads. A stamp for such a gate is also filed under the
+  fingerprint of those bytes, in `refs/notes/amont-gate-inputs`, and honoured
+  at pre-commit (judged on the staged tree, so partial staging is judged on
+  what will be committed) and at pre-push. The closing commit of a branch
+  changes only `docs/plans`, so it reuses the stamp of the code commit before
+  it: here, a pre-push rehearsal of 2 s against 32 min. A gate the declaration
+  does not name keeps the whole-tree key, as does every gate when the
+  declaration is missing, invalid or ambiguous. A tree that tracks `amont.conf`
+  offers the route only to a gate whose declared inputs cover it, so a
+  scope-only edit still misses. The token's identity (command, tool, amont's
+  version) still has to match. Never run `git notes prune` on that ref: its
+  keys are not objects.
+- **`amont attest check-inputs --require <gate>…`** proves each named gate
+  declares every tracked file, by real ancestry: `crates/foo` never stands for
+  `crates`, one gate's declaration never covers another's, and only
+  `docs/plans/` is exempt. A declared input list is only as safe as it is
+  complete, and a new file outside every declaration changes no fingerprint.
+  It exits 0 when covered, 1 when something is not, and 2 when there is no
+  usable declaration (unlike `attest covered`, which fails open). `--tree
+  <rev>` checks a tree other than `HEAD`.
+
+### Changed
+
+- **Gate stamps are keyed by declared inputs as well as the tree.** Recorded as
+  ADR-0011, which replaces ADR-0010's stamp key; the fleet counterpart is
+  `decisions` ADR-0033. `amont land` (the other half of ADR-0010) is unchanged.
+
+### Upgrading
+
+- Nothing to do. A repository that declares no inputs sees no change, and an
+  older amont ignores the new ref, finds no stamp and runs the gate. A stamp's
+  identity includes amont's version, so the first push after upgrading re-runs
+  each gate once.
+
 ## v1.54.0
 
 ### Added
