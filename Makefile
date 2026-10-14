@@ -100,7 +100,23 @@ lint-cross:
 
 # The full local gate: everything CI's `rust` job and `hooks` job assert.
 # `test` stays lint-free so the inner loop is a `cargo test` and nothing else.
-check: lint test
+check: lint test attest-inputs
+
+# Every gate whose result may be reused on a tree that differs only in files it
+# does not read must declare, in .github/attest-inputs, EVERYTHING the tree
+# tracks (docs/plans excepted). The spec cannot exclude paths, so a new
+# top-level path would otherwise fall outside every fingerprint and a change to
+# it would be skipped wrongly. This proves the declaration is complete, per
+# gate and by real ancestry. It reads the STAGED tree (`git write-tree`), so a
+# file added in this commit is checked before it is committed; CI's checkout is
+# clean, where that is HEAD's tree.
+#
+# The local gates are `cargo-test` (commit time) and `pre-push-cargo-test`; the
+# `ci-*` gates are signed by the CI jobs of the same name (ci.yaml).
+ATTEST_GATES := cargo-test pre-push-cargo-test ci-rust ci-msrv ci-deps \
+	ci-hooks-ubuntu ci-hooks-macos ci-windows-test
+attest-inputs:
+	@cargo run -q -p amont -- attest check-inputs --tree $$(git write-tree) --require $(ATTEST_GATES)
 
 # Installation lives in the BINARY, not here: `amont install`.
 #
@@ -149,4 +165,4 @@ propagate:
 deps:
 	@./scripts/check-no-deps.sh
 
-.PHONY: all chmodx build test lint lint-cross check install install-fleet propagate deps
+.PHONY: all chmodx build test lint lint-cross check attest-inputs install install-fleet propagate deps

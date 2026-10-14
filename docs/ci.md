@@ -235,6 +235,43 @@ did not happen. `--no-verify` skips pre-push entirely, mints nothing, and
 CI quietly does the full job — which is the backstop doing exactly what it
 is for.
 
+## Reusing a result when only plans changed: declared inputs
+
+Every cache above is keyed by the whole tree, so a commit that changes only
+`docs/plans/*.md` — the plan that opens a branch and the closing commit that
+records its verification — misses all of them. `.github/attest-inputs` lets a
+repository say what each gate reads; a result is then reused on any tree whose
+declared paths are byte-identical to the ones it passed on (attest's
+[input fingerprints](https://github.com/fredericrous/attest/blob/main/SPEC.md)).
+Both halves use the same fingerprint, from one module
+(`crates/amont-runtime/src/attest_inputs.rs`):
+
+- **CI** verifies the signature as before, but on the fingerprint.
+- **The local hooks** file each gate's stamp under its fingerprint too, in
+  `refs/notes/amont-gate-inputs`, and honour it at pre-commit (judged on the
+  *staged* tree, so partial staging is judged on what is committed) and
+  pre-push. Never run `git notes prune` on that ref: its keys are not objects.
+  A gate the spec does not declare keeps the whole-tree behaviour, and so does
+  every gate when the spec is missing, invalid or ambiguous. The token's
+  identity (command, tool, amont version) still has to match.
+
+The grammar cannot exclude paths, so a declaration is only as good as its
+completeness: a gate that omits something it reads is skipped wrongly the day
+that something changes. `amont attest check-inputs --require <gate>…` (run by
+`make check`, gates listed in the Makefile's `ATTEST_GATES`) fails unless each
+named gate declares every tracked file, by real ancestry: `crates/foo` never
+stands for `crates`, and one gate is never rescued by another. Only
+`docs/plans/` is exempt, and the spec itself, `.gitattributes` and
+`.gitmodules` are always part of a fingerprint. Exit 0 covered, 1 something is
+not covered, 2 no usable spec; it is the opposite of `covered`, which fails
+open. A new top-level path or `docs/` child therefore fails the check until it
+is declared for every gate — a deliberate cost of a skip nobody has to trust.
+
+A tracked file that configures a gate (`amont.conf`) must be a declared input
+of that gate, or a change to its scope would be invisible to the fingerprint.
+Settings outside tracked files are not in any fingerprint; they were not in the
+whole-tree key either.
+
 ## Skipping lint: tree gates
 
 Test gates are signed from `pre-push`. Lint and format are different: the
