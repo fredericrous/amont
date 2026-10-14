@@ -95,6 +95,7 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  moved. Exits 0 landed, 1 refused, 3 unreachable or unverified,
                  4 accepted but the expected tip was not observed (2 is usage)
                  [--force: lease on the tip it just read] [--json: stdout]
+                 [--dry-run: resolve the target only; no network, no push]
   warm           fill the cache of every cold `tree` gate, so the next commit
                  can prove it within its slack (after a cold commit this
                  runs in the background by itself) [--worker]
@@ -383,7 +384,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
-        Sub::Land => (&["--force", "--json"], &[]),
+        Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
     }
 }
 

@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont land --dry-run`** says what a land would push, without pushing:
+  the branch, the push URL, the sha and the destination ref, or the refusal.
+  No network, no ref written. `--json` adds `dst`, `receipt_dir` and
+  `lease` (true with `--force`).
+- **Landing receipts.** Every land that is not a dry run writes
+  `<git-dir>/amont/land/<started-unix-nanos>-<pid>.json` with the final
+  status and the sha it pushed, so what a retry pushed no longer depends on
+  the tracking ref. Receipts older than seven days are deleted by the next
+  land.
+
 ## v1.53.0
 
 ### Added

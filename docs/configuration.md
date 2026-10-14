@@ -233,6 +233,7 @@ test suite scroll.
 amont land            # push this branch, read the remote back
 amont land --force    # a non-fast-forward, leased on the tip it just read
 amont land --json     # one JSON document on stdout, everything else on stderr
+amont land --dry-run  # say what a land would push; touch nothing
 ```
 
 Not a setting, but the place its contract is written down. It pushes the
@@ -272,6 +273,29 @@ network legs only; a custom ssh command, a credential helper or an
 established session can still stall, and Ctrl-C ends it (exit 128+signal).
 After a verified landing the remote-tracking ref is moved to the proven sha,
 and the upstream is set the first time.
+
+### Dry run and landing receipts
+
+`amont land --dry-run` runs only the first two steps of a land: the branch, its
+upstream, and the refusals (detached HEAD, `main` or `master`, a dirty tracked
+tree, not exactly one push URL). It stops before the remote is read: no
+network, no push, no ref written, no receipt. It combines with `--force`.
+`--json` prints `{branch, remote, push_url, pushed, dst, retried, status,
+receipt_dir, lease}`: `pushed` is the HEAD sha, `dst` is
+`refs/heads/<branch on the remote>`, `retried` is always `false`, `lease` is
+`true` under `--force`, and `receipt_dir` is the directory below. `status` is
+`would-land` (exit 0) or `refused` (exit 1, the reason on stderr); the verdict
+line is still the last line on stderr.
+
+Every land that is not a dry run writes one receipt,
+`<git-dir>/amont/land/<started-unix-nanos>-<pid>.json`, with the final
+outcome: `{started, ended, branch, remote, push_url, dst, pushed, retried,
+status}`. It is written for every status once the branch is known (a detached
+HEAD has none), and its `pushed` is the sha the last push attempt carried, so
+after a retry it names the retried sha whatever happens to the tracking ref.
+The git directory is the worktree's own. A receipt that cannot be written
+prints a warning naming the path and does not change the exit code. Receipts
+older than seven days are deleted by the next land.
 
 ## `amont.quiet` — say it once, or once per check
 

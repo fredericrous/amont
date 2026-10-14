@@ -30,8 +30,9 @@
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Read, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::attest::{classify_push_stderr, PushFailure};
 use crate::git::{self, Probe};
@@ -42,6 +43,9 @@ use crate::json;
 /// Spent only when the first read disagrees: at most 6 s.
 const REREADS: u32 = 3;
 const REREAD_PAUSE: Duration = Duration::from_secs(2);
+
+/// A landing receipt older than this is deleted by the next land.
+const RECEIPT_KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Whether a non-fast-forward may replace the remote ref.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +103,8 @@ pub struct Report {
     pub remote: String,
     pub push_url: String,
     pub pushed: String,
+    /// `refs/heads/<rb>`, the ref the push writes; empty until known.
+    pub dst: String,
     pub remote_before: String,
     pub remote_after: String,
     pub retried: bool,
@@ -114,6 +120,7 @@ impl Report {
             remote: String::new(),
             push_url: String::new(),
             pushed: String::new(),
+            dst: String::new(),
             remote_before: String::new(),
             remote_after: String::new(),
             retried: false,
@@ -170,7 +177,11 @@ fn short(sha: &str) -> String {
 /// columns whatever the branch is called. Outcome word, the two shas, then
 /// the branch in whatever room is left.
 pub fn verdict(status: Status, before: &str, after: &str, branch: &str) -> String {
-    let head = format!("{} {}..{}", status.as_str(), short(before), short(after));
+    verdict_word(status.as_str(), before, after, branch)
+}
+
+fn verdict_word(word: &str, before: &str, after: &str, branch: &str) -> String {
+    let head = format!("{word} {}..{}", short(before), short(after));
     let room = VERDICT_WIDTH.saturating_sub(head.chars().count() + 1);
     if branch.is_empty() || room == 0 {
         return head;
@@ -202,23 +213,28 @@ fn read_tip(url: &str, rb: &str, budget: u64) -> Seen {
     }
 }
 
-/// `amont land [--force] [--json]`.
+/// `amont land [--force] [--json] [--dry-run]`.
 pub fn command(args: &[OsString]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
+    let dry_run = args.iter().any(|a| a == "--dry-run");
     let mode = if args.iter().any(|a| a == "--force") {
         Mode::Force
     } else {
         Mode::Plain
     };
-    let report = if args.iter().any(|a| {
+    if args.iter().any(|a| {
         let a = a.to_string_lossy();
-        a != "--force" && a != "--json"
+        a != "--force" && a != "--json" && a != "--dry-run"
     }) {
-        eprintln!("amont: `land` takes no arguments, only [--force] [--json]");
-        Report::new(Status::Usage)
-    } else {
-        land(mode)
-    };
+        eprintln!("amont: land: takes no arguments, only [--force] [--json] [--dry-run]");
+        return finish(&Report::new(Status::Usage), json_out);
+    }
+    if dry_run {
+        return dry_run_command(mode, json_out);
+    }
+    let started = now_nanos();
+    let report = land(mode);
+    write_receipt(&report, started, now_nanos());
     finish(&report, json_out)
 }
 
@@ -254,14 +270,27 @@ fn refuse(mut report: Report, why: &str, next: &[&str]) -> Report {
     report
 }
 
-fn land(mode: Mode) -> Report {
-    let settings = crate::config::Settings::default();
-    let budget = crate::hooks::common::network_probe_budget(&settings);
+/// What steps 1 and 2 learned: where the push goes and what it is called there.
+struct Resolved {
+    remote: String,
+    rb: String,
+    url: String,
+    has_upstream: bool,
+}
+
+/// Steps 1 and 2: the branch, its upstream, the refusals, and the one push
+/// URL. Reads local git state only: no network, nothing written. `Err` is the
+/// refused report, already explained on stderr.
+fn resolve() -> Result<(Resolved, Report), Box<Report>> {
     let mut report = Report::new(Status::Refused);
 
     // 1. What are we pushing, and where to.
     let Some(branch) = git::stdout(&["symbolic-ref", "--quiet", "--short", "HEAD"]) else {
-        return refuse(report, "HEAD is detached; there is no branch to land", &[]);
+        return Err(Box::new(refuse(
+            report,
+            "HEAD is detached; there is no branch to land",
+            &[],
+        )));
     };
     report.branch = branch.clone();
     let upstream_remote = git::stdout(&["config", "--get", &format!("branch.{branch}.remote")]);
@@ -281,45 +310,74 @@ fn land(mode: Mode) -> Report {
         .unwrap_or(&branch)
         .to_string();
     report.remote = remote.clone();
+    report.dst = format!("refs/heads/{rb}");
 
     if is_protected(&branch) || is_protected(&rb) {
-        return refuse(
+        return Err(Box::new(refuse(
             report,
             "main and master change by pull request, never by a push",
             &["git switch -c <name>"],
-        );
+        )));
     }
     if git::stdout(&["status", "--porcelain", "--untracked-files=no"])
         .is_some_and(|s| !s.is_empty())
     {
-        return refuse(
+        return Err(Box::new(refuse(
             report,
             "tracked files have uncommitted changes; the push would not include them",
             &["git status", "git stash"],
-        );
+        )));
     }
 
-    // 2. The endpoint the push will really use, and where the ref stands.
+    // 2. The endpoint the push will really use.
     let Some(urls) = git::stdout(&["remote", "get-url", "--push", "--all", &remote]) else {
-        return refuse(
+        return Err(Box::new(refuse(
             report,
             &format!("no remote named {remote:?}"),
             &["git remote -v"],
-        );
+        )));
     };
     let urls: Vec<&str> = urls.lines().filter(|l| !l.is_empty()).collect();
     if urls.len() != 1 {
-        return refuse(
+        return Err(Box::new(refuse(
             report,
             &format!(
                 "{remote:?} has {} push destinations; land verifies exactly one",
                 urls.len()
             ),
             &[&format!("git remote get-url --push --all {remote}")],
-        );
+        )));
     }
     let url = urls[0].to_string();
     report.push_url = url.clone();
+    Ok((
+        Resolved {
+            remote,
+            rb,
+            url,
+            has_upstream,
+        },
+        report,
+    ))
+}
+
+fn land(mode: Mode) -> Report {
+    let settings = crate::config::Settings::default();
+    let budget = crate::hooks::common::network_probe_budget(&settings);
+    let (
+        Resolved {
+            remote,
+            rb,
+            url,
+            has_upstream,
+        },
+        mut report,
+    ) = match resolve() {
+        Ok(r) => r,
+        Err(refused) => return *refused,
+    };
+
+    // Where the ref stands.
     let mut expected_old = match read_tip(&url, &rb, budget) {
         Seen::Tip(t) => t,
         Seen::Unreachable => {
@@ -421,6 +479,128 @@ fn land(mode: Mode) -> Report {
         }
     }
     report
+}
+
+/// `--dry-run`: steps 1 and 2 of a land and nothing else. No network, no push,
+/// no ref written, no receipt.
+fn dry_run_command(mode: Mode, json_out: bool) -> i32 {
+    let (mut report, would) = match resolve() {
+        Ok((_, report)) => (report, true),
+        Err(refused) => (*refused, false),
+    };
+    if would {
+        report.pushed = git::stdout(&["rev-parse", "HEAD"]).unwrap_or_default();
+    }
+    let word = if would { "would-land" } else { "refused" };
+    for line in &report.next {
+        eprintln!("    {line}");
+    }
+    eprintln!("{}", verdict_word(word, "", &report.pushed, &report.branch));
+    if json_out {
+        let dir = receipt_dir()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        println!(
+            "{}",
+            json::object(&[
+                json::string_field("branch", &report.branch),
+                json::string_field("remote", &report.remote),
+                json::string_field("push_url", &report.push_url),
+                json::string_field("pushed", &report.pushed),
+                json::string_field("dst", &report.dst),
+                json::bool_field("retried", false),
+                json::string_field("status", word),
+                json::string_field("receipt_dir", &dir),
+                json::bool_field("lease", mode == Mode::Force),
+            ])
+        );
+    }
+    if would {
+        0
+    } else {
+        1
+    }
+}
+
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_nanos()).ok())
+        .unwrap_or(0)
+}
+
+/// `<git-dir>/amont/land`, absolute and per worktree.
+fn receipt_dir() -> Option<PathBuf> {
+    git::stdout(&["rev-parse", "--absolute-git-dir"])
+        .map(|d| PathBuf::from(d).join("amont").join("land"))
+}
+
+/// The receipt is the evidence of what a land pushed, independent of the
+/// tracking ref. One per land that got past resolving the branch, written with
+/// the final status. A receipt that cannot be written is a warning, never a
+/// change of exit code.
+fn write_receipt(report: &Report, started: i64, ended: i64) {
+    if report.branch.is_empty() {
+        return;
+    }
+    let Some(dir) = receipt_dir() else {
+        eprintln!("amont: land: could not find the git directory; no landing receipt written");
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "amont: land: could not write a landing receipt in {}: {e}",
+            dir.display()
+        );
+        return;
+    }
+    prune_receipts(&dir);
+    let path = dir.join(format!("{started}-{}.json", std::process::id()));
+    let body = json::object(&[
+        json::int_field("started", started),
+        json::int_field("ended", ended),
+        json::string_field("branch", &report.branch),
+        json::string_field("remote", &report.remote),
+        json::string_field("push_url", &report.push_url),
+        json::string_field("dst", &report.dst),
+        json::string_field("pushed", &report.pushed),
+        json::bool_field("retried", report.retried),
+        json::string_field("status", report.status.as_str()),
+    ]);
+    if let Err(e) = std::fs::write(&path, format!("{body}\n")) {
+        eprintln!(
+            "amont: land: could not write the landing receipt {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Deletes receipts older than [`RECEIPT_KEEP`].
+fn prune_receipts(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "json") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > RECEIPT_KEEP);
+        if old {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!(
+                    "amont: land: could not delete the old receipt {}: {e}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 fn is_protected(branch: &str) -> bool {
