@@ -268,7 +268,6 @@ fn a_rebase_starts_the_rehearsal_of_the_new_tip() {
     r.stage("a.txt", "second\n");
     r.commit("feat: a second commit");
     let before = head(&r);
-    r.git(&["config", "amont.rehearseOnCommit", "true"]);
 
     // Upstream moved: a new commit under the two feature commits, so the
     // replay gives each a new id. (`--force-rebase` in place is not enough:
@@ -277,6 +276,11 @@ fn a_rebase_starts_the_rehearsal_of_the_new_tip() {
     r.stage("upstream.md", "moved\n");
     r.commit("docs: upstream moved");
     r.git(&["checkout", "-q", "feat/x"]);
+    // Opted in only now. Earlier, the "upstream moved" commit above ran
+    // post-commit and started a rehearsal of its own; the rebase's rehearsal
+    // cancelled it, but whether its suite had already run (and was counted in
+    // `runs`) depended on timing, so the test failed about one run in twelve.
+    r.git(&["config", "amont.rehearseOnCommit", "true"]);
     let out = r.git(&["rebase", "-q", "upstream"]);
     assert!(
         out.status.success(),

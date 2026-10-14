@@ -201,6 +201,7 @@ fn full_output(mut cmd: Command) -> Option<Output> {
 /// **2** for "connected, no such ref" and **128** for "could not connect",
 /// and reading those as one boolean is how offline got reported as
 /// "upstream deleted".
+#[derive(Debug)]
 pub enum Probe {
     /// Ran to completion with this exit code.
     Exit(i32),
@@ -482,6 +483,11 @@ mod tests {
 
     #[test]
     fn probe_remote_stdout_returns_what_git_printed_and_the_exit_code() {
+        // `probe_remote_stdout` spawns git in the process cwd, which the
+        // cwd-moving tests in `attest` and `gate_stamp` change under it: it ran
+        // inside another test's repository, or one already deleted, and git
+        // exited non-zero. The crate-wide lock is the rule for exactly this.
+        let _cwd = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!("amont-probe-stdout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -513,12 +519,12 @@ mod tests {
         let url = dir.to_string_lossy().to_string();
 
         let (probe, out) = probe_remote_stdout(&["ls-remote", &url, "refs/heads/main"], 30);
-        assert!(matches!(probe, Probe::Exit(0)));
+        assert!(matches!(probe, Probe::Exit(0)), "{probe:?} {out}");
         assert!(out.starts_with(&sha), "{out}");
 
         // Connected, and no such ref: success with nothing on stdout.
         let (probe, out) = probe_remote_stdout(&["ls-remote", &url, "refs/heads/nope"], 30);
-        assert!(matches!(probe, Probe::Exit(0)));
+        assert!(matches!(probe, Probe::Exit(0)), "{probe:?} {out}");
         assert!(out.trim().is_empty());
 
         // Could not connect: the exit code stays visible, stdout is empty.
