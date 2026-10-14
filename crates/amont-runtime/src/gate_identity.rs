@@ -83,22 +83,37 @@ pub fn base(token: &str) -> &str {
 
 fn seal(name: &str, material: &str) -> Option<String> {
     static MEMO: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
-    let memo = MEMO.get_or_init(Default::default);
+    seal_with(
+        MEMO.get_or_init(Default::default),
+        name,
+        material,
+        crate::tree_cache::hash,
+    )
+}
+
+fn seal_with(
+    memo: &Mutex<HashMap<String, Option<String>>>,
+    name: &str,
+    material: &str,
+    hasher: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     let cached = memo
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get(material)
         .cloned();
-    let hash = match cached {
+    let hash = match cached.flatten() {
         Some(h) => h,
         None => {
-            let h = crate::tree_cache::hash(material);
+            // Only an answer is remembered. A failed hash is a cache miss for
+            // this call alone; the next ask tries git again.
+            let h = hasher(material)?;
             memo.lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .insert(material.to_string(), h.clone());
+                .insert(material.to_string(), Some(h.clone()));
             h
         }
-    }?;
+    };
     Some(format!("{name}@{}", hash.get(..WIDTH).unwrap_or(&hash)))
 }
 
@@ -171,6 +186,26 @@ mod tests {
             a.split_once('@').map(|x| x.1),
             b.split_once('@').map(|x| x.1)
         );
+    }
+
+    /// One failed hash (a fork the scheduler refused) must not decide this
+    /// gate's identity for the rest of the process: the next ask tries again.
+    #[test]
+    fn a_failed_hash_is_not_remembered() {
+        let memo = Mutex::new(HashMap::new());
+        let calls = std::cell::Cell::new(0);
+        let flaky = |_: &str| {
+            calls.set(calls.get() + 1);
+            (calls.get() > 1).then(|| "0123456789abcdef0123".to_string())
+        };
+        assert_eq!(seal_with(&memo, "gate", "m", flaky), None);
+        assert_eq!(
+            seal_with(&memo, "gate", "m", flaky).as_deref(),
+            Some("gate@0123456789abcdef")
+        );
+        // A good answer IS remembered: no third hash.
+        assert!(seal_with(&memo, "gate", "m", flaky).is_some());
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
