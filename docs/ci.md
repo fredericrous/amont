@@ -296,8 +296,9 @@ holds the key:
 
 The trust is the trust of write access: the workflow and the scripts `sign`
 runs come from the ref under test, so whoever can push a branch can edit them,
-and `allowed_signers`. What the split guarantees is that a compromised test job
-cannot sign. `.github/CODEOWNERS` states that intent.
+and `allowed_signers`, and any job running that code could upload an artifact
+under any name. The split is separation of duties (a test job holds no key and
+signs nothing); against a hostile pull request the guarantee is write access. `.github/CODEOWNERS` states that intent.
 A signature made with a key added in a pull request covers nothing on `main`,
 whose own `allowed_signers` decides.
 

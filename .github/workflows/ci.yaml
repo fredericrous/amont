@@ -1075,13 +1075,14 @@ jobs:
 
   # The one job that holds the key. It never runs the test suite: it reads result
   # files, signs the ones that name THIS tree on the platform declared for the
-  # gate, and pushes the notes. It is not isolated from the pull request,
-  # though: the workflow and the scripts it runs come from the ref under test,
-  # so what it guarantees is that a compromised TEST job cannot sign, and the
-  # rest is the trust of write access (see the header comment). Never for a
-  # fork (no secret, read-only token) and never on `schedule`. `if: always()` so a job that
-  # failed does not stop the others' passes being recorded; a failed job
-  # uploaded nothing, so nothing of its is signed.
+  # gate and sit in the artifact named for it, and pushes the notes. That is
+  # separation of duties, not isolation from the pull request: the workflow and
+  # the scripts it runs come from the ref under test, and any job running that
+  # code could upload an artifact under any name. Against a hostile pull
+  # request the guarantee is the trust of write access (see the header comment).
+  # Never for a fork (no secret, read-only token) and never on `schedule`.
+  # `if: always()` so a job that failed does not stop the others' passes being
+  # recorded; a failed job uploaded nothing, so nothing of its is signed.
   sign:
     name: sign attestations
     needs: [verify, deps, rust, msrv, windows, test]

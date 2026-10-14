@@ -3,9 +3,10 @@
 #
 #   ci-attest-sign-plan.sh <results-dir>
 #
-# A gate is signed only when its result file says success, names THIS job's
-# tree (a job that checked out something else proves nothing about it), and
-# names the platform the workflow declares for that gate. Results are data
+# A gate is signed only when its result file says success, sits in the artifact
+# named for that gate, names THIS job's tree (a job that checked out something
+# else proves nothing about it), and names the platform the workflow declares
+# for that gate. Results are data
 # written by a job that ran the pull request's code: nothing here executes
 # them, and a field that does not match is a gate that is not signed.
 #
@@ -40,6 +41,14 @@ if [ -d "$dir" ]; then
     gate=$(jq -r '.gate // empty' "$f" 2> /dev/null) || gate=
     if [ -z "$gate" ] || ! want=$(expected "$gate"); then
       echo "ci-attest-sign-plan: $f: not a gate this workflow signs, ignored"
+      continue
+    fi
+    # The gate a file names must be the one its artifact is named for: one
+    # artifact per gate, in a directory of its own (no merge-multiple), so a
+    # result cannot claim a gate its artifact does not carry.
+    if [ "$(basename "$f")" != "attest-result-$gate.json" ] \
+      || [ "$(basename "$(dirname "$f")")" != "attest-result-$gate" ]; then
+      echo "ci-attest-sign-plan: $f: names gate $gate but is not artifact attest-result-$gate, ignored"
       continue
     fi
     outcome=$(jq -r '.outcome // empty' "$f")

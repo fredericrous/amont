@@ -214,9 +214,22 @@ fn results_name(repo: &Repo) -> String {
     )
 }
 
-fn result(repo: &Repo, name: &str, gate: &str, platform: &str, tree: &str, outcome: &str) {
+fn result(repo: &Repo, gate: &str, platform: &str, tree: &str, outcome: &str) {
+    result_in(
+        repo,
+        &format!("attest-result-{gate}"),
+        gate,
+        platform,
+        tree,
+        outcome,
+    );
+}
+
+/// A result file whose directory (the artifact name) is `dir`, not necessarily
+/// the one its gate would give it.
+fn result_in(repo: &Repo, dir: &str, gate: &str, platform: &str, tree: &str, outcome: &str) {
     repo.write(
-        &format!("../{}/{name}/attest-result-{gate}.json", results_name(repo)),
+        &format!("../{}/{dir}/attest-result-{gate}.json", results_name(repo)),
         &format!(
             r#"{{"gate":"{gate}","platform":"{platform}","tree":"{tree}","sha":"x","outcome":"{outcome}"}}"#
         ),
@@ -245,23 +258,9 @@ fn a_result_for_this_tree_on_the_declared_platform_is_signed() {
         return;
     }
     let (repo, tree) = repo_with_commit();
-    result(&repo, "a", "ci-rust", "x86_64-linux", &tree, "success");
-    result(
-        &repo,
-        "b",
-        "ci-hooks-macos",
-        "aarch64-macos",
-        &tree,
-        "success",
-    );
-    result(
-        &repo,
-        "c",
-        "ci-windows-test",
-        "x86_64-windows",
-        &tree,
-        "success",
-    );
+    result(&repo, "ci-rust", "x86_64-linux", &tree, "success");
+    result(&repo, "ci-hooks-macos", "aarch64-macos", &tree, "success");
+    result(&repo, "ci-windows-test", "x86_64-windows", &tree, "success");
     let (o, _) = plan(&repo);
     assert_eq!(value(&o, "linux"), "ci-rust");
     assert_eq!(value(&o, "macos"), "ci-hooks-macos");
@@ -276,7 +275,7 @@ fn a_result_for_another_tree_is_not_signed() {
     }
     let (repo, _) = repo_with_commit();
     let other = "0".repeat(40);
-    result(&repo, "a", "ci-rust", "x86_64-linux", &other, "success");
+    result(&repo, "ci-rust", "x86_64-linux", &other, "success");
     let (o, said) = plan(&repo);
     assert_eq!(value(&o, "linux"), "");
     assert!(said.contains("ci-rust: result is for tree"), "{said}");
@@ -290,15 +289,8 @@ fn a_result_from_the_wrong_platform_or_a_failure_is_not_signed() {
     }
     let (repo, tree) = repo_with_commit();
     // The macOS suite claiming to be a Linux result, and a failed Linux job.
-    result(
-        &repo,
-        "a",
-        "ci-hooks-ubuntu",
-        "aarch64-macos",
-        &tree,
-        "success",
-    );
-    result(&repo, "b", "ci-deps", "x86_64-linux", &tree, "failure");
+    result(&repo, "ci-hooks-ubuntu", "aarch64-macos", &tree, "success");
+    result(&repo, "ci-deps", "x86_64-linux", &tree, "failure");
     let (o, said) = plan(&repo);
     assert_eq!(value(&o, "linux"), "");
     assert!(
@@ -315,7 +307,7 @@ fn an_unknown_gate_and_garbage_are_ignored() {
         return;
     }
     let (repo, tree) = repo_with_commit();
-    result(&repo, "a", "publish", "x86_64-linux", &tree, "success");
+    result(&repo, "publish", "x86_64-linux", &tree, "success");
     repo.write(
         &format!(
             "../results-{}/b/attest-result-ci-rust.json",
@@ -326,6 +318,36 @@ fn an_unknown_gate_and_garbage_are_ignored() {
     let (o, said) = plan(&repo);
     assert_eq!(value(&o, "linux"), "");
     assert!(said.contains("not a gate this workflow signs"), "{said}");
+    let _ = std::fs::remove_dir_all(results_dir(&repo));
+}
+
+#[test]
+fn a_result_must_sit_in_the_artifact_named_for_its_gate() {
+    if missing("jq") {
+        return;
+    }
+    let (repo, tree) = repo_with_commit();
+    // A result claiming ci-rust but uploaded as another gate's artifact.
+    result_in(
+        &repo,
+        "attest-result-ci-deps",
+        "ci-rust",
+        "x86_64-linux",
+        &tree,
+        "success",
+    );
+    // And one whose artifact directory has no relation to any gate.
+    result_in(&repo, "a", "ci-msrv", "x86_64-linux", &tree, "success");
+    let (o, said) = plan(&repo);
+    assert_eq!(value(&o, "linux"), "");
+    assert!(
+        said.contains("names gate ci-rust but is not artifact"),
+        "{said}"
+    );
+    assert!(
+        said.contains("names gate ci-msrv but is not artifact"),
+        "{said}"
+    );
     let _ = std::fs::remove_dir_all(results_dir(&repo));
 }
 
