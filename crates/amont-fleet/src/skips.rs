@@ -35,8 +35,11 @@ pub enum Scope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkipEntry {
-    /// Exactly as written in config.
+    /// One check name, as written in config.
     pub value: String,
+    /// The name came from a comma-joined value (`a,b`), so no single
+    /// `git config --unset` matches it and the toggle must not try.
+    pub joined: bool,
     pub scope: Scope,
     /// Every check this entry suppresses, resolved through the dispatcher's own
     /// rule rather than a copy of it.
@@ -82,6 +85,7 @@ pub fn suppressed_by(value: &str) -> Vec<&'static str> {
 pub fn for_test(value: &str) -> SkipEntry {
     SkipEntry {
         value: value.to_string(),
+        joined: false,
         scope: Scope::Local,
         suppresses: suppressed_by(value),
     }
@@ -113,18 +117,22 @@ pub fn read(repo: &Path) -> Vec<SkipEntry> {
     };
     let mut entries: Vec<SkipEntry> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|line| {
-            // `file:/path/to/config\tvalue`
-            let (origin, value) = line.split_once('\t')?;
-            let value = value.trim();
-            if value.is_empty() {
-                return None;
-            }
-            Some(SkipEntry {
-                value: value.to_string(),
-                scope: scope_of(origin),
-                suppresses: suppressed_by(value),
-            })
+        .flat_map(|line| {
+            // `file:/path/to/config\tvalue`, the value possibly `a,b`.
+            let Some((origin, value)) = line.split_once('\t') else {
+                return Vec::new();
+            };
+            let names: Vec<&str> = amont_runtime::skip_names(value).collect();
+            let joined = names.len() > 1;
+            names
+                .into_iter()
+                .map(|name| SkipEntry {
+                    value: name.to_string(),
+                    joined,
+                    scope: scope_of(origin),
+                    suppresses: suppressed_by(name),
+                })
+                .collect()
         })
         .collect();
     // The committed policy's skips, shown under their own origin — and only
@@ -141,6 +149,7 @@ pub fn read(repo: &Path) -> Vec<SkipEntry> {
                     origin: "amont.conf".to_string(),
                 },
                 value,
+                joined: false,
             });
         }
     }
@@ -200,6 +209,7 @@ mod tests {
     #[test]
     fn a_trigger_and_a_typo_are_different_questions() {
         let exact = SkipEntry {
+            joined: false,
             value: "pre-commit-clippy".into(),
             scope: Scope::Local,
             suppresses: suppressed_by("pre-commit-clippy"),
@@ -211,6 +221,7 @@ mod tests {
         // that it was "not a check name, so a future rename could silently
         // widen it" — under exact naming it IS a name, and cannot widen.
         let fragment = SkipEntry {
+            joined: false,
             value: "run-tests-js".into(),
             scope: Scope::Local,
             suppresses: suppressed_by("run-tests-js"),
@@ -220,6 +231,7 @@ mod tests {
 
         // A trigger: several checks, deliberately.
         let broad = SkipEntry {
+            joined: false,
             value: "pre-commit".into(),
             scope: Scope::Local,
             suppresses: suppressed_by("pre-commit"),
@@ -229,6 +241,7 @@ mod tests {
 
         // A typo: the shape a mistake takes now.
         let typo = SkipEntry {
+            joined: false,
             value: "e".into(),
             scope: Scope::Local,
             suppresses: suppressed_by("e"),
@@ -278,6 +291,46 @@ mod tests {
             entries[1].suppresses
         );
         assert!(entries[1].suppresses.len() > 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A comma-joined value reads as one entry per name, and the toggle will
+    /// not try to unset a name it cannot match on its own line.
+    #[test]
+    fn a_comma_joined_value_reads_per_name_and_is_not_removable_by_name() {
+        let dir = std::env::temp_dir().join(format!("skips-joined-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        git(&["init", "-q", "--template=", "."]);
+        git(&["config", "--add", "hook.skip", "pre-commit-clippy,prettier"]);
+        git(&["config", "--add", "hook.skip", "ban-terms"]);
+
+        let entries = read(&dir);
+        let values: Vec<&str> = entries.iter().map(|e| e.value.as_str()).collect();
+        assert_eq!(values, ["pre-commit-clippy", "prettier", "ban-terms"]);
+        assert!(entries[0].joined && entries[1].joined && !entries[2].joined);
+
+        let joined = plan(&dir, "pre-commit-clippy");
+        assert_eq!(joined.action, Action::Remove);
+        assert!(
+            joined
+                .refuse
+                .as_deref()
+                .is_some_and(|why| why.contains("comma-joined")),
+            "{:?}",
+            joined.refuse
+        );
+        assert!(
+            plan(&dir, "ban-terms").refuse.is_none(),
+            "a name on its own line is still removable"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -339,6 +392,10 @@ pub fn plan(repo: &Path, check: &'static str) -> SkipPlan {
 
     if let Some(e) = exact {
         let scoped = match e.scope {
+            _ if e.joined => Some(
+                "that name is part of a comma-joined hook.skip value — edit the value where it lives"
+                    .to_string(),
+            ),
             Scope::Local => None,
             _ => Some(format!(
                 "that entry is {}, not local — edit it where it lives",
@@ -593,6 +650,7 @@ mod write_tests {
     #[test]
     fn a_non_local_entry_is_refused_with_its_scope() {
         let e = SkipEntry {
+            joined: false,
             value: "pre-commit-clippy".into(),
             scope: Scope::Global,
             suppresses: suppressed_by("pre-commit-clippy"),

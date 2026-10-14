@@ -10,6 +10,16 @@ missing here.
 
 ### Added
 
+- **`hook.skip` accepts several names joined by commas.**
+  `git -c hook.skip=clippy,prettier commit` is the same as one
+  `hook.skip` per name, and `git config --add hook.skip a,b` works too.
+  Until now a comma-joined value was read as one name that matched nothing,
+  and every check ran; the commit looked skipped and was not. Names stay
+  exact (a check id cannot contain a comma, so the split is never
+  ambiguous, and joining never turns a name into a glob). `amont-fleet`
+  lists each name separately and refuses to toggle one that sits in a joined
+  value, since no single `git config --unset` can remove it.
+
 - **`amont land` pushes a branch and proves the remote ref moved.** A push
   that exits 0 says the remote accepted something, not that the branch now
   points where you pushed it. `amont land` resolves the one effective push

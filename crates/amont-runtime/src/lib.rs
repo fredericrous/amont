@@ -918,6 +918,18 @@ pub fn skips_by_source(settings: &config::Settings) -> (Vec<String>, Vec<String>
     (machine_skips(), settings.policy().skips.clone())
 }
 
+/// The check names one `hook.skip` value carries. A value may join several
+/// with commas (`-c hook.skip=clippy,prettier`), which is the same as one
+/// `hook.skip` per name. A check id is letters, digits, `.`, `_` and `-`, so a
+/// comma can never be part of a name and the split is never ambiguous. Names
+/// are matched exactly afterwards, as ever: joining never turns one into a glob.
+pub fn skip_names(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
 fn machine_skips() -> Vec<String> {
     let Ok(out) = Command::new("git")
         .args(["config", "--get-all", "hook.skip"])
@@ -928,8 +940,7 @@ fn machine_skips() -> Vec<String> {
     };
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .flat_map(skip_names)
         .map(str::to_owned)
         .collect()
 }
@@ -974,6 +985,31 @@ pub fn cherry_pick_in_progress() -> bool {
 #[cfg(test)]
 mod naming {
     use super::*;
+
+    /// A joined value is the same as one skip per name; spaces, empty pieces
+    /// and a trailing comma change nothing, and a lone name is untouched.
+    #[test]
+    fn a_comma_joined_skip_is_one_skip_per_name() {
+        fn names(v: &str) -> Vec<&str> {
+            skip_names(v).collect()
+        }
+        assert_eq!(names("clippy"), ["clippy"]);
+        assert_eq!(
+            names("pre-commit-cargo-test,pre-commit-plugin-test"),
+            ["pre-commit-cargo-test", "pre-commit-plugin-test"]
+        );
+        assert_eq!(names(" a , b ,,c, "), ["a", "b", "c"]);
+        assert!(names(" , ").is_empty());
+    }
+
+    /// Joining never widens a name: each piece is matched exactly, as a
+    /// separate `hook.skip` would be, so `e,clippy` still reaches nothing by `e`.
+    #[test]
+    fn joining_names_does_not_turn_them_into_globs() {
+        assert!(!skip_suppresses("pre-commit-clippy", "e"));
+        assert!(skip_names("e,clippy").any(|n| skip_suppresses("pre-commit-clippy", n)));
+        assert!(!skip_names("e,lint").any(|n| skip_suppresses("pre-commit-clippy", n)));
+    }
 
     /// The three things a user can write, and what each reaches.
     #[test]
