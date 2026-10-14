@@ -22,6 +22,18 @@ on:
   schedule:
     - cron: "17 6 * * 1"
 
+# WHAT A SIGNATURE ALREADY COVERS (ADR-0024). `.github/attest-inputs` declares
+# what each gate reads, so a result signed for one tree is reused on any tree
+# whose declared files are byte-identical: the closing commit of a branch
+# changes only docs/plans and skips the heavy jobs below. `verify` reads the
+# signatures and decides; each heavy job writes a result file when it passes;
+# `sign` is the one job that holds the key, and it signs a result only for the
+# tree it is itself standing on. `make attest-inputs` (run in `verify`, never
+# skipped) proves the declaration covers every tracked file, because an
+# undeclared new file changes no fingerprint and would otherwise skip silently.
+# Trust: whoever can push a branch here can edit this file and the signers,
+# exactly as with write access; a fork PR verifies but cannot sign.
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -117,8 +129,60 @@ jobs:
       - name: The session hook is wired and current
         run: aval hook install --check
 
+  verify:
+    name: attestations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rust_covered: ${{ steps.plan.outputs.rust_covered }}
+      msrv_covered: ${{ steps.plan.outputs.msrv_covered }}
+      deps_covered: ${{ steps.plan.outputs.deps_covered }}
+      windows_test_covered: ${{ steps.plan.outputs.windows_test_covered }}
+      test_matrix: ${{ steps.plan.outputs.test_matrix }}
+      test_any: ${{ steps.plan.outputs.test_any }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # Always: the proof that the declaration is complete is not itself
+      # something a signature may stand in for.
+      - name: the declared inputs cover every tracked file
+        run: make attest-inputs
+      # One verification per platform: the signature names where the suite ran,
+      # and a pass on one OS is no evidence about another. Not on `schedule`,
+      # which exists to catch drift no push made.
+      - id: linux
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: fredericrous/attest@v1
+        with:
+          platform: x86_64-linux
+      - id: macos
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: fredericrous/attest@v1
+        with:
+          platform: aarch64-macos
+      - id: windows
+        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+        uses: fredericrous/attest@v1
+        with:
+          platform: x86_64-windows
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          LINUX: ${{ steps.linux.outputs.gates }}
+          MACOS: ${{ steps.macos.outputs.gates }}
+          WINDOWS: ${{ steps.windows.outputs.gates }}
+        run: ./scripts/ci-attest-verify-plan.sh
+
   deps:
     name: hook binary has no external dependencies
+    needs: verify
+    if: ${{ needs.verify.outputs.deps_covered != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,9 +205,23 @@ jobs:
             exit 1
           fi
           echo "refused, as it should"
+      # Last step, only when the work above passed: a result file naming this
+      # tree, uploaded for the `sign` job. This job ran the pull request's code,
+      # so it never holds the signing key.
+      - name: attest result (ci-deps)
+        if: ${{ success() }}
+        run: ./scripts/ci-attest-result.sh ci-deps
+      - if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-ci-deps
+          path: ${{ runner.temp }}/attest-result-ci-deps.json
+          if-no-files-found: error
 
   rust:
     name: rust
+    needs: verify
+    if: ${{ needs.verify.outputs.rust_covered != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -169,6 +247,19 @@ jobs:
       # target is this runner's own and costs one more pass.
       - run: rustup target add aarch64-apple-darwin x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
       - run: make lint-cross
+      # Last step, only when the work above passed: a result file naming this
+      # tree, uploaded for the `sign` job. This job ran the pull request's code,
+      # so it never holds the signing key.
+      - name: attest result (ci-rust)
+        if: ${{ success() }}
+        run: ./scripts/ci-attest-result.sh ci-rust
+      - if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-ci-rust
+          path: ${{ runner.temp }}/attest-result-ci-rust.json
+          if-no-files-found: error
+
 
   # The floor `rust-version` claims, compiled against.
   #
@@ -185,6 +276,8 @@ jobs:
     # job's `name`, and an unresolvable expression there renders as an empty
     # string rather than erroring.
     name: msrv (the commit path builds on 1.74)
+    needs: verify
+    if: ${{ needs.verify.outputs.msrv_covered != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -213,6 +306,19 @@ jobs:
           rustup target add --toolchain "$MSRV" aarch64-apple-darwin
           rm -f Cargo.lock
           cargo "+$MSRV" check --target aarch64-apple-darwin -p amont-runtime
+      # Last step, only when the work above passed: a result file naming this
+      # tree, uploaded for the `sign` job. This job ran the pull request's code,
+      # so it never holds the signing key.
+      - name: attest result (ci-msrv)
+        if: ${{ success() }}
+        run: ./scripts/ci-attest-result.sh ci-msrv
+      - if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-ci-msrv
+          path: ${{ runner.temp }}/attest-result-ci-msrv.json
+          if-no-files-found: error
+
 
   # The workspace's one dependency tree, watched.
   #
@@ -386,6 +492,7 @@ jobs:
   # shims, and that an UNBAKED shim can find the binary with PATH emptied.
   windows:
     name: windows
+    needs: verify
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -403,18 +510,26 @@ jobs:
       # the linters — those are covered on Linux and macOS by the `test` job,
       # which does install them and now fails if any of them is missing.
       #
-      # Skipped only when a signature by a key in .github/allowed_signers
-      # covers this exact tree for `pre-push-cargo-test` on THIS platform —
+      # Skipped only when `verify` found a signature by a key in
+      # .github/allowed_signers covering the declared inputs of this tree for
+      # `ci-windows-test` (or a local `pre-push-cargo-test`) on THIS platform —
       # the strict default, because amont ships per-platform binaries and each
-      # leg needs its own evidence. Only here: this job runs the same suite the
-      # local gate does. The `test` job asserts more (every tool-gated case
-      # ran), which no local signature proves, so it never skips. Not on
-      # `schedule`: that run exists to catch drift no push made.
-      - id: attest
-        if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
-        uses: fredericrous/attest@v1
-      - if: ${{ !contains(fromJSON(steps.attest.outputs.gates || '[]'), 'pre-push-cargo-test') }}
+      # leg needs its own evidence. ONLY this step: the installer and the
+      # end-to-end checks below fetch the latest published release, an external
+      # input no fingerprint can capture, so they always run. The gate means
+      # "cargo test passed here", whatever the later steps do.
+      - id: cargotest
+        if: ${{ needs.verify.outputs.windows_test_covered != 'true' }}
         run: cargo test -- --show-output
+      - name: attest result (ci-windows-test)
+        if: ${{ steps.cargotest.outcome == 'success' }}
+        run: ./scripts/ci-attest-result.sh ci-windows-test
+      - if: ${{ steps.cargotest.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-ci-windows-test
+          path: ${{ runner.temp }}/attest-result-ci-windows-test.json
+          if-no-files-found: error
 
       # The Windows installer, run for real on Windows.
       #
@@ -585,12 +700,21 @@ jobs:
 
   test:
     name: hooks (${{ matrix.os }})
+    # Only the legs `verify` found uncovered. A job-level `if` cannot see the
+    # matrix, so the matrix itself is the filter; none left means no job. The
+    # legs are the gates `ci-hooks-ubuntu` and `ci-hooks-macos`, built in
+    # scripts/ci-attest-verify-plan.sh; each is signed only after this job's
+    # reporter (the last step before the result) confirmed no tool-gated case
+    # was skipped, because a failing reporter fails the job and the result step
+    # runs only on success.
+    needs: verify
+    if: ${{ needs.verify.outputs.test_any == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include: ${{ fromJSON(needs.verify.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -935,3 +1059,68 @@ jobs:
           fi
 
           exit $rc
+
+      # Last step, only when the work above passed: a result file naming this
+      # tree, uploaded for the `sign` job. This job ran the pull request's code,
+      # so it never holds the signing key.
+      - name: attest result (${{ matrix.gate }})
+        if: ${{ success() }}
+        run: ./scripts/ci-attest-result.sh ${{ matrix.gate }}
+      - if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-${{ matrix.gate }}
+          path: ${{ runner.temp }}/attest-result-${{ matrix.gate }}.json
+          if-no-files-found: error
+
+  # The one job that holds the key, and it runs no code from the pull request:
+  # it reads result files, signs the ones that name THIS tree on the platform
+  # declared for the gate, and pushes the notes. Never for a fork (no secret,
+  # read-only token) and never on `schedule`. `if: always()` so a job that
+  # failed does not stop the others' passes being recorded; a failed job
+  # uploaded nothing, so nothing of its is signed.
+  sign:
+    name: sign attestations
+    needs: [verify, deps, rust, msrv, windows, test]
+    if: >-
+      ${{ always() && needs.verify.result == 'success' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # Outside the checkout: the signer refuses a dirty tree.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: attest-result-*
+          path: ${{ runner.temp }}/attest-results
+      - id: plan
+        run: ./scripts/ci-attest-sign-plan.sh "$RUNNER_TEMP/attest-results"
+      # One block per platform: a payload names one, and the signer defaults to
+      # its own runner's. The platform below is the one the plan validated.
+      - if: ${{ steps.plan.outputs.linux != '' }}
+        uses: fredericrous/attest/sign@v1
+        with:
+          key: ${{ secrets.ATTEST_SIGNING_KEY }}
+          gates: ${{ steps.plan.outputs.linux }}
+          platform: x86_64-linux
+          producer: attest-sign-linux
+      - if: ${{ steps.plan.outputs.macos != '' }}
+        uses: fredericrous/attest/sign@v1
+        with:
+          key: ${{ secrets.ATTEST_SIGNING_KEY }}
+          gates: ${{ steps.plan.outputs.macos }}
+          platform: aarch64-macos
+          producer: attest-sign-macos
+      - if: ${{ steps.plan.outputs.windows != '' }}
+        uses: fredericrous/attest/sign@v1
+        with:
+          key: ${{ secrets.ATTEST_SIGNING_KEY }}
+          gates: ${{ steps.plan.outputs.windows }}
+          platform: x86_64-windows
+          producer: attest-sign-windows

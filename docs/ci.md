@@ -267,6 +267,38 @@ not covered, 2 no usable spec; it is the opposite of `covered`, which fails
 open. A new top-level path or `docs/` child therefore fails the check until it
 is declared for every gate — a deliberate cost of a skip nobody has to trust.
 
+### In CI: verify, run what is uncovered, sign what passed
+
+`ci.yaml` splits the work in three so that no job both runs pull-request code
+and holds the key:
+
+1. **`verify`** always runs `make attest-inputs` (an undeclared new file
+   changes no fingerprint, so only this catches it), then asks attest's
+   verifier once per platform which gates a signature covers, and prints one
+   plain line per gate: `<gate>: skipped, a signature covers this tree's
+   declared inputs (ADR-0024)` or `<gate>: running, no valid signature`. It
+   names no commit: a signed payload identifies a tree. A `schedule` run
+   covers nothing.
+2. **The heavy jobs** (`rust`, `msrv`, `deps`, the `test` legs, the Windows
+   `cargo test` step) run only when uncovered. `test` takes its matrix from
+   `verify`, because a job-level `if` cannot see the matrix. The Windows
+   installer and end-to-end steps always run: they install the latest
+   published release, an external input no fingerprint captures. A job that
+   passed writes a result file (gate, platform, tree) and uploads it.
+3. **`sign`** is the only job with the key. It signs a result only when it
+   succeeded, names the tree `sign` itself is standing on, and names the
+   platform the workflow declares for that gate (`scripts/ci-attest-sign-plan.sh`),
+   one block per platform. It runs on `push` and on same-repository pull
+   requests, never for a fork (no secret) and never on `schedule`. A branch
+   push runs through `pull_request`, so that is where a branch's signatures are
+   made; the merge to `main` finds them again because the declared inputs are
+   unchanged.
+
+The trust is the trust of write access: whoever can push a branch can edit
+the workflow and `allowed_signers`. `.github/CODEOWNERS` states that intent.
+A signature made with a key added in a pull request covers nothing on `main`,
+whose own `allowed_signers` decides.
+
 A tracked file that configures a gate (`amont.conf`) must be a declared input
 of that gate, or a change to its scope would be invisible to the fingerprint.
 Settings outside tracked files are not in any fingerprint; they were not in the
