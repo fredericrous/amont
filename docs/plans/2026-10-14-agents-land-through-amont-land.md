@@ -66,9 +66,21 @@ CAS on `main` (branch-protect forbids pushes there); `push_landed` for plain git
 
 ## Verification
 
-- Phase 1: `amont land --dry-run --json` on branch `x` with no upstream → `status:would-land`, `dst:refs/heads/x`, exit 0, remote ref and `refs/remotes/origin/x` unchanged; on main → `refused`, exit 1; `amont land --dry-run --json` piloted in a scratch repo matches the `pushed`/`dst` a real `amont land` then uses; Windows CI runs the dry-run tests; a scratch land writes one receipt with `status:landed` and `pushed` = `git ls-remote` tip, and with `refs/remotes/origin/x.lock` present still exits 0 with the retried sha in the receipt.
+- Phase 1, observed on 41b024c (amont repo). `cargo test -p amont --test land`: 29/29, nine new. Dry-run: no upstream → `would-land`, `dst refs/heads/<b>`, exit 0, remote and tracking ref unchanged, no receipt dir; renamed upstream → `dst` names the remote branch; main, dirty tree, two push URLs → `refused`, exit 1; `--dry-run --force` → `lease:true`. Receipts: landed, refused and not-observed lands each write one with that status; a retry with `refs/remotes/origin/<b>.lock` present exits 0, prints the update-ref warning, and its receipt names the retried sha. A branch tracking `main` (the `worktree add -b <b> origin/main` shape) → dry-run `dst refs/heads/<b>`, land writes `<b>`, `main` untouched, `@{u}` = `origin/<b>` (this test was red on 78345a9). Pilot with the built binary in a scratch repo: dry-run `pushed 83fa8e7`, `dst refs/heads/feat/p`; the real land pushed `83fa8e7`, receipt `status:landed`, `git ls-remote` = `83fa8e7`. In a linked worktree `receipt_dir` is that worktree's own git dir. Workspace clippy and Windows-target clippy on `tests/land.rs`: clean. Windows CI runs on the PR.
 - Phase 2: hook input `git commit -m x && amont land` → deny with the unresolvable shape; `amont land` on main → no hold; PreToolUse time for one land < 5 s (measured); `amont land; true` → deny naming the supported shape; scratch pre-push hook that commits and prints the push-again marker → journal shows an unreviewed push for the retried sha; then live: in a scratch branch of a gated repo, with deny on, an unreviewed `amont land` is held with the review message, and after the review it passes and lands.
 - Phase 3: a real worktree-task run on a small change uses `amont land` and the journal shows the review gate judged it.
 - Each release: `tag-release` (workflow conclusion, artifacts, brew upgrade, `which -a` shows one version).
+
+## Decision log
+
+- 2026-10-14 — Phase 1 was written by relais (run-65dce89eb6f7c-f500). The run ended blocked on a relais fault (`admission_refused`, run not registered) after its candidate `make check` was cut off by the wall limit under load; the base was already red on an unrelated test (`index_fidelity::ctrl_c_mid_run_still_restores_and_dies_by_the_signal`). The candidate was salvaged unchanged, acceptance re-run in the session, and the salvage recorded with relais.
+- 2026-10-14 — Running the dry-run in this branch's own worktree showed every `worktree-task` branch tracks `main` (`git worktree add -b <b> origin/main`), so land refused them as pushes to `main`; Phase 3 could not have worked. Fixed in Phase 1 (41b024c): a main/master upstream under another name is the branch's base, and it lands under its own name, as `git push -u` would.
+- 2026-10-14 — Another session released 1.53.0 (#327, comma-joined `hook.skip`) while Phase 1 was in review, so Phase 1 ships as **1.54.0**. Read every "1.53" in the body as 1.54: the release Phase 2 waits for, and the version amont-agent and the skills' fallback check against. The rebase onto it conflicted only in CHANGELOG.md; the branch's first push happened mid-rebase and was replaced with `--force-with-lease` on the stale tip, as the person chose.
+- 2026-10-14 — A land killed by a signal before it returns writes no receipt (the plan expected an `interrupted` one). Phase 2 reads a missing receipt as `retry-check skipped`, never a silent pass, so this stays.
+## Implementation review
+
+Phase 1 (amont): approve-with-changes, then approve-with-changes on the Delta (41b024c, no new blocker).
+Fixed: verification actuals and the receipt-on-kill gap recorded here; deliberate: the reworded usage error, no `dst` in a real land's `--json`.
+55k + 58k tokens, about 30 s each; reviewed tree dfdc698. Phases 2 and 3 are reviewed in their own repositories.
 
 <!-- panel: repos=amont,amont-agent,dotfiles,relais adds= reviewers=backend body-sha=286061f64194 -->
