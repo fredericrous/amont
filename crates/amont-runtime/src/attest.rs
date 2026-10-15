@@ -105,6 +105,16 @@ pub const INPUTS_FULL_REF: &str = "refs/notes/amont-attest-inputs";
 /// nothing else.
 pub const NAMESPACE: &str = "amont-attest";
 
+/// The provenance record (decisions ADR-0036, attest SPEC
+/// `amont-provenance-v1`): what a push carried besides its tests, the plan
+/// and the verdicts on it. Its own ref, so CI's attestation verifier never
+/// reads it, and its own namespace, so a provenance signature is never
+/// accepted as an attestation.
+pub const PROVENANCE_REF: &str = "amont-provenance";
+pub const PROVENANCE_FULL_REF: &str = "refs/notes/amont-provenance";
+pub const PROVENANCE_NAMESPACE: &str = "amont-provenance";
+pub const PROVENANCE_FORMAT: &str = "amont-provenance-v1";
+
 /// Environment marker carried by the notes push so the recursive pre-push
 /// invocation stands down. See the module doc.
 pub const PUSH_GUARD: &str = "AMONT_ATTEST_PUSH";
@@ -204,9 +214,14 @@ fn inputs_for(tree: &str, gates: &[String]) -> Vec<(String, String)> {
 /// every failure — a missing binary, a missing key, a signer that said no —
 /// because an attestation we cannot mint is simply one CI never sees.
 fn sign(payload: &str, key: &std::path::Path) -> Option<String> {
+    sign_in(NAMESPACE, payload, key)
+}
+
+/// [`sign`] under another namespace.
+fn sign_in(namespace: &str, payload: &str, key: &std::path::Path) -> Option<String> {
     use std::io::Write;
     let mut child = Command::new("ssh-keygen")
-        .args(["-Y", "sign", "-n", NAMESPACE, "-f"])
+        .args(["-Y", "sign", "-n", namespace, "-f"])
         .arg(key)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -254,6 +269,17 @@ pub fn verify(
     allowed_signers: &std::path::Path,
     principal: &str,
 ) -> bool {
+    verify_in(NAMESPACE, payload, sig, allowed_signers, principal)
+}
+
+/// [`verify`] under another namespace.
+fn verify_in(
+    namespace: &str,
+    payload: &str,
+    sig: &str,
+    allowed_signers: &std::path::Path,
+    principal: &str,
+) -> bool {
     use std::io::Write;
     // -Y verify takes the signature as a FILE; the payload rides stdin.
     //
@@ -281,7 +307,7 @@ pub fn verify(
     drop(f);
     let ok = (|| {
         let mut child = Command::new("ssh-keygen")
-            .args(["-Y", "verify", "-n", NAMESPACE, "-I", principal, "-f"])
+            .args(["-Y", "verify", "-n", namespace, "-I", principal, "-f"])
             .arg(allowed_signers)
             .arg("-s")
             .arg(&sig_file)
@@ -408,6 +434,105 @@ pub fn attest_push(
                 ", input fingerprints not published".to_string()
             },
         );
+    }
+}
+
+/// Where amont-agent leaves each provenance payload: `<config dir>/amont-agent/
+/// provenance`, the config dir resolved as amont-agent's `settings::config_dir`
+/// does (`$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, else
+/// `%USERPROFILE%\.claude`).
+///
+/// Never a git config key: a key could point amont at a directory nobody
+/// guards, and the payload's `review` line is only as true as the guard on
+/// amont-agent's store. `env` is the lookup, so a test needs no global state.
+fn provenance_dir(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let config = match env("CLAUDE_CONFIG_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(env("HOME").or_else(|| env("USERPROFILE"))?).join(".claude"),
+    };
+    Some(config.join("amont-agent").join("provenance"))
+}
+
+/// The repository's name as amont-agent files it: the directory holding the
+/// common git directory, so every worktree of a repository shares one name.
+fn repo_name() -> Option<String> {
+    let common = crate::git::stdout(&["rev-parse", "--git-common-dir"])?;
+    let common = std::fs::canonicalize(common).ok()?;
+    Some(common.parent()?.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Sign and publish the provenance record amont-agent left for each pushed
+/// commit (ADR-0036). Opt-in, key and fail-open as [`attest_push`], with one
+/// difference: it does not wait for a gate to pass, because a push that changes
+/// only documentation or its plan still carries a plan and a review.
+pub fn provenance_push(settings: &crate::config::Settings, remote: &str, refs: &[PushRef]) {
+    if remote.is_empty() || !enabled(settings) {
+        return;
+    }
+    let (Some(dir), Some(name)) = (provenance_dir(|k| std::env::var_os(k)), repo_name()) else {
+        return;
+    };
+    provenance_push_from(&dir.join(name), remote, refs);
+}
+
+/// [`provenance_push`] reading payloads from `dir`.
+fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
+    let mut found: Vec<(PathBuf, String, String, String)> = Vec::new();
+    for r in refs {
+        if is_zero(&r.local_oid) {
+            continue;
+        }
+        let file = dir.join(&r.local_oid);
+        let Ok(payload) = std::fs::read_to_string(&file) else {
+            continue; // no record for this commit: nothing to say
+        };
+        let spec = format!("{}^{{tree}}", r.local_oid);
+        let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
+            continue;
+        };
+        let first = payload.lines().next().unwrap_or_default();
+        let claimed = payload.lines().find_map(|l| l.strip_prefix("tree "));
+        if first != PROVENANCE_FORMAT || claimed != Some(tree.as_str()) {
+            crate::say!(
+                "  provenance for {} not signed: its payload is not an {PROVENANCE_FORMAT} record of this tree",
+                &r.local_oid[..r.local_oid.len().min(7)]
+            );
+            continue;
+        }
+        found.push((file, r.local_oid.clone(), tree, payload));
+    }
+    if found.is_empty() {
+        return;
+    }
+    let Some(key) = key_path().filter(|k| k.exists()) else {
+        crate::say!("  provenance not signed: no signing key");
+        return;
+    };
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut signed: Vec<PathBuf> = Vec::new();
+    for (file, commit, tree, payload) in found {
+        let Some(sig) = sign_in(PROVENANCE_NAMESPACE, &payload, &key) else {
+            continue;
+        };
+        let body = format!("{payload}\n{sig}");
+        blocks.push((tree, body.clone()));
+        blocks.push((commit, body));
+        signed.push(file);
+    }
+    if blocks.is_empty() {
+        crate::say!("  provenance not signed: the signer refused");
+        return;
+    }
+    if publish(remote, PROVENANCE_FULL_REF, &blocks) {
+        for file in &signed {
+            let _ = std::fs::remove_file(file);
+        }
+        crate::say!(
+            "{} provenance published ({PROVENANCE_REF})",
+            crate::ui::valid_sign()
+        );
+    } else {
+        crate::say!("  provenance not published: kept for the next push");
     }
 }
 
@@ -1150,6 +1275,183 @@ mod tests {
         // The right payload under the wrong principal is also no.
         assert!(!verify(&p, &sig, &signers, "someone@else.test"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_provenance_dir_is_resolved_like_amont_agents_config_dir() {
+        use std::ffi::OsString;
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| OsString::from(v))
+            }
+        };
+        assert_eq!(
+            provenance_dir(env(&[("CLAUDE_CONFIG_DIR", "/c"), ("HOME", "/h")])),
+            Some(PathBuf::from("/c/amont-agent/provenance"))
+        );
+        assert_eq!(
+            provenance_dir(env(&[("HOME", "/h"), ("USERPROFILE", "/u")])),
+            Some(PathBuf::from("/h/.claude/amont-agent/provenance"))
+        );
+        assert_eq!(
+            provenance_dir(env(&[("USERPROFILE", "/u")])),
+            Some(PathBuf::from("/u/.claude/amont-agent/provenance"))
+        );
+        assert_eq!(provenance_dir(env(&[])), None);
+    }
+
+    /// A repository with a bare origin, the toggle on and a key; one commit.
+    /// Returns (scratch, work, remote, head, tree, signers).
+    fn provenance_world(name: &str) -> (PathBuf, PathBuf, PathBuf, String, String, PathBuf) {
+        let d = dir(name);
+        let (key, _) = keypair(&d);
+        let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = d.join("allowed_signers_provenance");
+        std::fs::write(
+            &signers,
+            format!("t@t.test namespaces=\"{NAMESPACE},{PROVENANCE_NAMESPACE}\" {pubkey}"),
+        )
+        .unwrap();
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo(&format!("{name}-work"));
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("README.md"), "words").unwrap();
+        git(&work, &["add", "README.md"]);
+        git(&work, &["commit", "-qm", "docs: words"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        (d, work, remote, head, tree, signers)
+    }
+
+    fn record(head: &str, tree: &str) -> String {
+        format!(
+            "{PROVENANCE_FORMAT}\ncommit {head}\ntree {tree}\ncanon {tree}\n\
+             plan docs/plans/p.md {}\nreview reviewed {tree}\npreview not-required\n\
+             producer amont-agent 0.0.0\n",
+            "a".repeat(64)
+        )
+    }
+
+    fn push_of(head: &str) -> PushRef {
+        PushRef {
+            local_ref: "refs/heads/feat/x".into(),
+            local_oid: head.to_string(),
+            remote_ref: "refs/heads/feat/x".into(),
+            remote_oid: "0".repeat(40),
+        }
+    }
+
+    /// A payload left by amont-agent reaches the remote as a note on both
+    /// the tree and the commit, verifies under its own namespace only, and
+    /// leaves the attestation ref alone. The file is gone once published.
+    #[test]
+    fn a_provenance_payload_is_signed_and_published_by_tree_and_commit() {
+        let (d, work, remote, head, tree, signers) = provenance_world("prov-e2e");
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        let body = record(&head, &tree);
+        std::fs::write(&file, &body).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        for object in [&head, &tree] {
+            let note = git(&remote, &["notes", "--ref", PROVENANCE_REF, "show", object]);
+            let (p, sig) = note
+                .split_once("\n\n")
+                .expect("payload, blank line, signature");
+            let p = format!("{p}\n");
+            assert_eq!(p, body, "the payload is signed byte for byte");
+            assert!(verify_in(
+                PROVENANCE_NAMESPACE,
+                &p,
+                sig,
+                &signers,
+                "t@t.test"
+            ));
+            assert!(
+                !verify_in(NAMESPACE, &p, sig, &signers, "t@t.test"),
+                "a provenance signature is never an attestation"
+            );
+        }
+        assert!(!file.exists(), "a published payload is deleted");
+        let attest = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args(["notes", "--ref", NOTES_REF, "list"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&attest.stdout).trim().is_empty(),
+            "the attestation ref is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn a_payload_for_another_tree_is_neither_signed_nor_deleted() {
+        let (d, work, remote, head, _tree, _) = provenance_world("prov-mismatch");
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        std::fs::write(&file, record(&head, &"b".repeat(40))).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert!(file.exists(), "a mismatched payload is kept");
+        let refs = git(&remote, &["for-each-ref", PROVENANCE_FULL_REF]);
+        assert!(refs.is_empty(), "nothing was published: {refs}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn a_failed_publish_keeps_the_payload_for_the_next_push() {
+        let (d, work, _remote, head, tree, _) = provenance_world("prov-fail");
+        git(
+            &work,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                d.join("gone.git").to_str().unwrap(),
+            ],
+        );
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        std::fs::write(&file, record(&head, &tree)).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert!(file.exists(), "an unpublished payload is kept");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn no_payload_publishes_nothing() {
+        let (d, work, remote, head, _, _) = provenance_world("prov-none");
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        let refs = git(&remote, &["for-each-ref", PROVENANCE_FULL_REF]);
+        assert!(refs.is_empty(), "{refs}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     #[test]

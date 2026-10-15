@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **The provenance record is signed and published.** When amont-agent's
+  implementation-review hook passes a push that carries a plan, it leaves an
+  `amont-provenance-v1` payload (the plan and its body-sha, the review
+  verdict, the preview outcome, the tree and the branch patch). With
+  `amont.attest` on, pre-push now signs it with the attestation key under its
+  own namespace, `amont-provenance`, and publishes it to
+  `refs/notes/amont-provenance`, keyed by tree and by commit (decisions
+  ADR-0036, attest SPEC `amont-provenance-v1`). It runs whether or not a gate
+  passed, refuses a payload whose `tree` is not the pushed commit's, keeps the
+  payload when the publish fails, and never blocks a push. CI never reads it.
+  `.github/allowed_signers` lists the new namespace.
+
 ## v1.56.0
 
 ### Added

@@ -384,3 +384,19 @@ bash's `-e` and `pipefail` cannot change the verdict. Run
 `amont tree-parity` as an ungated CI step, so a drift committed with
 `--no-verify` still fails.
 
+## The provenance record (not a skip)
+
+Next to its attestation, a push can publish a second signed note,
+`refs/notes/amont-provenance`: what the push carried besides its tests, the
+plan it implements and the verdicts given on it (decisions ADR-0036). amont-agent
+writes the unsigned payload when its implementation-review hook passes a
+push with a plan; amont's pre-push signs it with the attestation key under the
+namespace `amont-provenance` and publishes it by tree and by commit, with the
+same append-and-push loop as attestations. The format is the attest SPEC's
+`amont-provenance-v1` section.
+
+CI never reads it, and no step is skipped on it. `amont-agent shipped <plan>`
+does: it lists each pull request a plan shipped in, its merge commit, its
+release, and the record that went out. A repository's `allowed_signers` must
+list the namespace (`namespaces="amont-attest,amont-provenance"`) for a record
+to verify.
