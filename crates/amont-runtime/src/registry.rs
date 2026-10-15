@@ -179,6 +179,10 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-commit-clippy",
         stage: Stage::PreCommit,
+        // holds-until: a commit that changes only a manifest or a toolchain
+        // pin needs linting. Clippy consumes `RUST_PATHS` but declares `.rs`,
+        // so such a commit skips it here; the push suite (`RUST_PATHS`) still
+        // builds it. Widen this scope when that gap is shown to matter.
         scope: Scope::new(hooks::rust_tools::EXTS, &["Cargo.toml"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
