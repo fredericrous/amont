@@ -1145,7 +1145,23 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
             continue;
         }
         let lineno = i + 1;
-        out.push(parse_line(lineno, line, &out));
+        let mut parsed = parse_line(lineno, line, &out);
+        // `trim` and `is_whitespace` are Unicode; attest's verifiers read the
+        // raw line with ASCII blanks only. A line this parser takes for
+        // `planExempt off` that they would read as "on" (a form feed, a
+        // non-breaking space) is loud here, never a silent opt-out that is not.
+        if matches!(&parsed, Line::Policy { what: PolicyLine::Set { key, value }, .. }
+            if key == "amont.planExempt" && value.eq_ignore_ascii_case("off"))
+            && !crate::attest_inputs::conf_says_plan_exempt_off(raw.as_bytes())
+        {
+            parsed = broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadPlanExempt("write it with plain spaces or tabs".to_string()),
+            );
+        }
+        out.push(parsed);
     }
     out
 }
@@ -2555,5 +2571,16 @@ mod tests {
         assert!(matches!(why(&v[1]), ParseError::BadPlanExempt(_)));
         let v = parse_lines("set planExempt on\nset planExempt off\n");
         assert!(matches!(why(&v[1]), ParseError::BadPlanExempt(_)));
+        for odd in [
+            "set planExempt off\u{c}",
+            "\u{b}set planExempt off",
+            "set planExempt\u{a0}off",
+        ] {
+            let v = parse_lines(odd);
+            assert!(
+                matches!(why(&v[0]), ParseError::BadPlanExempt(_)),
+                "{odd:?} must be loud"
+            );
+        }
     }
 }

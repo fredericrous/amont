@@ -437,8 +437,9 @@ fn manifest_is_an_input(tree: &str, paths: &[crate::attest_inputs::PathTok]) -> 
     !tracked || crate::attest_inputs::declares(paths, crate::manifest::MANIFEST)
 }
 
-/// Does the inputs ref exist here? One spawn that lets a repository which
-/// declares nothing skip the fingerprint route entirely on the push path.
+/// Does the inputs ref exist here? One spawn that lets a repository nothing
+/// was ever filed for (an opted-out one, or one whose stamps never passed)
+/// skip the fingerprint and canonical routes entirely on the push path.
 fn inputs_ref_exists() -> bool {
     crate::git::succeeds(&["rev-parse", "-q", "--verify", INPUTS_FULL_REF])
 }
@@ -780,7 +781,9 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 
     // Declared-input stamps are keyed by fingerprint, not by tree, so a commit
     // whose tree carries no note can still be vouched for. Asked only when the
-    // ref exists: a repository that declares nothing pays one spawn.
+    // ref exists: a repository nothing was filed for pays one spawn. Once
+    // stamps are filed (declared or canonical), each pushed commit pays the
+    // few git spawns of its route.
     let by_inputs = inputs_ref_exists();
 
     for commit in commits {
@@ -1843,6 +1846,28 @@ mod tests {
             git(&dir, &["commit", "-qm", "feat: judged"]);
             bind_to_head();
             assert!(!inputs_ref_exists(), "an unreadable spec opens nothing");
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_specs_mean_no_canonical_stamps() {
+        let dir = repo("canon-ambiguous");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join(".forgejo")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        std::fs::write(dir.join(".forgejo/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists());
             let head = plan_only_commit(&dir);
             assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
         });
