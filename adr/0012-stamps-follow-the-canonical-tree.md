@@ -31,7 +31,8 @@ tracked except `docs/plans/`.
 **A repository that declares nothing is keyed by the canonical tree.**
 
 - The push adds `canon <fp>` to the signed block and files the block under the
-  canonical key in attest's inputs ref, whether or not a valid spec exists.
+  canonical key in attest's inputs ref when the repository has no spec or a
+  valid one; an invalid, ambiguous or unlistable spec gets no `canon` line.
 - The local stamps of a repository with no spec file at all (a successful
   `ls-tree` that lists neither location) are also filed under the canonical
   fingerprint, in `refs/notes/amont-gate-inputs`, and honoured at pre-commit
@@ -41,9 +42,10 @@ tracked except `docs/plans/`.
 - `set planExempt off` opts a repository out. It is read from the committed
   bytes, never through the trust-gated settings, by one tolerant reading shared
   with attest, and fails narrow: a failing `ls-tree` or an unreadable
-  `amont.conf` is off. The line itself is strict in amont, exactly `on` or
-  `off`, once, plain blanks, so a shape attest would read as "on" is a broken
-  line.
+  `amont.conf` is off. The line itself is strict in amont: exactly `on` or
+  `off`, set once, and a line containing a blank attest does not split on (a
+  form feed, a non-breaking space) is a broken line, so a shape attest would
+  read as "on" is never a silent opt-out.
 
 ## Consequences
 
