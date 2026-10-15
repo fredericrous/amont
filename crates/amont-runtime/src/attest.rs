@@ -453,12 +453,27 @@ fn provenance_dir(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Pa
     Some(config.join("amont-agent").join("provenance"))
 }
 
-/// The repository's name as amont-agent files it: the directory holding the
-/// common git directory, so every worktree of a repository shares one name.
+/// The repository's name as amont-agent files it (its `repo_name`): the
+/// directory holding the common git directory, so every worktree of a
+/// repository shares one name. Resolved the same way, step for step, or the
+/// two sides would look in different directories.
 fn repo_name() -> Option<String> {
     let common = crate::git::stdout(&["rev-parse", "--git-common-dir"])?;
-    let common = std::fs::canonicalize(common).ok()?;
-    Some(common.parent()?.file_name()?.to_string_lossy().into_owned())
+    if common.is_empty() {
+        return None;
+    }
+    let common = PathBuf::from(common);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        std::env::current_dir().ok()?.join(common)
+    };
+    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    common
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
 }
 
 /// Sign and publish the provenance record amont-agent left for each pushed
@@ -525,7 +540,12 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
     }
     if publish(remote, PROVENANCE_FULL_REF, &blocks) {
         for file in &signed {
-            let _ = std::fs::remove_file(file);
+            if std::fs::remove_file(file).is_err() {
+                crate::say!(
+                    "  provenance published, but its payload {} could not be removed",
+                    file.display()
+                );
+            }
         }
         crate::say!(
             "{} provenance published ({PROVENANCE_REF})",
@@ -1362,6 +1382,11 @@ mod tests {
         let file = payloads.join(&head);
         let body = record(&head, &tree);
         std::fs::write(&file, &body).unwrap();
+        let gates = ["pre-push-cargo-test".to_string()];
+        in_repo(&work, || {
+            attest_push(&test_settings(), "origin", &[push_of(&head)], &gates)
+        });
+        let attested = git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]);
         in_repo(&work, || {
             provenance_push_from(&payloads, "origin", &[push_of(&head)])
         });
@@ -1385,15 +1410,10 @@ mod tests {
             );
         }
         assert!(!file.exists(), "a published payload is deleted");
-        let attest = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&remote)
-            .args(["notes", "--ref", NOTES_REF, "list"])
-            .output()
-            .unwrap();
-        assert!(
-            String::from_utf8_lossy(&attest.stdout).trim().is_empty(),
-            "the attestation ref is untouched"
+        assert_eq!(
+            git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]),
+            attested,
+            "the attestation note is byte-identical with a provenance payload present"
         );
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
@@ -1436,6 +1456,27 @@ mod tests {
             provenance_push_from(&payloads, "origin", &[push_of(&head)])
         });
         assert!(file.exists(), "an unpublished payload is kept");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The payload directory comes from the environment only: a git config
+    /// key naming a directory full of payloads is never read.
+    #[test]
+    fn a_config_key_cannot_point_amont_at_other_payloads() {
+        let (d, work, remote, head, tree, _) = provenance_world("prov-config");
+        let elsewhere = d.join("elsewhere");
+        let name = work.file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::create_dir_all(elsewhere.join(&name)).unwrap();
+        std::fs::write(elsewhere.join(&name).join(&head), record(&head, &tree)).unwrap();
+        for key in ["amont.provenanceDir", "amont.agent.provenanceDir"] {
+            git(&work, &["config", key, elsewhere.to_str().unwrap()]);
+        }
+        in_repo(&work, || {
+            provenance_push(&test_settings(), "origin", &[push_of(&head)])
+        });
+        let refs = git(&remote, &["for-each-ref", PROVENANCE_FULL_REF]);
+        assert!(refs.is_empty(), "a configured directory was read: {refs}");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
     }
