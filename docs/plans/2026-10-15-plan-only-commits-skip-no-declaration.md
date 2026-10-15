@@ -23,3 +23,5 @@ list. Implementation decisions taken here are logged below.
   `ls-tree -r --full-tree` with `core.quotePath=true` (one record per line)
   instead of the `-z` listing the plan names, because awks disagree on a NUL
   record separator. amont computes the same text in Rust.
+- 2026-10-15 — **Verification observed before the push:** `make check` exit 0 (ends `check-attest-inputs: ok`); clippy `-D warnings` clean; the Rust known-answer test pins attest's shell fingerprint (tree `fd4804a2…` → canon `e942ded7…`).
+- 2026-10-15 — **Implementation review:** approve-with-changes, then a delta: unicode-blank `planExempt off` now loud, ambiguous-spec stamp test added, comments fixed. Kept as deliberate: ~8 git spawns per pushed commit with no per-tree cache (timing measured in a later step), and silent read failures on the stamp path (fail-open to "run the gate"), consistent with the existing declared route.
