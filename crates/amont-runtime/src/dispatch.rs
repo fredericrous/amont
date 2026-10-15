@@ -1300,6 +1300,18 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         vouched.extend(tree_proven);
         crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }
+    // Outside the `passed` branch above on purpose: a push that changes only
+    // documentation or its plan still carries a plan and a review to record.
+    // holds-until: a dispatch-level test drives a push where no gate passed;
+    // until one exists, moving this call inside that branch fails no test.
+    if crate::attest::enabled(settings) {
+        let remote = ctx
+            .args
+            .first()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        crate::attest::provenance_push(ctx.settings, &remote, ctx.push.get());
+    }
     crate::downgrade::note(settings, &downgraded);
     record_evidence(&tips, &evidence);
     Verdict::Proceed
