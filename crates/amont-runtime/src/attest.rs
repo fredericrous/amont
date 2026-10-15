@@ -71,7 +71,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::attest_inputs::{fingerprint, input_key, spec_at};
+use crate::attest_inputs::{canon_for_attest, canon_key, fingerprint, input_key, spec_at};
 #[cfg(test)]
 use crate::attest_inputs::{implicit_inputs, parse_spec, PathTok};
 use crate::pushrefs::PushRef;
@@ -164,8 +164,15 @@ pub fn platform() -> String {
 ///
 /// `inputs` are the `input <gate> <fingerprint>` lines (attest 1.3.0), after
 /// `platform` and before `amont`, in spec order — additive, so a verifier that
-/// predates them reads the block exactly as before.
-pub fn payload(tree: &str, gates: &[String], inputs: &[(String, String)]) -> String {
+/// predates them reads the block exactly as before. `canon` is the
+/// `canon <fingerprint>` line (attest 1.5.0), after the `input` lines and before
+/// `amont`, with the same compatibility.
+pub fn payload(
+    tree: &str,
+    gates: &[String],
+    inputs: &[(String, String)],
+    canon: Option<&str>,
+) -> String {
     let mut p = format!(
         "{FORMAT}\ntree {tree}\ngates {}\nplatform {}\n",
         gates.join(" "),
@@ -173,6 +180,9 @@ pub fn payload(tree: &str, gates: &[String], inputs: &[(String, String)]) -> Str
     );
     for (gate, fp) in inputs {
         p.push_str(&format!("input {gate} {fp}\n"));
+    }
+    if let Some(c) = canon {
+        p.push_str(&format!("canon {c}\n"));
     }
     p.push_str(&format!("amont {}\n", env!("CARGO_PKG_VERSION")));
     p
@@ -319,6 +329,7 @@ pub fn attest_push(
     }
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut input_blocks: Vec<(String, String)> = Vec::new();
+    let mut canon_blocks: Vec<(String, String)> = Vec::new();
     for r in refs {
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
@@ -330,7 +341,12 @@ pub fn attest_push(
         // Input fingerprints, from the spec in THIS tip's tree — the tree
         // the gates ran against — for the gates that passed.
         let inputs = inputs_for(&tree, gates);
-        let p = payload(&tree, gates, &inputs);
+        // The canonical tree (attest 1.5.0): the same block, filed once more
+        // under the key of the tree with plan contents left out, so a
+        // plans-only change finds it with nothing declared. Absent when the
+        // repository opted out (`set planExempt off`) or git failed.
+        let canon = canon_for_attest(&tree);
+        let p = payload(&tree, gates, &inputs, canon.as_deref());
         let body = match sign(&p, &key) {
             Some(sig) => format!("{p}\n{sig}"),
             None => continue,
@@ -339,6 +355,9 @@ pub fn attest_push(
             if let Some(k) = input_key(gate, fp) {
                 input_blocks.push((k, body.clone()));
             }
+        }
+        if let Some(k) = canon.as_deref().and_then(canon_key) {
+            canon_blocks.push((k, body.clone()));
         }
         // The note goes on the TREE as well as the commit, and the tree is
         // the key that matches what the signature already covers.
@@ -367,6 +386,8 @@ pub fn attest_push(
     // short-circuits the inputs ref, which is how a push whose inputs ref
     // failed earlier repairs the missing keys.
     let main_ok = publish(remote, NOTES_FULL_REF, &blocks);
+    let n_inputs = input_blocks.len();
+    input_blocks.extend(canon_blocks);
     let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_FULL_REF, &input_blocks);
     if main_ok {
         crate::say!(
@@ -377,7 +398,12 @@ pub fn attest_push(
             if input_blocks.is_empty() {
                 String::new()
             } else if inputs_ok {
-                format!(", {} input fingerprints", input_blocks.len())
+                let canonical = input_blocks.len() - n_inputs;
+                match (n_inputs, canonical) {
+                    (0, _) => ", canonical tree".to_string(),
+                    (n, 0) => format!(", {n} input fingerprints"),
+                    (n, _) => format!(", {n} input fingerprints, canonical tree"),
+                }
             } else {
                 ", input fingerprints not published".to_string()
             },
@@ -1096,6 +1122,7 @@ mod tests {
             "abc123",
             &["pre-push-pytest".into(), "pre-push-cargo-test".into()],
             &[],
+            None,
         );
         let lines: Vec<&str> = p.lines().collect();
         assert_eq!(lines[0], FORMAT);
@@ -1113,12 +1140,12 @@ mod tests {
     fn sign_verify_roundtrip_and_tamper_rejection() {
         let d = dir("roundtrip");
         let (key, signers) = keypair(&d);
-        let p = payload("deadbeef", &["pre-push-pytest".into()], &[]);
+        let p = payload("deadbeef", &["pre-push-pytest".into()], &[], None);
         let sig = sign(&p, &key).expect("signing with a real key succeeds");
         assert!(verify(&p, &sig, &signers, "t@t.test"));
         // One byte of the tree changed: the signature must not carry over —
         // this is the entire difference between this module and gate_stamp.
-        let tampered = payload("deadbeee", &["pre-push-pytest".into()], &[]);
+        let tampered = payload("deadbeee", &["pre-push-pytest".into()], &[], None);
         assert!(!verify(&tampered, &sig, &signers, "t@t.test"));
         // The right payload under the wrong principal is also no.
         assert!(!verify(&p, &sig, &signers, "someone@else.test"));
@@ -1489,6 +1516,174 @@ mod tests {
             "no inputs ref was created"
         );
         let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// No spec at all: the block carries `canon <fp>` and is filed under the
+    /// canonical key in the inputs ref, with nothing declared.
+    #[test]
+    fn with_no_spec_the_block_carries_the_canonical_tree() {
+        let (d, work, remote, _) = remote_and_work("canon");
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let c = in_repo(&work, || crate::attest_inputs::canon(&tree)).expect("canon");
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        assert!(body.contains(&format!("\ncanon {c}\namont ")), "{body}");
+        assert!(!body.contains("\ninput "), "nothing declared:\n{body}");
+        let key = in_repo(&work, || crate::attest_inputs::canon_key(&c)).expect("key");
+        assert_eq!(
+            git(&remote, &["notes", "--ref", INPUTS_REF, "show", &key]),
+            body,
+            "the same block is filed under the canonical key"
+        );
+        // A second push appends nothing anywhere.
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        assert_eq!(
+            git(&remote, &["notes", "--ref", INPUTS_REF, "show", &key])
+                .matches("BEGIN SSH SIGNATURE")
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A valid spec keeps its `input` lines and gains the `canon` line.
+    #[test]
+    fn a_valid_spec_also_carries_the_canonical_tree() {
+        let (d, work, remote, _) = remote_and_work("canon-spec");
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(
+            work.join(".github/attest-inputs"),
+            "pre-push-run-tests-js a.ts\n",
+        )
+        .unwrap();
+        git(&work, &["add", ".github/attest-inputs"]);
+        git(&work, &["commit", "-qm", "chore: spec"]);
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+        let input = body
+            .find("\ninput pre-push-run-tests-js ")
+            .expect("input line");
+        let canon = body.find("\ncanon ").expect("canon line");
+        let tool = body.find("\namont ").expect("amont line");
+        assert!(
+            input < canon && canon < tool,
+            "input, canon, amont:\n{body}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Opted out, or a spec nobody can use: the block is as before 1.56.0.
+    #[test]
+    fn an_opt_out_or_an_unusable_spec_leaves_no_canon_line() {
+        for (name, setup) in [
+            ("canon-off", "off"),
+            ("canon-bad-spec", "bad"),
+            ("canon-unreadable-conf", "conf-dir"),
+        ] {
+            let (d, work, remote, _) = remote_and_work(name);
+            match setup {
+                "off" => {
+                    std::fs::write(work.join("amont.conf"), "set planExempt off\n").unwrap();
+                    git(&work, &["add", "amont.conf"]);
+                }
+                "bad" => {
+                    std::fs::create_dir_all(work.join(".github")).unwrap();
+                    std::fs::write(work.join(".github/attest-inputs"), "g src/*.ts\n").unwrap();
+                    git(&work, &["add", ".github/attest-inputs"]);
+                }
+                _ => {
+                    std::fs::create_dir_all(work.join("amont.conf")).unwrap();
+                    std::fs::write(work.join("amont.conf/x"), "x").unwrap();
+                    git(&work, &["add", "amont.conf/x"]);
+                }
+            }
+            git(&work, &["commit", "-qm", "chore: setup"]);
+            let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+            in_repo(&work, || {
+                attest_push(
+                    &test_settings(),
+                    "origin",
+                    &[push_ref_for(&work)],
+                    &["pre-push-run-tests-js".into()],
+                );
+            });
+            let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
+            assert!(!body.contains("\ncanon "), "{name}: no canon line:\n{body}");
+            assert!(
+                !crate::git::succeeds_in(
+                    &remote,
+                    &["rev-parse", "--verify", "--quiet", INPUTS_FULL_REF]
+                ),
+                "{name}: no inputs ref was created"
+            );
+            let _ = std::fs::remove_dir_all(&d);
+            let _ = std::fs::remove_dir_all(&work);
+        }
+    }
+
+    /// The same vector attest's shell and Rust verifiers are held to: a fixed
+    /// tree, its canonical fingerprint, the same after a plan edit, different
+    /// after a code edit. A drift between the copies fails here.
+    #[test]
+    fn the_canonical_fingerprint_matches_attests_known_answers() {
+        let work = repo("canon-vector");
+        std::fs::create_dir_all(work.join("docs/plans")).unwrap();
+        std::fs::create_dir_all(work.join("src")).unwrap();
+        std::fs::write(work.join("a.ts"), "x\n").unwrap();
+        std::fs::write(work.join("docs/plans/p.md"), "plan\n").unwrap();
+        std::fs::write(work.join("src/lib.rs"), "fn f() {}\n").unwrap();
+        std::fs::write(work.join("run.sh"), "#!/bin/sh\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["update-index", "--chmod=+x", "run.sh"]);
+        git(&work, &["commit", "-qm", "init"]);
+        let canon = |w: &Path| {
+            let t = git(w, &["rev-parse", "HEAD^{tree}"]);
+            (t.clone(), in_repo(w, || crate::attest_inputs::canon(&t)))
+        };
+        let (t0, c0) = canon(&work);
+        assert_eq!(t0, "fd4804a25fa9207c65410d3a57099643e14564eb");
+        assert_eq!(
+            c0.as_deref(),
+            Some("e942ded734eec11936c0f65fd86c071f2ef505b0")
+        );
+        std::fs::write(work.join("docs/plans/p.md"), "plan2\n").unwrap();
+        git(&work, &["add", "docs/plans/p.md"]);
+        git(&work, &["commit", "-qm", "plan"]);
+        let (t1, c1) = canon(&work);
+        assert_ne!(t1, t0);
+        assert_eq!(c1, c0, "a plan edit leaves the canonical tree unchanged");
+        std::fs::write(work.join("src/lib.rs"), "fn g() {}\n").unwrap();
+        git(&work, &["add", "src/lib.rs"]);
+        git(&work, &["commit", "-qm", "code"]);
+        assert_eq!(
+            canon(&work).1.as_deref(),
+            Some("57dabcd18b8b8fa35db59657892b2b8b34a1ae4f")
+        );
         let _ = std::fs::remove_dir_all(&work);
     }
 
