@@ -179,6 +179,10 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-commit-clippy",
         stage: Stage::PreCommit,
+        // holds-until: a commit that changes only a manifest or a toolchain
+        // pin needs linting. Clippy consumes `RUST_PATHS` but declares `.rs`,
+        // so such a commit skips it here; the push suite (`RUST_PATHS`) still
+        // builds it. Widen this scope when that gap is shown to matter.
         scope: Scope::new(hooks::rust_tools::EXTS, &["Cargo.toml"]).not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
@@ -530,7 +534,7 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-push-cargo-test",
         stage: Stage::PrePush,
-        scope: Scope::new(hooks::rust_tools::EXTS, &["Cargo.toml"])
+        scope: Scope::new(hooks::rust_tools::RUST_PATHS, &["Cargo.toml"])
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
@@ -540,7 +544,7 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-push-go-test",
         stage: Stage::PrePush,
-        scope: Scope::new(hooks::go_tools::EXTS, &["go.mod"])
+        scope: Scope::new(hooks::go_tools::GO_PATHS, &["go.mod"])
             .not_during(&[GitState::Bisect, GitState::Rebase]),
         severity: Severity::Block,
         fix: Fix::None,
@@ -1245,6 +1249,36 @@ mod tests {
                     "{} declares {ext:?} in its scope but never asks for it — \
                      `amont list` would report a coverage the check does not have",
                     check.name
+                );
+            }
+        }
+    }
+
+    /// A push suite must declare EVERY path it consumes, the converse of the
+    /// test above, because the declaration is what the rest of the push
+    /// reads: rehearsal picks its gates by `scope.touches`, pairing judges
+    /// coverage by it, and `stamp_tips` stamps only a gate whose scope the
+    /// push touched.
+    ///
+    /// The incident: `pre-push-cargo-test` declared `.rs` while
+    /// `rust_tools::test` ran for `Cargo.toml` and `Cargo.lock` too. A
+    /// release commit (version bump only) got "nothing to rehearse", then
+    /// the push ran the full suite (557 s for relais 0.22.0), and the pass
+    /// was never stamped, so every such push ran it again.
+    #[test]
+    fn a_push_suite_declares_every_path_it_consumes() {
+        for name in ["pre-push-cargo-test", "pre-push-go-test", "pre-push-pytest"] {
+            let check = CHECKS.iter().find(|c| c.name == name).expect(name);
+            let Some((_, Consumes::Exts(consumed))) = CONSUMED.iter().find(|(n, _)| *n == name)
+            else {
+                panic!("{name} must consume an explicit file set");
+            };
+            for path in *consumed {
+                assert!(
+                    check.scope.files.contains(path),
+                    "{name} runs for {path:?} but does not declare it: a push \
+                     touching only {path:?} would be rehearsed as nothing to do, \
+                     run at push time, and never stamped"
                 );
             }
         }

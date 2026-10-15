@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A version-bump commit is rehearsed, and its push skips the suite.**
+  `pre-push-cargo-test` declared `.rs` files only, while `cargo test` ran
+  for a `Cargo.toml` or `Cargo.lock` change too. A release commit got
+  "nothing to rehearse", then its push ran the full suite (557 s for relais
+  0.22.0), and that pass was never stamped, so the next such push ran it
+  again. The gate now declares every file it runs for, as does
+  `pre-push-go-test` (`go.sum`). A registry test keeps each push suite's
+  scope equal to what it consumes.
+
 ## v1.55.0
 
 ### Added

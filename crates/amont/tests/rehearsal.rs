@@ -568,6 +568,46 @@ fn a_rehearsal_with_nothing_to_run_says_so() {
     assert_eq!(worktrees(&r), 1);
 }
 
+/// A release commit bumps `Cargo.toml` and `Cargo.lock` and no `.rs` file.
+/// `cargo test` runs for it, so the rehearsal must run it too, and the push
+/// must then skip it on the stamp. Before, the built-in declared `.rs` only:
+/// the rehearsal said "nothing to rehearse", the push ran the suite anyway,
+/// and the pass was never stamped (relais 0.22.0, 2026-10-15).
+#[test]
+#[cfg(unix)]
+fn a_manifest_only_commit_is_rehearsed_and_the_push_skips_cargo_test() {
+    if missing("cargo") {
+        return;
+    }
+    let r = Repo::new();
+    let manifest =
+        |v: &str| format!("[package]\nname = \"redloop\"\nversion = \"{v}\"\nedition = \"2021\"\n");
+    r.write(".gitignore", "target\n");
+    r.write("Cargo.toml", &manifest("0.1.0"));
+    r.write("src/lib.rs", "#[test]\nfn t() {}\n");
+    r.git(&["add", "-A"]);
+    r.commit("chore: base");
+    let base = head(&r);
+    trust_and_install(&r);
+    r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
+    r.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    r.stage("Cargo.toml", &manifest("0.2.0"));
+    r.commit("chore(release): v0.2.0");
+
+    let (code, out) = rehearse(&r, &["--wait"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("nothing to rehearse"), "{out}");
+    assert!(
+        note(&r, "HEAD").contains("pre-push-cargo-test"),
+        "HEAD is stamped: {out}\nlog:\n{}",
+        log(&r)
+    );
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(SKIP), "{out}");
+}
+
 /// `--stop` ends the worker and takes the snapshot with it.
 #[test]
 #[cfg(unix)]
