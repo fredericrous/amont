@@ -6,6 +6,16 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **Pushing a tag no longer rebases your checkout.** `pre-push-pull-rebase`
+  synced the checked-out branch whatever the push carried, so pushing a
+  release tag from a checkout on a branch that was behind rebased it and
+  refused the tag with "push again". It now acts only when the push
+  publishes the checked-out branch.
+
 ## v1.55.1
 
 ### Fixed

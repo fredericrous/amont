@@ -463,7 +463,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::pull_rebase::run(ctx.settings, ctx.args),
+        run: |ctx| hooks::pull_rebase::run(ctx.settings, ctx.push.get(), ctx.args),
     },
     // The four dependency audits sit between the structural checks and the
     // test suites: network-bound but seconds, where a suite is minutes —
