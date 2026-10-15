@@ -338,7 +338,7 @@ fn note_in(notes_ref: &str, key: &str) -> Note {
 /// not answer: all contribute nothing, and nothing means the gate runs.
 fn input_tokens(tree: &str) -> Vec<String> {
     let Some(spec) = crate::attest_inputs::spec_at(tree) else {
-        return Vec::new();
+        return canon_tokens(tree);
     };
     let mut out: Vec<String> = Vec::new();
     for (gate, paths) in spec {
@@ -360,14 +360,46 @@ fn input_tokens(tree: &str) -> Vec<String> {
     out
 }
 
+/// The tokens `tree`'s canonical fingerprint vouches for: a repository that
+/// declares nothing is reused on any tree that differs only in the CONTENT of
+/// its plans (attest SPEC, "Canonical tree"). One note per fingerprint holds
+/// the tokens of every gate that passed on it, as the tree note does for a
+/// tree. A declared (even invalid) spec, an opt-out, or a git that would not
+/// answer: no canonical route, nothing contributed, the gate runs.
+fn canon_tokens(tree: &str) -> Vec<String> {
+    canon_key_of(tree)
+        .map(|key| note_in(INPUTS_REF, &key).tokens)
+        .unwrap_or_default()
+}
+
+/// The key of the canonical note of `tree`, if the canonical route is open.
+fn canon_key_of(tree: &str) -> Option<String> {
+    let canon = crate::attest_inputs::canonical_route(tree)?;
+    crate::attest_inputs::canon_gate_key(&canon)
+}
+
+/// File `tokens` under the canonical key of `tree`. Best-effort and merged,
+/// like [`file_inputs`]. The manifest needs no rule here: `amont.conf` is part
+/// of the canonical tree, so a changed declaration is a changed fingerprint.
+fn file_canon(tree: &str, tokens: &[String]) {
+    let Some(key) = canon_key_of(tree) else {
+        return;
+    };
+    let mut note = note_in(INPUTS_REF, &key);
+    note.add_tokens(tokens);
+    let _ = write_note_in(INPUTS_REF, &key, &note);
+}
+
 /// File `tokens` under the fingerprint keys of the gates `tree` declares, in
-/// addition to wherever the caller put them by tree. Best-effort, silent, and
-/// merged: a miss here is one redundant gate run, which is the safe direction.
+/// addition to wherever the caller put them by tree; with no spec at all, under
+/// the canonical key. Best-effort, silent, and merged: a miss here is one
+/// redundant gate run, which is the safe direction.
 fn file_inputs(tree: &str, tokens: &[String]) {
     if tokens.is_empty() {
         return;
     }
     let Some(spec) = crate::attest_inputs::spec_at(tree) else {
+        file_canon(tree, tokens);
         return;
     };
     for (gate, paths) in spec {
@@ -405,8 +437,9 @@ fn manifest_is_an_input(tree: &str, paths: &[crate::attest_inputs::PathTok]) -> 
     !tracked || crate::attest_inputs::declares(paths, crate::manifest::MANIFEST)
 }
 
-/// Does the inputs ref exist here? One spawn that lets a repository which
-/// declares nothing skip the fingerprint route entirely on the push path.
+/// Does the inputs ref exist here? One spawn that lets a repository nothing
+/// was ever filed for (an opted-out one, or one whose stamps never passed)
+/// skip the fingerprint and canonical routes entirely on the push path.
 fn inputs_ref_exists() -> bool {
     crate::git::succeeds(&["rev-parse", "-q", "--verify", INPUTS_FULL_REF])
 }
@@ -748,7 +781,9 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 
     // Declared-input stamps are keyed by fingerprint, not by tree, so a commit
     // whose tree carries no note can still be vouched for. Asked only when the
-    // ref exists: a repository that declares nothing pays one spawn.
+    // ref exists: a repository nothing was filed for pays one spawn. Once
+    // stamps are filed (declared or canonical), each pushed commit pays the
+    // few git spawns of its route.
     let by_inputs = inputs_ref_exists();
 
     for commit in commits {
@@ -1684,6 +1719,174 @@ mod tests {
             assert!(inputs_ref_exists());
             assert!(forget());
             assert!(!inputs_ref_exists());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repository that declares nothing: `a.ts`, a plan, and optionally an
+    /// `amont.conf`, judged once (`test@abc`).
+    fn canonical(name: &str, conf: Option<&str>) -> PathBuf {
+        let dir = repo(name);
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "plan v1").unwrap();
+        if let Some(conf) = conf {
+            std::fs::write(dir.join("amont.conf"), conf).unwrap();
+        }
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            assert_eq!(bind_to_head(), vec!["test".to_string()]);
+        });
+        dir
+    }
+
+    fn vouched(dir: &Path, commit: &str) -> Vec<String> {
+        in_repo(dir, || {
+            stamps_for(std::slice::from_ref(&commit.to_string()))
+                .remove(commit)
+                .unwrap_or_default()
+        })
+    }
+
+    #[test]
+    fn with_no_spec_a_plans_only_commit_is_vouched_for_canonically() {
+        let dir = canonical("canon-plan-edit", None);
+        in_repo(&dir, || {
+            assert!(inputs_ref_exists(), "the canonical stamp is filed");
+            let head = plan_only_commit(&dir);
+            assert_eq!(
+                stamps_for(std::slice::from_ref(&head))
+                    .remove(&head)
+                    .unwrap_or_default(),
+                vec!["test@abc".to_string()]
+            );
+            // The staged tree, as pre-commit judges it, is vouched for too.
+            std::fs::write(dir.join("docs/plans/p.md"), "plan v3").unwrap();
+            git(&dir, &["add", "docs/plans/p.md"]);
+            assert!(vouched_for_staged_tree().contains("test@abc"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_plan_added_deleted_or_renamed_is_not_vouched_for() {
+        let dir = canonical("canon-plan-exists", None);
+        std::fs::write(dir.join("docs/plans/q.md"), "second plan").unwrap();
+        git(&dir, &["add", "docs/plans/q.md"]);
+        git(&dir, &["commit", "-qm", "docs(plan): add"]);
+        let added = git(&dir, &["rev-parse", "HEAD"]);
+        assert!(vouched(&dir, &added).is_empty(), "a plan added");
+        git(&dir, &["mv", "docs/plans/p.md", "docs/plans/r.md"]);
+        git(&dir, &["commit", "-qm", "docs(plan): rename"]);
+        let renamed = git(&dir, &["rev-parse", "HEAD"]);
+        assert!(vouched(&dir, &renamed).is_empty(), "a plan renamed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_no_spec_any_other_change_is_not_vouched_for() {
+        let dir = canonical("canon-code-edit", Some("gate test = make test\n"));
+        std::fs::write(dir.join("a.ts"), "changed").unwrap();
+        git(&dir, &["commit", "-qam", "feat: code"]);
+        let code = git(&dir, &["rev-parse", "HEAD"]);
+        assert!(vouched(&dir, &code).is_empty(), "a source edit");
+        // amont.conf is part of the canonical tree: a scope-only edit misses.
+        std::fs::write(dir.join("amont.conf"), "gate test = make other\n").unwrap();
+        git(&dir, &["commit", "-qam", "chore: config"]);
+        let conf = git(&dir, &["rev-parse", "HEAD"]);
+        assert!(vouched(&dir, &conf).is_empty(), "a manifest edit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_exempt_off_closes_the_canonical_route() {
+        for (name, conf) in [
+            ("off", "set planExempt off\n"),
+            ("spelled", "SET  PLANEXEMPT\tOff\r\n"),
+            ("after", "set planExempt on\nset planExempt off\n"),
+        ] {
+            let dir = canonical(&format!("canon-off-{name}"), Some(conf));
+            in_repo(&dir, || {
+                assert!(!inputs_ref_exists(), "{name}: nothing is filed");
+                let head = plan_only_commit(&dir);
+                assert!(
+                    stamps_for(std::slice::from_ref(&head)).is_empty(),
+                    "{name}: a plans-only commit is a new tree"
+                );
+            });
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // `on`, a trailing comment and a comment line do not opt out.
+        for (name, conf) in [
+            ("on", "set planExempt on\n"),
+            ("comment", "set planExempt off # no\n"),
+            ("commented", "# set planExempt off\n"),
+        ] {
+            let dir = canonical(&format!("canon-on-{name}"), Some(conf));
+            let head = plan_only_commit(&dir);
+            assert!(!vouched(&dir, &head).is_empty(), "{name}: still canonical");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_spec_that_cannot_be_used_means_no_canonical_stamps() {
+        // A directory where the spec should be: listed, unreadable as a blob.
+        let dir = repo("canon-unreadable-spec");
+        std::fs::create_dir_all(dir.join(".github/attest-inputs")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join(".github/attest-inputs/x"), "x").unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists(), "an unreadable spec opens nothing");
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_specs_mean_no_canonical_stamps() {
+        let dir = repo("canon-ambiguous");
+        std::fs::create_dir_all(dir.join(".github")).unwrap();
+        std::fs::create_dir_all(dir.join(".forgejo")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("docs/plans/p.md"), "v1").unwrap();
+        std::fs::write(dir.join(".github/attest-inputs"), "test a.ts\n").unwrap();
+        std::fs::write(dir.join(".forgejo/attest-inputs"), "test a.ts\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        in_repo(&dir, || {
+            record(&["test@abc"]);
+            git(&dir, &["commit", "-qm", "feat: judged"]);
+            bind_to_head();
+            assert!(!inputs_ref_exists());
+            let head = plan_only_commit(&dir);
+            assert!(stamps_for(std::slice::from_ref(&head)).is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_valid_spec_keeps_precedence_over_the_canonical_route() {
+        // `lint` is not declared: it must NOT ride the canonical route.
+        let dir = declared("canon-precedence", "test a.ts\n");
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            assert!(stamp_tree(&tree, &["lint@zzz".to_string()]));
+            let head = plan_only_commit(&dir);
+            let tokens = stamps_for(std::slice::from_ref(&head))
+                .remove(&head)
+                .unwrap_or_default();
+            assert!(tokens.contains(&"test@abc".to_string()));
+            assert!(!tokens.iter().any(|t| t.starts_with("lint@")));
         });
         let _ = std::fs::remove_dir_all(&dir);
     }

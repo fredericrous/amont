@@ -35,7 +35,7 @@ trigger) decides regardless of source. Skips union across every source. On a
 git too old for `--show-scope` (< 2.26) this degrades fail-safe to "all git
 config beats policy". A `set` line reaches an allowlist of the keys on this
 page — the thresholds, commit style, `autoRebase`, `timeout`,
-`testPushedTree`, `minVersion` — and never `fix`, `trusted`,
+`testPushedTree`, `minVersion`, `planExempt` — and never `fix`, `trusted`,
 `conventions`, or the observability opt-outs, which stay per-machine.
 
 ## `hook.skip` — do not run it
@@ -821,6 +821,25 @@ git config amont.fix true
 Off unless you ask. A hook that edits your files without being asked is a
 larger surprise than one that complains. See
 [custom checks](custom-checks.md#letting-a-check-fix-what-it-finds).
+
+## `amont.planExempt` — reusing gates across a plans-only commit
+
+`set planExempt off` in a committed `amont.conf` turns off the canonical-tree
+route (attest 1.5.0): a result is then reused only on the exact tree, or by a
+spec's declared inputs. It exists for a repository whose gate reads the
+*contents* of a plan, which the canonical route would otherwise skip when only
+a plan changed.
+
+- The default is on; the value is exactly `on` or `off`, and the line appears
+  once. Anything else (`off # because`, a second line) is a broken line, because
+  attest's verifiers read this one line from the committed bytes with a
+  reading that matches only exactly `set planExempt off`, and a shape they
+  would read as "on" must not look like "off" here.
+- `off` only narrows what is reused, so it is honoured trusted or not, and by
+  every producer and verifier, CI included. An unreadable `amont.conf`
+  counts as off.
+- Because `amont.conf` is part of the canonical tree, adding or removing the
+  line changes the fingerprint and the next push runs everything once.
 
 ## `amont.testPushedTree` — test what you are pushing
 

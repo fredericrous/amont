@@ -77,6 +77,11 @@ pub enum ParseError {
     BadPolicyLine(&'static str),
     /// A `set` line naming a key policy may not reach.
     UnsettableKey(String),
+    /// `set planExempt` with a value other than `on`/`off`, or a second one.
+    /// attest's verifiers read this one line from the committed bytes with a
+    /// tolerant reading that matches only exactly `set planExempt off`, so any
+    /// other shape would silently mean "on" to them: it is loud here instead.
+    BadPlanExempt(String),
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -125,6 +130,7 @@ impl std::fmt::Display for ParseError {
                 "a tool pin is exactly `tool <program> <version-substring>`"
             ),
             ParseError::BadPolicyLine(usage) => write!(f, "a policy line is `{usage}`"),
+            ParseError::BadPlanExempt(why) => write!(f, "set planExempt: {why}"),
             ParseError::UnsettableKey(k) => write!(
                 f,
                 "set {k:?} is not a policy-settable key — see docs/custom-checks.md"
@@ -429,6 +435,12 @@ pub const SETTABLE: &[&str] = &[
     "treeLintWait",
     "treeLintRehearsalTimeout",
     "snapshotPrepareOutputs",
+    // Whether a closing plan commit may reuse a gate's result (attest 1.5.0,
+    // "Canonical tree"). `off` for a repository whose gate reads the contents
+    // of a plan. It only ever narrows, so attest's verifiers and every producer
+    // read the committed line itself, trusted or not, and the line is strict:
+    // exactly `on` or `off`, once.
+    "planExempt",
 ];
 
 impl PolicyLine {
@@ -1133,7 +1145,23 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
             continue;
         }
         let lineno = i + 1;
-        out.push(parse_line(lineno, line, &out));
+        let mut parsed = parse_line(lineno, line, &out);
+        // `trim` and `is_whitespace` are Unicode; attest's verifiers read the
+        // raw line with ASCII blanks only. A line this parser takes for
+        // `planExempt off` that they would read as "on" (a form feed, a
+        // non-breaking space) is loud here, never a silent opt-out that is not.
+        if matches!(&parsed, Line::Policy { what: PolicyLine::Set { key, value }, .. }
+            if key == "amont.planExempt" && value.eq_ignore_ascii_case("off"))
+            && !crate::attest_inputs::conf_says_plan_exempt_off(raw.as_bytes())
+        {
+            parsed = broken_at(
+                lineno,
+                format!("{MANIFEST}:{lineno}"),
+                None,
+                ParseError::BadPlanExempt("write it with plain spaces or tabs".to_string()),
+            );
+        }
+        out.push(parsed);
     }
     out
 }
@@ -1235,6 +1263,37 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                 // stored — `set commit.subjectmax 72` must work, because git
                 // would have accepted the key in any case.
                 match SETTABLE.iter().find(|k| k.eq_ignore_ascii_case(key)) {
+                    Some(canonical) if *canonical == "planExempt" => {
+                        if !(value.eq_ignore_ascii_case("on") || value.eq_ignore_ascii_case("off"))
+                        {
+                            broken_at(
+                                lineno,
+                                format!("{MANIFEST}:{lineno}"),
+                                None,
+                                ParseError::BadPlanExempt(format!(
+                                    "the value is `on` or `off`, not {value:?}"
+                                )),
+                            )
+                        } else if earlier.iter().any(|l| {
+                            matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. }
+                                if key == "amont.planExempt")
+                        }) {
+                            broken_at(
+                                lineno,
+                                format!("{MANIFEST}:{lineno}"),
+                                None,
+                                ParseError::BadPlanExempt("it is set twice".to_string()),
+                            )
+                        } else {
+                            Line::Policy {
+                                what: PolicyLine::Set {
+                                    key: format!("amont.{canonical}"),
+                                    value: value.to_string(),
+                                },
+                                lineno,
+                            }
+                        }
+                    }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
                             key: format!("amont.{canonical}"),
@@ -2473,6 +2532,55 @@ mod tests {
                 // dispatcher would ENFORCE.
                 assert_eq!(d.exts, e.scope().files);
             }
+        }
+    }
+
+    #[test]
+    fn plan_exempt_is_exactly_on_or_off_and_set_once() {
+        let policy = |l: &Line| match l {
+            Line::Policy {
+                what: PolicyLine::Set { key, value },
+                ..
+            } => Some((key.clone(), value.clone())),
+            _ => None,
+        };
+        for ok in [
+            "set planExempt off",
+            "set PLANEXEMPT On",
+            "  set\tplanExempt\toff  ",
+        ] {
+            let v = parse_lines(ok);
+            assert!(policy(&v[0]).is_some(), "{ok:?} should parse");
+            assert_eq!(policy(&v[0]).unwrap().0, "amont.planExempt");
+        }
+        // attest's verifiers match only exactly `set planExempt off`, so any
+        // other shape would silently mean "on" to them: loud here instead.
+        for bad in [
+            "set planExempt off # because",
+            "set planExempt false",
+            "set planExempt off off",
+            "set planExempt",
+        ] {
+            let v = parse_lines(bad);
+            assert!(policy(&v[0]).is_none(), "{bad:?} must not be a policy");
+        }
+        let v = parse_lines("set planExempt off # because");
+        assert!(matches!(why(&v[0]), ParseError::BadPlanExempt(_)));
+        let v = parse_lines("set planExempt off\nset planExempt on\n");
+        assert!(policy(&v[0]).is_some());
+        assert!(matches!(why(&v[1]), ParseError::BadPlanExempt(_)));
+        let v = parse_lines("set planExempt on\nset planExempt off\n");
+        assert!(matches!(why(&v[1]), ParseError::BadPlanExempt(_)));
+        for odd in [
+            "set planExempt off\u{c}",
+            "\u{b}set planExempt off",
+            "set planExempt\u{a0}off",
+        ] {
+            let v = parse_lines(odd);
+            assert!(
+                matches!(why(&v[0]), ParseError::BadPlanExempt(_)),
+                "{odd:?} must be loud"
+            );
         }
     }
 }

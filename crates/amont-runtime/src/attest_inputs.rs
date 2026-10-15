@@ -130,10 +130,28 @@ pub enum SpecError {
 
 /// [`spec_at`] with the reason, and the path the spec was read from.
 pub(crate) fn read_spec(tree: &str) -> Result<(&'static str, Spec), SpecError> {
+    // Presence comes from a listing that must itself succeed, never from a
+    // `cat-file -e` probe: that cannot tell an absent file from a git that
+    // failed, and "absent" opens the canonical route while "cannot tell" must
+    // not.
+    let listing = crate::git::stdout_raw(&[
+        "ls-tree",
+        "--full-tree",
+        tree,
+        "--",
+        SPEC_PATHS[0],
+        SPEC_PATHS[1],
+    ])
+    .ok_or(SpecError::Unlisted)?;
+    let listing = String::from_utf8_lossy(&listing);
     let present: Vec<&'static str> = SPEC_PATHS
         .iter()
         .copied()
-        .filter(|p| crate::git::succeeds(&["cat-file", "-e", &format!("{tree}:{p}")]))
+        .filter(|p| {
+            listing
+                .lines()
+                .any(|l| l.split_once('\t').is_some_and(|(_, name)| name == *p))
+        })
         .collect();
     let path = match present.as_slice() {
         [] => return Err(SpecError::Missing),
@@ -392,4 +410,232 @@ pub(crate) fn input_key(gate: &str, fp: &str) -> Option<String> {
         pre.as_bytes(),
     )
     .filter(|s| is_oid(s))
+}
+
+// ---------------------------------------------------------------------------
+// The canonical tree (attest 1.5.0). attest's SPEC.md, "Canonical tree": the
+// fingerprint of a tree in which the CONTENT of every regular file under the
+// top-level `docs/plans/` is not counted but its EXISTENCE is. Nothing is
+// declared, so nothing can be under-declared. Ported in behaviour from the
+// shell and Rust verifiers there; the vectors below pin the same cases.
+// ---------------------------------------------------------------------------
+
+/// Does this `amont.conf` say `set planExempt off`? One tolerant reading,
+/// shared with attest: strip CR, trim blanks, split on blanks, compare the
+/// three words `set`, `planExempt` and `off` ASCII case-insensitively. A line
+/// that is not exactly those three words does not match; any match is off.
+pub(crate) fn conf_says_plan_exempt_off(bytes: &[u8]) -> bool {
+    bytes.split(|&b| b == b'\n').any(|line| {
+        let line: Vec<u8> = line.iter().copied().filter(|&b| b != b'\r').collect();
+        let words: Vec<&[u8]> = line
+            .split(|&b| b == b' ' || b == b'\t')
+            .filter(|w| !w.is_empty())
+            .collect();
+        words.len() == 3
+            && words[0].eq_ignore_ascii_case(b"set")
+            && words[1].eq_ignore_ascii_case(b"planExempt")
+            && words[2].eq_ignore_ascii_case(b"off")
+    })
+}
+
+/// Is the canonical route switched off for `tree`? Read from the bytes of
+/// `tree:amont.conf` itself, never through the trust-gated settings: `off`
+/// only narrows, so it is honoured whoever wrote it. Fails narrow: a failing
+/// `ls-tree`, or a listed `amont.conf` whose blob cannot be read, is off; only
+/// a successful `ls-tree` that does not list the file means on.
+pub(crate) fn plan_exempt_off(tree: &str) -> bool {
+    let manifest = crate::manifest::MANIFEST;
+    let Some(listing) = crate::git::stdout_raw(&["ls-tree", "--full-tree", tree, "--", manifest])
+    else {
+        return true;
+    };
+    if listing.is_empty() {
+        return false;
+    }
+    match crate::git::stdout_raw(&["cat-file", "blob", &format!("{tree}:{manifest}")]) {
+        Some(bytes) => conf_says_plan_exempt_off(&bytes),
+        None => true,
+    }
+}
+
+/// The canonical text of an `ls-tree -r --full-tree` listing (paths quoted by
+/// `core.quotePath=true`, so one record is one line): the same lines, except
+/// that a regular file (`100644`, `100755`) under the top-level `docs/plans/`
+/// has its oid replaced by zeros of the same length. Symlinks and gitlinks are
+/// never neutralised. `None` for an empty or malformed listing.
+pub(crate) fn canon_text(listing: &str) -> Option<String> {
+    let mut out = String::with_capacity(listing.len());
+    for line in listing.lines() {
+        let (head, path) = line.split_once('\t')?;
+        let mut f = head.split(' ');
+        let (mode, kind, oid) = (f.next()?, f.next()?, f.next()?);
+        if f.next().is_some() {
+            return None;
+        }
+        // A quoted path keeps its first characters: `"docs/plans/...`.
+        let under_plans = path.starts_with("docs/plans/") || path.starts_with("\"docs/plans/");
+        if matches!(mode, "100644" | "100755") && under_plans {
+            out.push_str(&format!(
+                "{mode} {kind} {}\t{path}\n",
+                "0".repeat(oid.len())
+            ));
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The canonical fingerprint of `tree`, or `None` when git fails at any step.
+pub(crate) fn canon(tree: &str) -> Option<String> {
+    let listing = crate::git::stdout_raw(&[
+        "-c",
+        "core.quotePath=true",
+        "ls-tree",
+        "-r",
+        "--full-tree",
+        tree,
+    ])?;
+    let text = canon_text(std::str::from_utf8(&listing).ok()?)?;
+    crate::git::stdout_piped_in(
+        std::path::Path::new("."),
+        &["hash-object", "--stdin"],
+        text.as_bytes(),
+    )
+    .filter(|s| is_oid(s))
+}
+
+fn hashed(preimage: &str) -> Option<String> {
+    crate::git::stdout_piped_in(
+        std::path::Path::new("."),
+        &["hash-object", "--stdin"],
+        preimage.as_bytes(),
+    )
+    .filter(|s| is_oid(s))
+}
+
+/// The synthetic key of a canonical fingerprint in attest's inputs ref.
+pub(crate) fn canon_key(canon: &str) -> Option<String> {
+    hashed(&format!("amont-attest-canon {canon}\n"))
+}
+
+/// The key under which the local gate stamps of a canonical fingerprint are
+/// filed in amont's own inputs ref: one note per fingerprint, holding the
+/// tokens of every gate that passed on it.
+pub(crate) fn canon_gate_key(canon: &str) -> Option<String> {
+    hashed(&format!("amont-gate-canon {canon}\n"))
+}
+
+/// The canonical fingerprint of `tree` when its gates are reused canonically:
+/// no spec at all (a successful listing that lists neither location), the
+/// repository has not opted out, and git could compute it. An invalid,
+/// ambiguous or unlistable spec is today's fail-open: no canonical route, so
+/// no canonical stamps.
+pub(crate) fn canonical_route(tree: &str) -> Option<String> {
+    match read_spec(tree) {
+        Err(SpecError::Missing) => {}
+        _ => return None,
+    }
+    canon_unless_off(tree)
+}
+
+/// The canonical fingerprint a pushed block may carry: a repository with no
+/// spec, or a valid one (which keeps its `input` lines and its precedence for
+/// its own gates). Not an invalid, ambiguous or unlistable one.
+pub(crate) fn canon_for_attest(tree: &str) -> Option<String> {
+    match read_spec(tree) {
+        Ok(_) | Err(SpecError::Missing) => {}
+        Err(_) => return None,
+    }
+    canon_unless_off(tree)
+}
+
+fn canon_unless_off(tree: &str) -> Option<String> {
+    if plan_exempt_off(tree) {
+        return None;
+    }
+    canon(tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const O1: &str = "1111111111111111111111111111111111111111";
+    const O2: &str = "2222222222222222222222222222222222222222";
+    const Z: &str = "0000000000000000000000000000000000000000";
+
+    #[test]
+    fn the_opt_out_is_one_tolerant_reading() {
+        for yes in [
+            "set planExempt off\n",
+            "SET PLANEXEMPT OFF",
+            "  set\tplanExempt   off  \r\n",
+            "gate x\nset planExempt off\ngate y\n",
+            "set planExempt on\nset planExempt off\n",
+            "set planExempt off\nset planExempt on\n",
+        ] {
+            assert!(conf_says_plan_exempt_off(yes.as_bytes()), "{yes:?}");
+        }
+        for no in [
+            "",
+            "set planExempt on\n",
+            "set planExempt off # trailing comment\n",
+            "# set planExempt off\n",
+            "set planExempt\n",
+            "set planExempt off off\n",
+            "setplanExempt off\n",
+            "set planexempt of\n",
+        ] {
+            assert!(!conf_says_plan_exempt_off(no.as_bytes()), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn canon_text_neutralises_plan_content_and_keeps_everything_else() {
+        let a = format!(
+            "100644 blob {O1}\tREADME.md\n100644 blob {O1}\tdocs/plans/a.md\n100755 blob {O1}\tdocs/plans/sub/run.sh\n"
+        );
+        let edited = a.replace(
+            &format!("{O1}\tdocs/plans/a.md"),
+            &format!("{O2}\tdocs/plans/a.md"),
+        );
+        assert_eq!(canon_text(&a), canon_text(&edited));
+        assert!(canon_text(&a)
+            .unwrap()
+            .contains(&format!("100644 blob {Z}\tdocs/plans/a.md\n")));
+        let other = a.replace(&format!("{O1}\tREADME.md"), &format!("{O2}\tREADME.md"));
+        assert_ne!(canon_text(&a), canon_text(&other));
+        let added = format!("{a}100644 blob {O1}\tdocs/plans/b.md\n");
+        assert_ne!(canon_text(&a), canon_text(&added));
+        let renamed = a.replace("docs/plans/a.md", "docs/plans/c.md");
+        assert_ne!(canon_text(&a), canon_text(&renamed));
+    }
+
+    #[test]
+    fn canon_text_exempts_only_the_top_level_docs_plans_of_regular_files() {
+        let nested = format!("100644 blob {O1}\tx/docs/plans/a.md\n");
+        assert!(canon_text(&nested).unwrap().contains(O1));
+        let near = format!("100644 blob {O1}\tdocs/plans-old/a.md\n100644 blob {O1}\tdocs/plans\n");
+        assert!(canon_text(&near).unwrap().contains(O1));
+        let link = format!("120000 blob {O1}\tdocs/plans/l\n160000 commit {O1}\tdocs/plans/m\n");
+        assert_eq!(canon_text(&link).unwrap(), link);
+        let quoted = format!("100644 blob {O1}\t\"docs/plans/a\\nb.md\"\n");
+        assert!(canon_text(&quoted).unwrap().contains(Z));
+        let long = format!("100644 blob {}\tdocs/plans/a.md\n", "a".repeat(64));
+        assert!(canon_text(&long).unwrap().contains(&"0".repeat(64)));
+        assert_eq!(canon_text(""), None);
+        assert_eq!(canon_text("garbage\n"), None);
+    }
+
+    #[test]
+    fn a_tree_git_cannot_list_has_no_spec_and_opens_no_route() {
+        let bogus = "0123456789012345678901234567890123456789";
+        assert_eq!(read_spec(bogus).err(), Some(SpecError::Unlisted));
+        assert_eq!(canonical_route(bogus), None);
+        assert_eq!(canon_for_attest(bogus), None);
+        // A failing ls-tree is not an absent amont.conf: fail narrow.
+        assert!(plan_exempt_off(bogus));
+    }
 }

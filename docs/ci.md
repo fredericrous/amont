@@ -267,6 +267,31 @@ not covered, 2 no usable spec; it is the opposite of `covered`, which fails
 open. A new top-level path or `docs/` child therefore fails the check until it
 is declared for every gate — a deliberate cost of a skip nobody has to trust.
 
+### With no declaration: the canonical tree
+
+A repository that declares nothing needs nothing: since amont 1.56.0 the same
+reuse works with no `attest-inputs` file, on attest 1.5.0's
+[canonical tree](https://github.com/fredericrous/attest/blob/main/SPEC.md).
+The canonical fingerprint is that of the tree with the *content* of the
+top-level `docs/plans/` left out and its *existence* kept, so a closing plan
+commit reuses every gate while a plan added, deleted or renamed, or any other
+path changed, does not. Nothing is declared, so nothing can be under-declared
+and no completeness check is needed.
+
+- **The push** adds `canon <fp>` to the signed block and files the block under
+  the canonical key in `refs/notes/amont-attest-inputs` (a repository with a
+  valid spec keeps its `input` lines and gains the `canon` line).
+- **The local hooks** file each gate's stamp under the canonical fingerprint
+  too, in `refs/notes/amont-gate-inputs`, and honour it at pre-commit and
+  pre-push. A repository with a spec that is valid keeps its declared route; one
+  whose spec is invalid, ambiguous or unlistable gets neither route, and the
+  gate runs.
+- **The cost of the exemption:** a gate that reads the *contents* of a plan (a
+  formatter or linter over the whole tree, a link checker) would be skipped on a
+  plans-only change. Ignore `docs/plans` in that tool's configuration, or opt
+  the repository out with `set planExempt off` in `amont.conf` (see
+  [configuration](configuration.md#amontplanexempt--reusing-gates-across-a-plans-only-commit)).
+
 ### In CI: verify, run what is uncovered, sign what passed
 
 `ci.yaml` splits the work in three so that no job that runs the test suite
