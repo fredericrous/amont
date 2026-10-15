@@ -27,8 +27,9 @@ use std::process::{Command, Stdio};
 /// count: a dependency bump compiles differently without a single `.rs` edit,
 /// and that is exactly when clippy earns its keep.
 ///
-/// Exported for the registry's drift guard: clippy and cargo-test consume this
-/// whole set while declaring only `.rs` plus a `Cargo.toml` opt-in.
+/// Exported for the registry: `pre-push-cargo-test` declares this whole set
+/// as its scope (rehearsal, pairing and stamps read the scope), and clippy
+/// consumes it while declaring only `.rs` plus a `Cargo.toml` opt-in.
 pub const RUST_PATHS: &[&str] = &[
     ".rs",
     "Cargo.toml",
