@@ -106,7 +106,21 @@ pub fn ahead_count(rev_list: &str) -> Option<u64> {
     rev_list.split_whitespace().next()?.parse().ok()
 }
 
-pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
+/// Does this push publish `current`, the branch checked out here? Only then
+/// is syncing it this push's business. A push of tags, or of another branch,
+/// leaves the checkout alone: pushing a release tag from the live checkout
+/// used to rebase it onto its upstream and refuse with "push again".
+/// No push lines at all (a hand-run hook) keeps the old behaviour.
+pub fn publishes_branch(push: &[crate::pushrefs::PushRef], current: &str) -> bool {
+    let own = format!("refs/heads/{current}");
+    push.is_empty() || push.iter().any(|r| r.local_ref == own)
+}
+
+pub fn run(
+    settings: &crate::config::Settings,
+    push: &[crate::pushrefs::PushRef],
+    _args: &[std::ffi::OsString],
+) -> Outcome {
     // 1. Never auto-rebase a dirty tree: that autostashes real work and can
     //    leave a broken mid-rebase state during a push.
     if !git::stdout(&["status", "--porcelain"])
@@ -145,6 +159,9 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     let Some(current) = git::stdout(&["symbolic-ref", "--short", "HEAD"]) else {
         return Outcome::Passed; // detached HEAD: nothing to sync
     };
+    if !publishes_branch(push, &current) {
+        return Outcome::Passed;
+    }
     let remote =
         git::stdout(&["config", "--get", &format!("branch.{current}.remote")]).unwrap_or_default();
     let is_a_real_remote = !remote.is_empty()
@@ -364,7 +381,34 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ahead_count, behind_count, divergence, lists_branch};
+    use super::{ahead_count, behind_count, divergence, lists_branch, publishes_branch};
+    use crate::pushrefs::PushRef;
+
+    fn line(local_ref: &str) -> PushRef {
+        PushRef {
+            local_ref: local_ref.into(),
+            local_oid: "a".repeat(40),
+            remote_ref: local_ref.into(),
+            remote_oid: "0".repeat(40),
+        }
+    }
+
+    /// The incident: pushing `v1.55.1` from the live checkout on `main`
+    /// rebased `main` and refused the tag with "push again".
+    #[test]
+    fn only_a_push_of_the_checked_out_branch_syncs_it() {
+        assert!(publishes_branch(&[line("refs/heads/main")], "main"));
+        assert!(!publishes_branch(&[line("refs/tags/v1.55.1")], "main"));
+        assert!(!publishes_branch(&[line("refs/heads/other")], "main"));
+        assert!(publishes_branch(
+            &[line("refs/tags/v1"), line("refs/heads/main")],
+            "main"
+        ));
+        assert!(
+            publishes_branch(&[], "main"),
+            "a hand-run hook keeps syncing"
+        );
+    }
 
     #[test]
     fn detects_divergence_only_when_both_counts_are_present() {

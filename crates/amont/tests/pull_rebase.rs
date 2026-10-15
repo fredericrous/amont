@@ -426,3 +426,67 @@ fn a_hung_remote_is_cut_at_the_deadline() {
         started.elapsed()
     );
 }
+
+/// Run the hook as git does, with `line` on stdin: the refs this push carries.
+fn hook_with_push(r: &Repo, line: &str) -> (i32, String) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    cmd.arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push-pull-rebase")
+        .current_dir(&r.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Repo::strip_git_env_impl(&mut cmd);
+    Repo::pin_host_env(&mut cmd);
+    let mut child = cmd.spawn().expect("run amont");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(line.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// A push of a tag publishes no branch, so the checkout is not this push's
+/// business. Pushing release tags from the live checkout on `main` used to
+/// rebase `main` and refuse the tag with "push again" (2026-10-15, three
+/// times). A push that carries the branch still syncs it.
+#[test]
+fn a_tag_push_leaves_a_behind_branch_alone() {
+    let r = with_origin();
+    r.stage("b.txt", "ahead on the remote\n");
+    r.commit("chore: remote-side commit");
+    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
+    r.git(&["reset", "--hard", "-q", "HEAD~1"]);
+    r.git(&["fetch", "-q", "origin"]);
+    let head = |r: &Repo| {
+        String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string()
+    };
+    let before = head(&r);
+    let zero = "0".repeat(before.len());
+
+    let tag = format!("refs/tags/v1 {before} refs/tags/v1 {zero}\n");
+    let (code, out) = hook_with_push(&r, &tag);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("push again"), "{out}");
+    assert_eq!(head(&r), before, "the checkout was not touched");
+
+    let branch = format!("refs/heads/main {before} refs/heads/main {zero}\n");
+    let (code, out) = hook_with_push(&r, &branch);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("push again"), "{out}");
+}
