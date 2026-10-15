@@ -6,6 +6,31 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.56.0
+
+### Added
+
+- **Plan-only commits reuse every gate with no declaration.** With attest
+  1.5.0, a repository that declares no `attest-inputs` file reuses a gate's
+  result on any tree that differs only in the *content* of the top-level
+  `docs/plans/`: the closing plan commit of a branch no longer re-runs the
+  suite, locally or in CI. A plan added, deleted or renamed, or any other
+  path changed, still re-runs everything. A push adds `canon <fp>` to the
+  signed block and files it under the canonical key; the local stamps are
+  filed under the canonical fingerprint. A repository with a valid spec keeps
+  its declared route; an invalid, ambiguous or unlistable one gets neither.
+- **`set planExempt off`** in `amont.conf` opts a repository out, for a gate
+  that reads the contents of a plan. It is read from the committed bytes by
+  every producer and verifier and fails narrow. The line is strict here:
+  exactly `on` or `off`, once, plain blanks; anything attest would read as
+  "on" is a broken line rather than a silent opt-out.
+
+### Changed
+
+- Whether a spec exists is read from a successful `ls-tree`, not from a
+  `cat-file -e` probe, so an absent spec and a git that failed are different
+  answers.
+
 ## v1.55.2
 
 ### Fixed
