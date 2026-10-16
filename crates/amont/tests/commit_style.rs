@@ -153,3 +153,29 @@ fn help_names_the_new_verb() {
 // the same reader in this series. They are asserted where they are actually
 // read — see `gits_own_spelling_of_true_turns_it_on` in `pushed_tree.rs` — since
 // a key nothing consults in a given run cannot prove anything here.
+
+/// `set planExempt off` alone is still honoured and said to be deprecated
+/// (decisions ADR-0037), on stderr, so `--json` stays one document; with
+/// attest's `@plan-exempt off` beside it, nothing is said.
+#[test]
+fn the_amont_conf_opt_out_alone_is_deprecated_on_stderr_only() {
+    let r = Repo::new();
+    r.write("amont.conf", "set planExempt off\n");
+    r.git(&["add", "-A"]);
+    r.commit("chore: opt out");
+    let run = r.run(&["list", "--json"]);
+    assert!(run.stdout.trim_start().starts_with('{'), "{}", run.stdout);
+    assert!(!run.stdout.contains("deprecated"), "{}", run.stdout);
+    assert!(
+        run.stderr.contains(
+            "deprecated: planExempt in amont.conf; also write @plan-exempt off in attest-inputs"
+        ),
+        "{}",
+        run.stderr
+    );
+    r.write(".github/attest-inputs", "@plan-exempt off\n");
+    r.git(&["add", "-A"]);
+    r.commit("chore: both opt-outs");
+    let run = r.run(&["list", "--json"]);
+    assert!(!run.stderr.contains("deprecated"), "{}", run.stderr);
+}

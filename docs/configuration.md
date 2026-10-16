@@ -840,6 +840,15 @@ a plan changed.
   counts as off.
 - Because `amont.conf` is part of the canonical tree, adding or removing the
   line changes the fingerprint and the next push runs everything once.
+- **Deprecated as the opt-out's home** (attest 1.6.0, decisions ADR-0037): the
+  opt-out is now `@plan-exempt off` in `.github/attest-inputs` (or
+  `.forgejo/`), attest's own file, so attest reads no other tool's
+  configuration. Until attest 2.0.0 write **both** lines: verifiers before
+  attest 1.6.0 know only this one. `amont list` says so on stderr while only
+  this line is present. A repository whose `attest-inputs` already declares
+  gates adds the directive only once its CI pins attest 1.7.0 or later and its
+  `amont.conf` sets `minVersion 1.58.0`, because to older tools the directive
+  invalidates the spec.
 
 ## `amont.testPushedTree` — test what you are pushing
 

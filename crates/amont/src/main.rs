@@ -475,6 +475,10 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                     return 2;
                 }
             };
+            // On stderr, so `--json` stays one document on stdout.
+            if let Some(line) = amont_runtime::attest_inputs::deprecated_opt_out() {
+                eprintln!("amont: {line}");
+            }
             amont_runtime::list_checks(ListOptions {
                 json: args.iter().any(|a| a == "--json"),
                 stage,
@@ -775,11 +779,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             else {
                 return 0; // no allowed_signers anywhere: nothing is covered
             };
-            let Some(principal) =
-                principal.or_else(|| amont_runtime::attest::first_principal(&signers))
-            else {
-                return 0; // an empty signers file names nobody to verify as
-            };
+            // No principal: whoever the signature says, if that key is in the
+            // signers file. Guessing the file's first entry, as this command
+            // once did, silently uncovered every other signer on a team.
             // Default: this machine's platform. A matrix leg therefore skips
             // only work that really ran on ITS platform, with no per-leg
             // configuration — the ubuntu and windows legs of a Rust matrix
@@ -792,7 +794,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 None => Some(amont_runtime::attest::platform()),
             };
             if let Some(gates) =
-                amont_runtime::attest::covered(&signers, &principal, want.as_deref())
+                amont_runtime::attest::covered(&signers, principal.as_deref(), want.as_deref())
             {
                 println!("{gates}");
             }

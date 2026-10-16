@@ -39,6 +39,9 @@ dependencies = [
 [[package]]
 name = "amont-runtime"
 version = "1.57.0"
+dependencies = [
+ "git-attest",
+]
 
 [[package]]
 name = "anyhow"
@@ -455,6 +458,10 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
 ]
+
+[[package]]
+name = "git-attest"
+version = "1.6.0"
 
 [[package]]
 name = "hashbrown"

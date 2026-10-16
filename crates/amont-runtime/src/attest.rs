@@ -7,54 +7,20 @@
 //! test job because the equivalent gate already passed here?" — and for that
 //! the note has to travel, so it has to be signed.
 //!
-//! Shape of the note, attached to each pushed tip in `refs/notes/amont-attest`:
+//! # What is amont's, and what is attest's
 //!
-//! ```text
-//! amont-attest-v1
-//! tree <tree the gates ran against>
-//! gates <names of the pre-push checks that PASSED>
-//! amont <version that produced it>
+//! The attestation FORMAT — the payload, a note's blocks, the `attest-inputs`
+//! spec, fingerprints, the canonical tree, the note keys, signing, the
+//! fetch-append-push publish loop and the verifier — is attest's, and amont
+//! calls the `git_attest` library for every part of it (decisions ADR-0037).
+//! There used to be a copy here, kept in step by hand; a fix to the format now
+//! lands once.
 //!
-//! -----BEGIN SSH SIGNATURE-----
-//! …signature over the four lines above…
-//! -----END SSH SIGNATURE-----
-//! ```
-//!
-//! The signature covers the **tree**, not the commit: tests read content, not
-//! messages, so a reword or a tree-preserving rebase keeps its attestation —
-//! the same reasoning as `gate_stamp`'s tree binding. CI's skip condition is
-//! tree equality with its own checkout plus a valid signature over exactly
-//! that tree, verified with stock `ssh-keygen -Y verify` against an
-//! `allowed_signers` file committed in the consuming repository. amont itself
-//! still never runs in CI (`docs/ci.md`) — CI verifies a document.
-//!
-//! # Where each half lives now
-//!
-//! The **producer** — [`attest_push`], `sign`, `key_path`, [`enabled`] — is
-//! this crate's, and stays. It needs the gate names only `dispatch` knows,
-//! reads amont's own config, and coordinates the recursive-push guard below.
-//!
-//! The **consumer** — [`verify`], [`covered`], [`split_note`],
-//! [`default_signers`], [`first_principal`] — was extracted to
-//! <https://github.com/fredericrous/attest>, because reading a signed document
-//! is the part every OTHER repository needs and amont is a strange thing to
-//! install just to do it. The CI templates call that action instead of the
-//! ~30 lines of shell they used to carry.
-//!
-//! The consumer copy here is therefore **frozen: bug fixes only**. New
-//! verifying work — better diagnostics, other forges — happens in that
-//! repository, and its `tests/conformance.sh` is the contract both sides
-//! answer to. `amont attest covered` keeps working for anyone already calling
-//! it. The producer follows that repository's `SPEC.md` as it grows: since
-//! attest 1.3.0 a committed `.github/attest-inputs` names the paths each gate
-//! reads, and the block carries an `input <gate> <fingerprint>` line per
-//! declared gate and is filed under that fingerprint in a second notes ref,
-//! `refs/notes/amont-attest-inputs`, so an unrelated change on main no longer
-//! voids it.
-//!
-//! Signing uses `ssh-keygen -Y sign` as a subprocess, like every other tool
-//! this crate talks to. Hand-rolling ed25519 in a zero-dependency crate would
-//! be the one thing worse than a dependency.
+//! What stays here is amont's: WHEN to attest and WHICH gates a push vouches
+//! for (the dispatcher's knowledge), its own config and key, the recursive-push
+//! guard below, every line it prints, and the provenance record amont-agent
+//! hands it (decisions ADR-0036), which it signs and publishes through the
+//! same library under its own namespace.
 //!
 //! Every failure mode points the same direction as `gate_stamp`'s: no key, a
 //! signer that errors, a note git refused, a notes push the remote rejected —
@@ -68,48 +34,25 @@
 //! list that is only ever `refs/notes/amont-attest` would be work spent
 //! proving nothing.
 
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
 
-use crate::attest_inputs::{canon_for_attest, canon_key, fingerprint, input_key, spec_at};
-#[cfg(test)]
-use crate::attest_inputs::{implicit_inputs, parse_spec, PathTok};
+use git_attest::format::block;
+use git_attest::notes::{publish as publish_notes, Publish, Published};
+use git_attest::produce::attestation;
+
 use crate::pushrefs::PushRef;
 
-/// First token of every note body. Versioned like `gate_stamp::FORMAT`: a
-/// future amont that changes the payload bumps this, and CI's verifier reads
-/// an unknown version as "no attestation".
-///
-/// v1 → v2 added the `platform` line. The bump is the point: a v1 verifier
-/// has no idea the tests it is about to skip ran on a different operating
-/// system, and reading v2 as unknown makes it run them. Fail-safe in the
-/// only direction this module ever fails.
-pub const FORMAT: &str = "amont-attest-v2";
+pub use git_attest::format::{platform, FORMAT, INPUTS_REF, NAMESPACE, NOTES_REF};
+pub use git_attest::notes::{classify_push as classify_push_stderr, PushFailure};
 
-/// The notes ref, spelled the way `git notes --ref` wants it.
-pub const NOTES_REF: &str = "amont-attest";
-
-/// The same ref, fully qualified — the push refspec and `update-ref -d` both
-/// need it.
+/// The notes ref, fully qualified — `update-ref -d` needs it.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-attest";
-
-/// The second ref, keyed by input fingerprint (attest 1.3.0). Every key there
-/// is an oid that is not an object — `git notes` accepts that — which is why
-/// it is its own ref: `git notes prune` on it would drop everything.
-pub const INPUTS_REF: &str = "amont-attest-inputs";
 pub const INPUTS_FULL_REF: &str = "refs/notes/amont-attest-inputs";
 
-/// The `ssh-keygen -Y` namespace, on both the signing and verifying side.
-/// Namespaces exist so a signature minted for one purpose cannot be replayed
-/// for another; an `allowed_signers` entry pinned to this namespace accepts
-/// nothing else.
-pub const NAMESPACE: &str = "amont-attest";
-
-/// The provenance record (decisions ADR-0036, attest SPEC
-/// `amont-provenance-v1`): what a push carried besides its tests, the plan
-/// and the verdicts on it. Its own ref, so CI's attestation verifier never
-/// reads it, and its own namespace, so a provenance signature is never
-/// accepted as an attestation.
+/// The provenance record (decisions ADR-0036, amont `docs/provenance.md`):
+/// what a push carried besides its tests, the plan and the verdicts on it.
+/// Its own ref, so CI's attestation verifier never reads it, and its own
+/// namespace, so a provenance signature is never accepted as an attestation.
 pub const PROVENANCE_REF: &str = "amont-provenance";
 pub const PROVENANCE_FULL_REF: &str = "refs/notes/amont-provenance";
 pub const PROVENANCE_NAMESPACE: &str = "amont-provenance";
@@ -118,6 +61,11 @@ pub const PROVENANCE_FORMAT: &str = "amont-provenance-v1";
 /// Environment marker carried by the notes push so the recursive pre-push
 /// invocation stands down. See the module doc.
 pub const PUSH_GUARD: &str = "AMONT_ATTEST_PUSH";
+
+/// The repository a hook stands in: git starts hooks at the worktree top.
+fn here() -> &'static Path {
+    Path::new(".")
+}
 
 /// The opt-in switch. Off by default: an attestation is a statement to
 /// another system, and amont does not speak for a repository that never
@@ -153,184 +101,20 @@ fn key_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(KEY_DEFAULT))
 }
 
-/// Where a suite ran, as `<arch>-<os>` — `aarch64-macos`, `x86_64-linux`,
-/// `x86_64-windows`.
-///
-/// Coarser than a target triple on purpose: the libc flavour is not
-/// something `std` can answer, and the question a CI matrix actually asks is
-/// "did this run on MY leg". Coarse and honest beats precise and guessed.
-pub fn platform() -> String {
-    format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
-}
-
-/// The exact bytes the signature covers. One datum per line, trailing
-/// newline included — CI reconstructs this from the note text, so the shape
-/// is a contract, not a convenience.
-///
-/// `platform` is signed alongside the gates because a pass is a pass **on
-/// something**: `cargo test` green on an arm64 Mac says nothing about the
-/// Windows leg of a matrix, and a note that omitted where it ran invited
-/// exactly that skip.
-///
-/// `inputs` are the `input <gate> <fingerprint>` lines (attest 1.3.0), after
-/// `platform` and before `amont`, in spec order — additive, so a verifier that
-/// predates them reads the block exactly as before. `canon` is the
-/// `canon <fingerprint>` line (attest 1.5.0), after the `input` lines and before
-/// `amont`, with the same compatibility.
-pub fn payload(
-    tree: &str,
-    gates: &[String],
-    inputs: &[(String, String)],
-    canon: Option<&str>,
-) -> String {
-    let mut p = format!(
-        "{FORMAT}\ntree {tree}\ngates {}\nplatform {}\n",
-        gates.join(" "),
-        platform()
-    );
-    for (gate, fp) in inputs {
-        p.push_str(&format!("input {gate} {fp}\n"));
-    }
-    if let Some(c) = canon {
-        p.push_str(&format!("canon {c}\n"));
-    }
-    p.push_str(&format!("amont {}\n", env!("CARGO_PKG_VERSION")));
-    p
-}
-
-/// The `input` lines for the gates being attested that the spec at `tree`
-/// declares, in spec order.
-fn inputs_for(tree: &str, gates: &[String]) -> Vec<(String, String)> {
-    let Some(spec) = spec_at(tree) else {
-        return Vec::new();
-    };
-    spec.iter()
-        .filter(|(g, _)| gates.iter().any(|x| x == g))
-        .filter_map(|(g, paths)| fingerprint(tree, paths).map(|fp| (g.clone(), fp)))
-        .collect()
-}
-
-/// `ssh-keygen -Y sign` over `payload`, armored signature back. `None` for
-/// every failure — a missing binary, a missing key, a signer that said no —
-/// because an attestation we cannot mint is simply one CI never sees.
-fn sign(payload: &str, key: &std::path::Path) -> Option<String> {
-    sign_in(NAMESPACE, payload, key)
-}
-
-/// [`sign`] under another namespace.
-fn sign_in(namespace: &str, payload: &str, key: &std::path::Path) -> Option<String> {
-    use std::io::Write;
-    let mut child = Command::new("ssh-keygen")
-        .args(["-Y", "sign", "-n", namespace, "-f"])
-        .arg(key)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(payload.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sig = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    sig.starts_with("-----BEGIN SSH SIGNATURE-----")
-        .then_some(sig)
-}
-
-/// `ssh-keygen -Y verify`: is `sig` a valid signature over `payload` by a
-/// `principal` key listed in `allowed_signers` for our namespace?
-///
-/// The runtime never gates on this — CI verifies with its own stock tooling —
-/// but owning the verifying half keeps the roundtrip honest in tests and
-/// gives a future `amont attest verify` its engine.
-/// Create `path` for writing, refusing anything already there.
-///
-/// `std::fs::write` is `O_CREAT|O_TRUNC` and FOLLOWS a symlink, which on a
-/// shared `/tmp` is the whole bug: anyone who guesses the name and pre-creates
-/// it as a link to a file we can write gets that file truncated and
-/// overwritten on our behalf. The sticky bit does not help — it stops you
-/// replacing someone else's file, not creating a name nobody has taken.
-///
-/// `create_new` is `O_CREAT|O_EXCL`, which refuses an existing path of any
-/// kind, symlink included, and never follows it. The attack becomes a failed
-/// verification, which is the safe direction for a signature check to fail.
-fn create_exclusive(path: &std::path::Path) -> Option<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .ok()
-}
-
-pub fn verify(
-    payload: &str,
-    sig: &str,
-    allowed_signers: &std::path::Path,
-    principal: &str,
-) -> bool {
-    verify_in(NAMESPACE, payload, sig, allowed_signers, principal)
-}
-
-/// [`verify`] under another namespace.
-fn verify_in(
-    namespace: &str,
-    payload: &str,
-    sig: &str,
-    allowed_signers: &std::path::Path,
-    principal: &str,
-) -> bool {
-    use std::io::Write;
-    // -Y verify takes the signature as a FILE; the payload rides stdin.
-    //
-    // The nanosecond is not decoration. The name was pid + a pointer, which
-    // a squatter on a shared /tmp can sit on: `create_exclusive` then refuses
-    // every call and verification fails permanently. Varying the name per
-    // call makes that a race to lose rather than a door to hold shut.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let sig_file = std::env::temp_dir().join(format!(
-        "amont-attest-verify-{}-{:p}-{nonce}.sig",
-        std::process::id(),
-        &sig
-    ));
-    let Some(mut f) = create_exclusive(&sig_file) else {
-        return false;
-    };
-    if f.write_all(format!("{sig}\n").as_bytes()).is_err() {
-        let _ = std::fs::remove_file(&sig_file);
-        return false;
-    }
-    // Closed before ssh-keygen opens it.
-    drop(f);
-    let ok = (|| {
-        let mut child = Command::new("ssh-keygen")
-            .args(["-Y", "verify", "-n", namespace, "-I", principal, "-f"])
-            .arg(allowed_signers)
-            .arg("-s")
-            .arg(&sig_file)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        child.stdin.take()?.write_all(payload.as_bytes()).ok()?;
-        child.wait().ok().map(|s| s.success())
-    })()
-    .unwrap_or(false);
-    let _ = std::fs::remove_file(&sig_file);
-    ok
-}
-
 /// pre-push, after every block gate has passed: attest each pushed tip and
-/// send the notes ref to the remote being pushed.
+/// send the notes refs to the remote being pushed.
 ///
 /// `gates` is what the dispatcher saw actually PASS — `Warned` and
 /// `Unavailable` never appear in it, because "could not run" is not
 /// "passed". Empty means nothing testlike ran, and an attestation listing
 /// no gates would be a signed way of saying nothing.
+///
+/// What each block says, and every key it is filed under (the tree and the
+/// commit in the main ref; each declared gate's fingerprint and the canonical
+/// tree in the inputs ref), is attest's [`attestation`]. The note goes on the
+/// TREE as well as the commit: the tree is what the signature covers, so it
+/// is the key that survives a squash-merge, an amend or a rebase, and the
+/// commit note is what `git log --notes` shows and an older verifier finds.
 ///
 /// Best-effort throughout, and quiet about it: pre-push has already printed
 /// its verdicts, and a push that works minus its CI shortcut is not a
@@ -353,9 +137,11 @@ pub fn attest_push(
         );
         return;
     }
+    let gates_line = gates.join(" ");
+    let producer = env!("CARGO_PKG_VERSION");
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut input_blocks: Vec<(String, String)> = Vec::new();
-    let mut canon_blocks: Vec<(String, String)> = Vec::new();
+    let (mut n_inputs, mut n_canon) = (0, 0);
     for r in refs {
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
@@ -364,44 +150,26 @@ pub fn attest_push(
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        // Input fingerprints, from the spec in THIS tip's tree — the tree
-        // the gates ran against — for the gates that passed.
-        let inputs = inputs_for(&tree, gates);
-        // The canonical tree (attest 1.5.0): the same block, filed once more
-        // under the key of the tree with plan contents left out, so a
-        // plans-only change finds it with nothing declared. Absent when the
-        // repository opted out (`set planExempt off`) or git failed.
-        let canon = canon_for_attest(&tree);
-        let p = payload(&tree, gates, &inputs, canon.as_deref());
-        let body = match sign(&p, &key) {
-            Some(sig) => format!("{p}\n{sig}"),
-            None => continue,
+        // The reasons a route is missing are attest's to give in CI's log;
+        // at push time they are noise.
+        let mut reasons = Vec::new();
+        let att = attestation(
+            here(),
+            &tree,
+            &gates_line,
+            &platform(),
+            producer,
+            &mut reasons,
+        );
+        let Ok(sig) = git_attest::sign::sign(NAMESPACE, &att.payload, &key) else {
+            continue;
         };
-        for (gate, fp) in &inputs {
-            if let Some(k) = input_key(gate, fp) {
-                input_blocks.push((k, body.clone()));
-            }
+        let body = block(&att.payload, &sig);
+        n_inputs += att.inputs.len();
+        n_canon += usize::from(att.canon.is_some());
+        for k in &att.input_keys {
+            input_blocks.push((k.clone(), body.clone()));
         }
-        if let Some(k) = canon.as_deref().and_then(canon_key) {
-            canon_blocks.push((k, body.clone()));
-        }
-        // The note goes on the TREE as well as the commit, and the tree is
-        // the key that matches what the signature already covers.
-        //
-        // Keying only by commit is why the verifier had to HUNT — `HEAD`,
-        // then `HEAD^2` for a pull request's merge commit — and the hunt has
-        // a floor it cannot reach past: a squash-merge onto a main that has
-        // moved produces a commit with neither the note nor a parent that
-        // has it, while an attestation for that exact tree may be sitting in
-        // the ref. Signed for the content, findable only by the container.
-        //
-        // Keyed by tree, the lookup is one step and survives squash-merge,
-        // amend and rebase — every rewrite that preserves content. Which is
-        // the whole claim the payload makes: `tree <sha>`, signed.
-        //
-        // Both, not either: the commit note is what `git log --notes` shows
-        // and what an older verifier looks for, so dropping it would break
-        // consumers mid-upgrade for no gain.
         blocks.push((tree, body.clone()));
         blocks.push((r.local_oid.clone(), body));
     }
@@ -411,21 +179,18 @@ pub fn attest_push(
     // Each ref on its own: a main ref that is already up to date never
     // short-circuits the inputs ref, which is how a push whose inputs ref
     // failed earlier repairs the missing keys.
-    let main_ok = publish(remote, NOTES_FULL_REF, &blocks);
-    let n_inputs = input_blocks.len();
-    input_blocks.extend(canon_blocks);
-    let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_FULL_REF, &input_blocks);
+    let main_ok = publish(remote, NOTES_REF, &blocks);
+    let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_REF, &input_blocks);
     if main_ok {
         crate::say!(
             "{} attested {} for CI ({}{})",
             crate::ui::valid_sign(),
-            crate::ui::highlight(&gates.join(" ")),
+            crate::ui::highlight(&gates_line),
             NOTES_REF,
             if input_blocks.is_empty() {
                 String::new()
             } else if inputs_ok {
-                let canonical = input_blocks.len() - n_inputs;
-                match (n_inputs, canonical) {
+                match (n_inputs, n_canon) {
                     (0, _) => ", canonical tree".to_string(),
                     (n, 0) => format!(", {n} input fingerprints"),
                     (n, _) => format!(", {n} input fingerprints, canonical tree"),
@@ -528,7 +293,7 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
         }
         // canon(T) whatever `planExempt` says: that governs skipping a gate,
         // not a tree's identity. No canon, no signature: kept for next time.
-        let Some(canon) = crate::attest_inputs::canon(&tree) else {
+        let Ok(canon) = git_attest::fingerprint::canon(here(), &tree) else {
             crate::say!(
                 "  provenance for {} not signed: its canonical tree cannot be computed;",
                 &r.local_oid[..r.local_oid.len().min(7)]
@@ -549,10 +314,10 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut signed: Vec<PathBuf> = Vec::new();
     for (file, commit, tree, payload) in found {
-        let Some(sig) = sign_in(PROVENANCE_NAMESPACE, &payload, &key) else {
+        let Ok(sig) = git_attest::sign::sign(PROVENANCE_NAMESPACE, &payload, &key) else {
             continue;
         };
-        let body = format!("{payload}\n{sig}");
+        let body = block(&payload, &sig);
         blocks.push((tree, body.clone()));
         blocks.push((commit, body));
         signed.push(file);
@@ -561,7 +326,7 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
         crate::say!("  provenance not signed: the signer refused");
         return;
     }
-    if publish(remote, PROVENANCE_FULL_REF, &blocks) {
+    if publish(remote, PROVENANCE_REF, &blocks) {
         for file in &signed {
             if std::fs::remove_file(file).is_err() {
                 crate::say!(
@@ -621,522 +386,54 @@ fn canon_refusal(commit: &str, file: &std::path::Path) -> Vec<String> {
 /// How many times a push that lost a race is retried before giving up.
 const PUSH_ATTEMPTS: u32 = 4;
 
-/// Attach each block to its object on the REMOTE's copy of the notes ref, and
-/// push the result. Never `notes add -f`, never a blind push of the local ref.
-///
-/// A note is one per object and may already hold blocks by other producers —
-/// since attest 1.2.0, CI signs the same tree on its own platform, and a
-/// teammate's push may have attested it too. `add -f` erased them all; a push
-/// of the local ref, which never fetched, was rejected as non-fast-forward the
-/// moment anyone else had written the ref, and the failure was silent. So:
-///
-/// 1. fetch the remote's ref into a TEMPORARY ref, leaving the local
-///    `refs/notes/amont-attest` alone whatever happens next;
-/// 2. `notes append` each block there, unless that exact block is already
-///    present (ed25519 signatures are deterministic, so a re-push of the
-///    same tree produces the same bytes);
-/// 3. push the temporary ref to the remote's ref. A non-fast-forward
-///    rejection means another producer wrote meanwhile: go back to 1.
-///
-/// On success the local ref follows what was published. The temporary ref is
-/// removed on every path. `notes_ref` is the fully qualified ref to publish
-/// to — the main ref or the inputs ref.
+/// Publish `blocks` (object, block) to `notes_ref` (short name) on `remote`
+/// through attest's loop: fetch the remote's ref into a temporary one, append
+/// each block not already there, push, and go again on a lost race. Never
+/// `notes add -f` (it erases every other producer's block) and never a push
+/// of the local ref (it would re-publish a block origin revoked). The push
+/// carries [`PUSH_GUARD`] so this hook's own pre-push stands down, and does
+/// not wait between rounds: this is the commit path.
 fn publish(remote: &str, notes_ref: &str, blocks: &[(String, String)]) -> bool {
-    let short = notes_ref.trim_start_matches("refs/notes/");
-    let tmp = format!("amont-attest-push-{}-{short}", std::process::id());
-    let tmp_full = format!("refs/notes/{tmp}");
-    let fetch_spec = format!("+{notes_ref}:{tmp_full}");
-    let push_spec = format!("{tmp_full}:{notes_ref}");
-    let mut published = false;
-    for _ in 0..PUSH_ATTEMPTS {
-        let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
-        // A remote with no such ref yet fails the fetch, harmlessly: append
-        // then creates the note from nothing.
-        let _ = crate::git::succeeds(&["fetch", "--quiet", remote, &fetch_spec]);
-        let mut appended = false;
-        for (object, body) in blocks {
-            let existing =
-                crate::git::stdout(&["notes", "--ref", &tmp, "show", object]).unwrap_or_default();
-            if existing.contains(body.trim_end()) {
-                continue;
-            }
-            if crate::git::succeeds(&["notes", "--ref", &tmp, "append", "-m", body, object]) {
-                appended = true;
-            }
-        }
-        if !appended {
-            // Everything is already there — a re-push of an attested tree.
-            published = true;
-            break;
-        }
-        match push_notes(remote, &push_spec) {
-            Push::Done => {
-                published = true;
-                break;
-            }
-            Push::Raced => continue,
-            Push::Refused => break,
-        }
-    }
-    if published {
-        let _ = crate::git::succeeds(&["update-ref", notes_ref, &tmp_full]);
-    }
-    let _ = crate::git::succeeds(&["update-ref", "-d", &tmp_full]);
-    published
+    let how = Publish {
+        remote,
+        attempts: PUSH_ATTEMPTS,
+        pause: false,
+        identity: None,
+        push_env: &[(PUSH_GUARD, "1")],
+    };
+    let mut log = Vec::new();
+    matches!(
+        publish_notes(here(), &how, notes_ref, blocks, &mut log),
+        Published::Pushed | Published::AlreadyPresent
+    )
 }
 
-/// What a notes push came back with.
-enum Push {
-    Done,
-    /// Rejected as non-fast-forward: another producer wrote the ref between
-    /// our fetch and our push. Worth another round.
-    Raced,
-    /// Anything else — no network, no permission, no remote. Not worth one.
-    Refused,
-}
-
-/// `amont attest covered` — the verifying side, as CI's one-liner.
+/// `amont attest covered` — the verifying side, as a one-liner for CI that is
+/// neither GitHub nor Forgejo: the gate names a VALID attestation covers for
+/// the tree checked out here, space-separated, or `None`.
 ///
-/// Answers "which gates does a VALID attestation cover for the tree checked
-/// out here?", doing everything the workflow snippet used to spell out in
-/// sh: freshen the notes ref (best-effort), look for a note on `HEAD` and —
-/// for a PR's merge commit — on `HEAD^2`, insist on the format version,
-/// insist the attested tree is byte-for-byte `HEAD^{tree}`, and verify the
-/// signature against `allowed_signers`. Thirty lines of workflow copied into
-/// every repository is exactly the drift this binary exists to end.
-///
-/// `None` for every failure, and the CLI prints nothing and exits 0 on
-/// `None` — fail-open is the caller's contract, not its option. A CI step
-/// reading empty output runs its tests, which is always the safe answer.
-///
-/// This is amont running in CI, which `docs/ci.md` forbids for CHECKS — the
-/// line held is narrower than the slogan: CI still never runs a check
-/// through amont; this verifies a document about checks that already ran.
-/// `require_platform` is the leg asking. `Some("x86_64-linux")` covers only
-/// a suite that ran there; `None` is the caller stating that this suite's
-/// result does not depend on where it ran (a pure-JS unit run, say) and is
-/// spelled `--platform any` in a committed workflow, where it is reviewed
-/// like any other line of the repository.
+/// attest's verifier, the one its action and `git-attest covered` run: input
+/// fingerprints, the canonical tree and every block of a note included.
+/// `principal` of `None` accepts whoever the signature says, if that key is in
+/// the signers file. Lines that say the repository's refs changed, or that
+/// something committed is deprecated, go to stderr; fail-open is the caller's
+/// contract, not its option.
 pub fn covered(
-    signers: &std::path::Path,
-    principal: &str,
+    signers: &Path,
+    principal: Option<&str>,
     require_platform: Option<&str>,
 ) -> Option<String> {
-    covered_within(signers, principal, require_platform, REMOTE_BUDGET_SECS)
-}
-
-/// Seconds each remote call of `covered` may take, as attest's verifier.
-const REMOTE_BUDGET_SECS: u64 = 15;
-
-/// What syncing the local notes ref with origin allows.
-#[derive(Debug, PartialEq)]
-enum Sync {
-    /// Judge the local ref: it is origin's, or there is no origin at all.
-    Judge,
-    /// Judge nothing, for the reason given (already reported on stderr).
-    Skip,
-}
-
-/// The local `refs/notes/amont-attest` as ORIGIN'S MIRROR (attest 1.4.0,
-/// SPEC.md "Which refs are read"). Origin is the only place an attestation
-/// can be revoked, so a ref origin no longer has is deleted here, and a copy
-/// nobody could refresh is not judged: a stale mirror on a persistent runner
-/// must not outlive a revocation.
-///
-/// The fetch lands in a THROWAWAY ref and the main ref moves by a local
-/// compare-and-swap: the deadline kills git with SIGKILL, and a fetch killed
-/// while writing the main ref leaves `amont-attest.lock`, which would fail
-/// every later fetch and delete — coverage lost for good, silently. The
-/// throwaway lives outside `refs/notes/`, so no notes push or pruning fetch
-/// ever touches it.
-fn sync_mirror(budget: u64) -> Sync {
-    if !crate::git::succeeds(&["remote", "get-url", "origin"]) {
-        // For fixtures and local use; CI always has an origin.
-        return Sync::Judge;
+    let v = git_attest::verify::evaluate(here(), signers, principal, require_platform, &[], false);
+    for line in v.loud.iter().chain(&v.warnings) {
+        eprintln!("amont: {line}");
     }
-    sweep_sync_refs();
-    let old = crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
-    let tmp = format!("{SYNC_NAMESPACE}{}/amont-attest", std::process::id());
-    let fetched = crate::git::probe_remote(
-        &[
-            "fetch",
-            "--quiet",
-            "origin",
-            &format!("+{NOTES_FULL_REF}:{tmp}"),
-        ],
-        budget,
-    );
-    let verdict = match fetched {
-        crate::git::Probe::Exit(0) => {
-            let new = crate::git::stdout(&["rev-parse", "--verify", "--quiet", &tmp]);
-            // Compare-and-swap against what was there before the fetch: a
-            // producer that published meanwhile is not overwritten.
-            let expected = old.clone().unwrap_or_default();
-            match new {
-                None => {
-                    // The throwaway vanished under us: nothing was fetched.
-                    say_skip(&format!(
-                        "the fetch of {NOTES_FULL_REF} left nothing to read; local mirror not judged"
-                    ));
-                    Sync::Skip
-                }
-                Some(new)
-                    if crate::git::succeeds(&["update-ref", NOTES_FULL_REF, &new, &expected]) =>
-                {
-                    Sync::Judge
-                }
-                Some(new) => {
-                    // The swap failed. Judge only if the ref now holds EXACTLY
-                    // what origin just gave us (a concurrent fetch or publish
-                    // got there first); anything else — a stale lock, a ref
-                    // nobody refreshed — is not origin's, and judging it would
-                    // honour a revoked attestation.
-                    let now =
-                        crate::git::stdout(&["rev-parse", "--verify", "--quiet", NOTES_FULL_REF]);
-                    if now.as_deref() == Some(new.as_str()) {
-                        Sync::Judge
-                    } else {
-                        say_skip(&format!(
-                            "cannot update {NOTES_FULL_REF} to origin's copy; local mirror not judged"
-                        ));
-                        Sync::Skip
-                    }
-                }
-            }
-        }
-        crate::git::Probe::TimedOut(secs) => {
-            // Origin did not answer; asking it again would only double the wait.
-            say_skip(&format!(
-                "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
-            ));
-            Sync::Skip
-        }
-        _ => match crate::git::probe_remote(
-            &["ls-remote", "--exit-code", "origin", NOTES_FULL_REF],
-            budget,
-        ) {
-            crate::git::Probe::Exit(2) => drop_mirror(old.as_deref()),
-            crate::git::Probe::Exit(0) => {
-                say_skip(&format!(
-                    "origin has {NOTES_FULL_REF} but fetching it failed; local mirror not judged, running everything"
-                ));
-                Sync::Skip
-            }
-            crate::git::Probe::Exit(code) => {
-                say_skip(&format!(
-                    "cannot fetch {NOTES_FULL_REF} from origin (exit {code}; no credentials? persist-credentials: false?); local mirror not judged, running everything"
-                ));
-                Sync::Skip
-            }
-            crate::git::Probe::TimedOut(secs) => {
-                say_skip(&format!(
-                    "origin did not answer within {secs} s for {NOTES_FULL_REF}; local mirror not judged, running everything"
-                ));
-                Sync::Skip
-            }
-            crate::git::Probe::Failed => {
-                say_skip(&format!(
-                    "cannot fetch {NOTES_FULL_REF} from origin (git did not run); local mirror not judged, running everything"
-                ));
-                Sync::Skip
-            }
-        },
-    };
-    let _ = crate::git::succeeds(&["update-ref", "-d", &tmp]);
-    report_stale_lock();
-    verdict
+    (!v.gates.is_empty()).then(|| v.gates.join(" "))
 }
 
-/// Origin answered and has no such ref: delete the mirror, if there is one,
-/// and say how to undo it. Compare-and-delete against the oid read before
-/// the fetch, so a ref a concurrent publish just wrote is left alone.
-fn drop_mirror(old: Option<&str>) -> Sync {
-    let Some(oid) = old else {
-        return Sync::Skip; // never attested here: nothing to delete, nothing to say
-    };
-    if crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF, oid]) {
-        say(format!(
-            "amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})"
-        ));
-        say(format!(
-            "amont:   undo locally: git update-ref {NOTES_FULL_REF} {oid}   (undo the revocation: git push origin {oid}:{NOTES_FULL_REF})"
-        ));
-    } else {
-        say_skip(&format!(
-            "origin has no {NOTES_FULL_REF} but the local mirror could not be deleted (read-only .git?); local mirror not judged"
-        ));
-    }
-    Sync::Skip
-}
-
-/// Where the throwaway sync refs live: one per process id.
-const SYNC_NAMESPACE: &str = "refs/amont-tmp/";
-
-/// Remove the throwaways of runs that were killed before their cleanup —
-/// only those whose process is gone, so a concurrent run in the same clone
-/// keeps its own. Where liveness cannot be asked (no `kill`), nothing is
-/// swept: a leftover outside `refs/notes/` is inert, never pushed or read.
-fn sweep_sync_refs() {
-    let Some(refs) = crate::git::stdout(&["for-each-ref", "--format=%(refname)", SYNC_NAMESPACE])
-    else {
-        return;
-    };
-    for r in refs.lines() {
-        let Some(pid) = r
-            .strip_prefix(SYNC_NAMESPACE)
-            .and_then(|rest| rest.split('/').next())
-            .filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        else {
-            continue;
-        };
-        if pid == std::process::id().to_string() || process_alive(pid) != Some(false) {
-            continue;
-        }
-        let _ = crate::git::succeeds(&["update-ref", "-d", r]);
-    }
-}
-
-/// `Some(false)` only when the system says no such process exists.
-fn process_alive(pid: &str) -> Option<bool> {
-    if !cfg!(unix) {
-        return None;
-    }
-    // LC_ALL=C: the answer is read from kill's English message below.
-    let out = Command::new("kill")
-        .args(["-0", pid])
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-    if out.status.success() {
-        return Some(true);
-    }
-    // Gone only on a positive "no such process"; anything else (EPERM: it
-    // exists, we may not signal it) counts as alive, so nothing live is swept.
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    Some(!err.contains("no such process"))
-}
-
-/// A lock a killed git left on the MAIN ref fails every later fetch and
-/// delete; say so, with the command, rather than lose coverage in silence.
-fn report_stale_lock() {
-    let lock = format!("{NOTES_FULL_REF}.lock");
-    if let Some(path) = crate::git::stdout(&["rev-parse", "--git-path", &lock]) {
-        if std::path::Path::new(&path).exists() {
-            say_skip(&format!(
-                "a git that was killed left a lock on {NOTES_FULL_REF}; if no git is running: rm {path}"
-            ));
-        }
-    }
-}
-
-/// Why nothing is covered, on stderr. Stdout stays the gates or nothing.
-fn say_skip(why: &str) {
-    say(format!("amont: {why}"));
-}
-
-thread_local! {
-    /// Lines `covered` wrote to stderr, recorded when a test asks — so the
-    /// exact wording, and the undo command, are asserted rather than trusted.
-    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// One line on stderr (and into [`CAPTURE`] when a test is recording).
-fn say(line: String) {
-    CAPTURE.with(|c| {
-        if let Some(v) = c.borrow_mut().as_mut() {
-            v.push(line.clone());
-        }
-    });
-    eprintln!("{line}");
-}
-
-/// [`covered`] with the per-call budget as a parameter, for tests.
-fn covered_within(
-    signers: &std::path::Path,
-    principal: &str,
-    require_platform: Option<&str>,
-    budget: u64,
-) -> Option<String> {
-    if sync_mirror(budget) == Sync::Skip {
-        return None;
-    }
-    let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])?;
-    // HEAD first: a push event's checkout IS the attested commit. HEAD^2
-    // second: a PR checkout is a merge commit git made a moment ago, whose
-    // second parent is the pushed tip that carries the note — and the tree
-    // comparison below still measures against what is ACTUALLY checked out,
-    // so a merge whose tree drifted from the tested tip never skips.
-    // The TREE first, which is what the signature covers and therefore the
-    // only key that cannot go stale: it finds the attestation after a
-    // squash-merge, an amend or a rebase, none of which the commit-shaped
-    // candidates below survive when main has moved underneath.
-    //
-    // `HEAD` and `HEAD^2` stay after it, for notes written by an amont that
-    // only ever keyed by commit. They cost one `rev-parse` each and only
-    // when the tree lookup found nothing.
-    for candidate in [head_tree.as_str(), "HEAD", "HEAD^2"] {
-        let Some(object) = crate::git::stdout(&["rev-parse", "--verify", candidate]) else {
-            continue;
-        };
-        let Some(body) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "show", &object]) else {
-            continue;
-        };
-        let Some((payload, sig)) = split_note(&body) else {
-            continue;
-        };
-        // By prefix, not by position: the payload has grown a line once
-        // already, and a positional reader silently mis-assigns every field
-        // after an insertion rather than failing.
-        let mut lines = payload.lines();
-        if lines.next() != Some(FORMAT) {
-            continue;
-        }
-        let field = |name: &str| {
-            payload
-                .lines()
-                .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(' ')))
-                .map(str::trim)
-        };
-        let (Some(tree), Some(gates), Some(ran_on)) =
-            (field("tree"), field("gates"), field("platform"))
-        else {
-            continue;
-        };
-        if tree != head_tree || gates.is_empty() {
-            continue; // wrong content, or a signed way of saying nothing
-        }
-        // The leg asking is not the leg that ran: a macOS `cargo test` is no
-        // evidence about Windows. `None` means the caller has stated this
-        // suite is platform-independent.
-        if require_platform.is_some_and(|want| want != ran_on) {
-            continue;
-        }
-        if verify(&payload, &sig, signers, principal) {
-            return Some(gates.to_string());
-        }
-    }
-    None
-}
-
-/// Where a repository keeps its `allowed_signers` when the caller does not
-/// say — the Forgejo location first, the GitHub one second. `None` when
-/// neither exists, which the CLI reads as "nothing is covered".
-/// Resolved from the REPOSITORY ROOT, not the working directory. A workflow
-/// that sets `working-directory` (a monorepo running a matrix inside
-/// `packages/<x>`, say) puts the step in a subdirectory, where a relative
-/// `.forgejo/allowed_signers` does not exist — and the CLI would then find no
-/// signers, print nothing, and fail open FOREVER. Silently: the suite still
-/// runs, CI still passes, and nothing anywhere says the gate is dead. That is
-/// the worst shape a fail-open can take, so the path is anchored.
+/// Where the repository keeps its `allowed_signers`, resolved from the
+/// repository root as attest resolves it.
 pub fn default_signers() -> Option<PathBuf> {
-    let root = crate::git::stdout(&["rev-parse", "--show-toplevel"]).map(PathBuf::from);
-    [".forgejo/allowed_signers", ".github/allowed_signers"]
-        .into_iter()
-        .map(|rel| match &root {
-            Some(root) => root.join(rel),
-            None => PathBuf::from(rel),
-        })
-        .find(|p| p.exists())
-}
-
-/// The first principal an `allowed_signers` file names — the identity to
-/// verify against when the caller does not pass `--principal`. One key, one
-/// principal is the overwhelmingly common shape of this file; a multi-signer
-/// team passes the flag.
-pub fn first_principal(signers: &std::path::Path) -> Option<String> {
-    let body = std::fs::read_to_string(signers).ok()?;
-    body.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
-        .and_then(|l| l.split_whitespace().next())
-        .map(str::to_string)
-}
-
-/// A note body back into the exact bytes that were signed, plus the
-/// signature block. The blank-line split ate the payload's trailing newline;
-/// it is part of the signed bytes, so it goes back.
-fn split_note(body: &str) -> Option<(String, String)> {
-    let (payload, sig) = body.split_once("\n\n")?;
-    if !sig.starts_with("-----BEGIN SSH SIGNATURE-----") {
-        return None;
-    }
-    Some((format!("{payload}\n"), sig.to_string()))
-}
-
-/// Push `refspec`, marked so the recursive pre-push yields.
-///
-/// Not `git::succeeds` — that helper cannot set an environment variable, and
-/// the guard is the entire point of this wrapper existing. stderr is read
-/// only to tell a lost race from a real refusal.
-fn push_notes(remote: &str, refspec: &str) -> Push {
-    let out = Command::new("git")
-        .args(["push", "--quiet", remote, refspec])
-        .env(PUSH_GUARD, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .output();
-    let Ok(out) = out else { return Push::Refused };
-    if out.status.success() {
-        return Push::Done;
-    }
-    match classify_push_stderr(&String::from_utf8_lossy(&out.stderr)) {
-        PushFailure::Raced => Push::Raced,
-        PushFailure::Unreachable | PushFailure::Refused => Push::Refused,
-    }
-}
-
-/// Why a push that exited non-zero failed, read from git's stderr.
-///
-/// Three classes, because the callers act differently on each: a lost race
-/// is worth one more fetch-and-try, an unreachable remote says nothing about
-/// the push itself, and everything else is a refusal to report verbatim.
-/// An unrecognised message is `Refused` — the direction that never claims a
-/// push was merely unlucky.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PushFailure {
-    Raced,
-    Unreachable,
-    Refused,
-}
-
-/// The markers behind [`PushFailure`]. Raced wins over Unreachable: a
-/// message naming both is a race that happened on a reachable remote.
-pub fn classify_push_stderr(err: &str) -> PushFailure {
-    const RACED: [&str; 5] = [
-        "non-fast-forward",
-        "fetch first",
-        "stale info",
-        "cannot lock ref",
-        "failed to lock",
-    ];
-    const UNREACHABLE: [&str; 5] = [
-        "Could not resolve host",
-        "Connection refused",
-        "Connection timed out",
-        "unable to access",
-        "Could not read from remote repository",
-    ];
-    // A hook's own output rides the same stream, and a gate log that happens
-    // to say "Connection refused" is not the remote being down. Unreachable
-    // is read only from the lines git and ssh themselves print.
-    let own = |l: &&str| {
-        let l = l.trim_start();
-        l.starts_with("fatal:") || l.starts_with("ssh:") || l.starts_with("error:")
-    };
-    if RACED.iter().any(|m| err.contains(m)) {
-        PushFailure::Raced
-    } else if err
-        .lines()
-        .filter(own)
-        .any(|l| UNREACHABLE.iter().any(|m| l.contains(m)))
-    {
-        PushFailure::Unreachable
-    } else {
-        PushFailure::Refused
-    }
+    git_attest::verify::default_signers(here())
 }
 
 /// A ref oid that is all zeros — git's spelling of "no object" in the
@@ -1161,42 +458,49 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn push_stderr_is_sorted_into_raced_unreachable_and_refused() {
-        assert_eq!(
-            classify_push_stderr(" ! [rejected] feat -> feat (non-fast-forward)"),
-            PushFailure::Raced
-        );
-        assert_eq!(
-            classify_push_stderr("error: failed to lock ref"),
-            PushFailure::Raced
-        );
-        for line in [
-            "fatal: unable to access 'https://h/x.git/': Could not resolve host: h",
-            "ssh: connect to host h port 22: Connection refused",
-            "fatal: Could not read from remote repository.",
-            "fatal: unable to access 'u': Connection timed out after 10001 ms",
-        ] {
-            assert_eq!(
-                classify_push_stderr(line),
-                PushFailure::Unreachable,
-                "{line}"
-            );
-        }
-        assert_eq!(
-            classify_push_stderr("remote: permission denied"),
-            PushFailure::Refused
-        );
-        assert_eq!(classify_push_stderr(""), PushFailure::Refused);
+    use std::process::Stdio;
+
+    /// The payload amont signs for `gates` on `tree`, as attest builds it.
+    fn payload(
+        tree: &str,
+        gates: &[String],
+        inputs: &[(String, String)],
+        canon: Option<&str>,
+    ) -> String {
+        git_attest::format::payload(
+            tree,
+            &gates.join(" "),
+            &platform(),
+            inputs,
+            canon,
+            env!("CARGO_PKG_VERSION"),
+        )
     }
 
-    #[test]
-    fn a_hooks_own_words_do_not_make_the_remote_unreachable() {
-        // A gate log that mentions a refused connection is the gate's news.
-        assert_eq!(
-            classify_push_stderr("integration: Connection refused by the fixture\nhook failed"),
-            PushFailure::Refused
-        );
+    fn canon(tree: &str) -> Option<String> {
+        git_attest::fingerprint::canon(here(), tree).ok()
+    }
+
+    fn canon_key(canon: &str) -> Option<String> {
+        git_attest::fingerprint::canon_key(here(), canon).ok()
+    }
+
+    fn sign(payload: &str, key: &Path) -> Option<String> {
+        git_attest::sign::sign(NAMESPACE, payload, key).ok()
+    }
+
+    fn verify(payload: &str, sig: &str, signers: &Path, principal: &str) -> bool {
+        verify_in(NAMESPACE, payload, sig, signers, principal)
+    }
+
+    fn verify_in(
+        namespace: &str,
+        payload: &str,
+        sig: &str,
+        signers: &Path,
+        principal: &str,
+    ) -> bool {
+        git_attest::sign::verify(namespace, payload, sig, signers, Some(principal)).is_ok()
     }
 
     /// `amont.attest` and the key path come from git config, which each test
@@ -1281,47 +585,6 @@ mod tests {
         let r = f();
         std::env::set_current_dir(prev).unwrap();
         r
-    }
-
-    /// The signature file must never be written THROUGH something already at
-    /// its path. `std::fs::write` would follow a symlink and truncate whatever
-    /// it points at — on a shared `/tmp`, a file chosen by whoever guessed the
-    /// name first.
-    #[test]
-    fn the_signature_file_refuses_to_follow_what_is_already_there() {
-        let dir = std::env::temp_dir().join(format!("amont-excl-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-
-        // A plain file already there: refused, and left untouched.
-        let taken = dir.join("taken");
-        std::fs::write(&taken, "original").expect("seed");
-        assert!(create_exclusive(&taken).is_none());
-        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "original");
-
-        // The real attack: the path is a symlink pointing somewhere valuable.
-        #[cfg(unix)]
-        {
-            let victim = dir.join("victim");
-            std::fs::write(&victim, "precious").expect("seed");
-            let link = dir.join("link");
-            std::os::unix::fs::symlink(&victim, &link).expect("symlink");
-            assert!(
-                create_exclusive(&link).is_none(),
-                "a symlink must be refused, not followed"
-            );
-            assert_eq!(
-                std::fs::read_to_string(&victim).unwrap(),
-                "precious",
-                "the link target was written through"
-            );
-        }
-
-        // And a free name still works, or the fix would break verification.
-        let fresh = dir.join("fresh");
-        assert!(create_exclusive(&fresh).is_some());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1663,7 +926,7 @@ mod tests {
         let file = payloads.join(&head);
         std::fs::write(&file, record(&head, &tree)).unwrap();
         in_repo(&work, || {
-            assert_eq!(crate::attest_inputs::canon(&tree), None);
+            assert_eq!(canon(&tree), None);
             provenance_push_from(&payloads, "origin", &[push_of(&head)])
         });
         assert!(file.exists(), "a payload without a canon is kept");
@@ -1748,7 +1011,7 @@ mod tests {
                 ],
             );
             let tree = git(&w, &["write-tree"]);
-            let canon = in_repo(&w, || crate::attest_inputs::canon(&tree)).unwrap();
+            let canon = in_repo(&w, || canon(&tree)).unwrap();
             println!("cross-check {format} tree {tree} canon {canon}");
             assert_eq!(canon, canon_by_hand(&w, &tree), "{format}");
             let _ = std::fs::remove_dir_all(&w);
@@ -2195,11 +1458,11 @@ mod tests {
                 &["pre-push-run-tests-js".into()],
             );
         });
-        let c = in_repo(&work, || crate::attest_inputs::canon(&tree)).expect("canon");
+        let c = in_repo(&work, || canon(&tree)).expect("canon");
         let body = git(&remote, &["notes", "--ref", NOTES_REF, "show", &tree]);
         assert!(body.contains(&format!("\ncanon {c}\namont ")), "{body}");
         assert!(!body.contains("\ninput "), "nothing declared:\n{body}");
-        let key = in_repo(&work, || crate::attest_inputs::canon_key(&c)).expect("key");
+        let key = in_repo(&work, || canon_key(&c)).expect("key");
         assert_eq!(
             git(&remote, &["notes", "--ref", INPUTS_REF, "show", &key]),
             body,
@@ -2325,7 +1588,7 @@ mod tests {
         git(&work, &["commit", "-qm", "init"]);
         let canon = |w: &Path| {
             let t = git(w, &["rev-parse", "HEAD^{tree}"]);
-            (t.clone(), in_repo(w, || crate::attest_inputs::canon(&t)))
+            (t.clone(), in_repo(w, || canon(&t)))
         };
         let (t0, c0) = canon(&work);
         assert_eq!(t0, "fd4804a25fa9207c65410d3a57099643e14564eb");
@@ -2347,36 +1610,6 @@ mod tests {
             Some("57dabcd18b8b8fa35db59657892b2b8b34a1ae4f")
         );
         let _ = std::fs::remove_dir_all(&work);
-    }
-
-    #[test]
-    fn the_spec_grammar_is_attests() {
-        assert!(parse_spec(b"# c\ng src Cargo.toml\n").is_some());
-        for bad in [
-            b"g src/*.rs\n".as_slice(),
-            b"g :!x\n",
-            b"g\n",
-            b"g src\ng x\n",
-            b"g src\r\n",
-            b"g sr\xc3\xa9\n",
-            b"-g src\n",
-            b"g ./src\n",
-            b"g src/\n",
-            b"g a/../b\n",
-        ] {
-            assert!(parse_spec(bad).is_none(), "{bad:?}");
-        }
-        assert_eq!(
-            implicit_inputs(&["crates/foo/src".into()]),
-            [
-                ".forgejo/attest-inputs",
-                ".github/attest-inputs",
-                ".gitmodules",
-                ".gitattributes",
-                "crates/.gitattributes",
-                "crates/foo/.gitattributes"
-            ]
-        );
     }
 
     /// Off by default: a repo that never opted in makes no statement, even
@@ -2522,24 +1755,24 @@ mod tests {
         );
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, "t@t.test", Some(&platform())).as_deref(),
+                covered(&signers, Some("t@t.test"), Some(&platform())).as_deref(),
                 Some("pre-push-pytest"),
                 "a fresh clone verifies the attestation and reads the gates"
             );
             assert_eq!(
-                covered(&signers, "t@t.test", None).as_deref(),
+                covered(&signers, Some("t@t.test"), None).as_deref(),
                 Some("pre-push-pytest"),
                 "`any` covers a platform-independent suite"
             );
             // The matrix case this exists for: another leg asking about a
             // suite that never ran there.
             assert_eq!(
-                covered(&signers, "t@t.test", Some("s390x-aix")),
+                covered(&signers, Some("t@t.test"), Some("s390x-aix")),
                 None,
                 "a pass on one platform is not evidence about another"
             );
             assert_eq!(
-                covered(&signers, "someone@else.test", None),
+                covered(&signers, Some("someone@else.test"), None),
                 None,
                 "an unlisted principal covers nothing"
             );
@@ -2551,7 +1784,11 @@ mod tests {
         git(&clone, &["add", "b.ts"]);
         git(&clone, &["commit", "-qm", "chore: b"]);
         in_repo(&clone, || {
-            assert_eq!(covered(&signers, "t@t.test", None), None, "drifted tree");
+            assert_eq!(
+                covered(&signers, Some("t@t.test"), None),
+                None,
+                "drifted tree"
+            );
         });
         // Forgery: replace the remote's notes with unsigned ones. covered's
         // own fetch pulls them in, and they must read as "no attestation".
@@ -2580,10 +1817,17 @@ mod tests {
                 &format!("+{NOTES_FULL_REF}:{NOTES_FULL_REF}"),
             ],
         );
+        // The genuine block is also filed under the canonical tree's key in
+        // the inputs ref, which attest's verifier reads (the frozen copy here
+        // never did): every place a note lives includes that ref.
+        git(
+            &work,
+            &["push", "-q", "origin", &format!(":{INPUTS_FULL_REF}")],
+        );
         git(&clone, &["reset", "-q", "--hard", &head]);
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, "t@t.test", None),
+                covered(&signers, Some("t@t.test"), None),
                 None,
                 "a foreign note is not a stamp"
             );
@@ -2608,11 +1852,6 @@ mod tests {
             let found = default_signers().expect("resolved from the repo root, not the cwd");
             assert!(found.ends_with(".forgejo/allowed_signers"));
             assert!(found.exists(), "the path it returns must be usable as-is");
-            assert_eq!(
-                first_principal(&found).as_deref(),
-                Some("t@t.test"),
-                "and readable from there"
-            );
         });
         let _ = std::fs::remove_dir_all(&work);
     }
@@ -2724,7 +1963,7 @@ mod tests {
         );
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, "t@t.test", None).as_deref(),
+                covered(&signers, Some("t@t.test"), None).as_deref(),
                 Some("pre-push-pytest"),
                 "the attestation must be found by the tree it signed"
             );
@@ -2733,40 +1972,6 @@ mod tests {
     }
 
     // --- attest 1.4.0 parity: optional paths --------------------------------
-
-    #[test]
-    fn optional_paths_are_marked_once_and_stripped() {
-        let spec = parse_spec(b"g src ?build.rs ?a/b/c\n").expect("valid");
-        assert_eq!(
-            spec[0].1,
-            [
-                PathTok {
-                    path: "src".into(),
-                    optional: false
-                },
-                PathTok {
-                    path: "build.rs".into(),
-                    optional: true
-                },
-                PathTok {
-                    path: "a/b/c".into(),
-                    optional: true
-                },
-            ]
-        );
-        assert!(
-            parse_spec(b"g ?nope\n").is_some(),
-            "an all-optional gate is a gate"
-        );
-        for bad in [
-            "?", "??x", "?/x", "?./x", "?x/", "?:x", "x?", "?a//b", "?a/../b",
-        ] {
-            assert!(
-                parse_spec(format!("g {bad}\n").as_bytes()).is_none(),
-                "{bad} should be invalid"
-            );
-        }
-    }
 
     /// The fingerprint of `g src ?nope` equals the hash of a listing built BY
     /// HAND from attest's SPEC — the optional path is absent, so the listing
@@ -2793,8 +1998,8 @@ mod tests {
             crate::git::stdout_piped_in(&work, &["hash-object", "--stdin"], listing.as_bytes())
                 .unwrap();
         let before = in_repo(&work, || {
-            let spec = spec_at(&tree).expect("the spec parses");
-            fingerprint(&tree, &spec[0].1)
+            let spec = crate::attest_inputs::spec_at(&tree).expect("the spec parses");
+            crate::attest_inputs::fingerprint(&tree, &spec, "g")
         });
         assert_eq!(before.as_deref(), Some(hand.as_str()));
         std::fs::write(work.join("nope"), "now it exists\n").unwrap();
@@ -2802,8 +2007,8 @@ mod tests {
         git(&work, &["commit", "-qm", "chore: nope"]);
         let tree2 = git(&work, &["rev-parse", "HEAD^{tree}"]);
         let after = in_repo(&work, || {
-            let spec = spec_at(&tree2).expect("the spec parses");
-            fingerprint(&tree2, &spec[0].1)
+            let spec = crate::attest_inputs::spec_at(&tree2).expect("the spec parses");
+            crate::attest_inputs::fingerprint(&tree2, &spec, "g")
         });
         assert!(
             after.is_some() && after != before,
@@ -2813,350 +2018,4 @@ mod tests {
     }
 
     // --- attest 1.4.0 parity: the notes ref is origin's mirror --------------
-
-    /// A work repo that pushed an attestation, and a fresh clone of its remote
-    /// that `covered` answers for.
-    fn attested_clone(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-        let (d, work, remote, signers) = remote_and_work(name);
-        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        git(&work, &["push", "-q", "origin", "HEAD:main"]);
-        in_repo(&work, || {
-            attest_push(
-                &test_settings(),
-                "origin",
-                &[push_ref_for(&work)],
-                &["pre-push-pytest".into()],
-            );
-        });
-        let clone = d.join("ci-checkout");
-        git(
-            &d,
-            &[
-                "clone",
-                "-q",
-                "--template=",
-                remote.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
-        );
-        (d, remote, clone, signers)
-    }
-
-    fn covers(clone: &Path, signers: &Path, budget: u64) -> Option<String> {
-        covers_logged(clone, signers, budget).0
-    }
-
-    /// [`covers`], with the stderr lines it wrote.
-    fn covers_logged(clone: &Path, signers: &Path, budget: u64) -> (Option<String>, Vec<String>) {
-        in_repo(clone, || {
-            CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
-            let got = covered_within(signers, "t@t.test", None, budget);
-            let lines = CAPTURE.with(|c| c.borrow_mut().take()).unwrap_or_default();
-            (got, lines)
-        })
-    }
-
-    #[test]
-    fn a_ref_revoked_on_origin_stops_covering_and_the_mirror_goes() {
-        let (d, remote, clone, signers) = attested_clone("revoked");
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        let oid = git(&clone, &["rev-parse", NOTES_FULL_REF]);
-        git(&remote, &["update-ref", "-d", NOTES_FULL_REF]);
-        let (got, lines) = covers_logged(&clone, &signers, 15);
-        assert_eq!(got, None, "revoked on origin");
-        assert_eq!(
-            lines[0],
-            format!("amont: origin has no {NOTES_FULL_REF}; deleted the local mirror (was {oid})")
-        );
-        assert!(
-            in_repo(&clone, || crate::git::stdout(&[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                NOTES_FULL_REF
-            ]))
-            .is_none(),
-            "the local mirror was deleted"
-        );
-        // The undo command, run exactly as printed.
-        let undo = lines[1]
-            .split("undo locally: git ")
-            .nth(1)
-            .and_then(|r| r.split("   (").next())
-            .expect("an undo command");
-        git(&clone, &undo.split(' ').collect::<Vec<_>>());
-        assert_eq!(git(&clone, &["rev-parse", NOTES_FULL_REF]), oid);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn an_unreachable_origin_covers_nothing_and_keeps_the_mirror() {
-        let (d, _remote, clone, signers) = attested_clone("unreachable");
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        git(
-            &clone,
-            &[
-                "remote",
-                "set-url",
-                "origin",
-                "file:///nonexistent/amont-origin.git",
-            ],
-        );
-        let (got, lines) = covers_logged(&clone, &signers, 15);
-        assert_eq!(got, None, "a stale mirror is not judged");
-        assert!(
-            lines.iter().any(|l| l.starts_with(&format!(
-                "amont: cannot fetch {NOTES_FULL_REF} from origin (exit "
-            ))),
-            "the reason is on stderr: {lines:?}"
-        );
-        assert!(
-            !git(&clone, &["rev-parse", NOTES_FULL_REF]).is_empty(),
-            "and it is kept"
-        );
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// A guard, not a reproduction: without an origin the local ref was
-    /// always judged, and still is — fixtures and local use rely on it.
-    #[test]
-    fn without_an_origin_the_local_ref_is_judged() {
-        let (d, _remote, clone, signers) = attested_clone("no-origin");
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        git(&clone, &["remote", "remove", "origin"]);
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// A remote that never answers is cut off by the deadline, leaves no lock
-    /// on the main ref, and does not stop the next good fetch.
-    #[cfg(unix)]
-    #[test]
-    fn a_silent_origin_is_cut_off_and_leaves_nothing_behind() {
-        use std::os::unix::fs::PermissionsExt;
-        let (d, remote, clone, signers) = attested_clone("silent");
-        let hang = d.join("hang-ssh");
-        std::fs::write(&hang, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // The user's own ssh command is honoured, which is how this one hangs.
-        git(
-            &clone,
-            &["config", "core.sshCommand", hang.to_str().unwrap()],
-        );
-        git(
-            &clone,
-            &["remote", "set-url", "origin", "ssh://example.invalid/x.git"],
-        );
-        // Timed INSIDE the working-directory lock these tests share, so the
-        // wait for other tests is not counted.
-        let (got, took) = in_repo(&clone, || {
-            let t0 = std::time::Instant::now();
-            let got = covered_within(&signers, "t@t.test", None, 2);
-            (got, t0.elapsed())
-        });
-        assert_eq!(got, None);
-        // The 2 s budget plus process overhead — far from the remote's 60 s.
-        assert!(took.as_secs() < 6, "took {took:?}");
-        let lock = in_repo(&clone, || {
-            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
-        })
-        .unwrap();
-        assert!(
-            !clone.join(&lock).exists() && !Path::new(&lock).exists(),
-            "no lock left"
-        );
-        git(&clone, &["config", "--unset", "core.sshCommand"]);
-        git(
-            &clone,
-            &["remote", "set-url", "origin", remote.to_str().unwrap()],
-        );
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn a_stale_lock_on_the_mirror_means_nothing_is_judged() {
-        let (d, remote, clone, signers) = attested_clone("stale-lock");
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        let lock = in_repo(&clone, || {
-            crate::git::stdout(&["rev-parse", "--git-path", &format!("{NOTES_FULL_REF}.lock")])
-        })
-        .unwrap();
-        let lock = if Path::new(&lock).is_absolute() {
-            PathBuf::from(lock)
-        } else {
-            clone.join(lock)
-        };
-        std::fs::write(&lock, "").unwrap();
-        // Origin unchanged: the locked copy IS origin's, so it may be judged.
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest"),
-            "an unchanged origin: the copy is origin's"
-        );
-        // The case that matters: origin moved on (a new attestation, or a
-        // revocation rewrite) while the lock pins the stale copy.
-        let main = git(&remote, &["rev-parse", "main"]);
-        // A bare remote has no committer identity on a fresh runner.
-        git(
-            &remote,
-            &[
-                "-c",
-                "user.email=t@t.test",
-                "-c",
-                "user.name=t",
-                "notes",
-                "--ref",
-                NOTES_REF,
-                "add",
-                "-f",
-                "-m",
-                "rewritten",
-                &main,
-            ],
-        );
-        let (got, lines) = covers_logged(&clone, &signers, 15);
-        assert_eq!(got, None, "a pinned stale copy is never judged");
-        assert!(
-            lines.iter().any(|l| l.contains(&format!(
-                "left a lock on {NOTES_FULL_REF}; if no git is running: rm "
-            ))),
-            "the lock is reported with its rm: {lines:?}"
-        );
-        std::fs::remove_file(&lock).unwrap();
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// Unix only: elsewhere liveness cannot be asked, so nothing is swept —
-    /// by design, since a leftover outside `refs/notes/` is inert.
-    #[cfg(unix)]
-    #[test]
-    fn leftover_sync_refs_are_swept() {
-        let (d, _remote, clone, signers) = attested_clone("sweep");
-        let head = git(&clone, &["rev-parse", "HEAD"]);
-        git(
-            &clone,
-            // A pid no process has: 2^22 + 1 exceeds pid_max on Linux and macOS.
-            &["update-ref", "refs/amont-tmp/4194305/amont-attest", &head],
-        );
-        assert_eq!(
-            covers(&clone, &signers, 15).as_deref(),
-            Some("pre-push-pytest")
-        );
-        assert_eq!(git(&clone, &["for-each-ref", "refs/amont-tmp/"]), "");
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn the_remote_environment_never_prompts() {
-        let (args, env) = crate::git::remote_env(crate::git::Ssh::Batch);
-        assert_eq!(
-            args,
-            [
-                "-c",
-                "http.lowSpeedLimit=1",
-                "-c",
-                "http.lowSpeedTime=10",
-                "-c",
-                "credential.interactive=never"
-            ]
-        );
-        assert!(env.contains(&("GIT_TERMINAL_PROMPT", "0")));
-        assert!(
-            env.contains(&("GIT_ASKPASS", "")),
-            "present and EMPTY disables every askpass"
-        );
-        assert!(env.contains(&("GCM_INTERACTIVE", "never")));
-        assert!(env.contains(&(
-            "GIT_SSH_COMMAND",
-            "ssh -o BatchMode=yes -o ConnectTimeout=10"
-        )));
-        let (_, env) = crate::git::remote_env(crate::git::Ssh::User);
-        assert!(
-            !env.iter().any(|(k, _)| *k == "GIT_SSH_COMMAND"),
-            "the user's own ssh command is left alone"
-        );
-    }
-
-    /// An http origin that demands credentials: through the remote
-    /// environment no askpass runs; without it the same askpass does — the
-    /// negative control that keeps this test from passing vacuously.
-    #[cfg(unix)]
-    #[test]
-    fn no_askpass_runs_against_an_origin_that_wants_credentials() {
-        use std::io::{Read, Write};
-        use std::os::unix::fs::PermissionsExt;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let mut s = stream;
-                let mut buf = [0u8; 4096];
-                let _ = s.read(&mut buf);
-                let _ = s.write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
-            }
-        });
-        let work = repo("askpass");
-        let marker = work.join("asked");
-        let askpass = work.join("askpass.sh");
-        std::fs::write(
-            &askpass,
-            format!("#!/bin/sh\ntouch '{}'\necho x\n", marker.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o755)).unwrap();
-        git(
-            &work,
-            &["config", "core.askPass", askpass.to_str().unwrap()],
-        );
-        git(&work, &["config", "credential.helper", ""]);
-        let url = format!("http://127.0.0.1:{port}/x.git");
-        in_repo(&work, || {
-            let _ = crate::git::probe_remote(&["ls-remote", &url], 10);
-        });
-        assert!(
-            !marker.exists(),
-            "an askpass ran through the remote environment"
-        );
-        // Plain git, prompts off, the ambient askpass variables removed: the
-        // repo's core.askPass is then what git runs — the very thing the
-        // remote environment must stop.
-        let _ = std::process::Command::new("git")
-            .current_dir(&work)
-            .args(["ls-remote", &url])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env_remove("GIT_ASKPASS")
-            .env_remove("SSH_ASKPASS")
-            .stdin(std::process::Stdio::null())
-            .output();
-        assert!(
-            marker.exists(),
-            "negative control: without it the askpass does run"
-        );
-        let _ = std::fs::remove_dir_all(&work);
-    }
 }

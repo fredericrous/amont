@@ -341,18 +341,18 @@ fn input_tokens(tree: &str) -> Vec<String> {
         return canon_tokens(tree);
     };
     let mut out: Vec<String> = Vec::new();
-    for (gate, paths) in spec {
-        if !manifest_is_an_input(tree, &paths) {
+    for (gate, _) in &spec.gates {
+        if !manifest_is_an_input(tree, &spec, gate) {
             continue;
         }
-        let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
+        let Some(fp) = crate::attest_inputs::fingerprint(tree, &spec, gate) else {
             continue;
         };
-        let Some(key) = crate::attest_inputs::input_key(&gate, &fp) else {
+        let Some(key) = crate::attest_inputs::input_key(gate, &fp) else {
             continue;
         };
         for t in note_in(INPUTS_REF, &key).tokens {
-            if crate::gate_identity::base(&t) == gate && !out.contains(&t) {
+            if crate::gate_identity::base(&t) == gate.as_str() && !out.contains(&t) {
                 out.push(t);
             }
         }
@@ -402,19 +402,19 @@ fn file_inputs(tree: &str, tokens: &[String]) {
         file_canon(tree, tokens);
         return;
     };
-    for (gate, paths) in spec {
+    for (gate, _) in &spec.gates {
         let mine: Vec<String> = tokens
             .iter()
-            .filter(|t| crate::gate_identity::base(t) == gate)
+            .filter(|t| crate::gate_identity::base(t) == gate.as_str())
             .cloned()
             .collect();
-        if mine.is_empty() || !manifest_is_an_input(tree, &paths) {
+        if mine.is_empty() || !manifest_is_an_input(tree, &spec, gate) {
             continue;
         }
-        let Some(fp) = crate::attest_inputs::fingerprint(tree, &paths) else {
+        let Some(fp) = crate::attest_inputs::fingerprint(tree, &spec, gate) else {
             continue;
         };
-        let Some(key) = crate::attest_inputs::input_key(&gate, &fp) else {
+        let Some(key) = crate::attest_inputs::input_key(gate, &fp) else {
             continue;
         };
         let mut note = note_in(INPUTS_REF, &key);
@@ -428,13 +428,13 @@ fn file_inputs(tree: &str, tokens: &[String]) {
 /// was a tree change; under a fingerprint it is one only if the gate declares
 /// the manifest. So a tree that tracks `amont.conf` offers the route only to a
 /// gate whose declared inputs cover it, and a scope-only edit then misses.
-fn manifest_is_an_input(tree: &str, paths: &[crate::attest_inputs::PathTok]) -> bool {
+fn manifest_is_an_input(tree: &str, spec: &crate::attest_inputs::Spec, gate: &str) -> bool {
     let tracked = crate::git::succeeds(&[
         "cat-file",
         "-e",
         &format!("{tree}:{}", crate::manifest::MANIFEST),
     ]);
-    !tracked || crate::attest_inputs::declares(paths, crate::manifest::MANIFEST)
+    !tracked || crate::attest_inputs::declares(spec, gate, crate::manifest::MANIFEST)
 }
 
 /// Does the inputs ref exist here? One spawn that lets a repository nothing
@@ -1682,7 +1682,7 @@ mod tests {
         in_repo(&dir, || {
             let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
             let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
-            let fp = crate::attest_inputs::fingerprint(&tree, &spec[0].1).expect("fp");
+            let fp = crate::attest_inputs::fingerprint(&tree, &spec, &spec.gates[0].0).expect("fp");
             let key = crate::attest_inputs::input_key("test", &fp).expect("key");
             let listed = git(&dir, &["notes", "--ref", INPUTS_REF, "list"]);
             assert!(
@@ -1701,7 +1701,7 @@ mod tests {
         in_repo(&dir, || {
             let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
             let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
-            let fp = crate::attest_inputs::fingerprint(&tree, &spec[0].1).expect("fp");
+            let fp = crate::attest_inputs::fingerprint(&tree, &spec, &spec.gates[0].0).expect("fp");
             let key = crate::attest_inputs::input_key("test", &fp).expect("key");
             // Somebody files a token for ANOTHER gate under `test`'s key.
             let mut note = note_in(INPUTS_REF, &key);

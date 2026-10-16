@@ -14,6 +14,7 @@
 - [Gate evidence](gate-evidence.md)
 - [Opting out](opting-out.md)
 - [The trust model](trust.md)
+- [The provenance record](provenance.md)
 - [Custom checks](custom-checks.md)
 
 # Project

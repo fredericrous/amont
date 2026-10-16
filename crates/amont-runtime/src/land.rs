@@ -447,7 +447,7 @@ fn land(mode: Mode) -> Report {
         }
         report.status = match classify_push_stderr(&run.stderr) {
             PushFailure::Unreachable => Status::Unreachable,
-            PushFailure::Raced | PushFailure::Refused => Status::Refused,
+            _ => Status::Refused,
         };
         return report;
     };
