@@ -6,6 +6,35 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- **amont calls attest for the attestation format** (decisions ADR-0037).
+  The payload, the spec, fingerprints, the canonical tree, the note keys,
+  signing, the publish loop and the verifier come from the `git_attest`
+  library; amont's own copies are gone. `amont-runtime` gains that one crate,
+  std-only, allowed by name in `scripts/check-no-deps.sh` only while its own
+  tree is empty. The notes amont publishes are unchanged.
+- **`amont attest covered` judges with attest's full verifier.** Its flags,
+  output and exit code are the same, but it now reads input fingerprints, the
+  canonical tree and every block of a note, as CI's action does, so it covers
+  gates it reported uncovered before (relais, its one caller, skips more), and
+  a stale fingerprint no longer covers anything. Without `--principal` it
+  accepts whoever signed, if that key is in the signers file, instead of the
+  file's first entry, which silently uncovered every other signer on a team.
+- **`amont attest check-inputs`** runs attest's completeness proof, which
+  `git-attest check-inputs` shares; output and exit codes are unchanged.
+- After a notes push, the local mirror is updated only when the remote is
+  `origin`, as attest's SPEC says; amont updated it for any remote.
+- `set planExempt off` in `amont.conf` is still honoured; `amont list` says on
+  stderr that it is deprecated in favour of `@plan-exempt off` in
+  `attest-inputs`, attest's own file.
+- The provenance record's specification moves from attest's SPEC to
+  `docs/provenance.md`: it is amont's.
+- The canonical-tree tests no longer vendor attest's `canon.txt`: attest's
+  library is tested against it where it lives.
+
 ## v1.57.0
 
 ### Added

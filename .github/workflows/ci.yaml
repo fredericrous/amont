@@ -292,9 +292,9 @@ jobs:
           # Cargo 1.74 cannot PARSE a v4 lock file ("lock file version `4` was
           # found"), which is what the committed one is, so it fails before it
           # reaches any Rust at all. Removing it is safe and is not a weakening
-          # of the check: the two crates being checked have no external
-          # dependencies whatsoever — that is the property the `deps` job
-          # exists to enforce — so there is nothing for a lock file to pin.
+          # of the check: the two crates being checked have one dependency,
+          # git-attest, itself std-only — the property the `deps` job exists
+          # to enforce — so the floor is resolved for it from `^1.6` as well.
           # The checkout is disposable; nothing is committed back.
           rm -f Cargo.lock
           cargo "+$MSRV" check -p amont -p amont-runtime

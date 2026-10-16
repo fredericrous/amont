@@ -39,6 +39,9 @@ dependencies = [
 [[package]]
 name = "amont-runtime"
 version = "1.57.0"
+dependencies = [
+ "git-attest",
+]
 
 [[package]]
 name = "anyhow"
@@ -455,6 +458,12 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
 ]
+
+[[package]]
+name = "git-attest"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a12f2673859977c6881ec41112453071d2765a06b66f1fa56ffc5e6303dbcf14"
 
 [[package]]
 name = "hashbrown"

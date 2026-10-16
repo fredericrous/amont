@@ -33,3 +33,12 @@ categories = ["development-tools"]
 test-hooks = []
 
 [dependencies]
+# The ONE dependency, argued here as scripts/check-no-deps.sh asks (decisions
+# ADR-0037, ADR-0020): git-attest is the one implementation of the
+# attestation format, which this crate used to copy by hand. It is std-only
+# and ours, so it puts no third party on the commit path: the code it runs
+# there is the code it replaces, moved to where every producer and verifier
+# shares it. The script allows it by name, and only while its own resolved
+# tree stays empty. A caret requirement: Cargo.lock pins the exact version.
+git-attest = "1.6"
+

@@ -207,10 +207,11 @@ attest: attested on aarch64-macos, this leg is x86_64-linux
 attest: no attestation found for tree 9f2a1c…
 ```
 
-If you would rather not depend on an action, the same verifier is a single
-shell script — [`verify.sh`](https://github.com/fredericrous/attest/blob/main/verify.sh)
-— and `amont attest covered` still does the same job locally for CI that is
-neither GitHub nor Forgejo. Both answer to the format in
+If you would rather not depend on an action, `git-attest covered` (`cargo
+install git-attest`) is the same verifier as a binary, and `amont attest
+covered` runs it too, through the `git_attest` library amont links (decisions
+ADR-0037), for CI that is neither GitHub nor Forgejo. All of them answer to
+the format in
 [`SPEC.md`](https://github.com/fredericrous/attest/blob/main/SPEC.md).
 
 Origin is the source of truth. `amont attest covered` treats the local

@@ -6,10 +6,11 @@
 //! the split there was no lib target at all, which is why `cargo test --lib`
 //! failed outright.
 //!
-//! **This crate must never gain an external dependency.** The hook binary
-//! depends on it, so anything added here reaches every commit transitively —
-//! and the entire Rust migration existed to remove exactly that kind of
-//! requirement. ratatui and friends belong in `amont-fleet`.
+//! **This crate gains no third-party dependency.** The hook binary depends on
+//! it, so anything added here reaches every commit transitively. The one
+//! crate it links is `git-attest`, attest's std-only implementation of the
+//! attestation format (decisions ADR-0037), argued in Cargo.toml and checked
+//! by `scripts/check-no-deps.sh`. ratatui and friends belong in `amont-fleet`.
 //!
 //! Hooks are invoked through a thin `sh` shim at each hook path, which passes
 //! the hooks directory it lives in:
