@@ -129,6 +129,8 @@ FleetScan {
   hooks_outside_seen : usize      // repos whose hooks resolve somewhere we will not touch
   excluded_dirs      : usize
   dirs_visited       : usize      // how much of the tree was actually walked
+  repos_with_deprecated_opt_out   : usize  // only `set planExempt off`: read until git-attest 2.0.0
+  repos_pinning_attest_before_1_7 : usize  // an attest pin older than 1.7.0, or an unnamed sha
   repos              : Vec<Repo>
 }
 
@@ -150,11 +152,14 @@ Repo {
   aval_hook         : AvalHook       // { state, ignored: Vec<String> } — see below
   hooks_dir         : HooksDir       // where the hooks are, and whether we may touch them
   shares_hooks_with : Option<PathBuf> // a repo already seen that owns this hooks dir
+  attest            : AttestState    // what it says to attest, from HEAD — see below
 }
 
 SkipEntry        { value, scope: Local|Global|Other{origin}, suppresses: Vec<&str> }
 SeverityOverride { check, value, level, scope, effective: bool }
 DeclaredCheck    { name, stage, state: Usable{severity, exts} | unusable }
+AttestState      { deprecated_opt_out, spec_with_gates, pins: Vec<AttestPin> }
+AttestPin        { file, action: attest|attest/sign, reference, version: Option<X.Y.Z> }
 
 ShimState = Ok            // installed bytes match the expected baked template
           | Drifted       // present, readable text, not the expected baked template
@@ -268,6 +273,20 @@ FILE, which the walk used to skip outright, making every submodule on the machin
 invisible), so one hooks directory is reachable from two rows. The first
 repository seen in the walk's sorted order owns it; the others plan nothing and
 display as covered-by.
+
+### `attest`
+
+`attest` measures the step that retires amont's opt-out from attest (decisions
+ADR-0037). `git-attest` 2.0.0 stops reading `set planExempt off` in
+`amont.conf`, so it waits for `repos_with_deprecated_opt_out` to reach zero.
+The sweep that gets it there adds `@plan-exempt off` to `attest-inputs`. Where
+the spec declares gates (`spec_with_gates`), the new line voids the input
+fingerprints of an attest before 1.6.0. So the sweep also waits for
+`repos_pinning_attest_before_1_7` to reach zero.
+
+The answers are read from HEAD's tree through the `git_attest` library. A
+moving `v1` follows the releases and is never counted. A sha counts unless a
+`# vX.Y.Z` comment beside it names a release.
 
 `languages` matters because a check that never fires is not the same as a check
 that is broken: `pre-commit-clippy` in a Python repo is *correctly* inert. The

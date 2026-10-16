@@ -31,6 +31,10 @@ rust-version = "1.88"
 # The registry is the source of truth for what a check IS. Hand-copying the
 # names here let the dashboard silently omit a check the dispatcher runs.
 amont-runtime.workspace = true
+# What each repository says to attest (its opt-out, its spec, read from
+# HEAD), through attest's one implementation rather than a fleet copy
+# (decisions ADR-0037). The same crate amont-runtime links.
+git-attest = "1.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.30"

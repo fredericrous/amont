@@ -31,6 +31,7 @@ version = "1.58.0"
 dependencies = [
  "amont-runtime",
  "crossterm",
+ "git-attest",
  "ratatui",
  "serde",
  "serde_json",
