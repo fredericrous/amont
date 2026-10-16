@@ -613,20 +613,84 @@ mod tests {
         assert_ne!(canon_text(&a), canon_text(&renamed));
     }
 
+    /// One case of the known answers: a name, a listing, and its canonical
+    /// text (`None`: no canon).
+    type CanonCase = (String, String, Option<String>);
+
+    /// Parse `tests/vectors/canon.txt`, vendored byte for byte from attest's
+    /// `tests/vectors/canon.txt` (its header says the format). Strict: any
+    /// line the format does not allow panics, so a damaged copy fails the
+    /// test instead of silently testing less.
+    fn canon_vectors(text: &str) -> Vec<CanonCase> {
+        let mut cases = Vec::new();
+        let mut open: Option<(String, String, Option<String>, bool)> = None;
+        for (n, line) in text.split('\n').enumerate() {
+            let at = n + 1;
+            match open.as_mut() {
+                None if line.is_empty() || line.starts_with('#') => {}
+                None => {
+                    let name = line
+                        .strip_prefix("case ")
+                        .unwrap_or_else(|| panic!("canon.txt:{at}: expected `case`: {line:?}"));
+                    open = Some((name.to_string(), String::new(), None, false));
+                }
+                Some((_, listing, out, none)) => {
+                    if line == "end" {
+                        let (name, listing, out, none) = open.take().unwrap();
+                        assert!(
+                            out.is_some() != none,
+                            "canon.txt:{at}: `{name}` needs `out` lines or one `none`"
+                        );
+                        cases.push((name, listing, out));
+                    } else if line == "none" {
+                        assert!(out.is_none() && !*none, "canon.txt:{at}: misplaced `none`");
+                        *none = true;
+                    } else if let Some(rec) = line.strip_prefix("in ") {
+                        assert!(
+                            out.is_none() && !*none,
+                            "canon.txt:{at}: `in` after the answer"
+                        );
+                        listing.push_str(rec);
+                        listing.push('\n');
+                    } else if let Some(rec) = line.strip_prefix("out ") {
+                        assert!(!*none, "canon.txt:{at}: `out` after `none`");
+                        let o = out.get_or_insert_with(String::new);
+                        o.push_str(rec);
+                        o.push('\n');
+                    } else {
+                        panic!("canon.txt:{at}: not a directive: {line:?}");
+                    }
+                }
+            }
+        }
+        assert!(open.is_none(), "canon.txt: the last case has no `end`");
+        cases
+    }
+
     #[test]
-    fn canon_text_exempts_only_the_top_level_docs_plans_of_regular_files() {
-        let nested = format!("100644 blob {O1}\tx/docs/plans/a.md\n");
-        assert!(canon_text(&nested).unwrap().contains(O1));
-        let near = format!("100644 blob {O1}\tdocs/plans-old/a.md\n100644 blob {O1}\tdocs/plans\n");
-        assert!(canon_text(&near).unwrap().contains(O1));
-        let link = format!("120000 blob {O1}\tdocs/plans/l\n160000 commit {O1}\tdocs/plans/m\n");
-        assert_eq!(canon_text(&link).unwrap(), link);
-        let quoted = format!("100644 blob {O1}\t\"docs/plans/a\\nb.md\"\n");
-        assert!(canon_text(&quoted).unwrap().contains(Z));
-        let long = format!("100644 blob {}\tdocs/plans/a.md\n", "a".repeat(64));
-        assert!(canon_text(&long).unwrap().contains(&"0".repeat(64)));
-        assert_eq!(canon_text(""), None);
-        assert_eq!(canon_text("garbage\n"), None);
+    fn canon_text_gives_every_known_answer() {
+        let cases = canon_vectors(include_str!("../tests/vectors/canon.txt"));
+        assert!(cases.iter().any(|c| c.2.is_some()) && cases.iter().any(|c| c.2.is_none()));
+        for (name, listing, want) in &cases {
+            assert_eq!(canon_text(listing).as_ref(), want.as_ref(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_vectors_reader_refuses_a_damaged_file() {
+        for bad in [
+            "stray\n",
+            "case x\nin a\tb\n",
+            "case x\nend\n",
+            "case x\nnone\nout y\nend\n",
+            "case x\nout y\nin a\tb\nend\n",
+            "case x\nwhat\nend\n",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| canon_vectors(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

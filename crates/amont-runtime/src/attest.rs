@@ -514,6 +514,29 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
             );
             continue;
         }
+        // The canonical tree is a tree fact the signer owns (attest SPEC,
+        // "The handoff"): a payload that states one is refused, never fixed
+        // up, and the person is told which file to delete.
+        if payload
+            .lines()
+            .any(|l| l.split_ascii_whitespace().next() == Some("canon"))
+        {
+            for line in canon_refusal(&r.local_oid, &file) {
+                crate::say!("{line}");
+            }
+            continue;
+        }
+        // canon(T) whatever `planExempt` says: that governs skipping a gate,
+        // not a tree's identity. No canon, no signature: kept for next time.
+        let Some(canon) = crate::attest_inputs::canon(&tree) else {
+            crate::say!(
+                "  provenance for {} not signed: its canonical tree cannot be computed;",
+                &r.local_oid[..r.local_oid.len().min(7)]
+            );
+            crate::say!("    the payload is kept for the next push");
+            continue;
+        };
+        let payload = with_canon(&payload, &canon);
         found.push((file, r.local_oid.clone(), tree, payload));
     }
     if found.is_empty() {
@@ -554,6 +577,45 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
     } else {
         crate::say!("  provenance not published: kept for the next push");
     }
+}
+
+/// `payload` with `canon <canon>` inserted right after its first `tree` line,
+/// where attest SPEC `amont-provenance-v1` places it.
+fn with_canon(payload: &str, canon: &str) -> String {
+    let mut out = String::with_capacity(payload.len() + canon.len() + 7);
+    let mut done = false;
+    for line in payload.split_inclusive('\n') {
+        out.push_str(line);
+        if !done && line.starts_with("tree ") {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("canon {canon}\n"));
+            done = true;
+        }
+    }
+    out
+}
+
+/// What is said for a payload that carries its own `canon` line: the reason
+/// and the fix, every line at most 80 columns for a path of usual length. The
+/// file is named as its directory and its name, so neither line holds both.
+fn canon_refusal(commit: &str, file: &std::path::Path) -> Vec<String> {
+    let dir = file.parent().unwrap_or(file).display().to_string();
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    vec![
+        format!(
+            "  provenance for {} not signed: its payload carries a canon line",
+            &commit[..commit.len().min(7)]
+        ),
+        "    (a pre-release amont-agent wrote it); delete the file".to_string(),
+        format!("    {name} in"),
+        format!("    {dir}"),
+        "    and upgrade amont-agent".to_string(),
+    ]
 }
 
 /// How many times a push that lost a race is retried before giving up.
@@ -1143,6 +1205,7 @@ mod tests {
         crate::config::Settings::default()
     }
 
+    use std::io::Write;
     use std::path::Path;
 
     /// Real repositories and real keys: every function here is a conversation
@@ -1323,9 +1386,18 @@ mod tests {
         assert_eq!(provenance_dir(env(&[])), None);
     }
 
-    /// A repository with a bare origin, the toggle on and a key; one commit.
-    /// Returns (scratch, work, remote, head, tree, signers).
+    /// A repository with a bare origin, the toggle on and a key; one commit
+    /// that carries a plan. Returns (scratch, work, remote, head, tree,
+    /// signers).
     fn provenance_world(name: &str) -> (PathBuf, PathBuf, PathBuf, String, String, PathBuf) {
+        provenance_world_in(name, None)
+    }
+
+    /// [`provenance_world`] in a repository of `object_format`.
+    fn provenance_world_in(
+        name: &str,
+        object_format: Option<&str>,
+    ) -> (PathBuf, PathBuf, PathBuf, String, String, PathBuf) {
         let d = dir(name);
         let (key, _) = keypair(&d);
         let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
@@ -1337,8 +1409,19 @@ mod tests {
         .unwrap();
         let remote = d.join("remote.git");
         std::fs::create_dir_all(&remote).unwrap();
-        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
-        let work = repo(&format!("{name}-work"));
+        let fmt = format!("--object-format={}", object_format.unwrap_or("sha1"));
+        git(&remote, &["init", "-q", "--bare", "--template=", &fmt, "."]);
+        let work = match object_format {
+            None => repo(&format!("{name}-work")),
+            Some(f) => {
+                let w = dir(&format!("{name}-work"));
+                let fmt = format!("--object-format={f}");
+                git(&w, &["init", "-q", "--template=", &fmt, "."]);
+                git(&w, &["config", "user.email", "t@t.test"]);
+                git(&w, &["config", "user.name", "t"]);
+                w
+            }
+        };
         git(
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
@@ -1346,7 +1429,9 @@ mod tests {
         git(&work, &["config", "amont.attest", "true"]);
         git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
         std::fs::write(work.join("README.md"), "words").unwrap();
-        git(&work, &["add", "README.md"]);
+        std::fs::create_dir_all(work.join("docs/plans")).unwrap();
+        std::fs::write(work.join("docs/plans/p.md"), "# P\n").unwrap();
+        git(&work, &["add", "README.md", "docs/plans/p.md"]);
         git(&work, &["commit", "-qm", "docs: words"]);
         let head = git(&work, &["rev-parse", "HEAD"]);
         let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
@@ -1355,11 +1440,71 @@ mod tests {
 
     fn record(head: &str, tree: &str) -> String {
         format!(
-            "{PROVENANCE_FORMAT}\ncommit {head}\ntree {tree}\ncanon {tree}\n\
-             plan docs/plans/p.md {}\nreview reviewed {tree}\npreview not-required\n\
+            "{PROVENANCE_FORMAT}\ncommit {head}\ntree {tree}\n\
+             plan docs/plans/p.md {}\nreview reviewed {}\npreview not-required\n\
              producer amont-agent 0.0.0\n",
-            "a".repeat(64)
+            "a".repeat(64),
+            "c".repeat(64)
         )
+    }
+
+    /// canon(T) as attest SPEC defines it, by hand and independent of
+    /// `attest_inputs`: the quoted listing, the oid of every regular file
+    /// under the top-level `docs/plans/` zeroed, through `git hash-object`.
+    fn canon_by_hand(work: &Path, tree: &str) -> String {
+        let listing = git(
+            work,
+            &[
+                "-c",
+                "core.quotePath=true",
+                "ls-tree",
+                "-r",
+                "--full-tree",
+                tree,
+            ],
+        );
+        let mut text = String::new();
+        for line in listing.lines() {
+            let (head, path) = line.split_once('\t').unwrap();
+            let f: Vec<&str> = head.split(' ').collect();
+            let plan = matches!(f[0], "100644" | "100755")
+                && (path.starts_with("docs/plans/") || path.starts_with("\"docs/plans/"));
+            if plan {
+                text.push_str(&format!(
+                    "{} {} {}\t{path}\n",
+                    f[0],
+                    f[1],
+                    "0".repeat(f[2].len())
+                ));
+            } else {
+                text.push_str(&format!("{line}\n"));
+            }
+        }
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(work)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The signed payload of `object` in the remote's provenance ref.
+    fn provenance_payload(remote: &Path, object: &str) -> (String, String) {
+        let note = git(remote, &["notes", "--ref", PROVENANCE_REF, "show", object]);
+        let (p, sig) = note
+            .split_once("\n\n")
+            .expect("payload, blank line, signature");
+        (format!("{p}\n"), sig.to_string())
     }
 
     fn push_of(head: &str) -> PushRef {
@@ -1390,22 +1535,31 @@ mod tests {
         in_repo(&work, || {
             provenance_push_from(&payloads, "origin", &[push_of(&head)])
         });
+        // The signer inserts canon(T) right after `tree`; everything else is
+        // amont-agent's payload byte for byte.
+        let canon = canon_by_hand(&work, &tree);
+        assert_ne!(
+            canon, tree,
+            "the tree carries a plan, so canon(T) is not its oid"
+        );
+        let signed = body.replacen(
+            &format!("tree {tree}\n"),
+            &format!("tree {tree}\ncanon {canon}\n"),
+            1,
+        );
         for object in [&head, &tree] {
-            let note = git(&remote, &["notes", "--ref", PROVENANCE_REF, "show", object]);
-            let (p, sig) = note
-                .split_once("\n\n")
-                .expect("payload, blank line, signature");
-            let p = format!("{p}\n");
-            assert_eq!(p, body, "the payload is signed byte for byte");
+            let (p, sig) = provenance_payload(&remote, object);
+            assert_eq!(p, signed, "the payload, with canon(T) inserted, is signed");
+            assert_eq!(p.lines().nth(3), Some(format!("canon {canon}").as_str()));
             assert!(verify_in(
                 PROVENANCE_NAMESPACE,
                 &p,
-                sig,
+                &sig,
                 &signers,
                 "t@t.test"
             ));
             assert!(
-                !verify_in(NAMESPACE, &p, sig, &signers, "t@t.test"),
+                !verify_in(NAMESPACE, &p, &sig, &signers, "t@t.test"),
                 "a provenance signature is never an attestation"
             );
         }
@@ -1434,6 +1588,171 @@ mod tests {
         assert!(refs.is_empty(), "nothing was published: {refs}");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A payload that already states a canonical tree was written by a
+    /// pre-release amont-agent: it is refused, never signed, never removed.
+    #[test]
+    fn a_payload_with_a_canon_line_is_refused_and_kept() {
+        let (d, work, remote, head, tree, _) = provenance_world("prov-canon");
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        let old = record(&head, &tree).replacen(
+            &format!("tree {tree}\n"),
+            &format!("tree {tree}\ncanon {}\n", "c".repeat(64)),
+            1,
+        );
+        std::fs::write(&file, &old).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            old,
+            "kept as it was"
+        );
+        let refs = git(&remote, &["for-each-ref", PROVENANCE_FULL_REF]);
+        assert!(refs.is_empty(), "nothing was published: {refs}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The refusal names the reason, the file and the fix, in lines of at
+    /// most 80 columns for a usual path, a sha256 commit included.
+    #[test]
+    fn the_canon_refusal_fits_in_80_columns() {
+        for commit in [
+            "9f1c2ab0d6e4c1b2a3f405e6d7c8b9a0f1e2d3c4".to_string(),
+            "e".repeat(64),
+        ] {
+            let file = PathBuf::from("/Users/someone/.claude/amont-agent/provenance/amont-agent")
+                .join(&commit);
+            let lines = canon_refusal(&commit, &file);
+            assert!(lines[0].starts_with("  provenance for "), "{lines:?}");
+            assert!(lines[0].contains(&commit[..7]), "{lines:?}");
+            let all = lines.join("\n");
+            assert!(all.contains("canon line") && all.contains("pre-release amont-agent"));
+            assert!(all.contains(&format!("    {commit} in\n")), "{all}");
+            assert!(all.contains("upgrade amont-agent"), "{all}");
+            for l in &lines {
+                assert!(
+                    l.chars().count() <= 80,
+                    "{} columns: {l}",
+                    l.chars().count()
+                );
+            }
+        }
+    }
+
+    /// No canon(T), no signature: the payload waits for the next push.
+    #[test]
+    fn a_failed_canon_keeps_the_payload() {
+        let (d, work, remote, head, tree, _) = provenance_world("prov-nocanon");
+        // The commit and its tree still resolve; listing the tree does not.
+        let docs = git(&work, &["rev-parse", &format!("{tree}:docs")]);
+        let objects = PathBuf::from(git(&work, &["rev-parse", "--git-path", "objects"]));
+        let objects = if objects.is_absolute() {
+            objects
+        } else {
+            work.join(objects)
+        };
+        std::fs::remove_file(objects.join(&docs[..2]).join(&docs[2..])).unwrap();
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        std::fs::write(&file, record(&head, &tree)).unwrap();
+        in_repo(&work, || {
+            assert_eq!(crate::attest_inputs::canon(&tree), None);
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert!(file.exists(), "a payload without a canon is kept");
+        let refs = git(&remote, &["for-each-ref", PROVENANCE_FULL_REF]);
+        assert!(refs.is_empty(), "nothing was published: {refs}");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The hook's cwd is the worktree, so canon(T) is of the repository's own
+    /// object format: 64 hex in a sha256 repository.
+    #[test]
+    fn a_sha256_repository_signs_a_64_hex_canon() {
+        let (d, work, remote, head, tree, _) = provenance_world_in("prov-sha256", Some("sha256"));
+        assert_eq!(tree.len(), 64);
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        std::fs::write(payloads.join(&head), record(&head, &tree)).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        let (p, _) = provenance_payload(&remote, &head);
+        let canon = canon_by_hand(&work, &tree);
+        assert_eq!(canon.len(), 64);
+        assert_eq!(
+            p.lines().nth(3),
+            Some(format!("canon {canon}").as_str()),
+            "{p}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The tree the cross-check with attest's `verify.sh` is built from: a
+    /// plan, a nested `x/docs/plans/` and a symlink under `docs/plans/`.
+    /// Prints canon(T) per object format (`--nocapture`), so the same tree
+    /// built by hand can be compared with `verify.sh`'s `canon_of`.
+    #[test]
+    fn the_cross_check_tree_has_the_hand_computed_canon() {
+        for format in ["sha1", "sha256"] {
+            let w = dir(&format!("canon-cross-{format}"));
+            git(
+                &w,
+                &[
+                    "init",
+                    "-q",
+                    "--template=",
+                    &format!("--object-format={format}"),
+                    ".",
+                ],
+            );
+            std::fs::create_dir_all(w.join("docs/plans")).unwrap();
+            std::fs::create_dir_all(w.join("x/docs/plans")).unwrap();
+            std::fs::write(w.join("README.md"), "words\n").unwrap();
+            std::fs::write(w.join("docs/plans/p.md"), "# P\n").unwrap();
+            std::fs::write(w.join("x/docs/plans/n.md"), "nested\n").unwrap();
+            let target = {
+                let mut c = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&w)
+                    .args(["hash-object", "-w", "--stdin"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                c.stdin.take().unwrap().write_all(b"p.md").unwrap();
+                String::from_utf8_lossy(&c.wait_with_output().unwrap().stdout)
+                    .trim()
+                    .to_string()
+            };
+            git(
+                &w,
+                &["add", "README.md", "docs/plans/p.md", "x/docs/plans/n.md"],
+            );
+            git(
+                &w,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("120000,{target},docs/plans/link"),
+                ],
+            );
+            let tree = git(&w, &["write-tree"]);
+            let canon = in_repo(&w, || crate::attest_inputs::canon(&tree)).unwrap();
+            println!("cross-check {format} tree {tree} canon {canon}");
+            assert_eq!(canon, canon_by_hand(&w, &tree), "{format}");
+            let _ = std::fs::remove_dir_all(&w);
+        }
     }
 
     #[test]

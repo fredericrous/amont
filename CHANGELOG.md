@@ -21,6 +21,15 @@ missing here.
   passed, refuses a payload whose `tree` is not the pushed commit's, keeps the
   payload when the publish fails, and never blocks a push. CI never reads it.
   `.github/allowed_signers` lists the new namespace.
+- **The signer writes the record's `canon`.** The payload amont-agent hands
+  over carries no `canon` line; pre-push computes canon(T) of the pushed tree
+  (in the repository's own object format, whatever `planExempt` says) and
+  inserts it after `tree` before signing, so every signed record's `canon` is
+  the canonical tree attestations use. A payload that already carries a
+  `canon` line was written by a pre-release amont-agent: it is not signed and
+  not removed, and pre-push names the file to delete. When canon(T) cannot be
+  computed nothing is signed and the payload waits for the next push. The
+  canonical-tree tests read attest's `tests/vectors/canon.txt`, vendored.
 
 ## v1.56.0
 
