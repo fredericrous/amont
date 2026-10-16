@@ -85,7 +85,8 @@ than a bare array.
 | `short_name` | the name without its trigger |
 | `stage` | which trigger runs it |
 | `source` | `builtin`, or `declared` for an `amont.conf` check |
-| `declared_severity` | what the check ships as |
+| `declared_severity` | what the check ships as (`warn` for a declared check that cannot run) |
+| `manifest_severity` | for a declared check, what its `amont.conf` line says, trusted or not; `null` for a builtin or a line that did not parse |
 | `effective_severity` | what it is here, after overrides |
 | `severity_overridden` | whether those two differ |
 | `severity_source` | `config` or `policy` when overridden, else `null` |
