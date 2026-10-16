@@ -1,0 +1,88 @@
+# Known answers for SPEC.md, "Canonical tree": raw listings of
+# `git -c core.quotePath=true ls-tree -r --full-tree T`, each with the
+# canonical text `git hash-object --stdin` is then run on. Every
+# implementation of canon(T) reads this one file: attest's Rust tests,
+# tests/conformance.sh through the canon block of verify.sh and sign/sign.sh,
+# and amont, which vendors a byte-identical copy.
+#
+# The format is strict, and a reader refuses anything else:
+#
+#   case <name>     opens a case; outside a case only comments (#) and
+#                   blank lines may appear
+#   in <record>     one listing line, verbatim after "in ", TAB included;
+#                   the listing is these lines, each followed by LF
+#   out <line>      one line of the expected canonical text, each followed
+#                   by LF
+#   none            the listing has no canonical text, so no canon(T)
+#   end             closes the case
+#
+# A case holds its "in" lines (maybe none), then either "out" lines or one
+# "none", then "end".
+
+case plan content is zeroed, everything else kept
+in 100644 blob 1111111111111111111111111111111111111111	README.md
+in 100644 blob 2222222222222222222222222222222222222222	docs/plans/a.md
+in 100755 blob 2222222222222222222222222222222222222222	docs/plans/sub/run.sh
+in 100644 blob 1111111111111111111111111111111111111111	src/main.rs
+out 100644 blob 1111111111111111111111111111111111111111	README.md
+out 100644 blob 0000000000000000000000000000000000000000	docs/plans/a.md
+out 100755 blob 0000000000000000000000000000000000000000	docs/plans/sub/run.sh
+out 100644 blob 1111111111111111111111111111111111111111	src/main.rs
+end
+
+case a symlink and a gitlink under docs/plans/ are kept
+in 120000 blob 1111111111111111111111111111111111111111	docs/plans/link
+in 160000 commit 2222222222222222222222222222222222222222	docs/plans/sub
+out 120000 blob 1111111111111111111111111111111111111111	docs/plans/link
+out 160000 commit 2222222222222222222222222222222222222222	docs/plans/sub
+end
+
+case a nested x/docs/plans/ is kept
+in 100644 blob 1111111111111111111111111111111111111111	x/docs/plans/a.md
+out 100644 blob 1111111111111111111111111111111111111111	x/docs/plans/a.md
+end
+
+case paths merely starting with docs/plans are kept
+in 100644 blob 1111111111111111111111111111111111111111	docs/plans
+in 100644 blob 1111111111111111111111111111111111111111	docs/plans-old/a.md
+in 100644 blob 1111111111111111111111111111111111111111	docs/plansx.md
+out 100644 blob 1111111111111111111111111111111111111111	docs/plans
+out 100644 blob 1111111111111111111111111111111111111111	docs/plans-old/a.md
+out 100644 blob 1111111111111111111111111111111111111111	docs/plansx.md
+end
+
+case a quoted path is recognised by its unescaped prefix
+in 100644 blob 1111111111111111111111111111111111111111	"docs/plans/a\nb.md"
+in 100644 blob 1111111111111111111111111111111111111111	"docs/plans/caf\303\251.md"
+in 100644 blob 1111111111111111111111111111111111111111	"x\tdocs/plans/a.md"
+out 100644 blob 0000000000000000000000000000000000000000	"docs/plans/a\nb.md"
+out 100644 blob 0000000000000000000000000000000000000000	"docs/plans/caf\303\251.md"
+out 100644 blob 1111111111111111111111111111111111111111	"x\tdocs/plans/a.md"
+end
+
+case sha256 object ids are zeroed to 64 digits
+in 100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	README.md
+in 100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	docs/plans/a.md
+out 100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	README.md
+out 100644 blob 0000000000000000000000000000000000000000000000000000000000000000	docs/plans/a.md
+end
+
+case an empty listing has no canon
+none
+end
+
+case a record without a TAB has no canon
+in garbage
+none
+end
+
+case a record with four head fields has no canon
+in 100644 blob 1111111111111111111111111111111111111111 extra	README.md
+none
+end
+
+case one malformed record among good ones has no canon
+in 100644 blob 1111111111111111111111111111111111111111	README.md
+in 100644 blob	docs/plans/a.md
+none
+end

@@ -24,3 +24,7 @@ install/install.sh text eol=lf
 # The excerpt fixtures are hashed (MANIFEST.sha256) and the hash is compared
 # with amont-agent's copy: any line-ending conversion would change the bytes.
 crates/amont/tests/fixtures/excerpt/* -text
+
+# The canonical-tree known answers, vendored byte for byte from attest: a
+# converted line ending would make every record fail the strict format.
+crates/amont-runtime/tests/vectors/canon.txt -text
