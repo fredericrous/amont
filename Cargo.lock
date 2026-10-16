@@ -462,6 +462,8 @@ dependencies = [
 [[package]]
 name = "git-attest"
 version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a12f2673859977c6881ec41112453071d2765a06b66f1fa56ffc5e6303dbcf14"
 
 [[package]]
 name = "hashbrown"
