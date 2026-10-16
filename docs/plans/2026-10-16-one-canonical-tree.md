@@ -1,7 +1,9 @@
 ---
-canonical: https://github.com/fredericrous/attest/blob/main/docs/plans/2026-10-16-one-canonical-tree.md
-status: draft
+canonical: decisions:docs/plans/2026-10-16-one-canonical-tree.md
+phases: [3]
+status: done
 ---
-# Pointer: one canonical tree across the fleet
+# One canonical tree across the fleet (pointer)
 
-This repository carries part 3 (the signer writes `canon`) of the plan (decisions ADR-0034, ADR-0036).
+The plan lives in the decisions repository, which owns ADR-0034 and
+ADR-0036. This repository carries phases [3].
