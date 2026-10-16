@@ -6,6 +6,18 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont-fleet --json` measures attest's contract step** (decisions
+  ADR-0037). Each repository gains `attest`: `deprecated_opt_out` (only `set
+  planExempt off` opts it out of the canonical tree), `spec_with_gates`, and
+  every attest action pin with the release it names. The scan counts
+  `repos_with_deprecated_opt_out` and `repos_pinning_attest_before_1_7`;
+  `git-attest` 2.0.0 waits for both to be zero. Read from HEAD through the
+  `git_attest` library.
+
 ## v1.58.0
 
 ### Added

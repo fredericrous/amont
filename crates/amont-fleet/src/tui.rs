@@ -1455,6 +1455,8 @@ pub fn run(root: std::path::PathBuf, depth: usize, binary: String) -> std::io::R
         repos_with_bypasses: 0,
         downgraded_events: 0,
         repos_with_downgrades: 0,
+        repos_with_deprecated_opt_out: 0,
+        repos_pinning_attest_before_1_7: 0,
         repos: Vec::new(),
     });
     app.binary = binary;
@@ -1552,6 +1554,8 @@ mod tests {
             repos_with_bypasses: 0,
             downgraded_events: 0,
             repos_with_downgrades: 0,
+            repos_with_deprecated_opt_out: 0,
+            repos_pinning_attest_before_1_7: 0,
             repos: Vec::new(),
         }
     }
@@ -1584,6 +1588,7 @@ mod tests {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
             shares_hooks_with: None,
+            attest: Default::default(),
         }
     }
 
@@ -1604,6 +1609,8 @@ mod tests {
             repos_with_bypasses: 0,
             downgraded_events: 0,
             repos_with_downgrades: 0,
+            repos_with_deprecated_opt_out: 0,
+            repos_pinning_attest_before_1_7: 0,
             repos: rs,
         }
     }

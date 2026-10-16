@@ -150,6 +150,7 @@ mod tests {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
             shares_hooks_with: None,
+            attest: Default::default(),
         }
     }
 
@@ -193,6 +194,7 @@ mod tests {
                 path: std::path::PathBuf::from(".git/hooks"),
             },
             shares_hooks_with: None,
+            attest: Default::default(),
         }
     }
 

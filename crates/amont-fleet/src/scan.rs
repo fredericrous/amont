@@ -166,6 +166,9 @@ pub struct Repo {
     /// The first repository encountered in the walk's (stable, sorted) order
     /// owns the directory; every later one points at it.
     pub shares_hooks_with: Option<PathBuf>,
+    /// What this repository says to attest: the deprecated opt-out, whether
+    /// its spec declares gates, and the attest releases its workflows pin.
+    pub attest: crate::attest::AttestState,
 }
 
 /// A local wrapper around `amont_runtime::agents_md::CheckResult`: that
@@ -224,6 +227,13 @@ pub struct FleetScan {
     /// the shadow-mode signal, with its own repo count for the same reason.
     pub downgraded_events: usize,
     pub repos_with_downgrades: usize,
+    /// Repositories that opt out of the canonical tree only through `set
+    /// planExempt off`, which `git-attest` 2.0.0 stops reading. That
+    /// release waits for this and the next count to be zero.
+    pub repos_with_deprecated_opt_out: usize,
+    /// Repositories pinning an attest action before 1.7.0 (the first that
+    /// runs the binary), or a sha no comment names.
+    pub repos_pinning_attest_before_1_7: usize,
     pub repos: Vec<Repo>,
 }
 
@@ -582,6 +592,8 @@ pub fn scan(
             repos_with_bypasses: 0,
             downgraded_events: 0,
             repos_with_downgrades: 0,
+            repos_with_deprecated_opt_out: 0,
+            repos_pinning_attest_before_1_7: 0,
             repos: Vec::new(),
         },
     };
@@ -755,6 +767,12 @@ fn found_repo(w: &mut Walk, repo: &Path) -> Repo {
     if inspected.downgrades.total > 0 {
         w.scan.repos_with_downgrades += 1;
     }
+    if inspected.attest.deprecated_opt_out {
+        w.scan.repos_with_deprecated_opt_out += 1;
+    }
+    if inspected.attest.pins_before(1, 7) {
+        w.scan.repos_pinning_attest_before_1_7 += 1;
+    }
     inspected
 }
 
@@ -871,6 +889,7 @@ fn inspect(
         aval_hook: crate::aval_hook::state(repo, "aval"),
         hooks_dir,
         shares_hooks_with,
+        attest: crate::attest::read(repo),
     }
 }
 

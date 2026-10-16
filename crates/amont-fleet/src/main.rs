@@ -10,6 +10,7 @@
 //! not meaningfully work with a TUI.
 
 mod apply;
+mod attest;
 mod aval_hook;
 mod bypasses;
 mod checks;
