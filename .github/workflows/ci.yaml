@@ -158,17 +158,17 @@ jobs:
       # which exists to catch drift no push made.
       - id: linux
         if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
-        uses: fredericrous/attest@v1
+        uses: fredericrous/attest@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           platform: x86_64-linux
       - id: macos
         if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
-        uses: fredericrous/attest@v1
+        uses: fredericrous/attest@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           platform: aarch64-macos
       - id: windows
         if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
-        uses: fredericrous/attest@v1
+        uses: fredericrous/attest@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           platform: x86_64-windows
       - id: plan
@@ -1108,21 +1108,21 @@ jobs:
       # One block per platform: a payload names one, and the signer defaults to
       # its own runner's. The platform below is the one the plan validated.
       - if: ${{ steps.plan.outputs.linux != '' }}
-        uses: fredericrous/attest/sign@v1
+        uses: fredericrous/attest/sign@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           key: ${{ secrets.ATTEST_SIGNING_KEY }}
           gates: ${{ steps.plan.outputs.linux }}
           platform: x86_64-linux
           producer: attest-sign-linux
       - if: ${{ steps.plan.outputs.macos != '' }}
-        uses: fredericrous/attest/sign@v1
+        uses: fredericrous/attest/sign@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           key: ${{ secrets.ATTEST_SIGNING_KEY }}
           gates: ${{ steps.plan.outputs.macos }}
           platform: aarch64-macos
           producer: attest-sign-macos
       - if: ${{ steps.plan.outputs.windows != '' }}
-        uses: fredericrous/attest/sign@v1
+        uses: fredericrous/attest/sign@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           key: ${{ secrets.ATTEST_SIGNING_KEY }}
           gates: ${{ steps.plan.outputs.windows }}
