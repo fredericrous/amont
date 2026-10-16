@@ -8,6 +8,15 @@ missing here.
 
 ## Unreleased
 
+### Added
+
+- **`manifest_severity` in `amont list --json`** (additive; still
+  `amont-list-v1`): for a declared check, the severity its `amont.conf` line
+  says, trusted or not. `declared_severity` reads `warn` for a check that
+  cannot run, an untrusted one included, so a reader asking what a fresh
+  clone declares (relais's `init --detect`) had no way to know; `null` for a
+  builtin and for a line that did not parse.
+
 ### Changed
 
 - **amont calls attest for the attestation format** (decisions ADR-0037).

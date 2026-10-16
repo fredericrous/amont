@@ -591,6 +591,10 @@ pub enum Kind {
     },
     Unusable {
         why: String,
+        /// The severity the line declares, when it parsed and only trust is
+        /// withheld: kept for `amont list` to report, never applied. `None`
+        /// for a line that did not parse.
+        declared: Option<Severity>,
     },
 }
 
@@ -601,6 +605,18 @@ fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
     static VOUCHED: std::sync::OnceLock<std::collections::HashSet<String>> =
         std::sync::OnceLock::new();
     VOUCHED.get_or_init(crate::gate_stamp::vouched_for_staged_tree)
+}
+
+impl External {
+    /// What the `amont.conf` line declares, trusted or not: reading the file
+    /// applies nothing, so a reader may be told what it says. `None` for a
+    /// line that did not parse.
+    pub fn manifest_severity(&self) -> Option<Severity> {
+        match &self.kind {
+            Kind::Runnable { severity, .. } => Some(*severity),
+            Kind::Unusable { declared, .. } => *declared,
+        }
+    }
 }
 
 impl Check for External {
@@ -640,7 +656,7 @@ impl Check for External {
                 docs_skip,
                 ..
             } => (scope, program, args, *fix, *files, *docs_skip),
-            Kind::Unusable { why } => {
+            Kind::Unusable { why, .. } => {
                 crate::hooks::common::warn(&format!(
                     "{MANIFEST}: {} — {}",
                     crate::ui::highlight(&self.short_name),
@@ -1625,7 +1641,10 @@ impl From<Line> for External {
                 files: d.files,
                 docs_skip: d.docs_skip,
             },
-            Err(why) => Kind::Unusable { why },
+            Err(why) => Kind::Unusable {
+                why,
+                declared: None,
+            },
         };
         let id = format!("{}-{}", stage.as_str(), name);
         External {
@@ -1852,6 +1871,7 @@ pub(crate) fn gate(declared: Vec<External>, state: crate::trust::State) -> Vec<E
             .map(|external| External {
                 kind: Kind::Unusable {
                     why: reason.to_string(),
+                    declared: external.manifest_severity(),
                 },
                 ..external
             })

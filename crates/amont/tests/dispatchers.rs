@@ -569,6 +569,45 @@ fn list_json_declared_check_shows_its_command() {
     assert_eq!(declared["command"], "scripts/lint.sh");
 }
 
+/// What the repository declares is readable before anyone trusts it:
+/// `manifest_severity` keeps the line's word while `declared_severity` says
+/// the check cannot block here, and a line that did not parse says nothing.
+#[test]
+fn list_json_reports_an_untrusted_line_s_own_severity() {
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        "pre-commit  lint-shell  *.sh  block  scripts/lint.sh
+         pre-push    smoke       *     warn   make smoke
+         pre-commit  broken      *.sh  loud   x
+",
+    );
+    r.commit("chore: declare checks");
+
+    let v = list_json(&r, &[]);
+    let untrusted = find_check(&v, "pre-commit-lint-shell");
+    assert_eq!(untrusted["status"], "unusable");
+    assert_eq!(untrusted["declared_severity"], "warn");
+    assert_eq!(untrusted["manifest_severity"], "block");
+    assert_eq!(
+        find_check(&v, "pre-push-smoke")["manifest_severity"],
+        "warn"
+    );
+    assert!(find_check(&v, "pre-commit-broken")["manifest_severity"].is_null());
+    assert!(find_check(&v, "pre-commit-clippy")["manifest_severity"].is_null());
+
+    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .arg("trust")
+        .current_dir(&r.dir)
+        .output()
+        .expect("run");
+    assert!(trusted.status.success(), "{trusted:?}");
+    let v = list_json(&r, &[]);
+    let lint = find_check(&v, "pre-commit-lint-shell");
+    assert_eq!(lint["declared_severity"], "block");
+    assert_eq!(lint["manifest_severity"], "block");
+}
+
 #[test]
 fn list_pushed_no_upstream_fails_clearly() {
     let r = Repo::new();

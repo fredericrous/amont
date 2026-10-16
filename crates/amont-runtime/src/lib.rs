@@ -199,6 +199,12 @@ pub struct CheckListing {
     pub source: Source,
     /// What the check (or manifest line) declared.
     pub declared_severity: check::Severity,
+    /// For a declared check, what its `amont.conf` line says, trusted or
+    /// not: `declared_severity` reads `warn` for a check that cannot run,
+    /// an untrusted one included, and a reader asking what the repository
+    /// declares needs the line's own word. `None` for a builtin and for a
+    /// line that did not parse.
+    pub manifest_severity: Option<check::Severity>,
     /// What `registry::Overrides::of` would actually apply — NOT the same as
     /// `declared_severity` once `amont.severity.*` is configured. This is
     /// the one thing the old text-only `list_checks` never reported, and the
@@ -287,7 +293,7 @@ pub fn gather_checks(
             let applies = check.scope().matches(paths);
 
             let unusable_why = external.and_then(|e| match &e.kind {
-                manifest::Kind::Unusable { why } => Some(why.as_str()),
+                manifest::Kind::Unusable { why, .. } => Some(why.as_str()),
                 manifest::Kind::Runnable { .. } => None,
             });
             // Four states: a check that is correctly silent must never look
@@ -345,6 +351,7 @@ pub fn gather_checks(
                     Source::Builtin
                 },
                 declared_severity,
+                manifest_severity: external.and_then(manifest::External::manifest_severity),
                 effective_severity,
                 severity_overridden: declared_severity != effective_severity,
                 severity_source,
@@ -608,6 +615,10 @@ pub fn print_json(
                     },
                 ),
                 json::string_field("declared_severity", l.declared_severity.as_str()),
+                json::opt_string_field(
+                    "manifest_severity",
+                    l.manifest_severity.map(check::Severity::as_str),
+                ),
                 json::string_field("effective_severity", l.effective_severity.as_str()),
                 json::bool_field("severity_overridden", l.severity_overridden),
                 json::opt_string_field(
