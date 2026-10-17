@@ -27,9 +27,11 @@
 //! # Which run where
 //!
 //! A commit runs the ones it can afford, each a few seconds: the ceiling
-//! kill, the idle kill, the idle clock reset by output, contiguous output,
-//! the lock-wait and marker rules. The CPU-load and lock-wait scenarios, 4 to
-//! 26 s each and 91 s together, are `#[ignore]`d and run in CI's hooks job
+//! kill, the idle kill, contiguous output, the lock-wait and marker rules.
+//! The CPU-load and lock-wait scenarios, 4 to 26 s each and 91 s together,
+//! and the 15 s proof that output resets the idle clock (pinned without
+//! sleeping by `common::tests::the_clocks_judge_silence_and_ceiling_
+//! separately`) are `#[ignore]`d and run in CI's hooks job
 //! (`make test-load`), ADR-0009's "skipping the check by name and leaning on
 //! CI" (decisions plan 2026-10-17-amont-tests-follow-user-flows).
 //!
@@ -135,6 +137,7 @@ fn a_silent_check_is_killed_by_the_idle_budget() {
 /// stuck, and outlives a silence budget shorter than its total run.
 #[cfg(unix)]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn a_chatty_check_outlives_the_idle_budget() {
     let _alone = alone();
     let r = Repo::new();
