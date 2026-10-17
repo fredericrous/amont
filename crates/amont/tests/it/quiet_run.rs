@@ -205,7 +205,10 @@ fn in_a_stage_a_pass_is_silent_and_a_failure_shows_its_excerpt() {
 
 #[test]
 fn a_long_run_names_its_log_after_five_seconds() {
-    let r = repo_with("block", "echo started\nsleep 6\necho done\n");
+    let r = repo_with(
+        "block",
+        &format!("echo started\nsleep {}\necho done\n", common::secs(7.0)),
+    );
     let (code, stdout, stderr) = run(&r, &["probe"], &[]);
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(stderr.contains("running probe, log "), "{stderr}");

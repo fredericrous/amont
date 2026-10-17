@@ -485,3 +485,24 @@ pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::io::Resu
     }
     unreachable!("the zero-tries arm returns")
 }
+
+/// `AMONT_TEST_CLOCK_SCALE` as the tests see it (`.cargo/config.toml`):
+/// amont's own fixed waits are shortened by it in the test build, so a
+/// fixture that must outlast one is shortened by the same factor.
+pub fn clock_scale() -> f64 {
+    std::env::var("AMONT_TEST_CLOCK_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|f| *f > 0.0 && *f <= 1.0)
+        .unwrap_or(1.0)
+}
+
+/// `secs` seconds on the scaled clock, as a `sleep` argument.
+pub fn secs(secs: f64) -> String {
+    format!("{:.2}", secs * clock_scale())
+}
+
+/// `d` on the scaled clock, for a test's own waits.
+pub fn scaled(d: std::time::Duration) -> std::time::Duration {
+    d.mul_f64(clock_scale())
+}

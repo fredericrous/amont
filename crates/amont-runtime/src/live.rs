@@ -804,7 +804,7 @@ fn is_failure(outcome: Option<crate::check::Outcome>) -> bool {
 
 fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(crate::clock::scaled(std::time::Duration::from_secs(1)));
         let Some(stage) = weak.upgrade() else { return };
         if stage.stop.load(Ordering::Relaxed) {
             return;
@@ -815,10 +815,13 @@ fn heartbeat(settings: crate::config::Settings, weak: Weak<Stage>) {
             let now = Instant::now();
             let mut due = Vec::new();
             for s in slots.iter_mut().filter(|s| s.running && !s.done) {
-                let elapsed = now.duration_since(s.started).as_secs();
+                let ran = now.duration_since(s.started);
+                let elapsed = ran.as_secs();
                 // Only a log the tool has written to: a check that prints
                 // nothing keeps no log, and the line would point at nothing.
-                if !s.announced && elapsed >= ANNOUNCE_SECS {
+                if !s.announced
+                    && ran >= crate::clock::scaled(std::time::Duration::from_secs(ANNOUNCE_SECS))
+                {
                     if let Some(c) = s.capture.as_ref().filter(|c| c.writing() && c.seen > 0) {
                         s.announced = true;
                         announce.push(format!("running {}, log {}\n", s.name, c.tmp.display()));

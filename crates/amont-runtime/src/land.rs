@@ -456,7 +456,7 @@ fn land(mode: Mode) -> Report {
     let mut observed = Seen::Unreachable;
     for i in 0..=REREADS {
         if i > 0 {
-            std::thread::sleep(REREAD_PAUSE);
+            std::thread::sleep(crate::clock::scaled(REREAD_PAUSE));
         }
         observed = read_tip(&url, &rb, budget);
         if matches!(&observed, Seen::Tip(t) if *t == pushed) {

@@ -379,15 +379,18 @@ mod tests {
     }
 
     #[test]
-    fn fifty_megabytes_keep_the_accumulator_bounded() {
+    /// Bounded, not merely small at the end: the holding never passes 64 KiB
+    /// at any point of a run 64 times that long. (It fed 50 MiB, checked
+    /// once, and was the slowest unit test by 6 s.)
+    fn a_long_run_keeps_the_accumulator_bounded() {
         let mut c = Capture::open(None, "x");
         let chunk: String = (0..1000).map(|i| format!("line {i} ok\n")).collect();
         let mut fed = 0u64;
-        while fed < 50 * 1024 * 1024 {
+        while fed < 4 * 1024 * 1024 {
             c.take(chunk.as_bytes());
             fed += chunk.len() as u64;
+            assert!(c.acc.held() <= 64 * 1024, "{} after {fed}", c.acc.held());
         }
-        assert!(c.acc.held() <= 64 * 1024, "{}", c.acc.held());
         assert_eq!(c.seen, fed);
     }
 }

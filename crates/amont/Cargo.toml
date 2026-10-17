@@ -32,3 +32,8 @@ amont-runtime.workspace = true
 # for exactly that reason. The floor is a claim about the SHIPPED code.
 [dev-dependencies]
 serde_json = "1"
+# The binary the integration tests spawn is built with `test-hooks`: its
+# test-only knobs (the clock scale, failure injection) exist in every
+# `cargo test` build and in no `cargo build`. Resolver 2 unifies a
+# dev-dependency's features only while dev-dependencies are being built.
+amont-runtime = { path = "../amont-runtime", features = ["test-hooks"] }
