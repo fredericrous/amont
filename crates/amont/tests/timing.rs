@@ -24,6 +24,15 @@
 //! tick rate and every expectation are exactly as they were. What changed is
 //! only how much else is happening on the machine while the clock is read.
 //!
+//! # Which run where
+//!
+//! A commit runs the ones it can afford, each a few seconds: the ceiling
+//! kill, the idle kill, the idle clock reset by output, contiguous output,
+//! the lock-wait and marker rules. The CPU-load and lock-wait scenarios, 4 to
+//! 26 s each and 91 s together, are `#[ignore]`d and run in CI's hooks job
+//! (`make test-load`), ADR-0009's "skipping the check by name and leaning on
+//! CI" (decisions plan 2026-10-17-amont-tests-follow-user-flows).
+//!
 //! The *decisions* these tests exercise are pinned to the second, without any
 //! sleeping, by `common::tests::the_clocks_judge_silence_and_ceiling_separately`
 //! in the runtime. These prove the wiring end to end.
@@ -286,6 +295,7 @@ fn killed_at_the_ceiling(
 /// The case this exists for: silent, and working in the root itself.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn a_silent_busy_check_answers_to_the_ceiling_not_the_silence_budget() {
     let _alone = alone();
     let r = Repo::new();
@@ -306,6 +316,7 @@ fn a_silent_busy_check_answers_to_the_ceiling_not_the_silence_budget() {
 /// misses all of it; the parent's reaped-children time does not.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn fork_per_file_work_keeps_a_silent_check_alive() {
     let _alone = alone();
     let r = Repo::new();
@@ -333,6 +344,7 @@ fn fork_per_file_work_keeps_a_silent_check_alive() {
 /// root then idles in `sleep`, so the only CPU left is the orphan's.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn a_seen_worker_keeps_counting_after_its_parent_exits() {
     let _alone = alone();
     let r = Repo::new();
@@ -388,6 +400,7 @@ fn an_idle_silent_check_still_dies_at_the_budget_and_says_it_was_measured() {
 /// check dies at the budget, and the message makes no CPU claim.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn with_cpu_credit_off_a_busy_silent_check_dies_at_the_budget() {
     let _alone = alone();
     let r = Repo::new();
@@ -425,6 +438,7 @@ const CARGO_WAIT: &str = "    Blocking waiting for file lock on build directory"
 /// declared wait. It passes, and says what it waited for.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn a_declared_lock_wait_outlives_the_silence_budget() {
     let _alone = alone();
     let r = Repo::new();
@@ -513,6 +527,7 @@ fn a_marker_on_stdout_does_not_pause_the_clock() {
 /// even with the ceiling off.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn an_unmeasured_check_answers_to_the_extended_budget() {
     let _alone = alone();
     let r = Repo::new();
@@ -577,6 +592,7 @@ fn slow_clippy_repo() -> Repo {
 /// says why.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn heavy_checks_queue_for_a_host_slot() {
     let _alone = alone();
     let slots = std::env::temp_dir().join(format!("amont-slots-fixture-{}", std::process::id()));
@@ -697,6 +713,7 @@ fn with_shims(r: &Repo) -> std::ffi::OsString {
 /// second kill is final, and both attempts fit in one ceiling.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
+#[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn a_wait_like_kill_is_retried_once() {
     let _alone = alone();
     let r = waiting_clippy_repo(false);
