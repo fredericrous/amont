@@ -173,7 +173,8 @@ echo "    building and running ${packages[*]//--test-package /} only"
     "${packages[@]}" "${only[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
     --output "$work/before" -- -- --exact "${filters[@]}" "${test_extra[@]}") \
     > "$work/before/run.log" 2>&1 || true
-grep -q "mutants tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
+# cargo-mutants ends with "N mutants tested", or "1 mutant tested".
+grep -Eq "mutants? tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
 keys "$work/before" caught > "$work/at-risk"
 echo "    the deleted tests catch $(wc -l < "$work/at-risk") of $(wc -l < "$work/before/listed.txt") mutants:"
 cut -f4 "$work/at-risk" | sed 's/^/      /'
@@ -206,7 +207,7 @@ re=$(exact_re < "$work/targets")
 cargo mutants --test-workspace=true --no-shuffle --timeout "$timeout" "${file_args[@]}" "${extra[@]}" \
     --re "$re" --output "$work/after" -- -- "${test_extra[@]}" \
     > "$work/after/run.log" 2>&1 || true
-grep -q "mutants tested" "$work/after/run.log" || { tail -20 "$work/after/run.log" >&2; echo "mutants-check: the run here did not complete" >&2; exit 2; }
+grep -Eq "mutants? tested" "$work/after/run.log" || { tail -20 "$work/after/run.log" >&2; echo "mutants-check: the run here did not complete" >&2; exit 2; }
 
 # Under GitHub Actions each lost mutant is also an error annotation: the
 # job log is not always readable where the result is wanted.
