@@ -113,11 +113,56 @@ read -r -a extra <<< "${MUTANTS_ARGS:-}"
 timeout=${MUTANTS_TIMEOUT:-600}
 read -r -a test_extra <<< "${MUTANTS_TEST_ARGS:-}"
 
+filters=()
+while read -r t; do filters+=("$t"); done < "$work/deleted"
 echo "--- 1. on $base: each mutant of ${files[*]} against the deleted tests only"
 mkdir -p "$work/before"
 (cd "$work/base" && cargo mutants --list "${file_args[@]}") > "$work/before/listed.txt"
-filters=()
-while read -r t; do filters+=("$t"); done < "$work/deleted"
+
+# Only the mutants on a line the deleted tests execute: a test cannot catch
+# a change to a line it never runs, and each mutant costs a build. One
+# coverage run of the deleted tests (cargo-llvm-cov, which follows the
+# binaries they spawn) says which lines those are. Without cargo-llvm-cov,
+# every mutant is tried, as before.
+only=()
+if command -v cargo-llvm-cov > /dev/null; then
+    pkgs=()
+    while read -r p; do pkgs+=(-p "$p"); done < <(cut -f1 "$work/deleted-with-package" | sort -u)
+    (cd "$work/base" && cargo llvm-cov --lcov --output-path "$work/cov.lcov" "${pkgs[@]}" \
+        -- --exact "${filters[@]}" "${test_extra[@]}") > "$work/cov.log" 2>&1 || true
+    if [ -s "$work/cov.lcov" ]; then
+        python3 - "$work/cov.lcov" "$work/base" "$work/before/listed.txt" "$work/covered-mutants" << 'EOF'
+import os, re, sys
+lcov, base, listed, out = sys.argv[1:]
+hit, cur = {}, None
+for l in open(lcov):
+    l = l.strip()
+    if l.startswith("SF:"):
+        cur = os.path.relpath(l[3:], base)
+    elif l.startswith("DA:") and cur:
+        n, c = l[3:].split(",")[:2]
+        if int(c) > 0:
+            hit.setdefault(cur, set()).add(int(n))
+pat = re.compile(r"^(.*?):(\d+):\d+: ")
+with open(out, "w") as o:
+    for name in open(listed):
+        m = pat.match(name)
+        if m and int(m.group(2)) in hit.get(m.group(1), ()):
+            o.write(name)
+EOF
+        echo "    $(wc -l < "$work/covered-mutants") of $(wc -l < "$work/before/listed.txt") mutants are on lines the deleted tests run"
+        if [ ! -s "$work/covered-mutants" ]; then
+            echo "mutants-check: the deleted tests run none of these lines; nothing is lost"
+            exit 0
+        fi
+        only=(--re "$(exact_re < "$work/covered-mutants")")
+    else
+        echo "    (coverage did not run; trying every mutant)"
+        tail -5 "$work/cov.log" | sed 's/^/      /'
+    fi
+else
+    echo "    (cargo-llvm-cov is not installed; trying every mutant)"
+fi
 # Only the packages that hold a deleted test are built and run for each
 # mutant: the rest cannot catch anything here, and building them is most
 # of a mutant's cost. The automatic timeout fits the few tests that run.
@@ -125,7 +170,7 @@ packages=()
 while read -r p; do packages+=(--test-package "$p"); done < <(cut -f1 "$work/deleted-with-package" | sort -u)
 echo "    building and running ${packages[*]//--test-package /} only"
 (cd "$work/base" && cargo mutants \
-    "${packages[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
+    "${packages[@]}" "${only[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
     --output "$work/before" -- -- --exact "${filters[@]}" "${test_extra[@]}") \
     > "$work/before/run.log" 2>&1 || true
 grep -q "mutants tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
