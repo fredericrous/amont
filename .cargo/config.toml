@@ -15,6 +15,12 @@
 [env]
 AMONT_HOST_SLOT = "held"
 AMONT_IDLE_LOAD_SCALE = "1"
+# Shortens amont's own fixed waits by this factor in the test build only
+# (crates/amont-runtime/src/clock.rs), and the fixtures' sleeps with them
+# (`common::secs`): a quiet run's log line, land's re-read, the tree-lint
+# slack and wait. The kill budgets are not scaled; timing.rs proves them on
+# the real clock.
+AMONT_TEST_CLOCK_SCALE = "0.25"
 
 # Quiet runs write an active-run entry for relais's pane, keyed by the Claude
 # Code session (relais docs/quiet-runs.md). A test run by an agent inherits

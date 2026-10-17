@@ -68,7 +68,7 @@ fn slack_ms(settings: &crate::config::Settings) -> u64 {
 
 fn slack(settings: &crate::config::Settings) -> Duration {
     let secs = crate::config::integer_or(settings, SLACK, DEFAULT_SLACK, 0..=600);
-    Duration::from_secs(u64::try_from(secs).unwrap_or(0))
+    crate::clock::scaled(Duration::from_secs(u64::try_from(secs).unwrap_or(0)))
 }
 
 /// The allow-list: the defaults plus `snapshotPrepareOutputs`.
@@ -490,7 +490,8 @@ pub fn await_verdict(
     started: Instant,
 ) -> (Vec<String>, Vec<String>) {
     let secs = crate::config::integer_or(settings, WAIT, 30, 0..=3600);
-    let until = started + Duration::from_secs(u64::try_from(secs).unwrap_or(30));
+    let until =
+        started + crate::clock::scaled(Duration::from_secs(u64::try_from(secs).unwrap_or(30)));
     let trees: Vec<String> = tips
         .iter()
         .filter_map(|t| crate::git::stdout(&["rev-parse", &format!("{t}^{{tree}}")]))

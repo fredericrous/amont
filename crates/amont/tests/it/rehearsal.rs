@@ -616,7 +616,7 @@ fn stop_cancels_the_worker_and_removes_its_snapshot() {
         return;
     }
     let (r, _base) =
-        gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);");
+        gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);");
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
     wait_state(&r, "the worker to start", |s| s.contains("phase=running"));
@@ -626,7 +626,9 @@ fn stop_cancels_the_worker_and_removes_its_snapshot() {
     assert_eq!(worktrees(&r), 1, "the snapshot went with the worker");
     let (_, status) = rehearse(&r, &["--status"]);
     assert!(status.contains("no rehearsal recorded"), "{status}");
-    std::thread::sleep(Duration::from_secs(6));
+    // Past the gate's own 2 s: a suite that survived the stop would have
+    // logged by now.
+    std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(runs(&r), 0, "the killed suite never reached its log line");
 }
 

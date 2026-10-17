@@ -630,11 +630,16 @@ fn an_unmeasured_covering_check_counts_as_cover() {
     let r = Repo::new();
     r.stage(
         "amont.conf",
-        "pre-commit  suite  *.txt  block  sleep 6\ntree slowish ruff * attest sleep 2\n",
+        &format!(
+            "pre-commit  suite  *.txt  block  sleep {}\ntree slowish ruff * attest sleep {}\n",
+            common::secs(6.0),
+            common::secs(2.0)
+        ),
     );
+    let gate = format!("sleep {}", common::secs(2.0));
     r.stage(
         ".forgejo/workflows/ci.yaml",
-        &workflow(&[("slowish", "sleep 2")]),
+        &workflow(&[("slowish", &gate)]),
     );
     r.commit("chore: gates");
     trust_and_install(&r);
@@ -656,15 +661,19 @@ fn an_unmeasured_covering_check_counts_as_cover() {
 #[test]
 fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
     // A declared commit check that takes 3 s on *.txt — the cover — and a
-    // tree gate that takes ~2 s, with a 1 s slack.
+    // tree gate that takes ~2 s, with a 1 s slack (all on the scaled clock).
     let r = Repo::new();
+    let gate = format!("sleep {}", common::secs(2.0));
     r.stage(
         "amont.conf",
-        "pre-commit  suite  *.txt  block  sleep 3\ntree slowish ruff * attest sleep 2\n",
+        &format!(
+            "pre-commit  suite  *.txt  block  sleep {}\ntree slowish ruff * attest {gate}\n",
+            common::secs(3.0)
+        ),
     );
     r.stage(
         ".forgejo/workflows/ci.yaml",
-        &workflow(&[("slowish", "sleep 2")]),
+        &workflow(&[("slowish", &gate)]),
     );
     r.commit("chore: gates");
     trust_and_install(&r);
@@ -690,7 +699,7 @@ fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
     let started = Instant::now();
     let (ok, out) = commit(&r, "docs: n");
     assert!(ok, "{out}");
-    assert!(out.contains("    slowish — skipped: needs ~2."), "{out}");
+    assert!(out.contains("    slowish — skipped: needs ~"), "{out}");
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "a skipped gate cost time: {:?}",
