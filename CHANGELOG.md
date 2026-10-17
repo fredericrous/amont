@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.59.0
 
 ### Added
 
@@ -17,6 +17,17 @@ missing here.
   `repos_with_deprecated_opt_out` and `repos_pinning_attest_before_1_7`;
   `git-attest` 2.0.0 waits for both to be zero. Read from HEAD through the
   `git_attest` library.
+
+### Changed
+
+- **For contributors, a faster test suite**: `cargo test --workspace` takes
+  about 90 s instead of about 230 s. The integration tests are one binary
+  (`crates/amont/tests/it/`; `make test RUN=<file>` still works), so a
+  change rebuilds in seconds. amont's fixed waits are shortened in test
+  builds only (`AMONT_TEST_CLOCK_SCALE`), and the real-clock load scenarios
+  run in CI (`make test-load`). `scripts/mutants-check.sh` and the
+  `mutants` workflow check that a branch deleting tests leaves no mutant
+  uncaught.
 
 ## v1.58.0
 
