@@ -1,0 +1,14 @@
+amont-attest-v2
+tree c6af0adea0867d5622daac88f979db273a3a37c0
+gates ci-windows-test
+platform x86_64-windows
+input ci-windows-test 4f019eae47319119967d14a3c9cef6664be02935
+canon 9384e1b3623f849bda87c80af5dc41d8c8c1693a
+amont attest-sign-windows
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgUpKx1QTdCdwZEjcw/MK/JGWqft
+YBCaiDmnUdMyQ1dZAAAAAMYW1vbnQtYXR0ZXN0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3Nz
+aC1lZDI1NTE5AAAAQDcqR4V1yxz6Lhonw9nu8+w2kyPZcoDZ3nb7gQ3BxKb8OG9o6EovIo
+K9GSuld8iHijsJuYP2EWepZPEnmvgu/g4=
+-----END SSH SIGNATURE-----
