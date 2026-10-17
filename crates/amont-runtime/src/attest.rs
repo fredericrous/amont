@@ -566,6 +566,35 @@ mod tests {
         r
     }
 
+    /// A bare remote plus a work repo opted in, ready to push.
+    fn remote_and_work(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let d = dir(name);
+        let (key, signers) = keypair(&d);
+        let remote = d.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare", "--template=", "."]);
+        let work = repo(&format!("{name}-work"));
+        git(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&work, &["config", "amont.attest", "true"]);
+        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        std::fs::write(work.join("a.ts"), "x").unwrap();
+        git(&work, &["add", "a.ts"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        (d, work, remote, signers)
+    }
+
+    fn push_ref_for(work: &Path) -> PushRef {
+        PushRef {
+            local_ref: "refs/heads/main".into(),
+            local_oid: git(work, &["rev-parse", "HEAD"]),
+            remote_ref: "refs/heads/main".into(),
+            remote_oid: "0".repeat(40),
+        }
+    }
+
     #[test]
     fn the_provenance_dir_is_resolved_like_amont_agents_config_dir() {
         use std::ffi::OsString;
@@ -1025,6 +1054,37 @@ mod tests {
 
     /// Off by default: a repo that never opted in makes no statement, even
     /// with everything else in place.
+    /// amont's half of input fingerprints: a push from a repository with a
+    /// spec publishes the inputs ref too, and counts what it filed. What
+    /// the block says (the `input` lines, the fingerprint, the key) is
+    /// attest's, tested there (decisions ADR-0037).
+    #[test]
+    fn a_push_with_a_spec_publishes_the_inputs_ref() {
+        let (_d, work, remote, _) = remote_and_work("inputs");
+        std::fs::create_dir_all(work.join(".github")).unwrap();
+        std::fs::write(
+            work.join(".github/attest-inputs"),
+            "pre-push-run-tests-js a.ts\n",
+        )
+        .unwrap();
+        git(&work, &["add", ".github/attest-inputs"]);
+        git(&work, &["commit", "-qm", "chore: spec"]);
+        in_repo(&work, || {
+            attest_push(
+                &test_settings(),
+                "origin",
+                &[push_ref_for(&work)],
+                &["pre-push-run-tests-js".into()],
+            );
+        });
+        let listed = git(&remote, &["notes", "--ref", INPUTS_REF, "list"]);
+        // How many keys (the input's, the canonical tree's) is attest's.
+        assert!(
+            !listed.trim().is_empty(),
+            "the inputs ref reached the remote"
+        );
+    }
+
     #[test]
     fn no_opt_in_means_no_note() {
         let d = dir("optout");
