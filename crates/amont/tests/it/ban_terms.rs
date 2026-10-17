@@ -71,7 +71,10 @@ const ACCEPTED: &[(&str, &str)] = &[
     ("py", "debugger = 1\n"),
     ("py", "# breakpoint() lives here\nx = 1\n"),
     ("py", "s = 'breakpoint()'\n"),
-    ("py", "def f():\n    \"\"\"docs mentioning pdb.set_trace()\"\"\"\n"),
+    (
+        "py",
+        "def f():\n    \"\"\"docs mentioning pdb.set_trace()\"\"\"\n",
+    ),
     ("py", "s = f\"breakpoint( {x}\"\n"), // f-string TEXT is still a string
     ("py", "self.breakpoint(1)\n"),       // somebody else's API
     ("py", "set_trace()\n"),              // bare, no module
