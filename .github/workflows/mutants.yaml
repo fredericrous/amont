@@ -1,0 +1,79 @@
+# Did a branch delete a test whose bugs nothing else catches?
+#
+# The bar of decisions' plan 2026-10-17-amont-tests-follow-user-flows: a
+# test may go only if every mutant it caught is still caught by the tests
+# that remain. scripts/mutants-check.sh says how that is checked; this runs
+# it on a branch, on demand, for the product files a pull request names:
+#
+#   gh workflow run mutants.yaml --ref <branch> -f files="crates/amont-runtime/src/manifest.rs"
+#
+# On demand, not on every pull request: only a branch that deletes or
+# rewrites tests needs it, and only the author knows which product files the
+# deleted tests exercised. The pull request quotes the summary.
+#
+# cargo-mutants is a CI tool here, like cargo-audit: it builds and runs the
+# tests, and links into nothing amont ships (ADR-0020).
+name: mutants
+
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: The product files the deleted tests exercise, space-separated
+        required: true
+      base:
+        description: The branch to compare with
+        default: main
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-mutants
+            target
+          key: mutants-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: cargo-mutants 27.1.0
+        run: |
+          set -eu
+          if ! cargo mutants --version 2> /dev/null | grep -qx 'cargo-mutants 27.1.0'; then
+            cargo install cargo-mutants --locked --version 27.1.0
+          fi
+      # The tests make commits in scratch repositories.
+      - run: |
+          git config --global user.email ci@example.com
+          git config --global user.name "amont ci"
+          git config --global init.defaultBranch main
+      - name: the deleted tests' mutants are still caught
+        env:
+          FILES: ${{ inputs.files }}
+          BASE: ${{ inputs.base }}
+          MUTANTS_ARGS: -j 2
+        run: |
+          set -o pipefail
+          read -r -a files <<< "$FILES"
+          scripts/mutants-check.sh --base "origin/$BASE" "${files[@]}" 2>&1 | tee "$RUNNER_TEMP/mutants.txt"
+      - if: ${{ always() }}
+        run: |
+          {
+            echo '## mutants-check'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/mutants.txt" 2> /dev/null || echo "(no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
