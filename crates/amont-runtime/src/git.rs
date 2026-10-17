@@ -568,7 +568,7 @@ mod tests {
 ///
 /// Two always-on pre-commit checks (`branch-pattern`, `branch-protect`) open
 /// with this same question. Asked twice it is two spawns on every commit,
-/// which is exactly the o(checks) growth `tests/spawn_budget.rs` exists to
+/// which is exactly the o(checks) growth `tests/it/spawn_budget.rs` exists to
 /// refuse; asked once it is the price of one check, however many share it.
 pub fn current_branch() -> Option<&'static str> {
     static BRANCH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();

@@ -786,7 +786,7 @@ mod tests {
     }
 
     /// root ignores permission bits, so a test built on them proves nothing
-    /// there. Same guard, and the same reason, as `tests/install.rs`.
+    /// there. Same guard, and the same reason, as `tests/it/install.rs`.
     #[cfg(unix)]
     fn running_as_root() -> bool {
         extern "C" {
