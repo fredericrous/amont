@@ -47,10 +47,14 @@ root=$(git rev-parse --show-toplevel)
 work=$(mktemp -d)
 trap 'git -C "$root" worktree remove --force "$work/base" > /dev/null 2>&1 || true; rm -rf "$work"' EXIT
 
-# Every test name cargo would run here, one per line.
+# Every test cargo would run here, one per line as `package<TAB>name`.
 list_tests() { # dir target-dir
-    (cd "$1" && CARGO_TARGET_DIR=$2 cargo test --workspace -q -- --list 2> /dev/null) \
-        | sed -n 's/: test$//p' | sort -u
+    local pkg
+    for pkg in $(cd "$1" && cargo metadata --no-deps --format-version 1 \
+        | python3 -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do
+        (cd "$1" && CARGO_TARGET_DIR=$2 cargo test -q -p "$pkg" -- --list 2> /dev/null) \
+            | sed -n "s/: test\$//p" | sed "s/^/$pkg\t/"
+    done | sort -u
 }
 
 # mutants.json of a run -> "file<TAB>description<TAB>n" keys of the given
@@ -93,7 +97,8 @@ echo "--- tests on $base and here"
 git -C "$root" worktree add -q --detach "$work/base" "$base"
 list_tests "$work/base" "$root/target/mutants-base" > "$work/base-tests"
 list_tests "$root" "$root/target" > "$work/head-tests"
-comm -23 "$work/base-tests" "$work/head-tests" > "$work/deleted"
+comm -23 "$work/base-tests" "$work/head-tests" > "$work/deleted-with-package"
+cut -f2 "$work/deleted-with-package" | sort -u > "$work/deleted"
 echo "    $(wc -l < "$work/base-tests") on $base, $(wc -l < "$work/head-tests") here, $(wc -l < "$work/deleted") deleted or renamed"
 if [ ! -s "$work/deleted" ]; then
     echo "mutants-check: no test was deleted; nothing to check"
@@ -113,8 +118,14 @@ mkdir -p "$work/before"
 (cd "$work/base" && cargo mutants --list "${file_args[@]}") > "$work/before/listed.txt"
 filters=()
 while read -r t; do filters+=("$t"); done < "$work/deleted"
+# Only the packages that hold a deleted test are built and run for each
+# mutant: the rest cannot catch anything here, and building them is most
+# of a mutant's cost. The automatic timeout fits the few tests that run.
+packages=()
+while read -r p; do packages+=(--test-package "$p"); done < <(cut -f1 "$work/deleted-with-package" | sort -u)
+echo "    building and running ${packages[*]//--test-package /} only"
 (cd "$work/base" && cargo mutants \
-    --test-workspace=true --no-shuffle --timeout "$timeout" "${file_args[@]}" "${extra[@]}" \
+    "${packages[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
     --output "$work/before" -- -- --exact "${filters[@]}" "${test_extra[@]}") \
     > "$work/before/run.log" 2>&1 || true
 grep -q "mutants tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
@@ -152,18 +163,26 @@ cargo mutants --test-workspace=true --no-shuffle --timeout "$timeout" "${file_ar
     > "$work/after/run.log" 2>&1 || true
 grep -q "mutants tested" "$work/after/run.log" || { tail -20 "$work/after/run.log" >&2; echo "mutants-check: the run here did not complete" >&2; exit 2; }
 
+# Under GitHub Actions each lost mutant is also an error annotation: the
+# job log is not always readable where the result is wanted.
+annotate() { # why < names
+    [ "${GITHUB_ACTIONS:-}" = true ] || { cat > /dev/null; return; }
+    while read -r m; do printf '::error title=mutant %s::%s\n' "$1" "$m"; done
+}
 lost=0
 for outcome in missed timeout; do
     f="$work/after/mutants.out/$outcome.txt"
     if [ -s "$f" ]; then
         echo "mutants-check: $outcome here, caught on $base by a deleted test:"
         sed 's/^/    /' "$f"
+        annotate "$outcome" < "$f"
         lost=1
     fi
 done
 if [ -s "$work/gone" ]; then
     echo "mutants-check: caught on $base, and no longer a mutant here (the product code changed):"
     sed 's/^/    /' "$work/gone"
+    annotate gone < "$work/gone"
     lost=1
 fi
 caught=$(wc -l < "$work/after/mutants.out/caught.txt" 2> /dev/null || echo 0)
