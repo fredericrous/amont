@@ -972,6 +972,12 @@ jobs:
       - name: make test
         run: make test 2>&1 | tee /tmp/hooks-test.log
 
+      # The real-clock load scenarios no commit runs (ADR-0009, "leaning on
+      # CI"): this is the only place they run, on both platforms the CPU
+      # sampler supports.
+      - name: make test-load
+        run: make test-load
+
       # A skip is legitimate (a tool genuinely absent) but must not pass
       # unnoticed: the whole point of installing the tools above is that these
       # suites run for real. A green tick over a suite that quietly skipped is

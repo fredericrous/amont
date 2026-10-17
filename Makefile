@@ -65,6 +65,12 @@ test: chmodx
 	@$(if $(RUN),true,cargo test -p amont-runtime --lib --features test-hooks -- capture::)
 	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test it -- quiet_run::)
 
+# The real-clock load scenarios `make test` leaves out (tests/timing.rs, the
+# `#[ignore]`d ones): about 90 s of CPU-burning children and lock waits. CI's
+# hooks job runs them on Linux and macOS; a commit does not (ADR-0009).
+test-load:
+	@cargo test -p amont --test timing -- --ignored --show-output
+
 # EXACTLY what CI's `rust` job runs, in the same order, with the same flags.
 # Keep them identical: the point of this target is that a contributor can
 # reproduce a red CI locally, and any drift here silently removes that.
@@ -167,4 +173,4 @@ propagate:
 deps:
 	@./scripts/check-no-deps.sh
 
-.PHONY: all chmodx build test lint lint-cross check attest-inputs install install-fleet propagate deps
+.PHONY: all chmodx build test lint lint-cross check attest-inputs install install-fleet propagate deps test-load
