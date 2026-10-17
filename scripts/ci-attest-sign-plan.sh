@@ -24,8 +24,8 @@ tree=$(git rev-parse 'HEAD^{tree}')
 # and with ATTEST_GATES in the Makefile (a test compares the names).
 expected() {
   case $1 in
-    ci-rust | ci-msrv | ci-deps | ci-hooks-ubuntu) echo x86_64-linux ;;
-    ci-hooks-macos) echo aarch64-macos ;;
+    ci-rust | ci-msrv | ci-deps | ci-hooks-ubuntu | ci-load-ubuntu) echo x86_64-linux ;;
+    ci-hooks-macos | ci-load-macos) echo aarch64-macos ;;
     ci-windows-test) echo x86_64-windows ;;
     *) return 1 ;;
   esac

@@ -311,6 +311,8 @@ holds the key:
    installer and end-to-end steps always run: they install the latest
    published release, an external input no fingerprint captures. A job that
    passed writes a result file (gate, platform, tree) and uploads it.
+   The load scenarios (`make test-load`) are the `load` job, gates
+   `ci-load-ubuntu` and `ci-load-macos`.
 3. **`sign`** is the only job with the key. It signs a result only when it
    succeeded, names the tree `sign` itself is standing on, and names the
    platform the workflow declares for that gate (`scripts/ci-attest-sign-plan.sh`),
@@ -319,6 +321,26 @@ holds the key:
    push runs through `pull_request`, so that is where a branch's signatures are
    made; the merge to `main` finds them again because the declared inputs are
    unchanged.
+
+### Which event proves what
+
+A tree is tested once per platform, at the cheapest point that still stops
+a bad release (decisions plan 2026-10-17-amont-ci-proves-platforms-once):
+
+| event | runs |
+|---|---|
+| pull request | Linux: `rust`, `msrv`, `deps`, `hooks (ubuntu)` |
+| push to `main` | what the pull request deferred: `hooks (macos)`, the Windows `cargo test`, both `load` legs, each skipped where a signature covers the tree |
+| tag | nothing new: the release waits until every gate is attested for the tagged tree |
+
+A pull request runs macOS, Windows and `load` too when it changes something
+platform-specific (`scripts/ci-platform-touched.sh`). That means the
+workflows, the CI scripts, the toolchain or dependency tree, the installers,
+`npm/`, `templates/`, or a product source file with a platform `cfg`. Adding
+the `full-ci` label also runs everything. A deferred gate says so in the
+`attestations` summary: `<gate>: deferred to the push to main`. A platform
+can therefore go red on `main` after a green pull request; that is fixed
+forward, and no release ships until it is green.
 
 The trust is the trust of write access: the workflow and the scripts `sign`
 runs come from the ref under test, so whoever can push a branch can edit them,

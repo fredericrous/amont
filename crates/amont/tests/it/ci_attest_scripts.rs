@@ -76,7 +76,8 @@ fn nothing_covered_runs_everything_and_says_why() {
     if missing("jq") {
         return;
     }
-    let (o, said) = verify(&[("EVENT", "pull_request")]);
+    // A pull request that changes platform code runs every platform.
+    let (o, said) = verify(&[("EVENT", "pull_request"), ("PLATFORM_CODE", "true")]);
     for k in [
         "rust_covered",
         "msrv_covered",
@@ -91,6 +92,78 @@ fn nothing_covered_runs_everything_and_says_why() {
         "{said}"
     );
     assert!(value(&o, "test_matrix").contains("macos-latest"));
+    assert_eq!(value(&o, "windows_test_run"), "true");
+    assert!(value(&o, "load_matrix").contains("ci-load-macos"));
+}
+
+/// The point of the tiers: a pull request that changes nothing
+/// platform-specific proves Linux, and says plainly that the rest waits for
+/// the push to main.
+#[test]
+fn a_pull_request_defers_the_other_platforms_and_says_so() {
+    if missing("jq") {
+        return;
+    }
+    let (o, said) = verify(&[("EVENT", "pull_request"), ("PLATFORM_CODE", "false")]);
+    assert_eq!(
+        value(&o, "test_matrix"),
+        r#"[{"os":"ubuntu-latest","gate":"ci-hooks-ubuntu"}]"#
+    );
+    assert_eq!(value(&o, "windows_test_run"), "false");
+    assert_eq!(
+        value(&o, "windows_test_covered"),
+        "false",
+        "deferred is not covered"
+    );
+    assert_eq!(value(&o, "load_matrix"), "[]");
+    assert_eq!(value(&o, "load_any"), "false");
+    assert_eq!(value(&o, "rust_covered"), "false", "Linux still runs");
+    for g in [
+        "ci-windows-test",
+        "ci-hooks-macos",
+        "ci-load-ubuntu",
+        "ci-load-macos",
+    ] {
+        assert!(
+            said.contains(&format!("{g}: deferred to the push to main")),
+            "{g}: {said}"
+        );
+    }
+}
+
+#[test]
+fn the_full_ci_label_runs_every_platform_on_a_pull_request() {
+    if missing("jq") {
+        return;
+    }
+    let (o, said) = verify(&[
+        ("EVENT", "pull_request"),
+        ("PLATFORM_CODE", "false"),
+        ("FULL_CI", "true"),
+    ]);
+    assert!(value(&o, "test_matrix").contains("macos-latest"));
+    assert_eq!(value(&o, "windows_test_run"), "true");
+    assert_eq!(value(&o, "load_any"), "true");
+    assert!(!said.contains("deferred"), "{said}");
+}
+
+/// The push to main proves what the pull request deferred, and a signature
+/// still skips it.
+#[test]
+fn a_push_runs_the_load_legs_a_signature_does_not_cover() {
+    if missing("jq") {
+        return;
+    }
+    let (o, _) = verify(&[
+        ("EVENT", "push"),
+        ("LINUX", r#"["ci-load-ubuntu"]"#),
+        ("PLATFORM_CODE", "false"),
+    ]);
+    assert_eq!(
+        value(&o, "load_matrix"),
+        r#"[{"os":"macos-latest","gate":"ci-load-macos"}]"#
+    );
+    assert_eq!(value(&o, "windows_test_run"), "true");
 }
 
 #[test]
@@ -400,7 +473,7 @@ fn every_ci_gate_the_makefile_requires_is_known_to_every_script_and_the_workflow
         .flat_map(|l| l.trim_end_matches('\\').split_whitespace())
         .filter(|g| g.starts_with("ci-"))
         .collect();
-    assert_eq!(gates.len(), 6, "{gates:?}");
+    assert_eq!(gates.len(), 8, "{gates:?}");
     let sign = std::fs::read_to_string(script("ci-attest-sign-plan.sh")).unwrap();
     let verify = std::fs::read_to_string(script("ci-attest-verify-plan.sh")).unwrap();
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yaml")).unwrap();
@@ -414,4 +487,65 @@ fn every_ci_gate_the_makefile_requires_is_known_to_every_script_and_the_workflow
             "{g} is not declared in .github/attest-inputs"
         );
     }
+}
+
+// ---- what a pull request touches -------------------------------------------
+
+/// `ci-platform-touched.sh` over a real history: the last line says whether
+/// the change since `base` behaves per platform.
+fn touched(repo: &Repo, base: &str) -> (String, String) {
+    let o = Command::new("sh")
+        .arg(script("ci-platform-touched.sh"))
+        .arg(base)
+        .current_dir(&repo.dir)
+        .output()
+        .expect("run script");
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    let last = out.lines().last().unwrap_or("").to_string();
+    (last, out)
+}
+
+#[test]
+fn a_change_is_platform_specific_only_where_the_product_differs_by_platform() {
+    let repo = Repo::new();
+    repo.stage("README.md", "r");
+    repo.stage("crates/x/src/lib.rs", "pub fn f() {}\n");
+    repo.commit("base");
+    let base = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    // Docs, and a test that is merely `cfg(unix)`: not platform code.
+    repo.stage("README.md", "r2");
+    repo.stage("crates/x/tests/t.rs", "#![cfg(unix)]\n");
+    repo.commit("docs and a unix-only test");
+    let (last, out) = touched(&repo, &base);
+    assert_eq!(last, "false", "{out}");
+
+    // A product file that compiles per platform: platform code, named.
+    repo.stage("crates/x/src/lib.rs", "#[cfg(windows)]\npub fn f() {}\n");
+    repo.commit("windows code");
+    let (last, out) = touched(&repo, &base);
+    assert_eq!(last, "true", "{out}");
+    assert!(
+        out.contains("crates/x/src/lib.rs: compiles per platform"),
+        "{out}"
+    );
+}
+
+#[test]
+fn what_ci_builds_from_counts_as_platform_specific() {
+    let repo = Repo::new();
+    repo.stage("README.md", "r");
+    repo.commit("base");
+    let base = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    repo.stage("Cargo.lock", "# deps\n");
+    repo.commit("deps");
+    let (last, out) = touched(&repo, &base);
+    assert_eq!(last, "true", "{out}");
+    // An unreadable base runs everything.
+    let (last, _) = touched(&repo, "0000000000000000000000000000000000000000");
+    assert_eq!(last, "true");
 }
