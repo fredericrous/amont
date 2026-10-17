@@ -13,38 +13,46 @@ fn rewrite(r: &Repo, msg: &str) -> (bool, String) {
     )
 }
 
+/// What the shipped limits and vocabulary accept, judged by the hook as a
+/// commit would. The parsing behind each verdict is unit-tested beside it.
 #[test]
-fn rejects_a_subject_over_72_characters() {
+fn the_default_rules_judge_each_subject() {
     let r = Repo::new();
-    let long = format!("feat: {}", "x".repeat(80));
-    assert!(!rewrite(&r, &long).0);
-}
-
-#[test]
-fn accepts_a_short_conventional_subject() {
-    let r = Repo::new();
-    assert!(rewrite(&r, "feat: a short one\n").0);
-}
-
-#[test]
-fn rejects_a_description_over_50_characters() {
-    let r = Repo::new();
-    let msg = format!("feat: {}", "d".repeat(60));
-    assert!(!rewrite(&r, &msg).0);
-}
-
-/// The whole subject may run to 72 even when the scope is long, as long as the
-/// description after the colon stays under 50.
-#[test]
-fn a_long_scope_is_fine_while_the_description_is_short() {
-    let r = Repo::new();
-    assert!(rewrite(&r, "feat(a-very-long-scope-name-here): short desc\n").0);
-}
-
-#[test]
-fn rejects_a_message_with_no_type_prefix() {
-    let r = Repo::new();
-    assert!(!rewrite(&r, "just a message\n").0);
+    let accepted = [
+        "feat: a short one\n".to_owned(),
+        // the subject may run to 72 while the description stays under 50
+        "feat(a-very-long-scope-name-here): short desc\n".to_owned(),
+        "fix(parser): trim\n".to_owned(),
+        "fix(my-scope): trim\n".to_owned(),
+        "♻️  refactor: already prefixed\n".to_owned(),
+    ]
+    .into_iter()
+    // every type in the vocabulary: this caught the commit-type and
+    // branch-prefix lists diverging
+    .chain(
+        [
+            "build", "chore", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
+            "add", "remove",
+        ]
+        .map(|t| format!("{t}: a description\n")),
+    );
+    for msg in accepted {
+        assert!(rewrite(&r, &msg).0, "rejected: {msg:?}");
+    }
+    for msg in [
+        format!("feat: {}", "x".repeat(80)), // subject over 72
+        format!("feat: {}", "d".repeat(60)), // description over 50
+        "just a message\n".to_owned(),
+        "feat:\n".to_owned(),
+        // git's pass-through shapes are exact: a human subject starting with
+        // one of the words is still judged
+        "Merges: cleanup\n".to_owned(),
+        "Reverted the parser\n".to_owned(),
+        "fixup the parser\n".to_owned(),
+        "Mergesort implemented\n".to_owned(),
+    ] {
+        assert!(!rewrite(&r, &msg).0, "accepted: {msg:?}");
+    }
 }
 
 /// Messages git itself writes pass through unjudged — and UNTOUCHED. `git
@@ -70,28 +78,8 @@ fn git_generated_messages_pass_through_untouched() {
     }
 }
 
-/// The pass-through is for git's EXACT shapes, not for humans who happen to
-/// start a sentence with one of the words.
-#[test]
-fn human_subjects_near_the_git_shapes_are_still_judged() {
-    let r = Repo::new();
-    for msg in [
-        "Merges: cleanup\n",       // not "Merge "
-        "Reverted the parser\n",   // not "Revert \""
-        "fixup the parser\n",      // not "fixup! "
-        "Mergesort implemented\n", // not "Merge "
-    ] {
-        assert!(!rewrite(&r, msg).0, "let a human subject through: {msg:?}");
-    }
-}
-
-#[test]
-fn rejects_a_prefix_with_no_description() {
-    let r = Repo::new();
-    assert!(!rewrite(&r, "feat:\n").0);
-}
-
-/// The shipped default decorates nothing.
+/// Each placement puts the emoji where it says, however git's value is
+/// spelled, and the shipped default decorates nothing.
 ///
 /// A gitmoji in every commit subject is the most divisive opinion this project
 /// ever held, and it used to be unavoidable — `commit-msg` takes no
@@ -99,88 +87,57 @@ fn rejects_a_prefix_with_no_description() {
 /// could be complied with or uninstalled. It is now a placement somebody
 /// chooses.
 #[test]
-fn nothing_is_decorated_unless_a_placement_is_chosen() {
-    let r = Repo::new();
-    let (ok, out) = rewrite(&r, "feat: add a thing\n");
-    assert!(ok);
-    assert_eq!(
-        out.lines().next(),
-        Some("feat: add a thing"),
-        "got: {out:?}"
-    );
-}
-
-#[test]
 fn each_placement_puts_the_emoji_where_it_says() {
+    let r = Repo::new();
     for (placement, expected) in [
-        ("none", "feat: add a thing"),
-        ("prefix", "✨  feat: add a thing"),
-        ("suffix", "feat: add a thing ✨"),
-        ("replace", "✨  add a thing"),
+        (None, "feat: add a thing"),
+        (Some("none"), "feat: add a thing"),
+        (Some("prefix"), "✨  feat: add a thing"),
+        (Some("PREFIX"), "✨  feat: add a thing"),
+        (Some("Prefix"), "✨  feat: add a thing"),
+        (Some("suffix"), "feat: add a thing ✨"),
+        (Some("replace"), "✨  add a thing"),
     ] {
-        let r = Repo::new();
-        r.git(&["config", "amont.commit.gitmoji", placement]);
+        if let Some(p) = placement {
+            r.git(&["config", "amont.commit.gitmoji", p]);
+        }
         let (ok, out) = rewrite(&r, "feat: add a thing\n");
-        assert!(ok, "{placement} rejected the message: {out:?}");
-        assert_eq!(out.lines().next(), Some(expected), "{placement}: {out:?}");
+        assert!(ok, "{placement:?} rejected the message: {out:?}");
+        assert_eq!(out.lines().next(), Some(expected), "{placement:?}: {out:?}");
     }
 }
 
-/// PROPERTY: re-running the hook over its own output changes nothing.
+/// PROPERTY: re-running the hook over its own output changes nothing, under
+/// every placement.
 ///
 /// This is what `--amend`, a rebase reword and a `--no-verify` retry all do.
-/// `suffix` used to grow one emoji per run, and `replace` REJECTED its own
-/// output — it demands a type prefix, and it had just replaced the type with an
-/// emoji.
+/// Three bugs shipped here: `suffix` grew one emoji per run; `replace`
+/// REJECTED its own output (it demands a type prefix, and it had just
+/// replaced the type with an emoji); and the gap after the subject grew a
+/// blank line per run, because `splitn` handed the body back with its
+/// separator and the format string wrote another. A subject at exactly the
+/// description limit must also survive its own decoration, or the first
+/// amend of a maximal subject is rejected for length the hook added.
 #[test]
 fn re_running_over_a_stored_message_is_a_no_op() {
-    for placement in ["none", "prefix", "suffix", "replace"] {
-        let r = Repo::new();
-        r.git(&["config", "amont.commit.gitmoji", placement]);
-        let (ok, once) = rewrite(&r, "feat(api)!: add a thing\n\nbody\n");
-        assert!(ok, "{placement} rejected the message: {once:?}");
-        let (ok, twice) = rewrite(&r, &once);
-        assert!(ok, "{placement} rejected its own output: {once:?}");
-        assert_eq!(once, twice, "{placement} is not idempotent");
-    }
-}
-
-/// REGRESSION: the gap between subject and body must not grow on a re-run.
-///
-/// This shipped. `splitn` hands the body back with the separator newline still
-/// on it, and the format string wrote another — so every `--amend` and every
-/// rebase reword added one more blank line, for as long as somebody kept
-/// editing the commit. It survived because the idempotence test covered
-/// `group_footer` in isolation rather than the whole rewrite.
-#[test]
-fn re_running_does_not_grow_the_gap_after_the_subject() {
     let r = Repo::new();
-    let (ok, once) = rewrite(&r, "feat: subject\n\nbody\n");
-    assert!(ok);
-    assert_eq!(
-        once.lines().take_while(|l| *l != "body").count(),
-        2,
-        "expected subject + one blank line: {once:?}"
-    );
-    let (_, twice) = rewrite(&r, &once);
-    let (_, thrice) = rewrite(&r, &twice);
-    assert_eq!(once, twice, "the second pass changed the message");
-    assert_eq!(twice, thrice, "the third pass changed the message");
-}
-
-/// A subject at exactly the limit must survive its own decoration, or the
-/// first amend of a maximal subject is rejected for length the hook added.
-#[test]
-fn decoration_never_counts_against_the_subject_limit() {
+    let maximal = format!("feat: {}\n", "x".repeat(50));
     for placement in ["none", "prefix", "suffix", "replace"] {
-        let r = Repo::new();
         r.git(&["config", "amont.commit.gitmoji", placement]);
-        let typed = format!("feat: {}\n", "x".repeat(50));
-        let (ok, once) = rewrite(&r, &typed);
-        assert!(ok, "{placement} rejected a 56-character subject: {once:?}");
-        assert!(
-            rewrite(&r, &once).0,
-            "{placement} rejected the subject it had just written: {once:?}"
+        for typed in ["feat(api)!: add a thing\n\nbody\n", maximal.as_str()] {
+            let (ok, once) = rewrite(&r, typed);
+            assert!(ok, "{placement} rejected {typed:?}: {once:?}");
+            let (ok, twice) = rewrite(&r, &once);
+            assert!(ok, "{placement} rejected its own output: {once:?}");
+            let (_, thrice) = rewrite(&r, &twice);
+            assert_eq!(once, twice, "{placement}: the second pass changed it");
+            assert_eq!(twice, thrice, "{placement}: the third pass changed it");
+        }
+        let (_, once) = rewrite(&r, "feat: subject\n\nbody\n");
+        assert_eq!(
+            once.lines().take_while(|l| *l != "body").count(),
+            2,
+            "{placement}: expected subject + one blank line: {once:?}"
         );
     }
 }
@@ -196,19 +153,6 @@ fn an_emoji_the_author_chose_is_left_alone() {
     assert_eq!(out.lines().next(), Some("feat: ship it 🚀 ✨"), "{out:?}");
 }
 
-#[test]
-fn accepts_a_subject_that_already_carries_an_emoji() {
-    let r = Repo::new();
-    assert!(rewrite(&r, "♻️  refactor: already prefixed\n").0);
-}
-
-#[test]
-fn accepts_scopes_including_hyphenated_ones() {
-    let r = Repo::new();
-    assert!(rewrite(&r, "fix(parser): trim\n").0);
-    assert!(rewrite(&r, "fix(my-scope): trim\n").0);
-}
-
 /// A body quoting a conventional commit — a revert citing what it undid — must
 /// not be promoted into the subject. The JS once used /ms flags and rewrote the
 /// commit with that body line as the new summary.
@@ -221,15 +165,6 @@ fn a_body_quoting_a_conventional_commit_is_not_promoted() {
     );
     assert!(ok);
     assert!(out.lines().next().unwrap().contains("revert: undo it"));
-}
-
-#[test]
-fn groups_footers_after_one_blank_line() {
-    let r = Repo::new();
-    let (ok, out) = rewrite(&r, "feat: x\n\nbody\n\nCo-Authored-By: a <a@x>\n");
-    assert!(ok);
-    assert!(out.ends_with("Co-Authored-By: a <a@x>\n"), "got: {out:?}");
-    assert!(out.contains("body\n\nCo-Authored-By"));
 }
 
 /// A subject that merely LOOKS like a trailer must not eat the trailer block.
@@ -349,22 +284,6 @@ fn a_limit_outside_its_range_is_reported_and_ignored() {
     assert!(run.says("amont.commit.subjectMax"), "{:?}", run.output());
 }
 
-/// Git's own boolean and integer spellings work, because git does the parsing.
-#[test]
-fn a_placement_is_matched_however_it_is_spelled() {
-    for spelling in ["prefix", "PREFIX", "Prefix"] {
-        let r = Repo::new();
-        r.git(&["config", "amont.commit.gitmoji", spelling]);
-        let (ok, out) = rewrite(&r, "feat: add a thing\n");
-        assert!(ok);
-        assert_eq!(
-            out.lines().next(),
-            Some("✨  feat: add a thing"),
-            "{spelling}: {out:?}"
-        );
-    }
-}
-
 /// A word that is not a placement names what was wanted, rather than sending
 /// the reader to the documentation for a list we already hold.
 #[test]
@@ -377,18 +296,5 @@ fn an_unknown_placement_lists_the_ones_that_exist() {
     let said = run.output();
     for word in ["none", "prefix", "suffix", "replace"] {
         assert!(said.contains(word), "{word} not offered: {said:?}");
-    }
-}
-
-/// Every type in the vocabulary must be accepted — this is what caught the
-/// commit-type/branch-prefix divergence being real rather than theoretical.
-#[test]
-fn every_declared_commit_type_is_accepted() {
-    let r = Repo::new();
-    for t in [
-        "build", "chore", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
-        "add", "remove",
-    ] {
-        assert!(rewrite(&r, &format!("{t}: a description\n")).0, "{t}");
     }
 }

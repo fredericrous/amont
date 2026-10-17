@@ -2022,55 +2022,65 @@ mod tests {
         );
     }
 
+    /// Each malformed tree line is refused, and says why.
     #[test]
-    fn tree_cache_refused_for_a_tool_without_one() {
-        let l = one("tree ruff-check ruff * attest uvx ruff@0.16.0 check packages {cache}");
-        assert_eq!(why(&l), ParseError::BadTreeCache);
-    }
-
-    #[test]
-    fn tree_cache_twice_refused() {
-        let l = one("tree eslint eslint * attest npx eslint {cache} . {cache}");
-        assert_eq!(why(&l), ParseError::BadTreeCache);
-    }
-
-    #[test]
-    fn tree_bad_tool_refused() {
-        let l = one("tree lint biome * attest npx biome check .");
-        assert_eq!(why(&l), ParseError::BadTreeTool("biome".into()));
-    }
-
-    #[test]
-    fn tree_missing_attest_refused() {
-        let l = one("tree eslint eslint * block npx eslint .");
-        assert!(matches!(why(&l), ParseError::BadTreeLine(_)));
-    }
-
-    #[test]
-    fn tree_absolute_cwd_refused() {
-        let l = one("tree eslint eslint * attest cwd=/etc npx eslint .");
-        assert_eq!(why(&l), ParseError::BadTreeOption("cwd=/etc".into()));
-    }
-
-    #[test]
-    fn tree_parent_dir_in_cwd_refused() {
-        let l = one("tree eslint eslint * attest cwd=web/../.. npx eslint .");
-        assert_eq!(why(&l), ParseError::BadTreeOption("cwd=web/../..".into()));
-    }
-
-    #[test]
-    fn tree_glob_in_inputs_refused() {
-        let l = one("tree eslint eslint * attest inputs=src/*.json npx eslint .");
-        assert_eq!(
-            why(&l),
-            ParseError::BadTreeOption("inputs=src/*.json".into())
-        );
-    }
-
-    #[test]
-    fn tree_unknown_option_refused() {
-        let l = one("tree eslint eslint * attest shell=bash npx eslint .");
-        assert_eq!(why(&l), ParseError::BadTreeOption("shell=bash".into()));
+    fn a_malformed_tree_line_is_refused_with_its_reason() {
+        for (line, expected) in [
+            ("tree", ParseError::BadTreeLine("missing name")),
+            ("tree eslint", ParseError::BadTreeLine("missing tool")),
+            (
+                "tree eslint eslint",
+                ParseError::BadTreeLine("missing scope"),
+            ),
+            (
+                "tree eslint eslint * block npx eslint .",
+                ParseError::BadTreeLine("the fifth column must be `attest`"),
+            ),
+            (
+                "tree eslint eslint * attest",
+                ParseError::BadTreeLine("missing command"),
+            ),
+            // `{cache}` only for a tool that has one, and only once
+            (
+                "tree ruff-check ruff * attest uvx ruff@0.16.0 check packages {cache}",
+                ParseError::BadTreeCache,
+            ),
+            (
+                "tree eslint eslint * attest npx eslint {cache} . {cache}",
+                ParseError::BadTreeCache,
+            ),
+            (
+                "tree lint biome * attest npx biome check .",
+                ParseError::BadTreeTool("biome".into()),
+            ),
+            // `cwd` stays inside the repository; `inputs` names paths, not globs
+            (
+                "tree eslint eslint * attest cwd=/etc npx eslint .",
+                ParseError::BadTreeOption("cwd=/etc".into()),
+            ),
+            (
+                "tree eslint eslint * attest cwd=web/../.. npx eslint .",
+                ParseError::BadTreeOption("cwd=web/../..".into()),
+            ),
+            (
+                "tree eslint eslint * attest inputs=src/*.json npx eslint .",
+                ParseError::BadTreeOption("inputs=src/*.json".into()),
+            ),
+            (
+                "tree eslint eslint * attest shell=bash npx eslint .",
+                ParseError::BadTreeOption("shell=bash".into()),
+            ),
+            (
+                "tree pre-commit-lint eslint * attest npx eslint .",
+                ParseError::TriggerInName("pre-commit-lint".into()),
+            ),
+            (
+                "tree -lint eslint * attest npx eslint .",
+                ParseError::BadTreeName("-lint".into()),
+            ),
+        ] {
+            assert_eq!(why(&one(line)), expected, "{line}");
+        }
     }
 
     #[test]
@@ -2081,18 +2091,6 @@ mod tests {
         assert_eq!(v.len(), 2);
         tree(&v[0]);
         assert_eq!(why(&v[1]), ParseError::Duplicate("eslint".into()));
-    }
-
-    #[test]
-    fn tree_name_saying_its_trigger_refused() {
-        let l = one("tree pre-commit-lint eslint * attest npx eslint .");
-        assert_eq!(why(&l), ParseError::TriggerInName("pre-commit-lint".into()));
-    }
-
-    #[test]
-    fn tree_bad_name_refused() {
-        let l = one("tree -lint eslint * attest npx eslint .");
-        assert_eq!(why(&l), ParseError::BadTreeName("-lint".into()));
     }
 
     #[test]
