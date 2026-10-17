@@ -123,7 +123,7 @@ check: lint test attest-inputs
 # The local gates are `cargo-test` (commit time) and `pre-push-cargo-test`; the
 # `ci-*` gates are signed by the CI jobs of the same name (ci.yaml).
 ATTEST_GATES := cargo-test pre-push-cargo-test ci-rust ci-msrv ci-deps \
-	ci-hooks-ubuntu ci-hooks-macos ci-windows-test
+	ci-hooks-ubuntu ci-hooks-macos ci-windows-test ci-load-ubuntu ci-load-macos
 attest-inputs:
 	@cargo run -q -p amont -- attest check-inputs --tree $$(git write-tree) --require $(ATTEST_GATES)
 

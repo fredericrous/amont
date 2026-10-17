@@ -14,6 +14,8 @@ on:
   push:
     branches: ["main"]
   pull_request:
+    # `labeled` too: adding `full-ci` re-plans the run with every platform.
+    types: [opened, synchronize, reopened, labeled]
   # For `audit` above all. A new advisory against a crate in the fleet's tree
   # appears without anybody pushing anything, so a push-only workflow learns
   # about it whenever the next commit happens to land — which in a repository
@@ -138,10 +140,16 @@ jobs:
       msrv_covered: ${{ steps.plan.outputs.msrv_covered }}
       deps_covered: ${{ steps.plan.outputs.deps_covered }}
       windows_test_covered: ${{ steps.plan.outputs.windows_test_covered }}
+      windows_test_run: ${{ steps.plan.outputs.windows_test_run }}
       test_matrix: ${{ steps.plan.outputs.test_matrix }}
       test_any: ${{ steps.plan.outputs.test_any }}
+      load_matrix: ${{ steps.plan.outputs.load_matrix }}
+      load_any: ${{ steps.plan.outputs.load_any }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The pull request's base must be reachable to say what it changed.
+          fetch-depth: 0
       - uses: actions/cache@v4
         with:
           path: |
@@ -171,12 +179,26 @@ jobs:
         uses: fredericrous/attest@c5c61817f5a78c3a23d31c903c00ba1eef50cc39 # v1.7.0
         with:
           platform: x86_64-windows
+      # A pull request proves Linux; macOS, Windows and the load scenarios
+      # wait for the push to main, which the release waits for (decisions plan
+      # 2026-10-17-amont-ci-proves-platforms-once), unless it changes something
+      # platform-specific or carries the `full-ci` label.
+      - id: platform
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          out=$(./scripts/ci-platform-touched.sh "$BASE")
+          printf '%s\n' "$out"
+          echo "touched=$(printf '%s\n' "$out" | tail -n 1)" >> "$GITHUB_OUTPUT"
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
           LINUX: ${{ steps.linux.outputs.gates }}
           MACOS: ${{ steps.macos.outputs.gates }}
           WINDOWS: ${{ steps.windows.outputs.gates }}
+          PLATFORM_CODE: ${{ steps.platform.outputs.touched || 'true' }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: ./scripts/ci-attest-verify-plan.sh
 
   deps:
@@ -519,7 +541,7 @@ jobs:
       # input no fingerprint can capture, so they always run. The gate means
       # "cargo test passed here", whatever the later steps do.
       - id: cargotest
-        if: ${{ needs.verify.outputs.windows_test_covered != 'true' }}
+        if: ${{ needs.verify.outputs.windows_test_run == 'true' }}
         run: cargo test -- --show-output
       - name: attest result (ci-windows-test)
         if: ${{ steps.cargotest.outcome == 'success' }}
@@ -972,12 +994,6 @@ jobs:
       - name: make test
         run: make test 2>&1 | tee /tmp/hooks-test.log
 
-      # The real-clock load scenarios no commit runs (ADR-0009, "leaning on
-      # CI"): this is the only place they run, on both platforms the CPU
-      # sampler supports.
-      - name: make test-load
-        run: make test-load
-
       # A skip is legitimate (a tool genuinely absent) but must not pass
       # unnoticed: the whole point of installing the tools above is that these
       # suites run for real. A green tick over a suite that quietly skipped is
@@ -1079,6 +1095,39 @@ jobs:
           path: ${{ runner.temp }}/attest-result-${{ matrix.gate }}.json
           if-no-files-found: error
 
+  # The real-clock load scenarios no commit runs (ADR-0009, "leaning on CI"),
+  # on both platforms the CPU sampler supports, as gates of their own
+  # (`ci-load-ubuntu`, `ci-load-macos`): attested like the rest, so they run
+  # once per tree, on the push to main unless a pull request asks for them.
+  load:
+    name: load (${{ matrix.os }})
+    needs: verify
+    if: ${{ needs.verify.outputs.load_any == 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.verify.outputs.load_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Git identity for the throwaway test repos
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name "git-templates ci"
+          git config --global init.defaultBranch main
+      - name: make test-load
+        run: make test-load
+      - name: attest result (${{ matrix.gate }})
+        if: ${{ success() }}
+        run: ./scripts/ci-attest-result.sh ${{ matrix.gate }}
+      - if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: attest-result-${{ matrix.gate }}
+          path: ${{ runner.temp }}/attest-result-${{ matrix.gate }}.json
+          if-no-files-found: error
+
   # The one job that holds the key. It never runs the test suite: it reads result
   # files, signs the ones that name THIS tree on the platform declared for the
   # gate and sit in the artifact named for it, and pushes the notes. That is
@@ -1091,7 +1140,7 @@ jobs:
   # recorded; a failed job uploaded nothing, so nothing of its is signed.
   sign:
     name: sign attestations
-    needs: [verify, deps, rust, msrv, windows, test]
+    needs: [verify, deps, rust, msrv, windows, test, load]
     if: >-
       ${{ always() && needs.verify.result == 'success' &&
       (github.event_name == 'push' ||
