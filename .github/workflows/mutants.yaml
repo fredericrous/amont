@@ -11,8 +11,8 @@
 # rewrites tests needs it, and only the author knows which product files the
 # deleted tests exercised. The pull request quotes the summary.
 #
-# cargo-mutants is a CI tool here, like cargo-audit: it builds and runs the
-# tests, and links into nothing amont ships (ADR-0020).
+# cargo-mutants and cargo-llvm-cov are CI tools here, like cargo-audit: they
+# build and run the tests, and link into nothing amont ships (ADR-0020).
 name: mutants
 
 on:
@@ -46,13 +46,20 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/cargo-mutants
+            ~/.cargo/bin/cargo-llvm-cov
             target
           key: mutants-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - name: cargo-mutants 27.1.0
+      - name: cargo-mutants 27.1.0 and cargo-llvm-cov 0.9.1
         run: |
           set -eu
           if ! cargo mutants --version 2> /dev/null | grep -qx 'cargo-mutants 27.1.0'; then
             cargo install cargo-mutants --locked --version 27.1.0
+          fi
+          # Coverage of the deleted tests decides which mutants are worth a
+          # build: only those on a line the tests run.
+          rustup component add llvm-tools-preview
+          if ! cargo llvm-cov --version 2> /dev/null | grep -qx 'cargo-llvm-cov 0.9.1'; then
+            cargo install cargo-llvm-cov --locked --version 0.9.1
           fi
       # The tests make commits in scratch repositories.
       - run: |
