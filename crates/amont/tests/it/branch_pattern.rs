@@ -85,32 +85,32 @@ fn passes_when_the_branch_is_already_on_the_server() {
     assert!(ok, "{out}");
 }
 
+/// The name rules, judged for a new branch through the real hook. The
+/// prefixes after `feat` are the vocabulary fix (#30): they were rejected
+/// while being valid commit types. Dots are allowed under `chore` only.
 #[test]
-fn rejects_a_name_that_does_not_conform() {
+fn each_new_branch_name_is_judged_by_the_rules() {
     let r = repo_with_origin();
-    let (ok, out) = new_branch(&r, "off-pattern");
-    assert!(!ok, "{out}");
-    assert!(out.contains("off-pattern"), "{out}");
-}
-
-#[test]
-fn accepts_a_conforming_name() {
-    let r = repo_with_origin();
-    let (ok, out) = new_branch(&r, "feat/0-test");
-    assert!(ok, "{out}");
-}
-
-#[test]
-fn dots_are_allowed_under_chore_only() {
-    let r = repo_with_origin();
-    assert!(new_branch(&r, "chore/duro-1.50.50").0);
-    assert!(!new_branch(&r, "feat/duro-1.50.50").0);
-}
-
-#[test]
-fn a_name_without_a_type_prefix_is_rejected() {
-    let r = repo_with_origin();
-    assert!(!new_branch(&r, "duro-1.50.50").0);
+    for b in [
+        "feat/0-test",
+        "docs/x",
+        "refactor/y",
+        "perf/z",
+        "build/w",
+        "style/v",
+        "revert/u",
+        "add/t",
+        "remove/s",
+        "chore/duro-1.50.50",
+    ] {
+        let (ok, out) = new_branch(&r, b);
+        assert!(ok, "{b}: {out}");
+    }
+    for b in ["off-pattern", "feat/duro-1.50.50", "duro-1.50.50"] {
+        let (ok, out) = new_branch(&r, b);
+        assert!(!ok, "{b} was accepted: {out}");
+        assert!(out.contains(b), "{b} was not named: {out}");
+    }
 }
 
 /// The name being CREATED is what is judged, not the one checked out. Under
@@ -170,26 +170,6 @@ fn a_tag_is_not_a_branch() {
         &format!("refs/tags/v1.0.0 {tip} refs/tags/v1.0.0 {ZERO}\n"),
     );
     assert!(ok, "{out}");
-}
-
-/// The vocabulary fix (#30): these were all rejected while being valid commit
-/// types. Driven through the real hook, not just the predicate.
-#[test]
-fn the_previously_rejected_prefixes_are_accepted() {
-    let r = repo_with_origin();
-    for b in [
-        "docs/x",
-        "refactor/y",
-        "perf/z",
-        "build/w",
-        "style/v",
-        "revert/u",
-        "add/t",
-        "remove/s",
-    ] {
-        let (ok, out) = new_branch(&r, b);
-        assert!(ok, "{b}: {out}");
-    }
 }
 
 /// A REAL push from a DETACHED HEAD, through the shipped shim and git itself.
