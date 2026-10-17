@@ -1,6 +1,7 @@
 //! The active-run entry: while a quiet check runs, one small JSON file says
 //! so, for relais's pane to tail its log (relais plan 2026-10-11 "a quiet run
-//! is live in relais's pane"; the contract is relais `docs/quiet-runs.md`).
+//! is live in relais's pane"). amont owns the contract, amont
+//! `docs/quiet-runs.md` (decisions ADR-0039); amont-agent conforms to it.
 //!
 //! `<dir>/<pid>-<n>.json`, `<dir>` being `$QUIET_ACTIVE_DIR`, else
 //! `${XDG_STATE_HOME:-~/.local/state}/quiet/active` (`%LOCALAPPDATA%` on

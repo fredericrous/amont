@@ -15,6 +15,7 @@
 - [Opting out](opting-out.md)
 - [The trust model](trust.md)
 - [The provenance record](provenance.md)
+- [The quiet-run active entry](quiet-runs.md)
 - [Custom checks](custom-checks.md)
 
 # Project
