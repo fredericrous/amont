@@ -41,4 +41,4 @@ It never pays that. `amont init` bakes `current_exe()`, which is the **native**
 binary inside the platform package, straight into `.git/hooks`. The JS wrapper
 runs exactly once, during `prepare`; every commit afterwards execs the binary
 directly. `init_writes_the_four_shims_and_bakes_the_running_binary` in
-`crates/amont/tests/init.rs` is what keeps that true.
+`crates/amont/tests/it/init.rs` is what keeps that true.

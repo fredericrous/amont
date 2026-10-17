@@ -54,14 +54,16 @@ build:
 # hides stdout for passing tests, and a silent skip is indistinguishable from a
 # pass — the trap the zsh suites already guarded against.
 #
-# RUN=<filter> still works: `make test RUN=branch_pattern`.
+# RUN=<file> still works: `make test RUN=branch_pattern` runs what was
+# tests/branch_pattern.rs, now the module of that name in the one
+# integration binary (tests/it/); `RUN=timing` runs the timing binary.
 test: chmodx
 	@./scripts/check-no-deps.sh
-	@cargo test $(if $(RUN),--test $(RUN)) -- --show-output
+	@cargo test $(if $(filter timing,$(RUN)),--test timing,$(if $(RUN),--test it)) -- $(if $(filter-out timing,$(RUN)),$(RUN)::) --show-output
 	@# The quiet capture's injected write failure exists only behind this
 	@# feature (crates/amont-runtime/Cargo.toml); nothing else needs it.
 	@$(if $(RUN),true,cargo test -p amont-runtime --lib --features test-hooks -- capture::)
-	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test quiet_run)
+	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test it -- quiet_run::)
 
 # EXACTLY what CI's `rust` job runs, in the same order, with the same flags.
 # Keep them identical: the point of this target is that a contributor can

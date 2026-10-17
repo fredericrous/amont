@@ -160,7 +160,7 @@ grants and only one of them was made.
 > `git hash-object`, because the binary links no crates and `std`'s only hash is
 > a fixed-key SipHash a crafted manifest could collide), so a `git pull` that
 > adds a command does not inherit consent given to the file before it.
-> `crates/amont/tests/trust_display.rs`.
+> `crates/amont/tests/it/trust_display.rs`.
 
 Which is where activation-as-the-boundary improves on the `direnv` design rather
 than replacing it. direnv must prompt lazily, on `cd`, because there is no
@@ -401,7 +401,7 @@ worse failure than any this repository has had, including the two that
 overwrote tracked files, because there is nothing on disk to recover from.
 
 Rules, all of which wanted tests and all of which now have them, in
-`crates/amont/tests/index_fidelity.rs`:
+`crates/amont/tests/it/index_fidelity.rs`:
 
 - **Nothing unstaged → do nothing**, and silently. The common case must not
   touch the tree, and it is not a degraded run — there is no unstaged content
@@ -494,7 +494,7 @@ dirty commit costs git a walk of the changed files, not of the whole tree.
 > `Outcome::Fixed`. Three checks declare it — prettier, ruff and cargo-fmt
 > — and all three now genuinely repair; two of them declared the fix for a
 > while without having any fixing code, which `amont list --json`
-> reported to agents as a capability. `crates/amont/tests/fixing.rs`.
+> reported to agents as a capability. `crates/amont/tests/it/fixing.rs`.
 
 From lefthook's job options: *"automatically add modified files back to git
 staging"*.
@@ -547,7 +547,7 @@ Not eslint `--fix`: its fixes are semantic and occasionally wrong.
 > and `registry::MID_OPERATION` as the shared set applied to the checks
 > that need it. `lib.rs::git_states_in_progress` does the detection and
 > `dispatch.rs` consults it for BOTH stages, closing the pre-push gap the
-> section names. `crates/amont/tests/git_state.rs`.
+> section names. `crates/amont/tests/it/git_state.rs`.
 
 lefthook:
 
@@ -606,7 +606,7 @@ to copy the other two.
 
 > **Shipped**, exactly as specified, plus `--hooks-dir`.
 > `amont run`, `amont run --all-files`, `amont run <check>`.
-> `crates/amont/tests/run_mode.rs`.
+> `crates/amont/tests/it/run_mode.rs`.
 
 `pre-commit run --all-files` runs every hook over the whole repository rather
 than the staged set. Two uses, both of which we currently cannot serve:
@@ -634,7 +634,7 @@ protect when the answer is "all of it".
 
 ## 4b. `amont check <paths…>` — the read that is not a rehearsal
 
-> **Shipped.** `crates/amont/tests/check_verb.rs`,
+> **Shipped.** `crates/amont/tests/it/check_verb.rs`,
 > `amont-runtime/src/content.rs`, `amont-runtime/src/finding.rs`.
 
 `run` answers *"is this commit ready?"* — a question about the **index**. It is

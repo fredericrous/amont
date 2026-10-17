@@ -70,7 +70,7 @@ jobs:
             exit 1
           fi
           if ! diff -u /tmp/theirs.sha256 "$ours"; then
-            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/excerpt_golden.rs"
+            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/it/excerpt_golden.rs"
             exit 1
           fi
           echo "excerpt fixtures match amont-agent's"
@@ -419,8 +419,8 @@ jobs:
   #
   # This job used to bill itself as a "cheap backstop for the hooks no test file
   # covers (argo-lint, kube-linter, kubeconform, yamllint)". Those four have
-  # been Rust since phase 3 and are covered by crates/amont/tests/k8s.rs and
-  # crates/amont/tests/linters.rs; the comment outlived its subject by three
+  # been Rust since phase 3 and are covered by crates/amont/tests/it/k8s.rs and
+  # crates/amont/tests/it/linters.rs; the comment outlived its subject by three
   # phases. It also dispatched on the shebang across four arms, of which the
   # `*zsh` and `*node` ones could never fire — no hook has been either since the
   # rename.

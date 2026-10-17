@@ -12,7 +12,7 @@
 //!   running tests after a rebase conflict.
 //!
 //! Resist the tempting shared `run_all` helper — collapsing these is the
-//! obvious way to silently lose the distinction. `tests/dispatchers.rs` pins
+//! obvious way to silently lose the distinction. `tests/it/dispatchers.rs` pins
 //! both.
 //!
 //! Checks are FUNCTIONS in this binary, called directly. They used to be files:
