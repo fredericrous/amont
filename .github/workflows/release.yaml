@@ -277,9 +277,38 @@ jobs:
           done
           exit 1
 
+  # Nothing is published until every platform is proven for this exact tree.
+  # A pull request proves Linux only; the push to main proves macOS, Windows
+  # and the load scenarios and signs them (decisions plan
+  # 2026-10-17-amont-ci-proves-platforms-once). The release PR's merge starts
+  # that CI while this tag is already building, so this waits for its
+  # signatures, up to 45 minutes, and refuses with the list of what is
+  # missing. The builds run meanwhile; only publishing waits.
+  proven:
+    name: every platform is proven for this tree
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      # attest's verifier at the version and archive digest its own RELEASE
+      # pins for v1.7.0.
+      - name: git-attest 1.7.0
+        run: |
+          set -euo pipefail
+          name=git-attest-1.7.0-x86_64-unknown-linux-musl
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/fredericrous/attest/releases/download/v1.7.0/$name.tar.gz"
+          echo "6d25cc5320670d7f2bf225bd9a653b5b862be015e17b678e642bedb2e23ba2db  $RUNNER_TEMP/$name.tar.gz" \
+            | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "GIT_ATTEST=$RUNNER_TEMP/$name/git-attest" >> "$GITHUB_ENV"
+      # A dry run asks once: it rehearses, it does not wait for CI.
+      - run: ./scripts/ci-release-gates.sh --wait ${{ needs.guard.outputs.dry_run == 'true' && '0' || '2700' }}
+
   publish:
     name: publish the release
-    needs: [guard, build, audit]
+    needs: [guard, build, audit, proven]
     runs-on: ubuntu-latest
     # `id-token: write` is the OIDC grant `attest-build-provenance` signs
     # with — the same one `publish-npm` already holds for `--provenance`.

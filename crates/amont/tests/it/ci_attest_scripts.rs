@@ -478,7 +478,12 @@ fn every_ci_gate_the_makefile_requires_is_known_to_every_script_and_the_workflow
     let verify = std::fs::read_to_string(script("ci-attest-verify-plan.sh")).unwrap();
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yaml")).unwrap();
     let spec = std::fs::read_to_string(root.join(".github/attest-inputs")).unwrap();
+    let release = std::fs::read_to_string(script("ci-release-gates.sh")).unwrap();
     for g in gates {
+        assert!(
+            release.contains(g),
+            "{g} is not required by ci-release-gates.sh"
+        );
         assert!(sign.contains(g), "{g} is not in ci-attest-sign-plan.sh");
         assert!(verify.contains(g), "{g} is not in ci-attest-verify-plan.sh");
         assert!(workflow.contains(g), "{g} is not in ci.yaml");
@@ -548,4 +553,96 @@ fn what_ci_builds_from_counts_as_platform_specific() {
     // An unreadable base runs everything.
     let (last, _) = touched(&repo, "0000000000000000000000000000000000000000");
     assert_eq!(last, "true");
+}
+
+// ---- the release waits for every platform ------------------------------------
+
+/// A stand-in for attest's verifier: `covered --platform P` prints the gates
+/// `answers` gives for P.
+fn fake_verifier(dir: &Path, answers: &[(&str, &str)]) -> PathBuf {
+    let mut body = String::from("#!/bin/sh\ncase \"$3\" in\n");
+    for (p, gates) in answers {
+        body.push_str(&format!("  {p}) echo \"{gates}\" ;;\n"));
+    }
+    body.push_str("esac\n");
+    let bin = dir.join("git-attest");
+    std::fs::write(&bin, body).unwrap();
+    let ok = Command::new("chmod")
+        .arg("+x")
+        .arg(&bin)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    bin
+}
+
+fn release_gates(answers: &[(&str, &str)]) -> (i32, String) {
+    let dir = std::env::temp_dir().join(format!(
+        "release-gates-{}-{}",
+        std::process::id(),
+        answers.len()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = fake_verifier(&dir, answers);
+    let o = Command::new("sh")
+        .arg(script("ci-release-gates.sh"))
+        .env("GIT_ATTEST", &bin)
+        .output()
+        .expect("run script");
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        o.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        ),
+    )
+}
+
+const LINUX_GATES: &str = "ci-rust ci-msrv ci-deps ci-hooks-ubuntu ci-load-ubuntu";
+
+#[cfg(unix)]
+#[test]
+fn a_tree_proven_on_every_platform_may_be_released() {
+    let (code, out) = release_gates(&[
+        ("x86_64-linux", LINUX_GATES),
+        ("aarch64-macos", "ci-hooks-macos ci-load-macos"),
+        ("x86_64-windows", "ci-windows-test"),
+    ]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_release_names_every_platform_gate_still_missing() {
+    let (code, out) = release_gates(&[
+        ("x86_64-linux", LINUX_GATES),
+        ("aarch64-macos", "ci-hooks-macos"),
+    ]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("ci-load-macos@aarch64-macos"), "{out}");
+    assert!(
+        out.contains("ci-windows-test|pre-push-cargo-test@x86_64-windows"),
+        "{out}"
+    );
+    assert!(!out.contains("ci-rust"), "{out}");
+}
+
+/// A gate proven on the wrong platform proves nothing here, and a Windows
+/// machine's own suite counts for Windows as the CI plan already accepts.
+#[cfg(unix)]
+#[test]
+fn only_the_gate_s_own_platform_counts() {
+    let (code, out) = release_gates(&[
+        (
+            "x86_64-linux",
+            &format!("{LINUX_GATES} ci-hooks-macos ci-load-macos"),
+        ),
+        ("x86_64-windows", "pre-push-cargo-test"),
+    ]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("ci-hooks-macos@aarch64-macos"), "{out}");
+    assert!(!out.contains("x86_64-windows"), "{out}");
 }
