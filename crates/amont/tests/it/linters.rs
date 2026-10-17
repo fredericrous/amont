@@ -353,6 +353,16 @@ fn pyright_passes_clean_code() {
 
 // ---- every tool ---------------------------------------------------------
 
+/// hook, tool, opt-in config (name, body), file, content, passes.
+type FlagNamedCase = (
+    &'static str,
+    &'static str,
+    Option<(&'static str, &'static str)>,
+    &'static str,
+    &'static str,
+    bool,
+);
+
 /// A staged file named like a flag is still judged on its CONTENT, by every
 /// tool: clean passes and broken fails. Without a `--` before the file list
 /// each tool reads `-weird.<ext>` as an option before it opens the file:
@@ -363,8 +373,7 @@ fn pyright_passes_clean_code() {
 /// read: a tool that silently checks nothing passes the clean row too.
 #[test]
 fn a_file_named_like_a_flag_is_judged_on_its_content() {
-    // hook, tool, opt-in config, file, content, passes
-    let cases: &[(&str, &str, Option<(&str, &str)>, &str, &str, bool)] = &[
+    let cases: &[FlagNamedCase] = &[
         (
             "lint-json-yaml",
             "node",
