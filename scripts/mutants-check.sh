@@ -119,7 +119,8 @@ while read -r t; do filters+=("$t"); done < "$work/deleted"
     > "$work/before/run.log" 2>&1 || true
 grep -q "mutants tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
 keys "$work/before" caught > "$work/at-risk"
-echo "    the deleted tests catch $(wc -l < "$work/at-risk") of $(wc -l < "$work/before/listed.txt") mutants"
+echo "    the deleted tests catch $(wc -l < "$work/at-risk") of $(wc -l < "$work/before/listed.txt") mutants:"
+cut -f4 "$work/at-risk" | sed 's/^/      /'
 if [ ! -s "$work/at-risk" ]; then
     echo "mutants-check: the deleted tests caught no mutant in these files; nothing is lost"
     exit 0
