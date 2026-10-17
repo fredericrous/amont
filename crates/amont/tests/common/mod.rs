@@ -51,15 +51,17 @@ impl Repo {
         std::fs::create_dir_all(&dir).expect("create temp repo");
         let r = Repo { dir };
         r.git(&["init", "-q", "--template=", "--initial-branch=main", "."]);
-        r.git(&["config", "user.email", "test@example.com"]);
-        r.git(&["config", "user.name", "test"]);
+        // The settings below go straight into `.git/config`, one write in
+        // place of five `git config` spawns: this runs for nearly every one
+        // of the suite's ~750 tests, and a spawn costs tens of milliseconds
+        // on Windows. Same keys, same values, same file git would write.
+        //
         // Keep the tests independent of the developer's global config.
-        r.git(&["config", "commit.gpgsign", "false"]);
         // Git for Windows converts line endings on checkout by default. A test
         // that writes "a\n", stages it and then compares the file byte for byte
         // would be asserting git's newline policy rather than the behaviour
         // under test — and would pass on two platforms and fail on the third.
-        r.git(&["config", "core.autocrlf", "false"]);
+        //
         // `amont.quiet` defaults to `auto`, and every command this harness runs
         // goes through `Command::output()` — so stderr is NEVER a terminal and
         // `auto` would resolve to quiet for the whole suite. That is not a
@@ -74,7 +76,15 @@ impl Repo {
         // `quiet_replaces_the_success_lines_with_their_count` sets `auto` and
         // `always` itself. Pinning also stops every other test asserting a
         // default by accident.
-        r.git(&["config", "amont.quiet", "never"]);
+        let config = r.dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&config).expect("read .git/config");
+        text.push_str(
+            "[user]\n\temail = test@example.com\n\tname = test\n\
+             [commit]\n\tgpgsign = false\n\
+             [core]\n\tautocrlf = false\n\
+             [amont]\n\tquiet = never\n",
+        );
+        std::fs::write(&config, text).expect("write .git/config");
         r
     }
 
