@@ -66,7 +66,8 @@ test: chmodx
 	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test it -- quiet_run::)
 
 # The real-clock load scenarios `make test` leaves out (tests/timing.rs, the
-# `#[ignore]`d ones): about 90 s of CPU-burning children and lock waits. CI's
+# `#[ignore]`d ones): about 105 s of CPU-burning children, lock waits and the
+# chatty check outliving its idle budget. CI's
 # hooks job runs them on Linux and macOS; a commit does not (ADR-0009).
 test-load:
 	@cargo test -p amont --test timing -- --ignored --show-output
