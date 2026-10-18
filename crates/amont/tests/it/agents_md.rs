@@ -5,6 +5,9 @@
 //! `amont-runtime`; these drive the actual binary and a real file on disk,
 //! the way `pull_rebase.rs`'s suite drives `pre-push-pull-rebase` rather than
 //! re-testing `divergence` through the CLI.
+//!
+//! Writing a new file and `--check` before and after it are steps of the
+//! install flow (`flows::onboarding`); the edge cases stay here.
 
 use crate::common;
 use common::Repo;
@@ -22,19 +25,6 @@ fn run_agents_md(r: &Repo, extra: &[&str]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
-}
-
-#[test]
-fn creates_a_new_file() {
-    let r = Repo::new();
-    r.commit("init");
-    assert!(!r.path("AGENTS.md").exists());
-
-    let (code, _, _) = run_agents_md(&r, &[]);
-    assert_eq!(code, 0);
-    let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
-    assert!(content.contains("<!-- amont:start -->"));
-    assert!(content.contains("amont list --json"));
 }
 
 #[test]
@@ -68,15 +58,6 @@ fn replaces_only_the_marked_block() {
 }
 
 #[test]
-fn check_reports_not_present_and_exits_zero() {
-    let r = Repo::new();
-    r.commit("init");
-    let (code, stdout, _) = run_agents_md(&r, &["--check"]);
-    assert_eq!(code, 0, "{stdout}");
-    assert!(stdout.contains("not present"), "{stdout}");
-}
-
-#[test]
 fn check_detects_drift() {
     let r = Repo::new();
     r.commit("init");
@@ -87,17 +68,6 @@ fn check_detects_drift() {
     let (code, _, stderr) = run_agents_md(&r, &["--check"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("drifted"), "{stderr}");
-}
-
-#[test]
-fn check_matches_after_a_write() {
-    let r = Repo::new();
-    r.commit("init");
-    let (write_code, _, _) = run_agents_md(&r, &[]);
-    assert_eq!(write_code, 0);
-    let (check_code, stdout, _) = run_agents_md(&r, &["--check"]);
-    assert_eq!(check_code, 0, "{stdout}");
-    assert!(stdout.contains("up to date"), "{stdout}");
 }
 
 #[test]
