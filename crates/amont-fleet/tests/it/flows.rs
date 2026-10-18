@@ -735,6 +735,9 @@ fn the_install_journey() {
         out.contains("forgot"),
         "sweeping 200 repositories must say so:\n{out}"
     );
+    // Only `kept` had bookkeeping: a repository that lost shims and nothing
+    // else gets no `forgot` line.
+    step_eq!("uninstall", out.matches("    forgot ").count(), 1, "{out}");
     step_eq!(
         "uninstall",
         config(&kept, "hook.skip"),
