@@ -5,6 +5,11 @@
 //! touched is by definition part of this commit. Without that, re-staging would
 //! sweep in work the author deliberately kept back — which is why this is the
 //! last piece of the spec rather than the first.
+//!
+//! Fixing off by default, a repair re-staged, a clean file not reported and
+//! unstaged work never swept in are steps of `flows/commit.rs`, which reuses
+//! the probe below. What stays here is a failing re-stage, concurrent
+//! fixers and prettier.
 
 use crate::common;
 use common::{missing, Repo};
@@ -16,7 +21,7 @@ use common::{missing, Repo};
 /// interpreter on Windows, which is exactly how the first version of this test
 /// failed there.
 #[cfg(unix)]
-fn rewriter(r: &Repo, name: &str) {
+pub(crate) fn rewriter(r: &Repo, name: &str) {
     r.write(
         name,
         "#!/bin/sh\nfor f in *.js; do [ -f \"$f\" ] || continue; sed -i.bak 's/BAD/GOOD/' \"$f\" && rm -f \"$f.bak\"; done\n",
@@ -28,7 +33,7 @@ fn rewriter(r: &Repo, name: &str) {
 }
 
 #[cfg(not(unix))]
-fn rewriter(r: &Repo, name: &str) {
+pub(crate) fn rewriter(r: &Repo, name: &str) {
     r.write(
         name,
         "@echo off\r\nfor %%f in (*.js) do powershell -NoProfile -Command \"$c = Get-Content -Raw '%%f'; [IO.File]::WriteAllText('%%f', ($c -replace 'BAD','GOOD'))\"\r\n",
@@ -37,9 +42,9 @@ fn rewriter(r: &Repo, name: &str) {
 }
 
 #[cfg(unix)]
-const REWRITER: &str = "rewrite.sh";
+pub(crate) const REWRITER: &str = "rewrite.sh";
 #[cfg(not(unix))]
-const REWRITER: &str = "rewrite.cmd";
+pub(crate) const REWRITER: &str = "rewrite.cmd";
 
 /// The same probe, but rewriting exactly the ONE file it is handed — so
 /// several of them can run at once without racing each other's `sed`.
@@ -83,81 +88,6 @@ fn manifest_with_fixer(r: &Repo) {
         .output()
         .expect("amont trust");
     assert!(out.status.success(), "could not trust the manifest");
-}
-
-/// The default. A hook that edits your files unasked is a larger surprise than
-/// one that complains.
-///
-/// It is also a check that DID NOT RUN, and that used to be reported as
-/// `Outcome::Passed` — the one verdict it must not have, because the
-/// dispatcher's roll-up and the fleet dashboard then show a check that never
-/// executed as clean. `check.rs` defines `Unavailable` as "could not run — a
-/// tool is missing, or the opt-in config is absent", which is exactly this.
-#[test]
-fn fixing_is_off_unless_asked_for() {
-    let r = Repo::new();
-    manifest_with_fixer(&r);
-    r.stage("a.js", "const a = BAD\n");
-
-    let run = r.hook("pre-commit", &[]);
-    // The declared command is not even invoked: fixing is all it does, and
-    // nobody asked for a fix.
-    assert_eq!(
-        std::fs::read_to_string(r.path("a.js")).expect("read"),
-        "const a = BAD\n",
-        "it edited a file without being asked"
-    );
-    assert!(!run.says("fixed and re-staged"), "{}", run.output());
-    // Said out loud, and counted as a gap rather than a pass…
-    assert!(
-        run.says("could not run"),
-        "a check that never ran was rolled up as clean:\n{}",
-        run.output()
-    );
-    assert!(
-        run.says("amont.fix"),
-        "the gap must name its reason:\n{}",
-        run.output()
-    );
-    // …while still not blocking the commit.
-    assert!(run.passed(), "{}", run.output());
-}
-
-#[test]
-fn with_fixing_on_it_repairs_and_restages() {
-    let r = Repo::new();
-    manifest_with_fixer(&r);
-    r.git(&["config", "amont.fix", "true"]);
-    r.stage("a.js", "const a = BAD\n");
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(
-        run.passed(),
-        "the repair should let the commit through:\n{}",
-        run.output()
-    );
-    assert_eq!(
-        std::fs::read_to_string(r.path("a.js")).expect("read"),
-        "const a = GOOD\n"
-    );
-    // Staged, not merely written — otherwise the commit would not contain it.
-    let staged = r.git(&["show", ":a.js"]);
-    assert_eq!(String::from_utf8_lossy(&staged.stdout), "const a = GOOD\n");
-    // And said out loud: the author's files changed under them.
-    assert!(run.says("fixed and re-staged"), "{}", run.output());
-}
-
-/// Nothing to repair must not report a repair.
-#[test]
-fn a_clean_file_is_not_reported_as_fixed() {
-    let r = Repo::new();
-    manifest_with_fixer(&r);
-    r.git(&["config", "amont.fix", "true"]);
-    r.stage("a.js", "const a = GOOD\n");
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(run.passed(), "{}", run.output());
-    assert!(!run.says("fixed and re-staged"), "{}", run.output());
 }
 
 /// A `git add` that FAILS must never be read as "nothing moved".
@@ -319,39 +249,5 @@ fn prettier_blocks_when_it_cannot_restage_what_it_wrote() {
         std::fs::read_to_string(r.path("a.ts")).expect("read"),
         "const x = 1;\n",
         "prettier did write the file — that is what makes the stale index a bug"
-    );
-}
-
-/// The interaction that makes this safe: a repair must stage only what it
-/// touched, never the unstaged work the author kept back.
-#[test]
-fn a_repair_does_not_sweep_in_unstaged_work() {
-    let r = Repo::new();
-    manifest_with_fixer(&r);
-    r.git(&["config", "amont.fix", "true"]);
-    r.stage("other.txt", "committed\n");
-    r.commit("chore: seed");
-
-    r.stage("a.js", "const a = BAD\n");
-    // Deliberately kept back.
-    r.write("other.txt", "work in progress, not staged\n");
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(run.passed(), "{}", run.output());
-
-    let staged = r.git(&["diff", "--cached", "--name-only"]);
-    let staged = String::from_utf8_lossy(&staged.stdout);
-    assert!(
-        staged.contains("a.js"),
-        "the repair was not staged: {staged}"
-    );
-    assert!(
-        !staged.contains("other.txt"),
-        "the repair swept in unstaged work: {staged}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(r.path("other.txt")).expect("read"),
-        "work in progress, not staged\n",
-        "and the unstaged work must still be there"
     );
 }

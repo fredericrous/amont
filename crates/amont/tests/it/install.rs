@@ -4,6 +4,11 @@
 //! that the subcommand is reachable at all, that it writes what it claims, and
 //! that the refusal path really does leave a checkout untouched — the failure
 //! that has already happened twice.
+//!
+//! The journey itself (install, twice, a real commit, AGENTS.md offered,
+//! uninstall and what it leaves behind) is `flows::onboarding`'s
+//! `the_install_journey`; what stays here are the refusals and where the
+//! binary is taken from, each on a fixture of its own.
 
 use crate::common;
 use common::output_retrying_etxtbsy;
@@ -71,121 +76,6 @@ fn init_repo(dir: &Path) {
     git(dir, &["config", "user.name", "t"]);
 }
 
-/// The binary name the installer chose, whichever platform this is.
-fn installed_bin(s: &Sandbox) -> PathBuf {
-    let dir = s.path(".local/bin");
-    for n in ["amont", "amont.exe"] {
-        let p = dir.join(n);
-        if p.is_file() {
-            return p;
-        }
-    }
-    panic!("no binary installed into {}", dir.display());
-}
-
-#[test]
-fn install_places_the_binary_the_templates_and_the_repo_hooks() {
-    let s = Sandbox::new("full");
-    let repo = s.path("repo");
-    init_repo(&repo);
-
-    let (code, out) = s.install(&repo);
-    assert_eq!(code, 0, "{out}");
-
-    let bin = installed_bin(&s);
-    let tpl = s.path(".config/git/git-templates/templates/hooks");
-    for name in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        assert!(tpl.join(name).is_file(), "template {name} missing:\n{out}");
-        assert!(
-            repo.join(".git/hooks").join(name).is_file(),
-            "repo hook {name} missing:\n{out}"
-        );
-    }
-
-    // Baked, not merely copied: the placeholder is what a GUI client cannot
-    // resolve, and leaving it would be the bug the baking exists to prevent.
-    let hook = std::fs::read_to_string(repo.join(".git/hooks/pre-commit")).expect("read");
-    assert!(!hook.contains("__AMONT_BIN__"), "shim was not baked");
-    assert!(
-        hook.contains(bin.to_str().expect("utf8")),
-        "shim names {:?}, not the installed {}",
-        hook.lines().find(|l| l.contains("amont")),
-        bin.display()
-    );
-}
-
-/// Running it twice must be a no-op, not an error — it is the normal way to
-/// pick up a new build.
-#[test]
-fn installing_twice_is_idempotent() {
-    let s = Sandbox::new("twice");
-    let repo = s.path("repo");
-    init_repo(&repo);
-
-    assert_eq!(s.install(&repo).0, 0);
-    let first = std::fs::read_to_string(repo.join(".git/hooks/pre-commit")).expect("read");
-    let (code, out) = s.install(&repo);
-    assert_eq!(code, 0, "{out}");
-    let second = std::fs::read_to_string(repo.join(".git/hooks/pre-commit")).expect("read");
-    assert_eq!(first, second, "a second install changed the shim");
-}
-
-/// Hooks are SHARED across every worktree of a repository — git dispatches
-/// them from the common directory, never a linked worktree's own private
-/// gitdir. An install run from inside a linked worktree must bake shims where
-/// git will actually look, not into `.git/worktrees/<name>/hooks`, which git
-/// never reads and which would make the install silently inert.
-#[test]
-fn installing_from_a_linked_worktree_bakes_into_the_shared_hooks_dir() {
-    let s = Sandbox::new("worktree");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    git(&repo, &["commit", "--allow-empty", "-qm", "seed"]);
-    let wt = s.path("repo-wt");
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["worktree", "add", "-q", "-b", "feature"])
-        .arg(&wt)
-        .output()
-        .expect("git worktree add");
-    assert!(
-        out.status.success(),
-        "git worktree add failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let (code, out) = s.install(&wt);
-    assert_eq!(code, 0, "{out}");
-    for name in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        assert!(
-            repo.join(".git/hooks").join(name).is_file(),
-            "{name} missing from the common hooks dir:\n{out}"
-        );
-    }
-    // The worktree's own PRIVATE gitdir — `wt.join(".git")` is a FILE, not a
-    // directory, so this is where a shim baked at `--git-dir`-plus-"hooks"
-    // would have actually landed: inert, since git never dispatches from here.
-    assert!(
-        !repo.join(".git/worktrees/feature/hooks").exists(),
-        "baked into the worktree-private gitdir instead of the shared one"
-    );
-}
-
 /// The incident, reproduced: the XDG path is a SYMLINK to a checkout, so
 /// "installing" there means overwriting tracked source. It must refuse, and say
 /// so, and leave every tracked file exactly as it was.
@@ -228,23 +118,6 @@ fn a_symlinked_checkout_is_refused_and_left_untouched() {
     assert!(
         after.contains("__AMONT_BIN__"),
         "the tracked placeholder was baked away"
-    );
-}
-
-/// Installing from outside any repository must still install the binary and the
-/// templates, and say plainly that it wrote no repo hooks.
-#[test]
-fn outside_a_repository_it_installs_what_it_can() {
-    let s = Sandbox::new("norepo");
-    let plain = s.path("plain");
-    std::fs::create_dir_all(&plain).expect("mkdir");
-
-    let (code, out) = s.install(&plain);
-    assert_eq!(code, 0, "{out}");
-    installed_bin(&s);
-    assert!(
-        out.contains("not inside a git repository"),
-        "should say why no repo hooks were written:\n{out}"
     );
 }
 
@@ -334,143 +207,6 @@ fn install_refuses_to_overwrite_a_hook_it_did_not_write() {
     assert!(std::fs::read_to_string(&mine)
         .expect("read")
         .contains("amont"));
-}
-
-#[test]
-fn uninstall_removes_our_shims_and_nothing_else() {
-    let s = Sandbox::new("uninstall");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    // A hook of their own, added after we installed. `post-checkout`, because
-    // `post-commit` stopped being available for this role — it is ours now.
-    let theirs = repo.join(".git/hooks/post-checkout");
-    std::fs::write(&theirs, "#!/bin/sh\necho theirs\n").expect("write");
-    // And policy they set, which is a statement about their repo, not ours.
-    git(&repo, &["config", "hook.skip", "pre-commit-clippy"]);
-
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "{out}");
-
-    for name in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        assert!(
-            !repo.join(".git/hooks").join(name).exists(),
-            "{name} survived uninstall:\n{out}"
-        );
-    }
-    assert!(theirs.exists(), "a hook we did not write was deleted");
-    let skips = Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["config", "--get-all", "hook.skip"])
-        .output()
-        .expect("git");
-    assert!(
-        String::from_utf8_lossy(&skips.stdout).contains("pre-commit-clippy"),
-        "uninstall discarded the user's own policy"
-    );
-    // The binary is shared with every other repository.
-    installed_bin(&s);
-}
-
-/// Running it twice must not be an error — it is how somebody makes sure.
-#[test]
-fn uninstalling_twice_is_idempotent() {
-    let s = Sandbox::new("uninstall-twice");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    assert_eq!(run_verb(&s, &repo, &["uninstall"]).0, 0);
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "second uninstall failed:\n{out}");
-}
-
-/// `--binary` is opt-in because other repositories are using it.
-#[test]
-fn uninstall_keeps_the_binary_unless_asked() {
-    let s = Sandbox::new("uninstall-bin");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    let bin = installed_bin(&s);
-
-    assert_eq!(run_verb(&s, &repo, &["uninstall"]).0, 0);
-    assert!(bin.exists(), "uninstall took the shared binary unasked");
-
-    assert_eq!(run_verb(&s, &repo, &["uninstall", "--binary"]).0, 0);
-    assert!(!bin.exists(), "--binary did not remove it");
-}
-
-/// The installed shim has to actually work — a hook that is written but cannot
-/// run is the failure this whole shim design is arranged against.
-#[test]
-fn the_installed_hooks_run_a_real_commit() {
-    let s = Sandbox::new("commit");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-
-    std::fs::write(repo.join("a.txt"), "hello\n").expect("write");
-    git(&repo, &["add", "-A"]);
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["commit", "-m", "feat: a commit through installed hooks"])
-        .env("HOME", &s.0)
-        .output()
-        .expect("commit");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(out.status.success(), "commit failed:\n{text}");
-    assert!(
-        !text.contains("amont binary not found"),
-        "the installed shim could not resolve the binary:\n{text}"
-    );
-}
-
-// ---- offer_agents_md ------------------------------------------------------
-
-/// A test process has no controlling terminal, so `trust::confirm`'s
-/// `/dev/tty` open fails and it answers "no" — the same path a real
-/// non-interactive install takes. `install` must still succeed, and must not
-/// have written anything nobody agreed to.
-#[test]
-fn a_non_interactive_install_completes_without_writing_agents_md() {
-    let s = Sandbox::new("agents-md-noninteractive");
-    let repo = s.path("repo");
-    init_repo(&repo);
-
-    let (code, out) = s.install(&repo);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        !repo.join("AGENTS.md").exists(),
-        "an unanswered prompt must not write anything"
-    );
-}
-
-/// Re-running install after a declined (unanswered) prompt must stay
-/// harmless — the same "twice is idempotent" property the shim install
-/// already has.
-#[test]
-fn offering_agents_md_again_after_declining_is_harmless() {
-    let s = Sandbox::new("agents-md-twice");
-    let repo = s.path("repo");
-    init_repo(&repo);
-
-    assert_eq!(s.install(&repo).0, 0);
-    let (code, out) = s.install(&repo);
-    assert_eq!(code, 0, "a second install failed:\n{out}");
-    assert!(!repo.join("AGENTS.md").exists());
 }
 
 // ---- what may be written over, and what may never be ----------------------
@@ -872,89 +608,10 @@ fn force_names_what_it_overwrote() {
     );
 }
 
-/// The README promises a foreign hook is "left alone and named". It was true
-/// only for hooks that happened to be valid UTF-8: the loop matched
-/// `Err(_) => {}` on `read_to_string`, so a compiled hook was passed over in
-/// total silence — not removed, not counted, not mentioned.
-#[test]
-fn uninstall_names_a_hook_it_could_not_read() {
-    let s = Sandbox::new("uninstall-binary");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    let theirs = repo.join(".git/hooks/commit-msg");
-    std::fs::write(&theirs, [0x7f, b'E', b'L', b'F', 0xff, 0xfe]).expect("write");
-
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        out.contains("commit-msg") && out.contains("not valid UTF-8"),
-        "an unreadable hook was passed over in silence:\n{out}"
-    );
-    assert!(theirs.exists(), "an unreadable hook was deleted");
-}
-
 // ---- uninstall undoes install ---------------------------------------------
 
-/// `uninstall` did not undo `install`. It removed the repository's shims and
-/// left the template directory populated, so with `init.templateDir` set every
-/// subsequent `git clone` re-installed the hooks into the new repo — after the
-/// user had been told the uninstall succeeded.
-#[test]
-fn uninstall_takes_back_the_template_dir_and_names_the_standing_grant() {
-    let s = Sandbox::new("uninstall-template");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-
-    let tpl = s.path(".config/git/git-templates/templates/hooks");
-    for name in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        assert!(tpl.join(name).is_file(), "install wrote no template shims");
-    }
-    // The standing grant itself, set the way the README tells people to.
-    let cfg = Command::new("git")
-        .args(["config", "--global", "init.templateDir"])
-        .arg(s.path(".config/git/git-templates"))
-        .env("HOME", &s.0)
-        .env("USERPROFILE", &s.0)
-        .env("XDG_CONFIG_HOME", s.path(".config"))
-        .output()
-        .expect("git config");
-    assert!(cfg.status.success());
-
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "{out}");
-    for name in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        assert!(
-            !tpl.join(name).exists(),
-            "{name} survived in the template dir — the next clone reinstalls it:\n{out}"
-        );
-    }
-    assert!(
-        out.contains("init.templateDir"),
-        "uninstall must name the setting that keeps installing hooks:\n{out}"
-    );
-    assert!(
-        out.contains("git config --global --unset init.templateDir"),
-        "and give the command that revokes it:\n{out}"
-    );
-}
-
-/// The other half, and the dangerous one: when the template dir is a CHECKOUT
+/// The dangerous half of uninstall taking back the template dir (the
+/// install flow's `standing grant` step): when the template dir is a CHECKOUT
 /// reached through a symlink, those shims are tracked source. `install` refuses
 /// to write there; `uninstall` must refuse to delete there, and a delete has no
 /// `--force` to argue with.
@@ -1019,30 +676,6 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
             "TRACKED FILE {name} WAS DELETED:\n{out}"
         );
     }
-}
-
-/// Once the block already matches what would be generated, `offer_agents_md`
-/// must skip silently — no prompt at all — the same way `offer_trust` skips
-/// once a manifest is already trusted.
-#[test]
-fn an_up_to_date_agents_md_is_not_re_offered() {
-    let s = Sandbox::new("agents-md-uptodate");
-    let repo = s.path("repo");
-    init_repo(&repo);
-
-    let write = Command::new(env!("CARGO_BIN_EXE_amont"))
-        .arg("agents-md")
-        .current_dir(&repo)
-        .output()
-        .expect("run amont agents-md");
-    assert!(write.status.success());
-
-    let (code, out) = s.install(&repo);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        !out.contains("AGENTS.md can point"),
-        "an already up-to-date block must not be offered again:\n{out}"
-    );
 }
 
 /// Run the installer with a custom `$AMONT_BIN_DIR`, the way somebody who
@@ -1378,76 +1011,4 @@ fn path_with(dir: &str) -> std::ffi::OsString {
     let mut dirs = vec![std::path::PathBuf::from(dir)];
     dirs.extend(std::env::split_paths(&inherited));
     std::env::join_paths(dirs).expect("join PATH")
-}
-
-/// Trust is CONSENT to run commands a file names, and uninstall is a request
-/// to stop running them. Keeping the record would re-honour that consent
-/// silently on the next install — for bytes reviewed once, long ago.
-#[test]
-fn uninstall_revokes_trust_and_keeps_the_users_own_work() {
-    let s = Sandbox::new("uninstall-trust");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    std::fs::write(repo.join("amont.conf"), "skip yamllint\n").expect("write manifest");
-    assert_eq!(run_verb(&s, &repo, &["trust"]).0, 0);
-    let trusted = |what: &str| -> String {
-        String::from_utf8_lossy(
-            &Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["config", "--local", "--get", what])
-                .output()
-                .expect("git")
-                .stdout,
-        )
-        .trim()
-        .to_string()
-    };
-    assert!(
-        !trusted("amont.trusted").is_empty(),
-        "fixture: trust granted"
-    );
-
-    // Work parked by an interrupted run, and a hook somebody else wrote.
-    let git_dir = repo.join(".git");
-    std::fs::create_dir_all(git_dir.join("amont-held")).expect("mkdir");
-    std::fs::write(git_dir.join("amont-held/index"), b"amont-held-v1\0").expect("write");
-
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        trusted("amont.trusted").is_empty(),
-        "trust survived uninstall — a reinstall would re-honour it:\n{out}"
-    );
-    assert!(
-        out.contains("forgot") && out.contains("trust"),
-        "what was forgotten must be said out loud:\n{out}"
-    );
-    assert!(
-        git_dir.join("amont-held/index").exists(),
-        "uninstall deleted PARKED WORK — the one thing it must never touch:\n{out}"
-    );
-    // The manifest itself is the repository's file, not ours.
-    assert!(repo.join("amont.conf").exists(), "{out}");
-}
-
-/// The ledger and stamp marker are bookkeeping about hooks that are leaving.
-#[test]
-fn uninstall_forgets_its_own_bookkeeping() {
-    let s = Sandbox::new("uninstall-bookkeeping");
-    let repo = s.path("repo");
-    init_repo(&repo);
-    assert_eq!(s.install(&repo).0, 0);
-    let git_dir = repo.join(".git");
-    std::fs::write(git_dir.join("amont-bypasses"), "amont-bypasses-v1\n").expect("write");
-    std::fs::write(git_dir.join("amont-skew"), "amont-skew-v1\n1.0.0\n").expect("write");
-
-    let (code, out) = run_verb(&s, &repo, &["uninstall"]);
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        !git_dir.join("amont-bypasses").exists(),
-        "the bypass ledger outlived the hooks it describes:\n{out}"
-    );
-    assert!(!git_dir.join("amont-skew").exists(), "{out}");
 }

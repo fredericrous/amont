@@ -5,6 +5,11 @@
 //! and again at pre-push, and the commit-time side earns per-commit stamps
 //! the push-time side defers to. A Rust repo's `cargo test`, a Python
 //! repo's `pytest` — same contract, no package.json anywhere.
+//!
+//! The pair as a person meets it (deferred to a stamped commit, back for an
+//! unstamped one, refused on request, the dodge in the ledger) is a step of
+//! `flows/push.rs`. What stays here is what changes the pairing: an opt-in
+//! marker, a warn or policy-downgraded side, an unpaired gate, a built-in.
 
 use crate::common;
 use common::{missing, Repo};
@@ -93,76 +98,6 @@ fn paired_repo(severity: &str) -> (Repo, String) {
     r.commit("chore: the pair");
     trust_and_install(&r);
     (r, base)
-}
-
-/// The point: a verified commit earns the stamp, and the push-side twin is
-/// skipped BY NAME, out loud.
-#[test]
-fn a_stamped_pair_is_not_repeated_at_push() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = paired_repo("block");
-    r.stage("a.txt", "hello\n");
-    let out = r.git(&["commit", "-q", "-m", "feat: through the gate"]);
-    assert!(out.status.success(), "verified commit failed");
-    assert_eq!(runs(&r), 1, "the commit-time side ran once");
-
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        out.contains("gated at commit instead"),
-        "the skip is said out loud: {out}"
-    );
-    assert_eq!(runs(&r), 1, "the push repeated nothing");
-}
-
-/// A `--no-verify` commit has no stamp, so the push-side twin runs — with
-/// the same warning the npm gate gives.
-#[test]
-fn an_unstamped_commit_brings_the_pair_back_at_push() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = paired_repo("block");
-    r.stage("a.txt", "hello\n");
-    r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
-    assert_eq!(runs(&r), 0, "nothing ran at commit");
-
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 0, "{out}");
-    assert!(
-        out.contains("no record of it — running it here"),
-        "the reason is named: {out}"
-    );
-    assert_eq!(runs(&r), 1, "the push-side twin ran");
-}
-
-/// `amont.unstampedPush refuse`: the same unstamped push is refused rather
-/// than run with the remote's connection held open — and says how to earn
-/// the stamp instead.
-#[test]
-fn refuse_turns_an_unstamped_push_away_with_the_way_out() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = paired_repo("block");
-    r.stage("a.txt", "hello\n");
-    r.commit("feat: dodge the gate");
-    r.git(&["config", "amont.unstampedPush", "refuse"]);
-
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_ne!(code, 0, "{out}");
-    assert!(out.contains("refusing the push"), "{out}");
-    assert!(out.contains("amont rehearse --wait"), "{out}");
-    assert_eq!(runs(&r), 0, "nothing ran with the push waiting");
-
-    // `run` is the default and keeps the old behaviour.
-    r.git(&["config", "amont.unstampedPush", "run"]);
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains("no record of it — running it here"), "{out}");
-    assert_eq!(runs(&r), 1);
 }
 
 /// An opt-in marker on the pair (`*.txt+marker`) is a fact about the
@@ -263,21 +198,6 @@ fn an_unpaired_push_declaration_just_runs() {
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("gated at commit"), "{out}");
     assert_eq!(runs(&r), 1);
-}
-
-/// The bypass ledger speaks the general vocabulary too: a dodged CUSTOM
-/// gate lands in `.git/amont-bypasses` under its own name.
-#[test]
-fn a_dodged_custom_gate_reaches_the_bypass_ledger() {
-    if missing("node") {
-        return;
-    }
-    let (r, _base) = paired_repo("block");
-    r.stage("a.txt", "hello\n");
-    r.commit("feat: dodge");
-    let ledger = std::fs::read_to_string(r.path(".git/amont-bypasses"))
-        .expect("a dodged gate leaves a ledger");
-    assert!(ledger.contains(" check"), "{ledger:?}");
 }
 
 /// A committed `severity` line downgrading the commit-time twin removes its

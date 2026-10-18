@@ -131,8 +131,14 @@ only=()
 if command -v cargo-llvm-cov > /dev/null; then
     pkgs=()
     while read -r p; do pkgs+=(-p "$p"); done < <(cut -f1 "$work/deleted-with-package" | sort -u)
-    (cd "$work/base" && cargo llvm-cov --lcov --output-path "$work/cov.lcov" "${pkgs[@]}" \
-        -- --exact "${filters[@]}" "${test_extra[@]}") > "$work/cov.log" 2>&1 || true
+    # Collect, then report over the whole workspace: a report scoped to the
+    # packages that hold the tests drops every other package's lines, and
+    # an integration test's lines are mostly amont-runtime's, run by the
+    # binary it spawns. Scoped, every runtime mutant read as unreached and
+    # the check passed without trying one.
+    (cd "$work/base" && cargo llvm-cov --no-report "${pkgs[@]}" \
+        -- --exact "${filters[@]}" "${test_extra[@]}" \
+        && cargo llvm-cov report --lcov --output-path "$work/cov.lcov") > "$work/cov.log" 2>&1 || true
     if [ -s "$work/cov.lcov" ]; then
         python3 - "$work/cov.lcov" "$work/base" "$work/before/listed.txt" "$work/covered-mutants" << 'EOF'
 import os, re, sys

@@ -401,7 +401,8 @@ worse failure than any this repository has had, including the two that
 overwrote tracked files, because there is nothing on disk to recover from.
 
 Rules, all of which wanted tests and all of which now have them, in
-`crates/amont/tests/it/index_fidelity.rs`:
+`crates/amont/tests/it/index_fidelity.rs` and the commit flow
+(`crates/amont/tests/it/flows/commit.rs`):
 
 - **Nothing unstaged → do nothing**, and silently. The common case must not
   touch the tree, and it is not a degraded run — there is no unstaged content

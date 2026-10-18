@@ -5,6 +5,9 @@
 //! a warning that fires on detached heads, remoteless repositories or
 //! branches the server already accepted trains people to stop reading it —
 //! `usual-name`'s lesson, which this check is a second application of.
+//!
+//! A conforming name and an off-contract one are steps of `flows/push.rs`;
+//! the quiet states stay here.
 
 use crate::common;
 use common::Repo;
@@ -31,34 +34,6 @@ fn with_remote(r: &Repo) {
     // A configured remote is all the check consults; it never touches the
     // network, so the URL can be nonsense.
     r.git(&["remote", "add", "origin", "/nowhere/in/particular"]);
-}
-
-/// A conforming name passes, and says so like the pre-push check does.
-#[test]
-fn a_conforming_branch_passes() {
-    let r = Repo::new();
-    r.stage("a.txt", "x\n");
-    r.git(&["commit", "-m", "chore: init"]);
-    r.git(&["checkout", "-q", "-b", "feat/good-name"]);
-    with_remote(&r);
-    let (code, out) = run_check(&r);
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains("conforms"), "{out}");
-}
-
-/// The one state it speaks in: an off-contract name that a remote exists to
-/// eventually refuse — warned, with the rename command, and NOT blocking.
-#[test]
-fn an_off_contract_branch_warns_without_blocking() {
-    let r = Repo::new();
-    r.stage("a.txt", "x\n");
-    r.git(&["commit", "-m", "chore: init"]);
-    r.git(&["checkout", "-q", "-b", "definitely-not-conforming"]);
-    with_remote(&r);
-    let (code, out) = run_check(&r);
-    assert_eq!(code, 0, "a warning must not block: {out}");
-    assert!(out.contains("refused at push time"), "{out}");
-    assert!(out.contains("git branch -m"), "the fix is named: {out}");
 }
 
 /// No remote, no contract to gate: a purely local repository stays quiet.

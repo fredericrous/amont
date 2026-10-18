@@ -9,7 +9,7 @@ use common::Repo;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn trust_and_install(r: &Repo) {
+pub(crate) fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
         let out = Command::new(env!("CARGO_BIN_EXE_amont"))
             .arg(verb)
@@ -39,13 +39,13 @@ fn commit(r: &Repo, msg: &str) -> (bool, String) {
 }
 
 /// The gate-stamp tokens on `rev` (a commit or a tree).
-fn stamped(r: &Repo, rev: &str) -> String {
+pub(crate) fn stamped(r: &Repo, rev: &str) -> String {
     let out = r.git(&["notes", "--ref", "amont-gate", "show", rev]);
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
 /// `amont warm`, in the foreground: fills every cold gate's cache.
-fn warm(r: &Repo) -> String {
+pub(crate) fn warm(r: &Repo) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_amont"))
         .arg("warm")
         .current_dir(&r.dir)
@@ -61,7 +61,7 @@ fn warm(r: &Repo) -> String {
 }
 
 /// The namespace directories of `gate` under `$GIT_DIR/amont-cache`.
-fn namespaces(r: &Repo, gate: &str) -> Vec<String> {
+pub(crate) fn namespaces(r: &Repo, gate: &str) -> Vec<String> {
     let dir = r.dir.join(".git").join("amont-cache").join(gate);
     let mut out: Vec<String> = std::fs::read_dir(dir)
         .map(|es| {
@@ -77,7 +77,7 @@ fn namespaces(r: &Repo, gate: &str) -> Vec<String> {
 
 /// A workflow with one step per `(name, command)`, each skipped on its gate —
 /// what `pre-commit-tree-parity` requires before any tree gate may attest.
-fn workflow(gates: &[(&str, &str)]) -> String {
+pub(crate) fn workflow(gates: &[(&str, &str)]) -> String {
     let mut w = String::from(
         "name: ci\njobs:\n  lint:\n    steps:\n      - id: attest\n        uses: fredericrous/attest@v1\n",
     );
@@ -104,16 +104,6 @@ fn repo_with(name: &str, tool: &str, command: &str) -> Repo {
     r.git(&["config", "amont.treeLint", "true"]);
     r.stage("a.txt", "hello\n");
     r
-}
-
-#[test]
-fn a_passing_tree_gate_stamps_the_commit_and_its_tree() {
-    let r = repo_with("ok", "ruff", "true");
-    warm(&r);
-    let (ok, out) = commit(&r, "feat: a");
-    assert!(ok, "{out}");
-    assert!(stamped(&r, "HEAD").contains("tree:ok"), "{out}");
-    assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
 }
 
 #[test]
@@ -304,36 +294,6 @@ fn a_killed_amont_leaves_no_gate_running() {
 }
 
 #[test]
-fn a_cold_commit_warms_in_the_background_and_the_next_one_is_proven() {
-    let r = repo_with("ok", "ruff", "true");
-    let (ok, out) = commit(&r, "feat: a");
-    assert!(ok, "{out}");
-    assert!(
-        out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
-        "{out}"
-    );
-    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
-    let until = Instant::now() + Duration::from_secs(20);
-    let marker = || {
-        namespaces(&r, "ok").iter().any(|ns| {
-            r.dir
-                .join(".git/amont-cache/ok")
-                .join(ns)
-                .join(".complete")
-                .is_file()
-        })
-    };
-    while !marker() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert!(marker(), "the background warm-up never completed");
-    r.stage("b.txt", "b\n");
-    let (ok, out) = commit(&r, "feat: b");
-    assert!(ok, "{out}");
-    assert!(stamped(&r, "HEAD").contains("tree:ok"), "{out}");
-}
-
-#[test]
 fn quiet_still_says_a_gate_is_cold() {
     // `auto` is quiet here: the harness captures output, nobody is watching.
     let r = repo_with("ok", "ruff", "true");
@@ -344,41 +304,6 @@ fn quiet_still_says_a_gate_is_cold() {
         out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
         "{out}"
     );
-}
-
-#[test]
-fn a_lockfile_change_moves_the_namespace_and_drops_the_old_cache() {
-    let r = repo_with("ok", "ruff", "true");
-    warm(&r);
-    let before = namespaces(&r, "ok");
-    assert_eq!(before.len(), 1, "{before:?}");
-    // A plugin upgrade: same config, a different lockfile.
-    r.stage("uv.lock", "version = 1\n");
-    let (ok, out) = commit(&r, "chore: upgrade");
-    assert!(ok, "{out}");
-    assert!(
-        out.contains("tree lint cold: ok"),
-        "a new namespace starts cold: {out}"
-    );
-    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
-    warm(&r);
-    let after = namespaces(&r, "ok");
-    assert_eq!(
-        after.len(),
-        1,
-        "the old namespace was not deleted: {after:?}"
-    );
-    assert_ne!(after, before);
-}
-
-#[test]
-fn tree_lint_off_runs_nothing() {
-    let r = repo_with("ok", "ruff", "true");
-    r.git(&["config", "amont.treeLint", "false"]);
-    let (ok, out) = commit(&r, "feat: a");
-    assert!(ok, "{out}");
-    assert!(!out.contains("tree lint"), "{out}");
-    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
 }
 
 /// A bare remote, a signing key, and `amont.attest` on. Returns the remote.
@@ -512,6 +437,10 @@ fn a_rehearsal_proves_a_lint_only_push_on_its_tree() {
     let out = rehearse_wait(&r);
     assert!(out.contains("tree lint proven: ok"), "{out}");
     assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+    // Lint was all there was: the rehearsal is over, passed, with no step.
+    let state = std::fs::read_to_string(r.dir.join(".git/amont-rehearsal")).unwrap_or_default();
+    assert!(state.contains("phase=passed"), "{state}");
+    assert!(!state.contains("step="), "{state}");
 }
 
 #[test]
@@ -560,63 +489,13 @@ fn a_prepare_that_edits_tracked_content_cannot_forge_the_tree() {
     assert!(!stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
 }
 
-#[test]
-fn a_pinned_tool_at_another_version_withholds_without_blocking() {
-    let r = repo_with("ok", "ruff", "true");
-    // A pin nothing installed here satisfies.
-    let conf = std::fs::read_to_string(r.dir.join("amont.conf")).unwrap();
-    r.stage("amont.conf", &format!("{conf}tool ruff 99.99.99\n"));
-    let out = r.git(&["commit", "-q", "--no-verify", "-m", "chore: pin"]);
-    assert!(out.status.success());
-    trust_and_install(&r);
-    warm(&r);
-    r.stage("b.txt", "b\n");
-    let (ok, out) = commit(&r, "feat: b");
-    assert!(ok, "skew never blocks a commit: {out}");
-    assert!(out.contains("    ok — ruff is pinned to 99.99.99"), "{out}");
-    assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
-}
-
 /// The `run` evidence lines for `tree-<gate>` on `rev`'s gate note.
-fn evidence(r: &Repo, rev: &str, gate: &str) -> Vec<String> {
+pub(crate) fn evidence(r: &Repo, rev: &str, gate: &str) -> Vec<String> {
     stamped(r, rev)
         .lines()
         .filter(|l| l.starts_with("run ") && l.split_whitespace().nth(2) == Some(gate))
         .map(|l| l.split_whitespace().nth(3).unwrap_or("").to_string())
         .collect()
-}
-
-#[test]
-fn every_tree_outcome_is_recorded_as_evidence_on_the_tree() {
-    let r = repo_with("ok", "ruff", "true");
-    // cold
-    let (ok, out) = commit(&r, "feat: a");
-    assert!(ok, "{out}");
-    assert_eq!(
-        evidence(&r, "HEAD^{tree}", "tree-ok"),
-        vec!["cold"],
-        "{out}"
-    );
-    // proven
-    warm(&r);
-    r.stage("b.txt", "b\n");
-    let (ok, out) = commit(&r, "feat: b");
-    assert!(ok, "{out}");
-    assert_eq!(
-        evidence(&r, "HEAD^{tree}", "tree-ok"),
-        vec!["pass"],
-        "{out}"
-    );
-    // withheld
-    r.write("stray.py", "x = 1\n");
-    r.stage("c.txt", "c\n");
-    let (ok, out) = commit(&r, "feat: c");
-    assert!(ok, "{out}");
-    assert_eq!(
-        evidence(&r, "HEAD^{tree}", "tree-ok"),
-        vec!["withheld"],
-        "{out}"
-    );
 }
 
 /// Fresh start: the gate's time is known (it outlasts the slack), the

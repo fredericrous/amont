@@ -4,6 +4,13 @@
 //! tree, rebase only onto the branch's OWN upstream (an older version used
 //! `origin HEAD`, which resolves to the remote's default branch and silently
 //! rebased every push onto main), and abort cleanly on conflict.
+//!
+//! The states a push journey passes through (no upstream, a dirty tree, in
+//! sync, diverged after an amend, behind with `amont.autoRebase` off and
+//! on, an upstream merged away) are steps of `flows/push.rs`, driven by
+//! real pushes. What stays here are the states that need a setup of their
+//! own: a local upstream, a worktree marker, a remote not named `origin`,
+//! offline, a hung remote, a tag push.
 
 use crate::common;
 use common::Repo;
@@ -28,120 +35,6 @@ fn with_origin() -> Repo {
         "the fixture itself must leave a CLEAN tree, or these tests prove nothing"
     );
     r
-}
-
-#[test]
-fn skips_a_branch_with_no_upstream() {
-    let r = with_origin();
-    r.git(&["checkout", "-q", "-b", "feat/brand-new"]);
-    assert!(r.hook("pre-push-pull-rebase", &[]).passed());
-}
-
-/// The guard that matters most. The zsh version asserted only that the file
-/// survived — which the no-upstream exit satisfies just as well, so deleting
-/// the guard entirely still passed. Assert the guard's OWN message instead: it
-/// is step 1, so it fires whatever the upstream state.
-#[test]
-fn announces_the_skip_on_a_dirty_tree() {
-    let r = with_origin();
-    r.write("scratch.txt", "dirty\n");
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(run.passed());
-    assert!(run.says("Uncommitted changes"), "the guard did not fire");
-    assert!(
-        r.path("scratch.txt").exists(),
-        "work must not be stashed away"
-    );
-}
-
-#[test]
-fn passes_when_in_sync_with_its_own_upstream() {
-    let r = with_origin();
-    r.git(&["checkout", "-q", "-b", "feat/synced"]);
-    r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/synced"]);
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(run.passed());
-    assert!(run.says("in sync"));
-}
-
-/// The state a local rebase or amend leaves behind, and the reason this copy
-/// was rewritten: the hook used to prescribe `git pull --rebase` as THE fix,
-/// which after a rebase replays the upstream commits you just rewrote — the one
-/// command that undoes the work you are pushing.
-#[test]
-fn divergence_offers_both_readings_and_prescribes_neither() {
-    let r = with_origin();
-    r.git(&["checkout", "-q", "-b", "feat/diverged"]);
-    r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/diverged"]);
-
-    // One commit pushed, then rewritten locally: 1 ahead, 1 behind.
-    r.stage("a.txt", "one\n");
-    r.commit("first");
-    r.git(&["push", "-q", "--no-verify", "origin", "feat/diverged"]);
-    r.git(&["reset", "-q", "--hard", "HEAD~1"]);
-    r.stage("a.txt", "one, rewritten\n");
-    r.commit("first, amended");
-
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(
-        run.passed(),
-        "divergence never blocked a push:\n{}",
-        run.output()
-    );
-    assert!(run.says("diverged"), "{}", run.output());
-    // How far apart, which the predicate used to compute and discard.
-    assert!(
-        run.says("1 ahead, 1 behind"),
-        "the counts must be in the message:\n{}",
-        run.output()
-    );
-    // Both readings offered, so neither is prescribed.
-    assert!(
-        run.says("--force-with-lease"),
-        "the rebase reading is missing:\n{}",
-        run.output()
-    );
-    assert!(
-        run.says("pull --rebase"),
-        "the someone-else-pushed reading is missing:\n{}",
-        run.output()
-    );
-}
-
-/// The normal state right after a PR squash-merges with delete-on-merge: the
-/// upstream is configured locally but gone on the remote. `git pull --rebase`
-/// would fail on the missing ref and read as a conflict, wrongly blocking.
-#[test]
-fn skips_when_the_upstream_was_deleted_on_the_remote() {
-    let r = with_origin();
-    r.git(&["checkout", "-q", "-b", "feat/merged-away"]);
-    r.git(&[
-        "push",
-        "-q",
-        "--no-verify",
-        "-u",
-        "origin",
-        "feat/merged-away",
-    ]);
-    // Delete the branch INSIDE the bare repo, not via `push --delete`: the
-    // latter also prunes the local remote-tracking ref, so `@{u}` stops
-    // resolving and the hook exits at the no-upstream step instead of reaching
-    // the "upstream vanished" one this case is about. The zsh suite did it this
-    // way for the same reason.
-    let origin = r.path(".git/test-origin.git");
-    std::process::Command::new("git")
-        .args([
-            "-C",
-            origin.to_str().unwrap(),
-            "update-ref",
-            "-d",
-            "refs/heads/feat/merged-away",
-        ])
-        .status()
-        .expect("delete the remote branch");
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(run.passed());
-    assert!(run.says("no longer exists"));
 }
 
 /// The incident this guard exists for: `git worktree add -b <new> <path>
@@ -281,65 +174,6 @@ fn the_advisory_uses_the_branch_s_own_remote() {
         "the advisory looked for a remote this repo does not have:\n{}",
         run.output()
     );
-}
-
-/// Behind, clean tree, sync succeeds — and the push must STOP: the oids git
-/// handed this push predate the rebase, so the suite would judge commits git
-/// is no longer pushing and the server refuses the stale objects anyway.
-#[test]
-fn a_successful_auto_rebase_stops_the_push_and_says_push_again() {
-    let r = with_origin();
-    // Advance the upstream past us WITHOUT a second clone: push a commit,
-    // then step the local branch back and re-fetch — behind by one, clean.
-    r.stage("b.txt", "ahead on the remote\n");
-    r.commit("chore: remote-side commit");
-    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
-    r.git(&["reset", "--hard", "-q", "HEAD~1"]);
-    r.git(&["fetch", "-q", "origin"]);
-    let remote_tip = String::from_utf8_lossy(&r.git(&["rev-parse", "origin/main"]).stdout)
-        .trim()
-        .to_string();
-
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(
-        !run.passed(),
-        "a push whose refs predate the rebase must not proceed:\n{}",
-        run.output()
-    );
-    assert!(run.says("push again"), "{}", run.output());
-    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
-        .trim()
-        .to_string();
-    assert_eq!(head, remote_tip, "the rebase itself must have happened");
-}
-
-/// `amont.autoRebase false`: the check becomes a pure advisor — no rebase it
-/// was not asked for, and the push stops BEFORE the suite spends minutes on
-/// refs the server will refuse.
-#[test]
-fn auto_rebase_off_advises_and_never_mutates() {
-    let r = with_origin();
-    r.stage("b.txt", "ahead on the remote\n");
-    r.commit("chore: remote-side commit");
-    r.git(&["push", "-q", "--no-verify", "-u", "origin", "main"]);
-    r.git(&["reset", "--hard", "-q", "HEAD~1"]);
-    r.git(&["fetch", "-q", "origin"]);
-    r.git(&["config", "amont.autoRebase", "false"]);
-    let before = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
-        .trim()
-        .to_string();
-
-    let run = r.hook("pre-push-pull-rebase", &[]);
-    assert!(!run.passed(), "{}", run.output());
-    assert!(
-        run.says("amont.autoRebase"),
-        "must name the key that changes this:\n{}",
-        run.output()
-    );
-    let after = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
-        .trim()
-        .to_string();
-    assert_eq!(before, after, "advisory mode rebased anyway");
 }
 
 /// Offline is not "your branch was deleted". `ls-remote --exit-code` exits 2

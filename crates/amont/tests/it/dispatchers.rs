@@ -11,6 +11,10 @@
 //! glob ran three scripts, not that a commit is stopped for the right reason.
 //! Each case now drives a REAL check to a real verdict. The concurrency itself
 //! is unit-tested by rendezvous in `dispatch::tests`, next to the runner.
+//!
+//! pre-commit's every-failure report and its clean pass are steps of the
+//! commit journey now (`flows/commit.rs`); what stays here is pre-push, the
+//! skip vocabulary, colour and `amont list`.
 
 use crate::common;
 use common::Repo;
@@ -28,9 +32,6 @@ fn conflicted() -> String {
         ">".repeat(7)
     )
 }
-
-/// Content that makes `pre-commit-ban-terms` fail.
-const BANNED: &str = "fit('x', () => {});\n";
 
 /// Feed `pre-push` a ref line on stdin, as git does.
 fn pre_push(r: &Repo, remote_ref: &str) -> (i32, String) {
@@ -56,34 +57,6 @@ fn pre_push(r: &Repo, remote_ref: &str) -> (i32, String) {
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
     )
-}
-
-#[test]
-fn pre_commit_passes_a_clean_tree() {
-    let r = Repo::new();
-    r.stage("a.txt", "fine\n");
-    assert!(r.hook("pre-commit", &[]).passed());
-}
-
-/// The reason pre-commit is concurrent rather than fail-fast: fixing lint one
-/// error per commit attempt is the experience this avoids.
-#[test]
-fn pre_commit_reports_every_failure_not_just_the_first() {
-    let r = Repo::new();
-    r.stage("bad.txt", &conflicted());
-    r.stage("bad.ts", BANNED);
-    let run = r.hook("pre-commit", &[]);
-    assert!(!run.passed());
-    assert!(
-        run.says("pre-commit-merge-conflict"),
-        "missing merge-conflict: {}",
-        run.stdout
-    );
-    assert!(
-        run.says("pre-commit-ban-terms"),
-        "missing ban-terms: {}",
-        run.stdout
-    );
 }
 
 /// A cherry-pick replays commits that already passed these checks, so
@@ -203,16 +176,6 @@ fn skipped_checks_are_announced_by_name() {
         run.stdout
     );
     assert!(run.says("skipped by"), "{}", run.stdout);
-}
-
-/// And silent otherwise — a line on every ordinary commit would be noise, and
-/// noise is how a warning stops being read.
-#[test]
-fn no_skips_means_no_extra_output() {
-    let r = Repo::new();
-    r.stage("a.txt", "x\n");
-    let run = r.hook("pre-commit", &[]);
-    assert!(!run.says("skipped by"), "{}", run.stdout);
 }
 
 /// A one-letter skip used to disable all twenty checks, because matching was
