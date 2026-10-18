@@ -437,6 +437,10 @@ fn a_rehearsal_proves_a_lint_only_push_on_its_tree() {
     let out = rehearse_wait(&r);
     assert!(out.contains("tree lint proven: ok"), "{out}");
     assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
+    // Lint was all there was: the rehearsal is over, passed, with no step.
+    let state = std::fs::read_to_string(r.dir.join(".git/amont-rehearsal")).unwrap_or_default();
+    assert!(state.contains("phase=passed"), "{state}");
+    assert!(!state.contains("step="), "{state}");
 }
 
 #[test]

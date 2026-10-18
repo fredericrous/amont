@@ -447,6 +447,7 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
     assert!(out.contains("could not prepare the snapshot"), "{out}");
     // Recorded, so a push finding this tree hears why rather than nothing.
     assert!(state(&r).contains("phase=failed"), "{}", state(&r));
+    assert!(!state(&r).contains("step="), "{}", state(&r));
     assert!(
         state(&r).contains("reason=could not prepare the snapshot"),
         "{}",

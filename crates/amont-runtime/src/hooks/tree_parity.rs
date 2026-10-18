@@ -739,9 +739,12 @@ mod tests {
             "tree eslint eslint * attest npm run lint\ntree prettier prettier * attest npx prettier --check .",
             &w,
         );
-        assert!(
-            p.iter().any(|p| p.what.contains("several tree gates")),
-            "{p:?}"
-        );
+        let several = p
+            .iter()
+            .find(|p| p.what.contains("several tree gates"))
+            .unwrap_or_else(|| panic!("{p:?}"));
+        // The problem names the step's own line (`- name: Lint`), where the
+        // reader has to look.
+        assert_eq!(several.line, 11, "{several:?}");
     }
 }

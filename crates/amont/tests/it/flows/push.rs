@@ -452,6 +452,11 @@ fn the_push_journey() {
         "the working tree was not touched"
     );
     step_eq!("rehearse", worktrees(&r), 1, "the snapshot was removed");
+    // A finished rehearsal records its verdict and no step: the step is
+    // only for one still running.
+    let state = read(&r, ".git/amont-rehearsal");
+    step!("rehearse", state.contains("phase=passed"), "{state}");
+    step!("rehearse", !state.contains("step="), "{state}");
     step!(
         "rehearse",
         rehearsal_state(&r).contains("phase=passed"),
@@ -559,6 +564,13 @@ fn the_push_journey() {
     );
     let (_, status) = amont_run(&r, &["rehearse", "--status"]);
     step!("failed rehearsal", status.contains("FAILED"), "{status}");
+    let state = read(&r, ".git/amont-rehearsal");
+    step!(
+        "failed rehearsal",
+        state.contains("phase=failed"),
+        "{state}"
+    );
+    step!("failed rehearsal", !state.contains("step="), "{state}");
     let (ok, out) = git(&r, &["push"]);
     step!("blocked push", !ok, "{out}");
     step!(
