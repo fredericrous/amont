@@ -13,6 +13,9 @@ use common::{missing, Repo};
 /// to be valid flow-mapping YAML, so yq accepts it and the "outside a chart
 /// still fails" case would pass for the wrong reason. A conditional BLOCK is
 /// what yq genuinely rejects, which is why the zsh suite used one.
+/// The one rule the yamllint cases opt into.
+const YAMLLINT: &str = "rules:\n  trailing-spaces: enable\n";
+
 const HELM_TMPL: &str =
     "{{- if .Values.enabled }}\nkind: Deployment\nmetadata:\n  name: x\n{{- end }}\n";
 
@@ -109,33 +112,6 @@ fn go_template_yaml_outside_a_chart_still_fails() {
     assert!(!r.hook("pre-commit-lint-json-yaml", &[]).passed());
 }
 
-/// A staged file named like a flag must still be judged on its CONTENT.
-/// `node -e script -weird.json` — no `--` — is `node: bad option:
-/// -weird.json` before node ever reads the file, so a perfectly valid file
-/// would fail for a reason that has nothing to do with JSON.
-#[test]
-fn a_dash_prefixed_filename_is_still_content_checked() {
-    if missing("node") {
-        return;
-    }
-    let r = Repo::new();
-    r.stage("-weird.json", "{\"a\": 1}\n");
-    assert!(r.hook("pre-commit-lint-json-yaml", &[]).passed());
-}
-
-/// The YAML half of the same fix: `yq e true -weird.yaml` — no `--` — is
-/// `unknown shorthand flag: 'w'` to yq's own parser, before yq ever opens
-/// the file.
-#[test]
-fn a_dash_prefixed_yaml_filename_is_still_content_checked() {
-    if missing("yq") {
-        return;
-    }
-    let r = Repo::new();
-    r.stage("-weird.yaml", "a: 1\n");
-    assert!(r.hook("pre-commit-lint-json-yaml", &[]).passed());
-}
-
 // ---- yamllint -----------------------------------------------------------
 
 /// Stock yamllint rules are too noisy to enforce generically, so a repo-local
@@ -162,21 +138,6 @@ fn yamllint_runs_when_the_repo_opts_in() {
     r.write(".yamllint", "rules:\n  trailing-spaces: enable\n");
     r.stage("a.yaml", "a: 1   \n"); // trailing spaces
     assert!(!r.hook("pre-commit-yamllint", &[]).passed());
-}
-
-/// `yamllint -c cfg -weird.yaml` — no `--` — leaves argparse unable to find
-/// its required FILE_OR_DIR positional at all, before yamllint ever opens
-/// the file, so a clean file would fail for a reason unrelated to its
-/// content.
-#[test]
-fn a_dash_prefixed_filename_is_still_content_checked_by_yamllint() {
-    if missing("yamllint") {
-        return;
-    }
-    let r = Repo::new();
-    r.write(".yamllint", "rules:\n  trailing-spaces: enable\n");
-    r.stage("-weird.yaml", "a: 1\n");
-    assert!(r.hook("pre-commit-yamllint", &[]).passed());
 }
 
 // ---- lint-js ------------------------------------------------------------
@@ -230,21 +191,6 @@ fn prettier_flags_an_unformatted_file_when_the_repo_opts_in() {
     r2.write(".prettierrc", "{}\n");
     r2.stage("b.ts", "const x = 1;\n");
     assert!(r2.hook("pre-commit-prettier", &[]).passed());
-}
-
-/// Prettier is the sneaky direction: `prettier --check -weird.ts` — no `--`
-/// — does not even ERROR on the unrecognised flag, it prints a warning and
-/// exits 0 having checked nothing. Without a `--` before the file list, an
-/// unformatted file named like a flag would silently pass.
-#[test]
-fn a_dash_prefixed_filename_is_still_content_checked_by_prettier() {
-    if missing("prettier") {
-        return;
-    }
-    let r = Repo::new();
-    r.write(".prettierrc", "{}\n");
-    r.stage("-weird.ts", "const  x   =1\n");
-    assert!(!r.hook("pre-commit-prettier", &[]).passed());
 }
 
 // ---- ruff / pyright -----------------------------------------------------
@@ -405,36 +351,118 @@ fn pyright_passes_clean_code() {
     assert!(run.passed(), "clean code must not block:\n{}", run.output());
 }
 
-/// The sibling of the `-weird.*` case every other tool-driven check carries —
-/// and the reason the `--` it used to pass could not simply be deleted.
-///
-/// Pyright has no `--`, so the protection has to come from the path itself:
-/// each file is handed over as `./<path>`, which no argument parser can read as
-/// a flag. Without that, `pyright -weird.py` is an unrecognised option and the
-/// check fails for a reason that has nothing to do with the file's contents.
-#[test]
-fn a_dash_prefixed_filename_is_still_content_checked_by_pyright() {
-    if missing("pyright") {
-        return;
-    }
-    let r = Repo::new();
-    r.write("pyrightconfig.json", "{}\n");
-    r.stage("-weird.py", "x: int = 1\n");
-    let run = r.hook("pre-commit-pyright", &[]);
-    assert!(
-        run.passed(),
-        "a clean file named like a flag must still pass:\n{}",
-        run.output()
-    );
+// ---- every tool ---------------------------------------------------------
 
-    // …and the same name must still be capable of FAILING, or the case above
-    // would be satisfied by pyright silently checking nothing at all — which is
-    // exactly how the prettier version of this bug behaved.
-    let r2 = Repo::new();
-    r2.write("pyrightconfig.json", "{}\n");
-    r2.stage("-weird.py", "x: int = 'nope'\n");
-    assert!(
-        !r2.hook("pre-commit-pyright", &[]).passed(),
-        "a file named like a flag was not actually type-checked"
-    );
+/// hook, tool, opt-in config (name, body), file, content, passes.
+type FlagNamedCase = (
+    &'static str,
+    &'static str,
+    Option<(&'static str, &'static str)>,
+    &'static str,
+    &'static str,
+    bool,
+);
+
+/// A staged file named like a flag is still judged on its CONTENT, by every
+/// tool: clean passes and broken fails. Without a `--` before the file list
+/// each tool reads `-weird.<ext>` as an option before it opens the file:
+/// node says `bad option`, yq `unknown shorthand flag`, yamllint's argparse
+/// loses its required positional, and prettier only WARNS and exits 0 having
+/// checked nothing. Pyright has no `--`, so each file is handed over as
+/// `./<path>`. The failing row of each pair is what proves the file was
+/// read: a tool that silently checks nothing passes the clean row too.
+#[test]
+fn a_file_named_like_a_flag_is_judged_on_its_content() {
+    let cases: &[FlagNamedCase] = &[
+        (
+            "lint-json-yaml",
+            "node",
+            None,
+            "-weird.json",
+            "{\"a\": 1}\n",
+            true,
+        ),
+        (
+            "lint-json-yaml",
+            "node",
+            None,
+            "-weird.json",
+            "{\"a\": \n",
+            false,
+        ),
+        ("lint-json-yaml", "yq", None, "-weird.yaml", "a: 1\n", true),
+        (
+            "lint-json-yaml",
+            "yq",
+            None,
+            "-weird.yaml",
+            HELM_TMPL,
+            false,
+        ),
+        (
+            "yamllint",
+            "yamllint",
+            Some((".yamllint", YAMLLINT)),
+            "-weird.yaml",
+            "a: 1\n",
+            true,
+        ),
+        (
+            "yamllint",
+            "yamllint",
+            Some((".yamllint", YAMLLINT)),
+            "-weird.yaml",
+            "a: 1   \n",
+            false,
+        ),
+        (
+            "prettier",
+            "prettier",
+            Some((".prettierrc", "{}\n")),
+            "-weird.ts",
+            "const x = 1;\n",
+            true,
+        ),
+        (
+            "prettier",
+            "prettier",
+            Some((".prettierrc", "{}\n")),
+            "-weird.ts",
+            "const  x   =1\n",
+            false,
+        ),
+        (
+            "pyright",
+            "pyright",
+            Some(("pyrightconfig.json", "{}\n")),
+            "-weird.py",
+            "x: int = 1\n",
+            true,
+        ),
+        (
+            "pyright",
+            "pyright",
+            Some(("pyrightconfig.json", "{}\n")),
+            "-weird.py",
+            "x: int = 'nope'\n",
+            false,
+        ),
+    ];
+    for &(hook, tool, config, file, content, passes) in cases {
+        if missing(tool) {
+            continue;
+        }
+        let r = Repo::new();
+        if let Some((name, body)) = config {
+            r.write(name, body);
+        }
+        r.stage(file, content);
+        let run = r.hook(&format!("pre-commit-{hook}"), &[]);
+        assert_eq!(
+            run.passed(),
+            passes,
+            "{hook} on {file} holding {content:?}:\n{}",
+            run.output()
+        );
+    }
 }
