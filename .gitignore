@@ -1,1 +1,4 @@
 target/
+# cargo-mutants writes its report where it runs (scripts/mutants-check.sh
+# sends it elsewhere; a bare `cargo mutants` does not)
+/mutants.out*/
