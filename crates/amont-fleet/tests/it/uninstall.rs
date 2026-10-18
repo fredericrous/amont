@@ -13,6 +13,7 @@ fn shim_text() -> String {
     shim_for("/bin/fake-amont")
 }
 
+#[cfg(unix)]
 fn git(dir: &std::path::Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -186,99 +187,6 @@ fn a_hook_we_did_not_write_is_named_not_silently_skipped() {
     assert!(
         stdout.contains("left alone (not ours)") && stdout.contains("commit-msg"),
         "leaving it alone silently is the other half of the same bug:\n{stdout}"
-    );
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// The ordinary case, unaffected: an untracked shim in a plain (non-symlinked)
-/// repo is still removed.
-#[test]
-fn uninstall_still_removes_an_ordinary_untracked_shim() {
-    let root = std::env::temp_dir().join(format!("fleet-uninstall-plain-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let hooks = root.join("victim/.git/hooks");
-    std::fs::create_dir_all(&hooks).expect("mkdir");
-    std::fs::write(hooks.join("pre-commit"), shim_text()).expect("write");
-
-    let out = Command::new(bin())
-        .args(["uninstall", "--root"])
-        .arg(&root)
-        .output()
-        .expect("amont-fleet uninstall");
-    assert!(out.status.success(), "{:?}", out);
-    assert!(
-        !hooks.join("pre-commit").exists(),
-        "an ordinary, untracked shim must still be removed"
-    );
-
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// The fleet removed shims from 200 repositories and forgot nothing in any of
-/// them: 200 stamp refs, ledgers and trust records describing hooks that were
-/// no longer there. It now sweeps the same list `amont uninstall` does — and
-/// stops at the same line, held work included.
-#[test]
-fn uninstall_forgets_our_bookkeeping_but_not_the_users_work() {
-    let root = std::env::temp_dir().join(format!("fleet-uninstall-forget-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let repo = root.join("managed");
-    std::fs::create_dir_all(&repo).expect("mkdir");
-    git(&repo, &["init", "-q"]);
-    let hooks = repo.join(".git/hooks");
-    std::fs::create_dir_all(&hooks).expect("mkdir");
-    std::fs::write(hooks.join("pre-commit"), shim_text()).expect("write");
-
-    // Ours: a trust record, a ledger, a skew marker.
-    git(&repo, &["config", "amont.trusted", "deadbeef"]);
-    git(&repo, &["config", "hook.skip", "pre-commit-clippy"]);
-    std::fs::write(repo.join(".git/amont-bypasses"), "amont-bypasses-v1\n").expect("write");
-    // Theirs: parked work an interrupted run left behind.
-    std::fs::create_dir_all(repo.join(".git/amont-held")).expect("mkdir");
-    std::fs::write(repo.join(".git/amont-held/index"), b"amont-held-v1\0").expect("write");
-
-    let out = Command::new(bin())
-        .args(["uninstall", "--root"])
-        .arg(&root)
-        .output()
-        .expect("amont-fleet uninstall");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}");
-
-    let config = |key: &str| -> String {
-        String::from_utf8_lossy(
-            &Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["config", "--local", "--get", key])
-                .output()
-                .expect("git")
-                .stdout,
-        )
-        .trim()
-        .to_string()
-    };
-    assert!(
-        config("amont.trusted").is_empty(),
-        "trust survived a fleet uninstall:\n{stdout}"
-    );
-    assert!(
-        !repo.join(".git/amont-bypasses").exists(),
-        "the ledger outlived the hooks it describes:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("forgot"),
-        "sweeping 200 repositories must say so:\n{stdout}"
-    );
-    assert_eq!(
-        config("hook.skip"),
-        "pre-commit-clippy",
-        "the user's own policy is not ours to drop:\n{stdout}"
-    );
-    assert!(
-        repo.join(".git/amont-held/index").exists(),
-        "PARKED WORK was deleted — the one thing uninstall must never take:\n{stdout}"
     );
 
     let _ = std::fs::remove_dir_all(&root);

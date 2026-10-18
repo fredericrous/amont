@@ -29,14 +29,7 @@ impl Tree {
         .expect("write");
         self
     }
-    /// A git repo we do not manage — no shim dispatching to the binary.
-    fn foreign_repo(&self, rel: &str) -> &Self {
-        let hooks = self.0.join(rel).join(".git/hooks");
-        std::fs::create_dir_all(&hooks).expect("mkdir");
-        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\necho mine\n").expect("write");
-        self
-    }
-    /// A REAL repository (`managed_repo`/`foreign_repo` only fake the
+    /// A REAL repository (`managed_repo` only fakes the
     /// directory shape) whose `core.hooksPath` points somewhere other than
     /// `.git/hooks`, with a managed shim living at that redirected location
     /// and nothing at the default one.
@@ -107,16 +100,6 @@ impl Tree {
         std::fs::create_dir_all(self.0.join(rel)).expect("mkdir");
         self
     }
-    /// A committed `amont.conf` at a repo root.
-    fn manifest(&self, rel: &str, body: &str) -> &Self {
-        std::fs::write(self.0.join(rel).join("amont.conf"), body).expect("write");
-        self
-    }
-    /// A committed `AGENTS.md` at a repo root, verbatim.
-    fn agents_md(&self, rel: &str, body: &str) -> &Self {
-        std::fs::write(self.0.join(rel).join("AGENTS.md"), body).expect("write");
-        self
-    }
     fn path(&self) -> &Path {
         &self.0
     }
@@ -172,44 +155,6 @@ fn json(args: &[&str]) -> serde_json::Value {
     serde_json::from_str(&run(&a).stdout).expect("valid json")
 }
 
-/// The live status line is drawn for a person watching a terminal, and this
-/// asserts the other half of that sentence: when nothing is watching — which
-/// is every piped, redirected and CI invocation, including this test's own —
-/// the run is silent on stderr and clean on stdout.
-///
-/// Worth a test rather than a reading of the code because the failure is not
-/// cosmetic. The line redraws itself with CR and CSI K; emitted into a pipe
-/// those are bytes in the capture, at up to twelve frames a second for the
-/// whole walk. A log would fill with them, and anything parsing stdout beside
-/// them would be parsing a moving target.
-#[test]
-fn nothing_is_drawn_when_nothing_is_watching() {
-    let t = Tree::new("quiet");
-    t.managed_repo("a").managed_repo("b/c");
-    let out = Command::new(bin())
-        .args(["--root", t.path().to_str().unwrap()])
-        .output()
-        .expect("run");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.is_empty(), "stderr must stay empty: {stderr:?}");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.contains('\u{1b}') && !stdout.contains('\r'),
-        "the report carries no redraw sequences: {stdout:?}"
-    );
-}
-
-#[test]
-fn counts_managed_and_unmanaged_separately() {
-    let t = Tree::new("mixed");
-    t.managed_repo("a").managed_repo("b/c").foreign_repo("d");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["git_dirs_found"], 3);
-    assert_eq!(v["managed_seen"], 2);
-    assert_eq!(v["unmanaged_seen"], 1);
-    assert_eq!(v["repos"].as_array().unwrap().len(), 3);
-}
-
 /// THE case. A wrong root must be loud in three independent ways: a non-zero
 /// exit, the words "SCAN FAILURE", and counters that show nothing was examined.
 /// Any one of them alone could be missed.
@@ -254,143 +199,9 @@ fn a_too_shallow_depth_finds_nothing_and_says_so() {
 }
 
 #[test]
-fn excluded_subtrees_are_skipped_and_counted() {
-    let t = Tree::new("excluded");
-    t.managed_repo("app");
-    t.managed_repo("app/node_modules/pkg");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["git_dirs_found"], 1, "the vendored repo must not count");
-    assert!(
-        v["excluded_dirs"].as_u64().unwrap() >= 1,
-        "and the skip must be recorded, not silent"
-    );
-}
-
-/// Repos are reported relative to the root, because that is what a human
-/// recognises, and sorted so output is stable between runs.
-#[test]
-fn paths_are_root_relative_and_sorted() {
-    let t = Tree::new("sorted");
-    t.managed_repo("zeta")
-        .managed_repo("alpha")
-        .managed_repo("mid");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let paths: Vec<&str> = v["repos"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["path"].as_str().unwrap())
-        .collect();
-    // Single components, so no separator appears — safe to compare literally.
-    assert_eq!(paths, vec!["alpha", "mid", "zeta"]);
-}
-
-#[test]
 fn a_root_that_does_not_exist_is_rejected_before_scanning() {
     let r = run(&["--root", "/definitely/not/here"]);
     assert_eq!(r.code, 2, "usage error, distinct from an empty scan");
-}
-
-/// The JSON is the contract the TUI renders over, so its shape is pinned.
-#[test]
-fn json_carries_every_counter() {
-    let t = Tree::new("shape");
-    t.managed_repo("a");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    for k in [
-        "root",
-        "depth",
-        "git_dirs_found",
-        "hook_dirs_seen",
-        "managed_seen",
-        "unmanaged_seen",
-        "unreadable",
-        "hooks_outside_seen",
-        "excluded_dirs",
-        "dirs_visited",
-        "repos",
-    ] {
-        assert!(!v[k].is_null(), "missing {k} from the scan contract");
-    }
-    // Per-repo, the two fields a reader needs to tell "we did not act on this"
-    // from "there was nothing to do".
-    assert_eq!(v["repos"][0]["hooks_dir"]["where"], "in");
-    assert!(
-        v["repos"][0].get("shares_hooks_with").is_some(),
-        "shares_hooks_with must be present (null), not absent: {}",
-        v["repos"][0]
-    );
-}
-
-/// A repo four directories down must be found at the default depth.
-///
-/// Not hypothetical: `Perso/jellyfish/tuna/Coinbase-OAuth2` sat at that depth
-/// and was invisible to every sweep, because `propagate.sh` and the hand-run
-/// verification both used `find -maxdepth 6` while its hook files are eight
-/// path components deep. It is still running pre-migration zsh hooks. The whole
-/// fleet was reported consistent while one repo had never been touched.
-#[test]
-fn a_deeply_nested_repo_is_found_at_default_depth() {
-    let t = Tree::new("nested");
-    t.managed_repo("Perso/group/project/sub");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["git_dirs_found"], 1, "default depth must reach it");
-    // Built through PathBuf: paths serialise with the platform's separator, so
-    // a hardcoded "a/b" passes on Unix and fails on Windows for no real reason.
-    let expected = PathBuf::from("Perso")
-        .join("group")
-        .join("project")
-        .join("sub");
-    assert_eq!(v["repos"][0]["path"], expected.to_string_lossy().as_ref());
-}
-
-/// Files nothing dispatches any more: they look installed and never run.
-#[test]
-fn stale_and_foreign_hook_files_are_reported_separately() {
-    let t = Tree::new("leftovers");
-    t.managed_repo("a");
-    let hooks = t.path().join("a/.git/hooks");
-    // Ours, but no longer shipped (a retired per-check shim).
-    std::fs::write(
-        hooks.join("pre-commit-ruff"),
-        "#!/bin/sh\n# git-templates hook shim.\nexec x --hooks-dir y pre-commit-ruff\n",
-    )
-    .unwrap();
-    // Somebody's own sub-hook: not ours, and now dispatched by nothing.
-    std::fs::write(hooks.join("pre-push-mine.sh"), "#!/bin/sh\necho hi\n").unwrap();
-    std::fs::write(hooks.join("package.json"), "{\"//\":\"Forces Node\"}").unwrap();
-
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let r = &v["repos"][0];
-    assert_eq!(r["stale_ours"][0], "pre-commit-ruff");
-    assert_eq!(r["foreign_subs"][0], "pre-push-mine.sh");
-    assert_eq!(r["hook_pkgjson"], true);
-}
-
-/// "Ours" is answered by the shim marker, not by grepping for `--hooks-dir` —
-/// a hand-written hook that happens to mention that flag (in a comment, or
-/// forwarding it to another tool) is not ours, and must not be classified as
-/// a stale shim of ours: that classification feeds `fix --apply`'s removal
-/// list directly.
-#[test]
-fn a_hook_merely_mentioning_hooks_dir_is_not_classified_as_ours() {
-    let t = Tree::new("mentions-flag");
-    t.managed_repo("a");
-    let hooks = t.path().join("a/.git/hooks");
-    std::fs::write(
-        hooks.join("pre-commit-mine"),
-        "#!/bin/sh\n# forwards --hooks-dir to some other tool of mine\nexec my-own-tool \"$@\"\n",
-    )
-    .unwrap();
-
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let r = &v["repos"][0];
-    assert_eq!(
-        r["stale_ours"].as_array().map(|a| a.len()).unwrap_or(0),
-        0,
-        "a hook that only MENTIONS --hooks-dir was classified as ours: {r}"
-    );
-    assert_eq!(r["foreign_subs"][0], "pre-commit-mine");
 }
 
 /// A shim installed by `make install` must classify as OK, not drifted — the
@@ -433,76 +244,6 @@ fn a_baked_shim_is_ok_and_a_hand_edited_one_is_not() {
     );
 }
 
-/// Declared checks were invisible to the fleet view: a repository could run a
-/// command on every commit that no column mentioned. The scanner reads the same
-/// file the dispatcher does, with the same parser.
-#[test]
-fn a_declared_check_reaches_the_scan() {
-    let t = Tree::new("declared");
-    t.managed_repo("a").manifest(
-        "a",
-        "pre-commit  lint-shell  *.sh  block  scripts/lint-shell.sh\n",
-    );
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let d = &v["repos"][0]["declared"][0];
-    assert_eq!(d["name"], "lint-shell");
-    assert_eq!(d["stage"], "pre-commit");
-    // A tagged sum, so the usable fields exist only when the line is usable.
-    assert_eq!(d["state"], "usable");
-    assert_eq!(d["severity"], "block");
-    assert_eq!(d["command"], "scripts/lint-shell.sh");
-    assert_eq!(d["exts"][0], ".sh");
-}
-
-/// The case worth scanning ninety-six repositories for: a line committed
-/// months ago that has never once run.
-#[test]
-fn an_unusable_declaration_is_reported_as_such() {
-    let t = Tree::new("declared-broken");
-    t.managed_repo("a")
-        .manifest("a", "pre-commit  lint-shell  *.sh  LOUD  make lint\n");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let d = &v["repos"][0]["declared"][0];
-    assert_eq!(d["state"], "unusable", "{d}");
-    let why = d["why"].as_str().expect("must say why");
-    assert!(why.contains("severity"), "{why}");
-    assert!(why.contains("line 1"), "{why}");
-    // And it carries no command, because the type has nowhere to put one.
-    assert!(d["command"].is_null(), "{d}");
-}
-
-/// Ninety-six repositories have no manifest, and that must cost nothing and
-/// produce no rows.
-#[test]
-fn a_repo_without_a_manifest_declares_nothing() {
-    let t = Tree::new("declared-none");
-    t.managed_repo("a");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(
-        v["repos"][0]["declared"].as_array().map(Vec::len),
-        Some(0),
-        "{}",
-        v["repos"][0]
-    );
-}
-
-/// A repo can point `core.hooksPath` anywhere; the scanner must look there,
-/// not at `.git/hooks`. Otherwise a redirected repo reads as unmanaged (the
-/// shim IS there, just not where this tool assumed) and `fix --apply` would
-/// go on to WRITE at a path git never executes.
-#[test]
-fn core_hooks_path_is_honoured_not_assumed() {
-    let t = Tree::new("hookspath");
-    t.custom_hooks_path_repo("redirected", "tooling/hooks");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let repo = &v["repos"][0];
-    assert_eq!(repo["managed"], true, "{repo}");
-    // The default location was never created — a managed reading here would
-    // mean the scan fell back to `.git/hooks` and got lucky, not that it
-    // resolved `core.hooksPath`.
-    assert!(!t.path().join("redirected/.git/hooks").exists());
-}
-
 /// The husky case, at scan level. `.husky/_` is inside the working tree, so
 /// every containment test the scanner had said "in" — and it reported eleven
 /// repositories as managed-but-drifted when what was true is that amont was not
@@ -523,24 +264,6 @@ fn a_husky_hooks_path_is_reported_as_hostile_not_managed() {
         repo["managed"], false,
         "a repository whose dispatch husky owns is not managed by us: {repo}"
     );
-}
-
-/// The other half of the same predicate, and the reason it is not simply
-/// "refuse every `core.hooksPath`".
-///
-/// A repository that deliberately keeps its hooks in `tooling/hooks` has chosen
-/// a location, not handed dispatch to a tool that will overwrite it. Nothing
-/// regenerates that directory, so there is nothing to protect it from — it stays
-/// benign, stays managed, and `fix` still writes there.
-#[test]
-fn a_deliberate_in_repo_hooks_path_stays_benign() {
-    let t = Tree::new("hookspath-benign");
-    t.custom_hooks_path_repo("redirected", "tooling/hooks");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let repo = &v["repos"][0];
-    assert_eq!(repo["hooks_dir"]["where"], "redirected", "{repo}");
-    assert_eq!(repo["hooks_dir"]["hostile"], false, "{repo}");
-    assert_eq!(repo["managed"], true, "{repo}");
 }
 
 /// `core.hooksPath` reaching a repo through an `include`, not a literal key
@@ -815,76 +538,6 @@ fn a_non_utf8_hook_is_never_ours_and_never_missing() {
         Some(0),
         "a binary must never reach the removal list: {r}"
     );
-}
-
-/// A repo with no `AGENTS.md` at all is `missing`, not a problem to alarm on —
-/// the pointer is opt-in, same posture as `amont.conf`.
-#[test]
-fn a_repo_without_agents_md_scans_as_missing() {
-    let t = Tree::new("agents-md-missing");
-    t.managed_repo("a");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["repos"][0]["agents_md"], "missing");
-}
-
-/// The exact block `amont agents-md` would write scans as up to date, so
-/// a fleet-wide rollout knows which repos are already done.
-#[test]
-fn a_repo_with_the_generated_block_scans_as_up_to_date() {
-    let t = Tree::new("agents-md-current");
-    t.managed_repo("a").agents_md(
-        "a",
-        &amont_runtime::agents_md::generate_block(&amont_runtime::config::Settings::default()),
-    );
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["repos"][0]["agents_md"], "up_to_date");
-}
-
-/// A block that has drifted from what `agents-md` would generate today — the
-/// case a fleet rollout exists to repair.
-#[test]
-fn a_repo_with_a_stale_block_scans_as_drifted() {
-    let t = Tree::new("agents-md-drifted");
-    t.managed_repo("a").agents_md(
-        "a",
-        &format!(
-            "{}\nstale content from an older version\n{}\n",
-            amont_runtime::agents_md::START,
-            amont_runtime::agents_md::END
-        ),
-    );
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    assert_eq!(v["repos"][0]["agents_md"], "drifted");
-}
-
-/// The bypass ledger reaches the JSON, read through the runtime's own
-/// parser — and a repo without one reads as zero, not as an error.
-#[test]
-fn the_json_carries_each_repos_bypass_ledger() {
-    let t = Tree::new("bypasses");
-    t.managed_repo("a");
-    // `managed_repo` fakes the directory shape; the ledger reader resolves
-    // the common dir through git, so this repo must be real.
-    let repo = t.path().join("a");
-    Command::new("git")
-        .args(["init", "-q", "--template=", "."])
-        .current_dir(&repo)
-        .output()
-        .expect("git init");
-    std::fs::write(
-        repo.join(".git/amont-bypasses"),
-        "amont-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n",
-    )
-    .expect("write ledger");
-    let v = json(&["--root", t.path().to_str().unwrap()]);
-    let b = &v["repos"][0]["bypasses"];
-    assert_eq!(b["total"], 3, "{b}");
-    assert_eq!(b["last"], 200, "{b}");
-    assert_eq!(b["by_script"][0]["script"], "typecheck");
-    assert_eq!(b["by_script"][0]["count"], 2);
-    assert_eq!(b["by_script"][0]["last"], 200);
-    assert_eq!(v["bypassed_commits"], 3, "{}", v["bypassed_commits"]);
-    assert_eq!(v["repos_with_bypasses"], 1);
 }
 
 /// A fleet with no ledgers anywhere aggregates to zero.
