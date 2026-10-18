@@ -578,10 +578,13 @@ fn fake_verifier(dir: &Path, answers: &[(&str, &str)]) -> PathBuf {
 }
 
 fn release_gates(answers: &[(&str, &str)]) -> (i32, String) {
+    // One directory per call: tests run in parallel in one process, and two
+    // calls with as many answers shared a directory and each other's verifier.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "release-gates-{}-{}",
         std::process::id(),
-        answers.len()
+        CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let bin = fake_verifier(&dir, answers);

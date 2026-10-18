@@ -1,13 +1,14 @@
 //! The active-run entry: while a quiet check runs, one small JSON file says
 //! so, for relais's pane to tail its log (relais plan 2026-10-11 "a quiet run
-//! is live in relais's pane"; the contract is relais `docs/quiet-runs.md`).
+//! is live in relais's pane"). amont owns the contract, amont
+//! `docs/quiet-runs.md` (decisions ADR-0039); amont-agent conforms to it.
 //!
 //! `<dir>/<pid>-<n>.json`, `<dir>` being `$QUIET_ACTIVE_DIR`, else
 //! `${XDG_STATE_HOME:-~/.local/state}/quiet/active` (`%LOCALAPPDATA%` on
 //! Windows). Written when the capture opens; rewritten with `exit` and
-//! `ended` when it ends, and LEFT: relais's watcher emits it and deletes it,
-//! or a later sweep does once it is 60 s old, so a run that ends between two
-//! of the watcher's polls is still seen with its exit.
+//! `ended` when it ends, and LEFT: a reader may delete it by its own
+//! protocol, or a later sweep does once it is 60 s old, so a run that ends
+//! between two of a reader's polls is still seen with its exit.
 //!
 //! Nothing here may change a check's verdict or output: every failure is
 //! silence, and the capture works without an entry.
