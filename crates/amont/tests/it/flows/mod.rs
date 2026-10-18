@@ -30,3 +30,5 @@ macro_rules! step_eq {
         assert_eq!($left, $right, "step `{}`: {}", $step, format_args!($($arg)+))
     };
 }
+
+mod commit;

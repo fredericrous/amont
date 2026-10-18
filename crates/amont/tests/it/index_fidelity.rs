@@ -5,6 +5,12 @@
 //! uncommitted work, which is worse than either failure that overwrote tracked
 //! files, because there is nothing on disk to recover from. Most of these tests
 //! are about that.
+//!
+//! The ordinary journey — staged content judged, unstaged and untracked work
+//! back where the author left it, a blocked commit restored, nothing parked
+//! when nothing is unstaged — is walked by `flows/commit.rs`. What stays here
+//! is the edge a journey does not meet: merges, signals, symlinks, modes,
+//! worktrees, hostile names and the recovery path.
 
 use crate::common;
 use common::Repo;
@@ -20,127 +26,6 @@ fn seed(r: &Repo) {
 
 fn tree(r: &Repo, path: &str) -> String {
     std::fs::read_to_string(r.path(path)).expect("read")
-}
-
-/// The false POSITIVE: staged content is valid, the tree is not, and the hook
-/// blocked a commit that was about to be correct.
-#[test]
-fn a_check_judges_the_staged_content_not_the_tree() {
-    let r = Repo::new();
-    seed(&r);
-    r.stage("x.json", VALID);
-    r.write("x.json", BROKEN);
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(
-        run.passed(),
-        "judged the working tree, not the commit:\n{}",
-        run.output()
-    );
-    // …and the tree is exactly as the author left it.
-    assert_eq!(tree(&r, "x.json"), BROKEN, "unstaged work was not restored");
-}
-
-/// The false NEGATIVE, which is the worse direction: the tree is fine and the
-/// staged content is not, so a broken commit sails through.
-#[test]
-fn a_broken_staged_change_is_still_caught() {
-    let r = Repo::new();
-    seed(&r);
-    r.stage("x.json", BROKEN);
-    r.write("x.json", VALID);
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(
-        !run.passed(),
-        "a broken staged change passed because the tree was fine:\n{}",
-        run.output()
-    );
-    assert_eq!(tree(&r, "x.json"), VALID, "unstaged work was not restored");
-}
-
-/// Git QUOTES non-ASCII bytes in `--name-only` output by default — `é.json`
-/// prints as the literal text `"\303\251.json"`. A line-oriented reader that
-/// treated that as a real path would never find the actual file, record a
-/// false "absent" marker for it, and restore nothing where the real unstaged
-/// bytes belong — silent data loss on any filename outside ASCII.
-#[test]
-fn a_non_ascii_path_survives_the_stash_and_restore() {
-    let r = Repo::new();
-    r.stage("é.json", "{\n  \"a\": 1\n}\n");
-    r.commit("chore: seed");
-    r.stage("é.json", VALID);
-    r.write("é.json", BROKEN);
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(
-        run.passed(),
-        "judged the working tree, not the commit:\n{}",
-        run.output()
-    );
-    assert_eq!(
-        tree(&r, "é.json"),
-        BROKEN,
-        "unstaged work on a non-ASCII path was not restored"
-    );
-}
-
-/// The common case, and it must cost nothing: a clean tree is never touched.
-#[test]
-fn nothing_unstaged_means_nothing_is_moved() {
-    let r = Repo::new();
-    seed(&r);
-    r.stage("x.json", VALID);
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(run.passed(), "{}", run.output());
-    assert_eq!(tree(&r, "x.json"), VALID);
-    assert!(
-        !r.path(".git/amont-held").exists(),
-        "held something with nothing to hold"
-    );
-}
-
-/// A failing check must not cost the author their unstaged work.
-#[test]
-fn a_blocked_commit_still_restores() {
-    let r = Repo::new();
-    seed(&r);
-    r.stage("x.json", BROKEN);
-    r.write("bad.txt", "unstaged and precious\n");
-    // Make the working tree differ so a patch is actually taken.
-    r.write("x.json", "{\n  \"a\": 9\n}\n");
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(!run.passed(), "guard: the staged JSON is broken");
-    assert_eq!(
-        tree(&r, "x.json"),
-        "{\n  \"a\": 9\n}\n",
-        "a blocked commit lost the unstaged change"
-    );
-    assert!(
-        !r.path(".git/amont-held").exists(),
-        "held files left behind after a block"
-    );
-}
-
-/// Untracked files are not part of this commit and must not be moved — losing
-/// somebody's new file would be the same failure by another route.
-#[test]
-fn untracked_files_are_left_alone() {
-    let r = Repo::new();
-    seed(&r);
-    r.stage("x.json", VALID);
-    r.write("x.json", BROKEN);
-    std::fs::write(r.path("scratch.txt"), "not staged, not tracked\n").expect("write");
-
-    let run = r.hook("pre-commit", &[]);
-    assert!(run.passed(), "{}", run.output());
-    assert_eq!(
-        std::fs::read_to_string(r.path("scratch.txt")).expect("read"),
-        "not staged, not tracked\n",
-        "an untracked file was moved"
-    );
 }
 
 /// Mid-merge the tree already holds somebody else's work, so taking a copy of
@@ -649,8 +534,8 @@ fn a_retargeted_symlink_with_an_extension_keeps_its_name() {
 
 /// The same `with_extension` mistake, on the OTHER marker: a tracked file
 /// deleted in the working tree but not staged. `x.json` already has an
-/// extension, so this is the case `nothing_unstaged_means_nothing_is_moved`
-/// and friends never exercised — they all pass `x.json` through the
+/// extension, so this is the case the commit journey (`flows/commit.rs`)
+/// and the tests here never exercised — they all pass `x.json` through the
 /// MODIFIED branch, which never went through `with_extension` at all.
 #[test]
 fn an_unstaged_delete_of_an_extensioned_file_restores_under_its_full_name() {

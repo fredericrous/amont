@@ -27,7 +27,6 @@ mod check_verb;
 mod ci_attest_scripts;
 mod cli_dispatch;
 mod commit_msg;
-mod commit_stamps;
 mod commit_style;
 mod dispatchers;
 mod docs_counts;
