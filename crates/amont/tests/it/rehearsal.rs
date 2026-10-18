@@ -5,6 +5,10 @@
 //! appends to a log — except the log lives at an ABSOLUTE path baked into the
 //! script: the gate runs inside a throwaway worktree, and a relative log
 //! would be written there and vanish with it.
+//!
+//! A rehearsal on the person's path (`--wait` on a snapshot, one that fails,
+//! one with nothing to run) is a step of `flows/push.rs`. What stays here is
+//! the background worker and its clocks, and the snapshot's preparation.
 
 // The detached worker is Unix-only (see `rehearsal::spawn_detached`); the
 // tests that watch it run are too, and the helpers only they use go quiet.
@@ -177,40 +181,6 @@ fn gated_repo(body: &str) -> (Repo, String) {
 }
 
 const SKIP: &str = "passed on this exact tree earlier — not repeating it here";
-
-/// The point: the rehearsal tests the COMMIT, not the working tree, stamps
-/// it, and the push that follows skips the suite.
-#[test]
-fn a_rehearsal_tests_a_snapshot_of_head_and_the_push_skips_the_suite() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = gated_repo("");
-    // The working tree says something the gate would refuse. A run on the
-    // tree fails; a run on the snapshot never sees it.
-    r.write("a.txt", "broken\n");
-
-    let (code, out) = rehearse(&r, &["--wait"]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(runs(&r), 1, "the gate ran once: {out}");
-    assert!(out.contains("rehearsal of"), "{out}");
-    assert!(
-        note(&r, "HEAD").contains("pre-push-suite"),
-        "HEAD is stamped: {out}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(r.dir.join("a.txt")).unwrap(),
-        "broken\n",
-        "the working tree was not touched"
-    );
-    assert_eq!(worktrees(&r), 1, "the snapshot was removed");
-    assert!(state(&r).contains("phase=passed"), "{}", state(&r));
-
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains(SKIP), "{out}");
-    assert_eq!(runs(&r), 1, "the push repeated nothing");
-}
 
 /// `amont.rehearseOnCommit`: the commit itself starts the worker, git does
 /// not wait for it, and the gate ends up run exactly once.
@@ -403,33 +373,6 @@ fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
     assert_eq!(runs(&r), 1, "the push repeated nothing");
 }
 
-/// A rehearsal that failed is reported and NOT honoured: the push runs the
-/// gate again, in the terminal the developer is looking at.
-#[test]
-fn a_failed_rehearsal_is_reported_and_the_push_runs_the_gate() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = gated_repo("");
-    // Fail AFTER logging, so the run count still says what ran.
-    let script = gate_js(&r, "process.exitCode = 1;");
-    r.stage("gate.js", &script);
-    r.commit("feat: a gate that fails");
-
-    let (code, out) = rehearse(&r, &["--wait"]);
-    assert_eq!(code, 1, "{out}");
-    assert_eq!(runs(&r), 1);
-    assert!(!note(&r, "HEAD").contains("pre-push-suite"), "no stamp");
-    let (_, status) = rehearse(&r, &["--status"]);
-    assert!(status.contains("FAILED"), "{status}");
-
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_ne!(code, 0, "{out}");
-    assert!(out.contains("rehearsal of this tree failed"), "{out}");
-    assert!(out.contains("running the gate here"), "{out}");
-    assert_eq!(runs(&r), 2, "the push ran it again");
-}
-
 /// The same preparation, COMMITTED. `testPushedTree` was settable from
 /// amont.conf and this was not, so a repository could ask for a snapshot and
 /// not say how to make it runnable — useless for the workspace case that
@@ -541,31 +484,6 @@ fn snapshot_prepare_is_told_the_source_worktree() {
     assert_eq!(code, 0, "{out}");
     assert_eq!(runs(&r), 1, "{out}");
     assert!(note(&r, "HEAD").contains("pre-push-suite"));
-}
-
-/// Nothing to rehearse is said, not done: a push that touches no gate's
-/// scope starts no suite and creates no snapshot.
-#[test]
-fn a_rehearsal_with_nothing_to_run_says_so() {
-    if missing("node") {
-        return;
-    }
-    let (r, _base) = gated_repo("");
-    // Rewind the branch to the base plus a change outside the gate's scope.
-    r.git(&["reset", "-q", "--hard", "refs/remotes/origin/main"]);
-    r.stage(
-        "amont.conf",
-        "pre-push    suite  *.txt  block  node gate.js\n",
-    );
-    r.stage("notes.md", "prose\n");
-    r.commit("docs: prose only");
-    trust_and_install(&r);
-
-    let (code, out) = rehearse(&r, &["--wait"]);
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains("nothing to rehearse"), "{out}");
-    assert_eq!(runs(&r), 0);
-    assert_eq!(worktrees(&r), 1);
 }
 
 /// A release commit bumps `Cargo.toml` and `Cargo.lock` and no `.rs` file.

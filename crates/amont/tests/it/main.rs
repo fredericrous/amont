@@ -22,7 +22,6 @@ mod ban_terms;
 mod branch_pattern;
 mod branch_pattern_early;
 mod branch_protect_early;
-mod branch_protect_push;
 mod check_verb;
 mod ci_attest_scripts;
 mod cli_dispatch;

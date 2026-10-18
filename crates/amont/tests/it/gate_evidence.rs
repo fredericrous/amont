@@ -1,10 +1,10 @@
-//! The evidence half of the gate record, end to end.
+//! The evidence half of the gate record: the order it buys.
 //!
-//! `gate_stamp`'s unit tests prove the note keeps both halves apart. These
-//! prove the dispatcher fills the evidence half at all — including on the
-//! path a FAILING push leaves by, which is the half a report is mostly made
-//! of — and that `amont.order evidence` reorders the gates it finds there
-//! without ever dropping one.
+//! `gate_stamp`'s unit tests prove the note keeps both halves apart, and
+//! `flows/push.rs` proves the dispatcher fills the evidence half at all,
+//! including on the path a FAILING push leaves by. These prove that
+//! `amont.order evidence` reorders the gates it finds there without ever
+//! dropping one, and that without it the declared order is kept.
 //!
 //! Same fixture shape as `push_stamps.rs`: declared pre-push gates that
 //! append to a log, so the log says how many times each ran and in which
@@ -69,13 +69,6 @@ fn trust_and_install(r: &Repo) {
     }
 }
 
-/// The note our ref holds for `HEAD^{tree}`.
-fn note(r: &Repo) -> String {
-    let t = tree(r);
-    String::from_utf8_lossy(&r.git(&["notes", "--ref", "amont-gate", "show", &t]).stdout)
-        .to_string()
-}
-
 fn log(r: &Repo) -> String {
     std::fs::read_to_string(r.dir.join("gate.log")).unwrap_or_default()
 }
@@ -104,60 +97,6 @@ fn two_gates() -> (Repo, String) {
     r.stage("a.txt", "hello\n");
     r.commit("feat: something to push");
     (r, base)
-}
-
-/// A push records what each gate cost and how it ended, keyed by the content
-/// it judged. Without this the report has no dataset at all.
-#[test]
-fn a_push_records_a_run_line_per_gate() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = two_gates();
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 0, "{out}");
-    let note = note(&r);
-    assert!(
-        note.lines()
-            .next()
-            .is_some_and(|l| l.starts_with("amont-gate-v1")),
-        "line one is still the stamp: {note}"
-    );
-    for gate in ["alpha", "beta"] {
-        assert!(
-            note.lines().any(|l| l.starts_with("run ")
-                && l.contains(&format!("pre-push-{gate} "))
-                && l.ends_with(|c: char| c.is_ascii_digit())),
-            "no run line for {gate}: {note}"
-        );
-    }
-    assert!(
-        note.lines().filter(|l| l.starts_with("run ")).count() >= 2,
-        "{note}"
-    );
-}
-
-/// The path that matters most: a push the gate REFUSED still leaves a
-/// record. A dataset of only the pushes that succeeded could never show a
-/// failure rate, which is the number the ordering is computed from.
-#[test]
-fn a_blocked_push_records_the_failure_it_blocked_on() {
-    if missing("node") {
-        return;
-    }
-    let (r, base) = two_gates();
-    r.write("BETA_FAILS", "");
-    let (code, out) = push_out(&r, &base, &head(&r));
-    assert_eq!(code, 1, "the push was supposed to be refused: {out}");
-    let note = note(&r);
-    assert!(
-        note.contains(" pre-push-beta fail "),
-        "the failure is on the record: {note}"
-    );
-    assert!(
-        note.contains(" pre-push-alpha pass "),
-        "so is what ran before it: {note}"
-    );
 }
 
 /// `amont.order evidence`: the gate the record says fails is attempted

@@ -17,60 +17,14 @@
 //! 5. gate stamps: a gate that passed on a tree is not run again for it,
 //!    and only for it.
 
+use super::{amont, git_commit, git_out, head, install, read};
 use crate::common::{missing, Repo};
 use crate::fixing::{rewriter, REWRITER};
-use std::process::{Command, Stdio};
 
 const SEED: &str = "{\n  \"a\": 1\n}\n";
 const VALID: &str = "{\n  \"a\": 2\n}\n";
 const BROKEN: &str = "{ THIS IS NOT JSON\n";
 const REUSED: &str = "passed on this exact tree earlier — not repeating it here";
-
-/// `amont <args>` from the repository, as a person types it: no hook mode,
-/// and their own git config (trust lives there).
-fn amont(r: &Repo, args: &[&str]) -> (bool, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
-    cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
-    Repo::strip_git_env_impl(&mut cmd);
-    let out = cmd.output().expect("run amont");
-    (
-        out.status.success(),
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-    )
-}
-
-/// A hooked `git commit`, with everything the hooks said.
-fn git_commit(r: &Repo, args: &[&str]) -> (bool, String) {
-    let mut all = vec!["commit", "-q"];
-    all.extend_from_slice(args);
-    let out = r.git(&all);
-    (
-        out.status.success(),
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-    )
-}
-
-fn read(r: &Repo, path: &str) -> String {
-    std::fs::read_to_string(r.path(path)).unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
-
-fn git_out(r: &Repo, args: &[&str]) -> String {
-    String::from_utf8_lossy(&r.git(args).stdout)
-        .trim_end()
-        .to_string()
-}
-
-fn head(r: &Repo) -> String {
-    git_out(r, &["rev-parse", "HEAD"])
-}
 
 /// The paths the last commit changed.
 fn head_files(r: &Repo) -> String {
@@ -144,10 +98,7 @@ fn the_commit_journey() {
         ),
     );
     r.commit("chore: seed");
-    for verb in ["trust", "init"] {
-        let (ok, out) = amont(&r, &[verb]);
-        step!("install", ok, "amont {verb}:\n{out}");
-    }
+    install(&r);
 
     // ---- 1. staged-only checks; unstaged and untracked work survive ------
 
