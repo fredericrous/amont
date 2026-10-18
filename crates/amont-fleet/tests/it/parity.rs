@@ -17,30 +17,10 @@
 //! below contains one repo for each condition either implementation can act on,
 //! and the test asserts up front that the comparison is not vacuous.
 
+use crate::common::{bin, shim_for, DISPATCHERS};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-}
-
-fn template() -> String {
-    std::fs::read_to_string(repo_root().join("templates/hooks/pre-commit")).expect("template")
-}
-
-fn shim_for(binary: &str) -> String {
-    template().replace("__AMONT_BIN__", binary)
-}
-
-const DISPATCHERS: [&str; 6] = [
-    "commit-msg",
-    "post-commit",
-    "post-rewrite",
-    "pre-commit",
-    "pre-push",
-    "prepare-commit-msg",
-];
 
 struct Fleet {
     root: PathBuf,
@@ -178,7 +158,7 @@ impl Fleet {
     }
 
     fn plans(&self, extra: &[&str]) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+        let out = Command::new(bin())
             .args(["fix", "--json", "--root"])
             .arg(&self.root)
             .arg("--binary")
@@ -319,7 +299,7 @@ fn the_plan_no_longer_deletes_a_hook_it_did_not_write() {
     );
 
     // (c) An actual apply must leave the bytes alone, not merely omit the path.
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["fix", "--apply", "--root"])
         .arg(&f.root)
         .arg("--binary")
@@ -337,136 +317,5 @@ fn the_plan_no_longer_deletes_a_hook_it_did_not_write() {
         String::from_utf8_lossy(&out.stdout).contains("pre-push-branch-protect.sh"),
         "and the apply report must NAME what it left alone:\n{}",
         String::from_utf8_lossy(&out.stdout)
-    );
-}
-
-/// Neither implementation may touch a repo it does not manage. That rule is the
-/// only thing standing between this tool and an application's data repository.
-#[test]
-fn neither_implementation_touches_an_unmanaged_repo() {
-    let f = Fleet::new("unmanaged");
-    f.healthy("ok").unmanaged("legacy");
-
-    for path in f.rust_removals() {
-        assert!(
-            !path.contains("legacy"),
-            "an unmanaged repo must be left alone: {path}"
-        );
-    }
-
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
-        .args(["fix", "--json", "--root"])
-        .arg(&f.root)
-        .output()
-        .expect("run");
-    let plans: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let legacy = plans
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["repo"].as_str().unwrap_or_default().contains("legacy"))
-        .expect("legacy repo planned");
-    assert_eq!(legacy["refuse"][0]["refusal"], "unmanaged");
-    assert!(legacy["write"].as_array().unwrap().is_empty());
-}
-
-/// `fix` is a dry run in this release, and must say so rather than implying it
-/// acted.
-#[test]
-fn fix_writes_nothing() {
-    let f = Fleet::new("drywrite");
-    f.with_stale_ours("stale");
-    let stale = f.root.join("stale/.git/hooks/pre-commit-ruff");
-    assert!(stale.exists());
-
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
-        .args(["fix", "--root"])
-        .arg(&f.root)
-        .output()
-        .expect("run");
-    assert!(stale.exists(), "dry run must not delete");
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("DRY RUN"),
-        "and must say so"
-    );
-}
-
-/// End to end through the CLI, and then AGAIN to prove idempotence.
-///
-/// Note the explicit `--root`. The version of this test that came before it
-/// invoked `fix --apply` with no root, so it fell back to $HOME/Developer and
-/// ran the apply path over the real fleet — 13 seconds of it. That was harmless
-/// only because every plan there is currently a no-op. A test must never be one
-/// clean fleet away from mutating the machine it runs on.
-#[test]
-fn apply_removes_the_stale_file_and_is_idempotent() {
-    let f = Fleet::new("apply");
-    f.with_stale_ours("stale").healthy("clean");
-    let stale = f.root.join("stale/.git/hooks/pre-commit-ruff");
-    assert!(stale.exists(), "guard");
-
-    let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
-            .args(args)
-            .arg("--root")
-            .arg(&f.root)
-            .arg("--binary")
-            .arg(&f.binary)
-            .output()
-            .expect("run")
-    };
-
-    let first = run(&["fix", "--apply", "--json"]);
-    assert!(first.status.success());
-    assert!(!stale.exists(), "the stale file must be gone");
-
-    let v: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
-    let applied: Vec<_> = v
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|r| r["outcome"]["outcome"] == "applied")
-        .collect();
-    assert_eq!(applied.len(), 1, "only the stale repo changed: {v}");
-
-    // Second run: nothing left to do.
-    let second = run(&["fix", "--apply", "--json"]);
-    let v2: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
-    assert!(
-        v2.as_array()
-            .unwrap()
-            .iter()
-            .all(|r| r["outcome"]["outcome"] != "applied"),
-        "applying twice must change nothing the second time: {v2}"
-    );
-}
-
-/// An unmanaged repo survives `--apply` untouched. This is the rule that keeps
-/// the tool away from an application's data repository.
-#[test]
-fn apply_leaves_an_unmanaged_repo_alone() {
-    let f = Fleet::new("applyskip");
-    f.healthy("ok").unmanaged("legacy");
-    let legacy = f.root.join("legacy/.git/hooks/pre-commit");
-    let before = std::fs::read_to_string(&legacy).unwrap();
-
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
-        .args(["fix", "--apply", "--json", "--root"])
-        .arg(&f.root)
-        .arg("--binary")
-        .arg(&f.binary)
-        .output()
-        .expect("run");
-    assert!(out.status.success());
-    assert_eq!(
-        std::fs::read_to_string(&legacy).unwrap(),
-        before,
-        "an unmanaged repo must be byte-identical afterwards"
-    );
-    assert!(
-        f.root
-            .join("legacy/.git/hooks/pre-commit-ban-terms.js")
-            .exists(),
-        "including its legacy sub-hooks"
     );
 }

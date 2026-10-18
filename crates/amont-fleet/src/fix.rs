@@ -1198,7 +1198,8 @@ mod tests {
 
     /// `plan()` must find and repair shims at a redirected `core.hooksPath`,
     /// not at `.git/hooks` — the write-side counterpart to the scanner's own
-    /// `core_hooks_path_is_honoured_not_assumed`. A REAL repository, unlike
+    /// proof, the `repo states` step of `tests/it/flows.rs`'s
+    /// `the_survey_journey`. A REAL repository, unlike
     /// `repo()`'s fixtures: `core.hooksPath` only means anything to git
     /// itself, which is exactly the predicate this is proving.
     #[test]
