@@ -28,6 +28,9 @@
 # passes `-j 2`), MUTANTS_TIMEOUT sets each mutant's test timeout (600 s);
 # MUTANTS_TEST_ARGS adds arguments for the test binaries
 # (a machine missing a tool skips that test with `--skip NAME`).
+# MUTANTS_SHARD=k/n (k from 0) checks only every n-th mutant of run 1,
+# starting at k, and so only its share of run 2: n machines, one shard
+# each, check the whole set between them.
 set -euo pipefail
 
 base=origin/main
@@ -168,11 +171,17 @@ fi
 # of a mutant's cost. The automatic timeout fits the few tests that run.
 packages=()
 while read -r p; do packages+=(--test-package "$p"); done < <(cut -f1 "$work/deleted-with-package" | sort -u)
+shard=()
+[ -n "${MUTANTS_SHARD:-}" ] && shard=(--shard "$MUTANTS_SHARD" --sharding round-robin)
 echo "    building and running ${packages[*]//--test-package /} only"
 (cd "$work/base" && cargo mutants \
-    "${packages[@]}" "${only[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
+    "${packages[@]}" "${only[@]}" "${shard[@]}" --no-shuffle "${file_args[@]}" "${extra[@]}" \
     --output "$work/before" -- -- --exact "${filters[@]}" "${test_extra[@]}") \
     > "$work/before/run.log" 2>&1 || true
+if grep -q "No mutants found" "$work/before/run.log"; then
+    echo "mutants-check: no mutant of these files in this shard; nothing is lost"
+    exit 0
+fi
 # cargo-mutants ends with "N mutants tested", or "1 mutant tested".
 grep -Eq "mutants? tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
 keys "$work/before" caught > "$work/at-risk"
