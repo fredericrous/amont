@@ -45,8 +45,8 @@ backlog.
 
 > **Shipped.** Per-repository activation is the default; `amont install`
 > / `uninstall` and `amont-fleet install` / `uninstall` are all real
-> verbs. `install.rs` carries the routine, and `crates/amont/tests/
-> install.rs` and `crates/amont-fleet/tests/uninstall.rs` carry the
+> verbs. `install.rs` carries the routine, and `crates/amont/tests/it/
+> install.rs` and `crates/amont-fleet/tests/it/uninstall.rs` carry the
 > guards. `uninstall` also removes the shims from the template directory
 > and says so loudly if `init.templateDir` is still set.
 

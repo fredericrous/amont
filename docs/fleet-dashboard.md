@@ -247,7 +247,7 @@ the write.
 they had never touched, reported only as a number. That was inherited wholesale
 from a one-time migration sweep in `scripts/propagate.sh` (see
 `git show 90b0d30^:scripts/propagate.sh`, around lines 82-87) and then pinned as
-golden by `tests/parity.rs`.
+golden by `tests/it/parity.rs`.
 
 They are now `Warning::UnrecognizedSubHook` and are left exactly where they are.
 `--remove-unrecognized` puts them back on the removal list, and is deliberately

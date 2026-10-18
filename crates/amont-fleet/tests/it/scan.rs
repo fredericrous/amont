@@ -5,12 +5,9 @@
 //! read. Each has to be distinguishable from "the fleet is clean", which is the
 //! single failure this tool exists to prevent.
 
+use crate::common::{bin, shim_for, DISPATCHERS};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_amont-fleet")
-}
 
 struct Tree(PathBuf);
 
@@ -154,16 +151,6 @@ fn git(dir: &Path, args: &[&str]) {
         dir.display(),
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// The shim body, baked at `binary`, exactly as the installer writes it.
-fn shim_for(binary: &str) -> String {
-    std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../templates/hooks/pre-commit"
-    ))
-    .expect("template")
-    .replace("__AMONT_BIN__", binary)
 }
 
 struct Run {
@@ -413,24 +400,8 @@ fn a_baked_shim_is_ok_and_a_hand_edited_one_is_not() {
     let t = Tree::new("baked");
     let hooks = t.path().join("r/.git/hooks");
     std::fs::create_dir_all(&hooks).unwrap();
-    let template = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../templates/hooks/pre-commit"
-    ))
-    .unwrap();
-    for n in [
-        "commit-msg",
-        "post-commit",
-        "post-rewrite",
-        "pre-commit",
-        "pre-push",
-        "prepare-commit-msg",
-    ] {
-        std::fs::write(
-            hooks.join(n),
-            template.replace("__AMONT_BIN__", "/opt/amont"),
-        )
-        .unwrap();
+    for n in DISPATCHERS {
+        std::fs::write(hooks.join(n), shim_for("/opt/amont")).unwrap();
     }
     let v = json(&["--root", t.path().to_str().unwrap(), "--depth", "3"]);
     let r = &v["repos"][0];

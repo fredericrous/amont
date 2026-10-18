@@ -6,17 +6,11 @@
 //! a checkout, and an install/uninstall step that only checked "is this ours"
 //! and not "is this tracked" destroyed tracked source before.
 
-use std::path::PathBuf;
+use crate::common::{bin, shim_for};
 use std::process::Command;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-}
-
 fn shim_text() -> String {
-    std::fs::read_to_string(repo_root().join("templates/hooks/pre-commit"))
-        .expect("template")
-        .replace("__AMONT_BIN__", "/bin/fake-amont")
+    shim_for("/bin/fake-amont")
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {
@@ -61,7 +55,7 @@ fn uninstall_refuses_a_shim_reached_through_a_symlink_into_a_tracked_checkout() 
     #[cfg(unix)]
     std::os::unix::fs::symlink(&checkout, victim.join(".git")).expect("symlink");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["uninstall", "--root"])
         .arg(&root)
         .output()
@@ -127,7 +121,7 @@ fn a_hooks_directory_we_cannot_write_to_is_reported_and_exits_nonzero() {
     }
     std::fs::set_permissions(&hooks, std::fs::Permissions::from_mode(0o555)).expect("chmod");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["uninstall", "--root"])
         .arg(&root)
         .output()
@@ -170,7 +164,7 @@ fn a_hook_we_did_not_write_is_named_not_silently_skipped() {
     let theirs = "#!/bin/sh\n# my own commit-msg, thanks\nexec my-linter \"$@\"\n";
     std::fs::write(hooks.join("commit-msg"), theirs).expect("write");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["uninstall", "--root"])
         .arg(&root)
         .output()
@@ -207,7 +201,7 @@ fn uninstall_still_removes_an_ordinary_untracked_shim() {
     std::fs::create_dir_all(&hooks).expect("mkdir");
     std::fs::write(hooks.join("pre-commit"), shim_text()).expect("write");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["uninstall", "--root"])
         .arg(&root)
         .output()
@@ -244,7 +238,7 @@ fn uninstall_forgets_our_bookkeeping_but_not_the_users_work() {
     std::fs::create_dir_all(repo.join(".git/amont-held")).expect("mkdir");
     std::fs::write(repo.join(".git/amont-held/index"), b"amont-held-v1\0").expect("write");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["uninstall", "--root"])
         .arg(&root)
         .output()

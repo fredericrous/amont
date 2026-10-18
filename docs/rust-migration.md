@@ -242,7 +242,7 @@ every repo rather than for the framework.
 rewriting them early would remove the net while walking the wire.
 
 *Done, and it stopped being optional the moment Windows mattered.* The suites
-are `crates/amont/tests/*.rs` and `crates/amont-fleet/tests/*.rs`, each
+are `crates/amont/tests/it/` and `crates/amont-fleet/tests/it/`, each
 `Repo` an isolated temp repository so they run in parallel — which the old
 one-repo-per-suite runner could not, and which is why several old cases depended
 on state left by earlier ones. Windows CI runs the full suite rather than a

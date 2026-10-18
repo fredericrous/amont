@@ -17,30 +17,10 @@
 //! below contains one repo for each condition either implementation can act on,
 //! and the test asserts up front that the comparison is not vacuous.
 
+use crate::common::{bin, shim_for, DISPATCHERS};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-}
-
-fn template() -> String {
-    std::fs::read_to_string(repo_root().join("templates/hooks/pre-commit")).expect("template")
-}
-
-fn shim_for(binary: &str) -> String {
-    template().replace("__AMONT_BIN__", binary)
-}
-
-const DISPATCHERS: [&str; 6] = [
-    "commit-msg",
-    "post-commit",
-    "post-rewrite",
-    "pre-commit",
-    "pre-push",
-    "prepare-commit-msg",
-];
 
 struct Fleet {
     root: PathBuf,
@@ -178,7 +158,7 @@ impl Fleet {
     }
 
     fn plans(&self, extra: &[&str]) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+        let out = Command::new(bin())
             .args(["fix", "--json", "--root"])
             .arg(&self.root)
             .arg("--binary")
@@ -319,7 +299,7 @@ fn the_plan_no_longer_deletes_a_hook_it_did_not_write() {
     );
 
     // (c) An actual apply must leave the bytes alone, not merely omit the path.
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["fix", "--apply", "--root"])
         .arg(&f.root)
         .arg("--binary")
@@ -354,7 +334,7 @@ fn neither_implementation_touches_an_unmanaged_repo() {
         );
     }
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["fix", "--json", "--root"])
         .arg(&f.root)
         .output()
@@ -379,7 +359,7 @@ fn fix_writes_nothing() {
     let stale = f.root.join("stale/.git/hooks/pre-commit-ruff");
     assert!(stale.exists());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["fix", "--root"])
         .arg(&f.root)
         .output()
@@ -406,7 +386,7 @@ fn apply_removes_the_stale_file_and_is_idempotent() {
     assert!(stale.exists(), "guard");
 
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+        Command::new(bin())
             .args(args)
             .arg("--root")
             .arg(&f.root)
@@ -450,7 +430,7 @@ fn apply_leaves_an_unmanaged_repo_alone() {
     let legacy = f.root.join("legacy/.git/hooks/pre-commit");
     let before = std::fs::read_to_string(&legacy).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-fleet"))
+    let out = Command::new(bin())
         .args(["fix", "--apply", "--json", "--root"])
         .arg(&f.root)
         .arg("--binary")

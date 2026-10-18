@@ -23,33 +23,9 @@
 //! assumption that let `apply` skip four of its five re-checks for two
 //! releases.
 
+use crate::common::{bin, shim_for, DISPATCHERS};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_amont-fleet")
-}
-
-fn template() -> String {
-    std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../templates/hooks/pre-commit"
-    ))
-    .expect("template")
-}
-
-fn shim_for(binary: &str) -> String {
-    template().replace("__AMONT_BIN__", binary)
-}
-
-const DISPATCHERS: [&str; 6] = [
-    "commit-msg",
-    "post-commit",
-    "post-rewrite",
-    "pre-commit",
-    "pre-push",
-    "prepare-commit-msg",
-];
 
 struct Tree(PathBuf);
 
