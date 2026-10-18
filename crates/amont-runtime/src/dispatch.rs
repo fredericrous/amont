@@ -1400,8 +1400,8 @@ fn stamp_tips(
     // repository using declared gates would stop earning stamps permanently
     // after its first commit. That does not merely lose an optimisation: it
     // puts the suite back INSIDE the push, which is the failure the whole
-    // stamping mechanism exists to prevent. amont's own
-    // `a_push_stamp_merges_with_a_commit_time_stamp` fixture is exactly that
+    // stamping mechanism exists to prevent. amont's own push flow
+    // (`flows/push.rs`, steps `first push` and `retry`) is exactly that
     // shape, and CI is where it surfaced — a `*.log` line in one developer's
     // global gitignore had hidden it on the machine that wrote the change.
     //
