@@ -92,5 +92,6 @@ fn head(r: &Repo) -> String {
 }
 
 mod commit;
+mod declared;
 mod land;
 mod push;
