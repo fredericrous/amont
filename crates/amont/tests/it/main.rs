@@ -36,6 +36,7 @@ mod enroll;
 mod excerpt_golden;
 mod external;
 mod fixing;
+mod flows;
 mod gate_evidence;
 mod gate_pairs;
 mod git_state;
