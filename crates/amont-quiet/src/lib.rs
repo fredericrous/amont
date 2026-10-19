@@ -439,7 +439,9 @@ mod tests {
         let done = dir.join("final.log");
         e.end(Some(101), Some(&done));
         let t = read(e.path());
-        assert_eq!(field(&t, "log"), Some(&*done.to_string_lossy()));
+        // `field` returns the raw JSON text, escapes kept: a Windows path's
+        // backslashes are doubled there.
+        assert_eq!(field(&t, "log"), Some(&*escape(&done.to_string_lossy())));
         assert_eq!(field(&t, "exit"), Some("101"));
         assert!(field(&t, "ended").is_some());
         e.end(Some(7), None);
