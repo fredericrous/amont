@@ -3,7 +3,9 @@
 //! These compile a tiny crate, so they are the slowest tests here. They earn it:
 //! everything interesting is in the seam between git's staged set and cargo's
 //! notion of a workspace, and nothing about that seam is exercised by a unit
-//! test on path strings.
+//! test on path strings. What the Rust checks promise like every other tool
+//! (scoping, a clean and a broken crate, fixing on and off, a manifest-only
+//! change, a docs-only push) are rows of the tables in `tool_tables`.
 
 use crate::common;
 use common::{missing, Repo};
@@ -46,98 +48,6 @@ fn head(r: &Repo) -> String {
         .to_string()
 }
 
-/// The scoping guarantee that matters most: a repo with no Rust must never
-/// invoke cargo, however the checks are wired.
-#[test]
-fn a_non_rust_repo_runs_nothing() {
-    let r = Repo::new();
-    r.stage("a.py", "x = 1\n");
-    r.stage("README.md", "hi\n");
-    assert!(r.hook("pre-commit-cargo-fmt", &[]).passed());
-    assert!(r.hook("pre-commit-clippy", &[]).passed());
-}
-
-/// A `.rs` file with no `Cargo.toml` above it is not a cargo project — a loose
-/// script must not make the hook try to build a workspace that doesn't exist.
-#[test]
-fn a_rust_file_outside_any_crate_is_skipped() {
-    let r = Repo::new();
-    r.stage("scripts/loose.rs", "fn main() {}\n");
-    let run = r.hook("pre-commit-cargo-fmt", &[]);
-    assert!(run.passed(), "{}", run.stdout);
-    assert!(
-        !run.says("Rust formatting"),
-        "should not have run cargo at all: {}",
-        run.stdout
-    );
-}
-
-#[test]
-fn cargo_fmt_rejects_unformatted_rust_and_accepts_clean() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    crate_files(&r, "fn main(){let _x=1;}\n");
-    assert!(
-        !r.hook("pre-commit-cargo-fmt", &[]).passed(),
-        "unformatted code must fail"
-    );
-
-    let r2 = Repo::new();
-    crate_files(&r2, "fn main() {\n    let _x = 1;\n}\n");
-    let run = r2.hook("pre-commit-cargo-fmt", &[]);
-    assert!(run.passed(), "formatted code must pass: {}", run.stdout);
-    assert!(run.says("Rust formatting is clean"));
-}
-
-/// The registry has always declared `Fix::Rewrite` for `pre-commit-cargo-fmt`,
-/// and `amont list --json` reported `"fix":"rewrite"` — which `agents_md`
-/// tells agents to trust — while no fixing code existed anywhere. Only
-/// prettier and the manifest's externals ever called `restage`. So an agent
-/// could set `amont.fix true` and wait forever for a repair.
-#[test]
-fn cargo_fmt_repairs_and_restages_when_asked() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    r.git(&["config", "amont.fix", "true"]);
-    crate_files(&r, "fn main(){let _x=1;}\n");
-
-    let run = r.hook("pre-commit-cargo-fmt", &[]);
-    assert!(
-        run.passed(),
-        "the repair should let it through: {}",
-        run.stdout
-    );
-    assert!(run.says("reformatted and re-staged"), "{}", run.stdout);
-
-    let staged = r.git(&["show", ":src/main.rs"]);
-    assert_eq!(
-        String::from_utf8_lossy(&staged.stdout),
-        "fn main() {\n    let _x = 1;\n}\n",
-        "the repair reached the index, not just the disk"
-    );
-}
-
-/// With fixing OFF the file must come back byte for byte as it was written.
-#[test]
-fn cargo_fmt_leaves_files_alone_when_fixing_is_off() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    crate_files(&r, "fn main(){let _x=1;}\n");
-
-    assert!(!r.hook("pre-commit-cargo-fmt", &[]).passed());
-    assert_eq!(
-        std::fs::read_to_string(r.path("src/main.rs")).expect("read"),
-        "fn main(){let _x=1;}\n",
-        "it rewrote a file nobody asked it to rewrite"
-    );
-}
-
 /// The guard that makes the repair safe: `cargo fmt --all` formats the WHOLE
 /// workspace, but `restage` is handed only the staged `.rs` list. A second,
 /// unformatted, UNSTAGED file in the same crate is reformatted on disk (cargo's
@@ -169,87 +79,6 @@ fn a_repair_does_not_stage_an_unrelated_unformatted_file() {
         !staged.contains("src/other.rs"),
         "the repair swept in work the author kept back: {staged}"
     );
-}
-
-/// `-D warnings` is the point: an ordinary rustc warning has to fail the
-/// commit, not merely print.
-#[test]
-fn clippy_denies_warnings() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    crate_files(&r, "fn main() {\n    let unused = 1;\n}\n");
-    assert!(
-        !r.hook("pre-commit-clippy", &[]).passed(),
-        "an unused variable must fail under -D warnings"
-    );
-
-    let r2 = Repo::new();
-    crate_files(&r2, "fn main() {\n    println!(\"ok\");\n}\n");
-    let run = r2.hook("pre-commit-clippy", &[]);
-    assert!(run.passed(), "clean code must pass: {}", run.stdout);
-    assert!(run.says("Clippy passed"));
-}
-
-/// A dependency bump changes what compiles without touching a single `.rs`,
-/// which is exactly when clippy is worth running.
-#[test]
-fn a_manifest_only_change_still_runs_clippy() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    crate_files(&r, "fn main() {\n    println!(\"ok\");\n}\n");
-    r.commit("feat: base");
-    // Stage ONLY the manifest.
-    r.stage(
-        "Cargo.toml",
-        "[package]\nname = \"t\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\n",
-    );
-    let run = r.hook("pre-commit-clippy", &[]);
-    assert!(run.passed(), "{}", run.stdout);
-    assert!(
-        run.says("Clippy passed"),
-        "a manifest-only change should still have run clippy: {}",
-        run.stdout
-    );
-}
-
-#[test]
-fn cargo_test_gates_the_push() {
-    if missing("cargo") {
-        return;
-    }
-    let r = Repo::new();
-    crate_files(
-        &r,
-        "fn main() {}\n\n#[test]\nfn passes() {\n    assert_eq!(1, 1);\n}\n",
-    );
-    r.commit("feat: base");
-    let base = head(&r);
-    r.stage(
-        "src/main.rs",
-        "fn main() {}\n\n#[test]\nfn fails() {\n    assert_eq!(1, 2);\n}\n",
-    );
-    r.commit("feat: a failing test");
-    assert_ne!(
-        pre_push(&r, &base, &head(&r)),
-        0,
-        "a failing test must abort the push"
-    );
-}
-
-/// A push that touches no Rust must not pay for a workspace test run.
-#[test]
-fn a_docs_only_push_runs_no_tests() {
-    let r = Repo::new();
-    crate_files(&r, "fn main() {}\n");
-    r.commit("feat: base");
-    let base = head(&r);
-    r.stage("README.md", "docs\n");
-    r.commit("docs: readme");
-    assert_eq!(pre_push(&r, &base, &head(&r)), 0);
 }
 
 /// The gate runs a project's test suite, and git hands every hook a GIT_DIR

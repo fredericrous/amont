@@ -1,5 +1,6 @@
-//! The Python test gate — a fake pytest on a shimmed PATH gives each test
-//! the exit code, and the gate's own contract does the rest.
+//! The Python test gate: which pytest answers. A fake pytest on a shimmed
+//! PATH stands in for the suite; a green, a red and an untouched push are rows
+//! of the tables in `tool_tables`.
 #![cfg(unix)]
 
 use crate::common;
@@ -75,43 +76,6 @@ fn repo() -> (Repo, String) {
     r.stage("test_x.py", "def test_x():\n    assert True\n");
     r.commit("feat: python change");
     (r, base)
-}
-
-/// A green suite passes the push and says so.
-#[test]
-fn a_green_suite_passes() {
-    let (r, base) = repo();
-    shim(&r, "exit 0");
-    let (code, out) = push(&r, &base);
-    assert_eq!(code, 0, "{out}");
-    assert!(out.contains("Python tests passed"), "{out}");
-}
-
-/// A red suite aborts the push, fail-fast.
-#[test]
-fn a_red_suite_aborts_the_push() {
-    let (r, base) = repo();
-    shim(&r, "echo 'FAILED test_x.py::test_x'\nexit 1");
-    let (code, out) = push(&r, &base);
-    assert_ne!(code, 0, "{out}");
-    assert!(out.contains("Python tests failed"), "{out}");
-}
-
-/// A ref pushing no Python runs nothing — the suite is not a toll.
-#[test]
-fn a_push_without_python_runs_nothing() {
-    let r = Repo::new();
-    r.stage("conftest.py", "# setup\n");
-    r.commit("chore: base");
-    let base = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
-        .trim()
-        .to_string();
-    r.stage("README.md", "docs only\n");
-    r.commit("docs: change");
-    shim(&r, "echo SHOULD-NOT-RUN\nexit 1");
-    let (code, out) = push(&r, &base);
-    assert_eq!(code, 0, "{out}");
-    assert!(!out.contains("SHOULD-NOT-RUN"), "{out}");
 }
 
 /// The project's own `.venv/bin/pytest` beats whatever is first on `PATH`.

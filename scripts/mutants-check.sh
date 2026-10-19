@@ -230,7 +230,17 @@ annotate() { # why < names
     [ "${GITHUB_ACTIONS:-}" = true ] || { cat > /dev/null; return; }
     while read -r m; do printf '::error title=mutant %s::%s\n' "$1" "$m"; done
 }
+# Only the mutants asked for count. cargo-mutants 27.1.0 does not apply
+# --re to "delete field ... from struct ... expression" mutants: every one
+# in the file runs in step 2 whether or not it was at risk, and one no
+# test catches would read as lost (amont#370).
 lost=0
+for outcome in caught missed timeout; do
+    f="$work/after/mutants.out/$outcome.txt"
+    [ -f "$f" ] || continue
+    grep -Fx -f "$work/targets" "$f" > "$f.asked" || true
+    mv "$f.asked" "$f"
+done
 for outcome in missed timeout; do
     f="$work/after/mutants.out/$outcome.txt"
     if [ -s "$f" ]; then

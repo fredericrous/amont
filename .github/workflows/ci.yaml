@@ -441,8 +441,8 @@ jobs:
   #
   # This job used to bill itself as a "cheap backstop for the hooks no test file
   # covers (argo-lint, kube-linter, kubeconform, yamllint)". Those four have
-  # been Rust since phase 3 and are covered by crates/amont/tests/it/k8s.rs and
-  # crates/amont/tests/it/linters.rs; the comment outlived its subject by three
+  # been Rust since phase 3 and are covered by crates/amont/tests/it/k8s.rs,
+  # linters.rs and tool_tables.rs; the comment outlived its subject by three
   # phases. It also dispatched on the shebang across four arms, of which the
   # `*zsh` and `*node` ones could never fire — no hook has been either since the
   # rename.
@@ -901,12 +901,13 @@ jobs:
       #
       # And the skip reporter below could not have told you: the early return
       # prints nothing, so the log would read as though the case ran. The test
-      # now prints a marker of its own on that return (see k8s.rs), and this
+      # now prints a marker of its own on that return (see `Gate::Absent` in
+      # tool_tables.rs), and this
       # step asserts the precondition that makes it meaningful.
       - name: argo must be ABSENT (the only argo test needs it missing)
         run: |
           if command -v argo > /dev/null 2>&1; then
-            echo "::error::argo is on PATH — argo_soft_fails_without_the_cli now returns early and asserts nothing"
+            echo "::error::argo is on PATH — the argo row of a_missing_tool_warns_and_never_blocks now skips and asserts nothing"
             exit 1
           fi
           echo "argo absent, as the test requires"
@@ -1028,8 +1029,9 @@ jobs:
           # Tools this platform may legitimately lack, with the reason, because
           # an allowlist without reasons grows silently.
           #
-          #   argo — deliberately NOT installed. The only argo-gated case is
-          #          `argo_soft_fails_without_the_cli`, which asserts the
+          #   argo — deliberately NOT installed. The only argo-gated case is the
+          #          argo row of `a_missing_tool_warns_and_never_blocks`
+          #          (tool_tables.rs), which asserts the
           #          SOFT-FAIL branch: a missing toolchain must warn and let the
           #          commit through. It therefore needs argo absent, and this
           #          marker means the opposite of what it means for every other
@@ -1070,7 +1072,8 @@ jobs:
 
           # The other direction, and the one that bit: a case can skip WITHOUT
           # printing `missing()`'s marker if it returns early for its own
-          # reasons. `argo_soft_fails_without_the_cli` is exactly that, so it
+          # reasons. The argo row of `a_missing_tool_warns_and_never_blocks` is
+          # exactly that, so it
           # prints a marker of its own and this asserts the marker is there.
           # Without this, "argo is allowlisted" would be indistinguishable from
           # "the argo case vanished".
