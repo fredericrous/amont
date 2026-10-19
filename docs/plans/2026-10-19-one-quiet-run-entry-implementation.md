@@ -109,4 +109,38 @@ Order: Phase 1 and its release, then Phases 2 and 3 in parallel. Each PR goes th
 - relais's existing `quiet.rs` tests for `active_dir` pass unchanged against the delegated rule.
 - After the releases, `cargo search amont-quiet` shows the released version, and `amont --version` and `amont-agent --version` on this machine show the new versions.
 
+## Outcome
+
+Phase 1 (amont), as observed before the push:
+
+| Check | Expected | Actual |
+|---|---|---|
+| `cargo test -p amont-quiet` | pass | 12 tests pass, and no `amont-quiet-*` scratch directory remains in `$TMPDIR` |
+| clippy `-D warnings`, rustfmt on `amont-quiet` and `amont-runtime` | clean | clean |
+| `scripts/check-no-deps.sh` | pass | "no external dependencies (git-attest and amont-quiet, std-only, are the allowed crates)" |
+| `cfg-if` injected into `amont-quiet` as a normal, a build and a `cfg(windows)` dependency, each in a disposable copy | each fails | all three exit 1 with "amont gained external dependencies: cfg-if" |
+| the 1.74 floor | `amont`, `amont-runtime` and `amont-quiet` build | `cargo +1.74.0 check` passes with `Cargo.lock` removed, as CI's msrv job does. Cargo 1.74 cannot parse the v4 lock file, so `--locked` as worded cannot run at 1.74 |
+| `cargo check -p amont-quiet --target x86_64-pc-windows-gnu` | pass | pass |
+| `cargo publish --dry-run -p amont-quiet` | packages | packages |
+| the new binary's `amont run cargo-fmt` in a scratch Rust repository, with `QUIET_ACTIVE_DIR` and a session set | one entry, fields in the documented order, 0600 file in a 0700 directory, no temp left | as expected; the ended entry names the final `.log`; `relais quiet watch --protocol` emits `started` and `ended` for it |
+| empty `HOME` leaves no `.local/` | no entry | not reachable end to end: with an empty `HOME`, git fails first ("git would not list the staged files") for the old binary and the new one alike, and no check runs. The rule is proven by the unit test `the_directory_follows_the_documented_precedence` |
+| pre-commit gate | pass | 28 checks passed; `make attest-inputs` ok |
+| crates.io | `amont-quiet` unclaimed | API 404; the publish token's scope cannot be read from here, so the person is asked before tagging |
+
+Phase 2 (amont-agent) and Phase 3 (relais) follow once amont is released.
+
+## Decision log
+
+- 2026-10-19: the API as built is `Entry::start(dir, tool, session, check, repo, log)`, with the session before the check. Phases 2 and 3 build against this signature. `Entry::path()` is public for callers' tests.
+- 2026-10-19: the `amont-quiet` floor in `[workspace.dependencies]` is the workspace version, 1.59.0. Cargo requires a path dependency to satisfy its own requirement, so the floor cannot name the next release. The first published version will be the next amont release.
+- 2026-10-19: the environment assertion `quiet_entries_never_reach_the_real_state_dir` moved to `amont-runtime`'s `capture.rs` tests. It holds only inside this workspace, because it depends on its `.cargo/config.toml`, so it cannot live in a crate that others test.
+
+## Implementation review
+
+approve-with-changes, then approve-with-changes on the Delta.
+- Fixed: the tests clean up their scratch directories; the environment assertion moved; every `let _ =` gives its reason on the same line; the comment now says "four crates".
+- Recorded here: the signature as built, and the verification rows run differently from their wording.
+- Kept deliberately: the version floor, for the reason above.
+- 48k tokens and 70 s for round 1; 60k and 30 s for the Delta.
+
 <!-- panel: repos=amont,amont-agent,relais reviewers=backend,codex body-sha=60127b65f789 -->
