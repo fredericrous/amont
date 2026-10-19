@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/amont-quiet
 repos: [amont, amont-agent, relais]
 adrs: [ADR-0039, ADR-0037, ADR-0020]
@@ -9,7 +9,7 @@ adrs: [ADR-0039, ADR-0037, ADR-0020]
 ## Review panel
 
 👉 **Decide:** none. Approve if one std-only `amont-quiet` crate, which amont publishes and amont, amont-agent and relais call, is worth one crate dependency in each tool and two releases.
-📍 amont, amont-agent, relais · reviewed, no code yet · next: Phase 1, the crate in amont. Panel: backend (opus-5-5), codex (gpt), the delta panel `plan-panel` computed.
+📍 amont, amont-agent, relais · done: amont 1.60.0, amont-agent 2.44.0, relais #266 · next: none. Panel: backend (opus-5-5), codex (gpt), the delta panel `plan-panel` computed.
 **Changed by review:**
 - The writer creates its temp file exclusively, so a planted symlink is never followed.
 - amont-agent's caller is adapted explicitly, not one call for one call.
@@ -44,7 +44,7 @@ Dependents:
 **API**, with a pure core and the I/O at the edge, following relais's testable `active_dir(get)`:
 
 - `pub fn dir(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf>`, and `pub fn dir_from_env()`. Both call a private pure `dir_for(env, windows: bool)`, so the tests exercise both platform branches on any host.
-- `pub struct Entry`, created by `Entry::start(dir, tool, check, repo, log, session) -> Option<Entry>`. `entry.end(exit, final_log)` ends it, and `Drop` ends it too. The tool name is a parameter, so one writer serves `amont` and `amont-agent`. `start` returns `None` for an empty `session` before calling `repo` (a lazy `FnOnce`, as at active.rs:81); each caller passes `CLAUDE_CODE_SESSION_ID` unfiltered. `dir`'s `cfg!(test)` guard (active.rs:37) no longer covers amont-runtime's tests; `.cargo/config.toml:31-32` does, and the move keeps it.
+- `pub struct Entry`, created by `Entry::start(dir, tool, session, check, repo, log) -> Option<Entry>` (as built; see the Decision log). `entry.end(exit, final_log)` ends it, and `Drop` ends it too. The tool name is a parameter, so one writer serves `amont` and `amont-agent`. `start` returns `None` for an empty `session` before calling `repo` (a lazy `FnOnce`, as at active.rs:81); each caller passes `CLAUDE_CODE_SESSION_ID` unfiltered. `dir`'s `cfg!(test)` guard (active.rs:37) no longer covers amont-runtime's tests; `.cargo/config.toml:31-32` does, and the move keeps it.
 - `pub fn sweep(dir, tool, now_ms)` and `pub fn alive(pid: i64) -> bool`.
 - A private minimal JSON writer, and a tolerant field reader for the three fields the sweep reads. Each is a leaf utility the crate owns. Copying one is allowed by ADR-0039.
 
@@ -88,7 +88,7 @@ The entry stays at `"v": 1`. No field changes, so readers are unaffected.
 
 - `Cargo.toml` gains `amont-quiet = "<released>"`, with its argument written beside it.
 - `src/quiet.rs:261-449` is replaced by calls to `amont_quiet` with `tool = "amont-agent"`. That removes `ENDED_KEEP_MS`, `active_dir`, `pid_alive`, `sweep_active` and `ActiveEntry`, and the `holds-until:` comment with them.
-  - Adapt `execute` to `Option<amont_quiet::Entry>` explicitly. Preserve the no-log guard and absolute-path conversion before start; pass repository discovery lazily. Early error returns call `end(Some(code), None)` when an entry exists. On normal completion, retain the exit code locally until the log disposition is known, then call `end` exactly once, passing the absolute final log path only when the rename succeeded. Do not translate the assignment at `:712` into an early `end`: subsequent calls are ignored. Keep Drop for unwinding and otherwise unfinished paths. Extend integration coverage for failed log creation and a relative config directory, checking absolute started/ended log paths, final output drainage, and unchanged command exit codes.
+  - Adapt `execute` to `amont_quiet::Entry` explicitly (as built: a thin local `ActiveEntry` wrapper; see the Decision log). Preserve the no-log guard and absolute-path conversion before start; pass repository discovery lazily. Early error returns call `end(Some(code), None)` when an entry exists. On normal completion, retain the exit code locally until the log disposition is known, then call `end` exactly once, passing the absolute final log path only when the rename succeeded. Do not translate the assignment at `:712` into an early `end`: subsequent calls are ignored. Keep Drop for unwinding and otherwise unfinished paths. Extend integration coverage for failed log creation and a relative config directory, checking absolute started/ended log paths, final output drainage, and unchanged command exit codes.
   - `crate::atomic` stays for its other callers. Check with LSP findReferences before removing anything.
 - `tests/quiet.rs` stays as the behaviour test. It gains one test: with `HOME=""` and no override, `amont-agent quiet -- true` writes nothing.
 - Release amont-agent (minor).
@@ -127,13 +127,36 @@ Phase 1 (amont), as observed before the push:
 | pre-commit gate | pass | 28 checks passed; `make attest-inputs` ok |
 | crates.io | `amont-quiet` unclaimed | API 404; the publish token's scope cannot be read from here, so the person is asked before tagging |
 
-Phase 2 (amont-agent) and Phase 3 (relais) follow once amont is released.
+Phase 2 (amont-agent, #124, released as 2.44.0):
+
+| Check | Expected | Actual |
+|---|---|---|
+| `cargo test --test quiet` | pass | 25 pass, 3 of them new |
+| an empty `HOME` with no override | nothing under the working directory | passes. A regression guard only: amont-agent already wrote nothing there |
+| a log that cannot be created | no entry; the exit code is kept | no entry, exit 3 |
+| a relative `CLAUDE_CONFIG_DIR` | absolute started and ended log paths, and the ended log holds the run's last line | as expected, after a fix: the ended path used to be relative (a pre-existing defect the test caught) |
+| `git grep holds-until -- src/quiet.rs`; `git grep 'fn active_dir\|fn pid_alive\|fn sweep_active' -- src` | empty | empty, in amont-agent and in amont-runtime |
+| real entries from amont 1.60 and amont-agent, each with a scratch `QUIET_ACTIVE_DIR` | the same key set and order | `v, tool, session, check, repo, pid, started, log, exit, ended` in both; `relais quiet watch --protocol` emits `started` and `ended` for each |
+| Cargo.lock | `amont-quiet` from crates.io | 1.60.0, registry source, no dependencies |
+
+Phase 3 (relais, #266):
+
+| Check | Expected | Actual |
+|---|---|---|
+| `active_dir` keeps relais's old rule | the same result for every case | relais had no `active_dir` test, so the row as worded ("existing tests pass unchanged") checked nothing. `active_dir_keeps_the_rule_it_had` now pins every case: `QUIET_ACTIVE_DIR` wins; an empty value counts as unset; `XDG_STATE_HOME`, then `HOME`; no `HOME` gives none; Windows uses `LOCALAPPDATA`. It passes against the delegated rule and, run in place, against the old body. The Windows branch ran on the `test (windows-latest)` job |
 
 ## Decision log
 
 - 2026-10-19: the API as built is `Entry::start(dir, tool, session, check, repo, log)`, with the session before the check. Phases 2 and 3 build against this signature. `Entry::path()` is public for callers' tests.
-- 2026-10-19: the `amont-quiet` floor in `[workspace.dependencies]` is the workspace version, 1.59.0. Cargo requires a path dependency to satisfy its own requirement, so the floor cannot name the next release. The first published version will be the next amont release.
+- 2026-10-19: the `amont-quiet` floor in `[workspace.dependencies]` is the workspace version, 1.59.0. Cargo requires a path dependency to satisfy its own requirement, so the floor cannot name the next release. The first published version will be the next amont release. Superseded at the release: the 1.60.0 release commit raised the floor with the workspace version.
 - 2026-10-19: #371's `windows` job failed one test, `an_entry_carries_the_documented_fields_and_ends_in_place`. `field()` returns the raw JSON text with escapes kept, so a Windows path's backslashes come back doubled. The test now compares against the escaped path. The writer was correct.
+- 2026-10-19: Phase 2 keeps a thin local `ActiveEntry` around `amont_quiet::Entry`, holding `exit` and `final_log`, instead of rewriting `execute`'s call sites. It does what the plan's adaptation asked:
+  - `finish()` ends the entry once, right after the log's fate is known and before the excerpt prints;
+  - `Drop` ends it on early returns and on unwinding, each with the code it set;
+  - `Entry::end` writes only once.
+- 2026-10-19: Phase 3 is relais's reader only. Its watcher's liveness check, including `OpenProcess` on Windows, and its retention rules stay relais's protocol.
+- 2026-10-19: the 1.74 row ran `cargo +1.74.0 check` with `Cargo.lock` removed, not the planned `cargo +1.74 build -p amont --locked`. Cargo 1.74 cannot parse the v4 lock file, so `--locked` cannot run at 1.74 at all, and CI's msrv job removes the lock for the same reason.
+- 2026-10-19: the person confirmed that `CARGO_REGISTRY_TOKEN` can publish a new crate ("Yes, it can publish new") before the 1.60.0 tag was pushed.
 - 2026-10-19: the environment assertion `quiet_entries_never_reach_the_real_state_dir` moved to `amont-runtime`'s `capture.rs` tests. It holds only inside this workspace, because it depends on its `.cargo/config.toml`, so it cannot live in a crate that others test.
 
 ## Implementation review
