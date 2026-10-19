@@ -1,4 +1,5 @@
-//! pre-commit-helm-lint.
+//! pre-commit-helm-lint: chart discovery. Scoping, a valid and a broken chart
+//! and a missing helm are rows of the tables in `tool_tables`.
 
 use crate::common;
 use common::Repo;
@@ -13,29 +14,6 @@ fn chart(r: &Repo, dir: &str, name: &str) {
         &format!("{dir}/templates/cm.yaml"),
         "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n",
     );
-}
-
-/// A repository with `.yaml` and no `Chart.yaml` must not hear about helm —
-/// that marker is the whole opt-in, and most YAML in the world is not a chart.
-#[test]
-fn yaml_without_a_chart_is_silent() {
-    let r = Repo::new();
-    r.stage("config.yaml", "a: 1\n");
-    let run = r.hook("pre-commit", &[]);
-    assert!(!run.says("helm"), "{}", run.output());
-    assert!(run.passed(), "{}", run.output());
-}
-
-#[test]
-fn a_valid_chart_passes() {
-    if common::missing("helm") {
-        return;
-    }
-    let r = Repo::new();
-    chart(&r, "charts/app", "app");
-    let run = r.hook("pre-commit", &[]);
-    assert!(run.passed(), "a valid chart must pass: {}", run.output());
-    assert!(run.says("helm lint passed"), "{}", run.output());
 }
 
 /// THE property worth pinning: `Perso/charts` holds ten charts, and a commit
@@ -68,24 +46,6 @@ fn each_chart_is_linted_once_however_many_files_it_staged() {
     assert!(
         run.says("2 charts"),
         "two charts, counted once each: {}",
-        run.output()
-    );
-}
-
-#[test]
-fn a_broken_chart_blocks_and_names_itself() {
-    if common::missing("helm") {
-        return;
-    }
-    let r = Repo::new();
-    // No `name:` — helm lint refuses a chart without one.
-    r.stage("charts/bad/Chart.yaml", "apiVersion: v2\nversion: 0.1.0\n");
-    r.stage("charts/bad/values.yaml", "x: 1\n");
-    let run = r.hook("pre-commit", &[]);
-    assert!(!run.passed(), "a broken chart must block: {}", run.output());
-    assert!(
-        run.says("charts/bad"),
-        "and say WHICH chart: {}",
         run.output()
     );
 }

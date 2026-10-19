@@ -40,40 +40,6 @@ fn head(r: &Repo) -> String {
         .to_string()
 }
 
-#[test]
-fn runs_a_packages_gate_and_passes_when_it_succeeds() {
-    if missing("npm") {
-        return;
-    }
-    let r = Repo::new();
-    r.stage(
-        "package.json",
-        r#"{"name":"t","scripts":{"test":"exit 0"}}"#,
-    );
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage("src/a.js", "const x = 1;\n");
-    r.commit("feat: a");
-    assert_eq!(push_range(&r, &base, &head(&r)), 0);
-}
-
-#[test]
-fn fails_when_the_gate_fails() {
-    if missing("npm") {
-        return;
-    }
-    let r = Repo::new();
-    r.stage(
-        "package.json",
-        r#"{"name":"t","scripts":{"test":"exit 1"}}"#,
-    );
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage("src/a.js", "const x = 1;\n");
-    r.commit("feat: a");
-    assert_ne!(push_range(&r, &base, &head(&r)), 0);
-}
-
 /// typecheck → test:unit → test, cheapest first, so a type error costs seconds
 /// rather than a full suite. `lint` is deliberately absent — pre-commit-lint-js
 /// already lints staged files.
@@ -284,21 +250,6 @@ fn a_file_reverted_later_in_the_same_push_still_selects_its_package() {
         0,
         "the endpoints' trees are identical, but a pushed commit touched .js"
     );
-}
-
-/// A change with no JS/TS files runs nothing at all.
-#[test]
-fn a_non_js_change_runs_no_gate() {
-    let r = Repo::new();
-    r.stage(
-        "package.json",
-        r#"{"name":"t","scripts":{"test":"exit 1"}}"#,
-    );
-    r.commit("chore: seed");
-    let base = head(&r);
-    r.stage("README.md", "docs\n");
-    r.commit("docs: readme");
-    assert_eq!(push_range(&r, &base, &head(&r)), 0);
 }
 
 // --- what a repository has already gated at COMMIT time ---------------------
