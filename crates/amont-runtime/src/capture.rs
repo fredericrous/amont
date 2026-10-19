@@ -311,6 +311,14 @@ fn prune(dir: &Path, done: &Path) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn quiet_entries_never_reach_the_real_state_dir() {
+        // .cargo/config.toml: an agent running this suite must not put its
+        // fixtures in the person's live relais pane.
+        assert_eq!(std::env::var("CLAUDE_CODE_SESSION_ID").as_deref(), Ok(""));
+        assert!(std::env::var("QUIET_ACTIVE_DIR").is_ok_and(|d| d.contains("target")));
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("amont-capture-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);

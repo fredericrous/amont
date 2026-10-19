@@ -18,7 +18,7 @@ members = ["crates/amont", "crates/amont-fleet", "crates/amont-quiet", "crates/a
 [workspace.package]
 rust-version = "1.74"
 
-# Published metadata, shared so the three crates cannot disagree about who they
+# Published metadata, shared so the four crates cannot disagree about who they
 # are. `version` is here because they are released together: `amont` depends
 # on `amont-runtime`, and crates.io resolves that by VERSION, not by path, so
 # a release where the two disagree is a release nobody can install.
@@ -38,7 +38,9 @@ edition = "2021"
 [workspace.dependencies]
 amont-runtime = { path = "crates/amont-runtime", version = "1.24.0" }
 # Released with amont at the workspace version, first in the publish order;
-# amont-agent and relais take it from crates.io (decisions ADR-0039).
+# amont-agent and relais take it from crates.io (decisions ADR-0039). The
+# floor is the workspace version: cargo requires a path dependency to satisfy
+# its own requirement, so it can name no release later than this checkout.
 amont-quiet = { path = "crates/amont-quiet", version = "1.59.0" }
 
 # Shared release posture. The hook binary runs on every commit, so size and

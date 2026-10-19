@@ -26,7 +26,7 @@ AMONT_TEST_CLOCK_SCALE = "0.25"
 # Code session (amont docs/quiet-runs.md). A test run by an agent inherits
 # that agent's session, and its fixtures would appear in the person's live
 # pane; an empty session writes no entry, and any entry stays under target/.
-# `quiet_entries_never_reach_the_real_state_dir` in crates/amont-quiet fails if this
+# `quiet_entries_never_reach_the_real_state_dir` in crates/amont-runtime/src/capture.rs fails if this
 # stops reaching the tests.
 CLAUDE_CODE_SESSION_ID = { value = "", force = true }
 QUIET_ACTIVE_DIR = { value = "target/quiet-active-test", relative = true, force = true }

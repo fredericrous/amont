@@ -149,7 +149,7 @@ impl Entry {
         }
         // A failed rewrite leaves the entry live-looking; a reader then ends
         // it when the pid dies. Storage never changes a check's verdict.
-        let _ = write_atomic(&self.path, &self.body(Some((exit, now_ms()))));
+        let _ = write_atomic(&self.path, &self.body(Some((exit, now_ms())))); // best-effort: see above
     }
 }
 
@@ -202,7 +202,7 @@ fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
     drop(f);
     let done = written.and_then(|()| fs::rename(&tmp, path));
     if done.is_err() {
-        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(&tmp); // best-effort: the write failed anyway, and a sweep takes a stale temp
     }
     done
 }
@@ -232,7 +232,7 @@ pub fn sweep(dir: &Path, tool: &str, now_ms: u128) {
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .is_some_and(|m| now_ms.saturating_sub(m.as_millis()) > TEMP_KEEP_MS);
             if old {
-                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&path); // best-effort: the next sweep retries
             }
             continue;
         }
@@ -252,7 +252,7 @@ pub fn sweep(dir: &Path, tool: &str, now_ms: u128) {
             }
         };
         if stale {
-            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(&path); // best-effort: the next sweep retries
         }
     }
 }
@@ -347,10 +347,35 @@ fn field<'t>(text: &'t str, key: &str) -> Option<&'t str> {
 mod tests {
     use super::*;
 
-    fn scratch(tag: &str) -> PathBuf {
+    /// A path under the temp dir, removed when the test ends (a directory
+    /// or a file, whichever the test made of it).
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if fs::remove_dir_all(&self.0).is_err() {
+                let _ = fs::remove_file(&self.0); // test cleanup: a leftover is harmless
+            }
+        }
+    }
+
+    fn scratch(tag: &str) -> Scratch {
         let d = std::env::temp_dir().join(format!("amont-quiet-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        d
+        let _ = fs::remove_dir_all(&d); // absent unless an earlier run was killed
+        Scratch(d)
     }
 
     fn read(path: &Path) -> String {
@@ -478,14 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn quiet_entries_never_reach_the_real_state_dir() {
-        // .cargo/config.toml: an agent running this suite must not put its
-        // fixtures in the person's live relais pane.
-        assert_eq!(std::env::var("CLAUDE_CODE_SESSION_ID").as_deref(), Ok(""));
-        assert!(std::env::var("QUIET_ACTIVE_DIR").is_ok_and(|d| d.contains("target")));
-    }
-
-    #[test]
     fn the_sweep_takes_dead_old_ended_and_stale_temp_files_only() {
         let dir = scratch("sweep");
         fs::create_dir_all(&dir).unwrap();
@@ -592,7 +609,6 @@ mod tests {
             fs::symlink_metadata(temp_of(&target)).is_ok(),
             "a temp this call did not create is left"
         );
-        let _ = fs::remove_file(&sentinel);
     }
 
     #[test]
@@ -601,7 +617,7 @@ mod tests {
         fs::create_dir_all(dir.join("9-8.json")).unwrap();
         let target = dir.join("9-8.json");
         // A directory in the way: the rename fails after the temp was made.
-        let _ = fs::create_dir(target.join("x"));
+        fs::create_dir(target.join("x")).unwrap();
         assert!(write_atomic(&target, "{}").is_err());
         assert!(!temp_of(&target).exists(), "the temp it created is gone");
     }
