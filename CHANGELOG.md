@@ -6,6 +6,35 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.60.0
+
+### Added
+
+- **`amont-quiet`, a new std-only crate on crates.io**: the one
+  implementation of the quiet-run active entry, the JSON file per running
+  check that relais's pane tails (decisions ADR-0039). amont writes through
+  it now, and amont-agent and relais will too, in place of their own copies.
+  `docs/quiet-runs.md` is its contract and lives in amont.
+
+### Changed
+
+- **The active entry follows one set of rules**, chosen where the copies
+  disagreed. An empty `HOME` now names no directory: amont used to write a
+  relative `.local/state/quiet/active` under the repository. A pid counts as
+  gone only when `kill` says `ESRCH`. A pid that is no process (zero,
+  negative, wider than an `i32`) is dead and never signalled. The temp file
+  is `.<id>.json.tmp`, created new, so a planted symlink is never followed,
+  and a sweep removes temps older than an hour, including the
+  `<id>.json.tmp` files earlier versions left behind.
+- **A release publishes nothing until every platform is proven**: the tag
+  waits until main's CI has attested macOS, Windows and the load scenarios
+  for the tagged tree, while a pull request now proves Linux only.
+- **For contributors**: `scripts/check-no-deps.sh` also checks build
+  dependencies and every target, and allows `amont-quiet` by name while its
+  own tree is empty, as it allows `git-attest`. The release-gate tests no
+  longer share a temp directory, which made them fail together on a busy
+  machine.
+
 ## v1.59.0
 
 ### Added
