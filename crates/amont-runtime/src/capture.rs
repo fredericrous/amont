@@ -73,8 +73,8 @@ pub struct Capture {
     fail_after: Option<u64>,
     pub acc: Accumulator,
     /// The active-run entry relais's pane tails this log from, while the run
-    /// is live (see [`crate::active`]). `None` when it could not be written.
-    entry: Option<crate::active::Entry>,
+    /// is live (see [`amont_quiet`]). `None` when it could not be written.
+    entry: Option<amont_quiet::Entry>,
 }
 
 /// The repository's top level, asked of git once per process: an entry is
@@ -135,9 +135,17 @@ impl Capture {
             }
         };
         // Only a log that exists can be tailed.
-        let entry = file
-            .as_ref()
-            .and_then(|_| crate::active::Entry::start(&crate::active::dir()?, check, repo, &tmp));
+        let session = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+        let entry = file.as_ref().and_then(|_| {
+            amont_quiet::Entry::start(
+                &amont_quiet::dir_from_env()?,
+                "amont",
+                &session,
+                check,
+                repo,
+                &tmp,
+            )
+        });
         Capture {
             tmp,
             done,
@@ -302,6 +310,14 @@ fn prune(dir: &Path, done: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_entries_never_reach_the_real_state_dir() {
+        // .cargo/config.toml: an agent running this suite must not put its
+        // fixtures in the person's live relais pane.
+        assert_eq!(std::env::var("CLAUDE_CODE_SESSION_ID").as_deref(), Ok(""));
+        assert!(std::env::var("QUIET_ACTIVE_DIR").is_ok_and(|d| d.contains("target")));
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("amont-capture-{tag}-{}", std::process::id()));

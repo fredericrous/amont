@@ -1,0 +1,21 @@
+[package]
+name = "amont-quiet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Inherited from [workspace.package]: 1.74, amont's commit-path floor, because
+# amont-runtime depends on this crate.
+rust-version.workspace = true
+description = "The quiet-run active entry: one JSON file per running check, for a pane to tail"
+readme = "README.md"
+keywords = ["amont", "git-hooks", "quiet"]
+categories = ["development-tools"]
+
+# NO DEPENDENCIES, and that is the condition of its use (decisions ADR-0039,
+# ADR-0020): amont-runtime, on the commit path, depends on this crate, and
+# scripts/check-no-deps.sh allows it there by name only while its own resolved
+# tree is empty. It is the one implementation of the contract in
+# docs/quiet-runs.md; amont-agent and relais call it instead of copying it.
+[dependencies]

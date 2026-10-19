@@ -39,7 +39,14 @@
 # decoration.
 set -eu
 
-if ! tree_out=$(cargo tree -p amont --edges normal --prefix none); then
+# Normal AND build edges, on EVERY target: a build script runs on the
+# developer's machine as surely as the binary does, and a dependency declared
+# under `[target.'cfg(windows)'.dependencies]` never shows on a macOS host's
+# default query.
+EDGES="--edges normal,build --target all"
+
+# shellcheck disable=SC2086 # $EDGES is two flags, split on purpose
+if ! tree_out=$(cargo tree -p amont $EDGES --prefix none); then
   echo "check-no-deps: cargo tree failed — the commit path is UNVERIFIED." >&2
   echo "That is a failure, not a pass: see the error above." >&2
   exit 1
@@ -62,15 +69,17 @@ if ! printf '%s\n' "$crates" | grep -qx 'amont'; then
   exit 1
 fi
 
-# git-attest is the one crate allowed, argued beside its declaration in
-# crates/amont-runtime/Cargo.toml (decisions ADR-0037): attest's std-only
-# implementation of the attestation format, the code this workspace used to
-# copy. Allowed by name, and only while its OWN tree is empty, checked below:
-# a dependency it gains would reach the commit path through it.
+# Two crates are allowed, each argued beside its declaration in
+# crates/amont-runtime/Cargo.toml: git-attest (decisions ADR-0037), attest's
+# std-only implementation of the attestation format, and amont-quiet
+# (ADR-0039), the one implementation of the quiet-run active entry. Each is
+# allowed by name, and only while its OWN tree is empty, checked below: a
+# dependency it gains would reach the commit path through it.
+ALLOWED="git-attest amont-quiet"
 #
 # The one legitimate `|| true` in this file: `grep -v` exits 1 when nothing
 # matches, and nothing matching IS the success case here.
-ext=$(printf '%s\n' "$crates" | grep -vE '^(amont|amont-runtime|git-attest)$' || true)
+ext=$(printf '%s\n' "$crates" | grep -vE '^(amont|amont-runtime|git-attest|amont-quiet)$' || true)
 
 if [ -n "$ext" ]; then
   echo "amont gained external dependencies:" >&2
@@ -79,14 +88,17 @@ if [ -n "$ext" ]; then
   echo "The commit path must stay dependency-free. Put this in amont-fleet." >&2
   exit 1
 fi
-if ! attest_out=$(cargo tree -p git-attest --edges normal --prefix none); then
-  echo "check-no-deps: cargo tree -p git-attest failed — the commit path is UNVERIFIED." >&2
-  exit 1
-fi
-attest_ext=$(printf '%s\n' "$attest_out" | sed 's/ (\*)$//' | awk '{print $1}' | sort -u | grep -vx 'git-attest' || true)
-if [ -n "$attest_ext" ]; then
-  echo "git-attest gained dependencies, which would reach the commit path:" >&2
-  echo "$attest_ext" | sed 's/^/  /' >&2
-  exit 1
-fi
-echo "amont: no external dependencies (git-attest, std-only, is the one allowed crate)"
+for leaf in $ALLOWED; do
+  # shellcheck disable=SC2086 # $EDGES is two flags, split on purpose
+  if ! leaf_out=$(cargo tree -p "$leaf" $EDGES --prefix none); then
+    echo "check-no-deps: cargo tree -p $leaf failed — the commit path is UNVERIFIED." >&2
+    exit 1
+  fi
+  leaf_ext=$(printf '%s\n' "$leaf_out" | sed 's/ (\*)$//' | awk '{print $1}' | sort -u | grep -vx "$leaf" || true)
+  if [ -n "$leaf_ext" ]; then
+    echo "$leaf gained dependencies, which would reach the commit path:" >&2
+    echo "$leaf_ext" | sed 's/^/  /' >&2
+    exit 1
+  fi
+done
+echo "amont: no external dependencies (git-attest and amont-quiet, std-only, are the allowed crates)"

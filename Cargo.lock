@@ -38,9 +38,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "amont-quiet"
+version = "1.59.0"
+
+[[package]]
 name = "amont-runtime"
 version = "1.59.0"
 dependencies = [
+ "amont-quiet",
  "git-attest",
 ]
 
