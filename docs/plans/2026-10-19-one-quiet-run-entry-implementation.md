@@ -115,7 +115,7 @@ Phase 1 (amont), as observed before the push:
 
 | Check | Expected | Actual |
 |---|---|---|
-| `cargo test -p amont-quiet` | pass | 12 tests pass, and no `amont-quiet-*` scratch directory remains in `$TMPDIR` |
+| `cargo test -p amont-quiet` | pass | 13 tests pass on unix (11 on Windows, where two are unix-only), and no `amont-quiet-*` scratch directory remains in `$TMPDIR` |
 | clippy `-D warnings`, rustfmt on `amont-quiet` and `amont-runtime` | clean | clean |
 | `scripts/check-no-deps.sh` | pass | "no external dependencies (git-attest and amont-quiet, std-only, are the allowed crates)" |
 | `cfg-if` injected into `amont-quiet` as a normal, a build and a `cfg(windows)` dependency, each in a disposable copy | each fails | all three exit 1 with "amont gained external dependencies: cfg-if" |
@@ -133,6 +133,7 @@ Phase 2 (amont-agent) and Phase 3 (relais) follow once amont is released.
 
 - 2026-10-19: the API as built is `Entry::start(dir, tool, session, check, repo, log)`, with the session before the check. Phases 2 and 3 build against this signature. `Entry::path()` is public for callers' tests.
 - 2026-10-19: the `amont-quiet` floor in `[workspace.dependencies]` is the workspace version, 1.59.0. Cargo requires a path dependency to satisfy its own requirement, so the floor cannot name the next release. The first published version will be the next amont release.
+- 2026-10-19: #371's `windows` job failed one test, `an_entry_carries_the_documented_fields_and_ends_in_place`. `field()` returns the raw JSON text with escapes kept, so a Windows path's backslashes come back doubled. The test now compares against the escaped path. The writer was correct.
 - 2026-10-19: the environment assertion `quiet_entries_never_reach_the_real_state_dir` moved to `amont-runtime`'s `capture.rs` tests. It holds only inside this workspace, because it depends on its `.cargo/config.toml`, so it cannot live in a crate that others test.
 
 ## Implementation review
@@ -141,6 +142,6 @@ approve-with-changes, then approve-with-changes on the Delta.
 - Fixed: the tests clean up their scratch directories; the environment assertion moved; every `let _ =` gives its reason on the same line; the comment now says "four crates".
 - Recorded here: the signature as built, and the verification rows run differently from their wording.
 - Kept deliberately: the version floor, for the reason above.
-- 48k tokens and 70 s for round 1; 60k and 30 s for the Delta.
+- 48k tokens and 70 s for round 1; 60k and 30 s for the Delta; 66k and 20 s for the second Delta, on the Windows test fix.
 
 <!-- panel: repos=amont,amont-agent,relais reviewers=backend,codex body-sha=60127b65f789 -->
