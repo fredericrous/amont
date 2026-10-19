@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/amont-quiet
 repos: [amont, amont-agent, relais]
 adrs: [ADR-0039, ADR-0037, ADR-0020]
@@ -127,13 +127,38 @@ Phase 1 (amont), as observed before the push:
 | pre-commit gate | pass | 28 checks passed; `make attest-inputs` ok |
 | crates.io | `amont-quiet` unclaimed | API 404; the publish token's scope cannot be read from here, so the person is asked before tagging |
 
-Phase 2 (amont-agent) and Phase 3 (relais) follow once amont is released.
+Released as amont 1.60.0. `amont-quiet` 1.60.0 resolves on crates.io, and `amont-runtime` 1.60.0 depends on it with `^1.60.0`. This machine runs amont 1.60.0.
+
+Phase 2 (amont-agent, #124, released as 2.44.0):
+
+| Check | Expected | Actual |
+|---|---|---|
+| `cargo test --test quiet` | pass | 25 pass, 3 of them new |
+| an empty `HOME` with no override | nothing under the working directory | passes. A regression guard only: amont-agent already wrote nothing there |
+| a log that cannot be created | no entry; the exit code is kept | no entry, exit 3 |
+| a relative `CLAUDE_CONFIG_DIR` | absolute started and ended log paths, and the ended log holds the run's last line | as expected, after a fix: the ended path used to be relative (a pre-existing defect the test caught) |
+| `git grep holds-until -- src/quiet.rs`; `git grep 'fn active_dir\|fn pid_alive\|fn sweep_active' -- src` | empty | empty, in amont-agent and in amont-runtime |
+| real entries from amont 1.60 and amont-agent, each with a scratch `QUIET_ACTIVE_DIR` | the same key set and order | `v, tool, session, check, repo, pid, started, log, exit, ended` in both; `relais quiet watch --protocol` emits `started` and `ended` for each |
+| Cargo.lock | `amont-quiet` from crates.io | 1.60.0, registry source, no dependencies |
+| release | amont-agent 2.44.0 on crates.io and in brew | both; this machine runs 2.44.0 |
+
+Phase 3 (relais, #266):
+
+| Check | Expected | Actual |
+|---|---|---|
+| `active_dir` keeps relais's old rule | the same result for every case | relais had no `active_dir` test, so the row as worded ("existing tests pass unchanged") checked nothing. `active_dir_keeps_the_rule_it_had` now pins every case: `QUIET_ACTIVE_DIR` wins; an empty value counts as unset; `XDG_STATE_HOME`, then `HOME`; no `HOME` gives none; Windows uses `LOCALAPPDATA`. It passes against the delegated rule and, run in place, against the old body. The Windows branch ran on the `test (windows-latest)` job |
+| CI | green | 7 checks passed, plugin tests included |
 
 ## Decision log
 
 - 2026-10-19: the API as built is `Entry::start(dir, tool, session, check, repo, log)`, with the session before the check. Phases 2 and 3 build against this signature. `Entry::path()` is public for callers' tests.
 - 2026-10-19: the `amont-quiet` floor in `[workspace.dependencies]` is the workspace version, 1.59.0. Cargo requires a path dependency to satisfy its own requirement, so the floor cannot name the next release. The first published version will be the next amont release.
 - 2026-10-19: #371's `windows` job failed one test, `an_entry_carries_the_documented_fields_and_ends_in_place`. `field()` returns the raw JSON text with escapes kept, so a Windows path's backslashes come back doubled. The test now compares against the escaped path. The writer was correct.
+- 2026-10-19: Phase 2 keeps a thin local `ActiveEntry` around `amont_quiet::Entry`, holding `exit` and `final_log`, instead of rewriting `execute`'s call sites. It does what the plan's adaptation asked:
+  - `finish()` ends the entry once, right after the log's fate is known and before the excerpt prints;
+  - `Drop` ends it on early returns and on unwinding, each with the code it set;
+  - `Entry::end` writes only once.
+- 2026-10-19: Phase 3 is relais's reader only. Its watcher's liveness check, including `OpenProcess` on Windows, and its retention rules stay relais's protocol.
 - 2026-10-19: the environment assertion `quiet_entries_never_reach_the_real_state_dir` moved to `amont-runtime`'s `capture.rs` tests. It holds only inside this workspace, because it depends on its `.cargo/config.toml`, so it cannot live in a crate that others test.
 
 ## Implementation review
