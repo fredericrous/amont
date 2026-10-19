@@ -20,6 +20,9 @@
 # Mutants are matched across the two trees by file, description and
 # occurrence, not by line: a table conversion moves lines in the same file.
 #
+# Mutants listed in scripts/mutants-equivalent.txt, each under its reason,
+# are not counted: no test could tell them from the original.
+#
 # Exit 0: nothing deleted, or nothing lost. Exit 1: a mutant the deleted
 # tests caught is missed, or times out, or no longer exists, each listed.
 # Exit 2: a usage error, or a run that could not start.
@@ -191,6 +194,21 @@ fi
 # cargo-mutants ends with "N mutants tested", or "1 mutant tested".
 grep -Eq "mutants? tested" "$work/before/run.log" || { tail -20 "$work/before/run.log" >&2; echo "mutants-check: the run on $base did not complete" >&2; exit 2; }
 keys "$work/before" caught > "$work/at-risk"
+# Known-equivalent mutants (scripts/mutants-equivalent.txt, each with its
+# reason) are not at risk: no test could catch them.
+equivalent="$root/scripts/mutants-equivalent.txt"
+if [ -s "$equivalent" ]; then
+    grep -Ev '^(#|$)' "$equivalent" > "$work/equivalent.re" || true
+    if [ -s "$work/equivalent.re" ]; then
+        awk -F'\t' '{print $2}' "$work/at-risk" | grep -nEf "$work/equivalent.re" | cut -d: -f1 > "$work/equivalent.lines" || true
+        if [ -s "$work/equivalent.lines" ]; then
+            echo "    known equivalent, not at risk:"
+            awk 'NR==FNR {skip[$1]; next} FNR in skip {print "      " $4}' FS='\t' "$work/equivalent.lines" "$work/at-risk"
+            awk 'NR==FNR {skip[$1]; next} !(FNR in skip)' "$work/equivalent.lines" FS='\t' "$work/at-risk" > "$work/at-risk.kept"
+            mv "$work/at-risk.kept" "$work/at-risk"
+        fi
+    fi
+fi
 echo "    the deleted tests catch $(wc -l < "$work/at-risk") of $(wc -l < "$work/before/listed.txt") mutants:"
 cut -f4 "$work/at-risk" | sed 's/^/      /'
 if [ ! -s "$work/at-risk" ]; then
