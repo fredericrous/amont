@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/amont", "crates/amont-fleet", "crates/amont-runtime"]
+members = ["crates/amont", "crates/amont-fleet", "crates/amont-quiet", "crates/amont-runtime"]
 
 # The floor for the COMMIT PATH — `amont` and `amont-runtime`, which
 # inherit this. Not a guess: 1.73 was run against those two crates and failed
@@ -37,6 +37,9 @@ edition = "2021"
 # above is now the whole edit.
 [workspace.dependencies]
 amont-runtime = { path = "crates/amont-runtime", version = "1.24.0" }
+# Released with amont at the workspace version, first in the publish order;
+# amont-agent and relais take it from crates.io (decisions ADR-0039).
+amont-quiet = { path = "crates/amont-quiet", version = "1.59.0" }
 
 # Shared release posture. The hook binary runs on every commit, so size and
 # start-up cost are features.

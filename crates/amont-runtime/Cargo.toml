@@ -41,4 +41,10 @@ test-hooks = []
 # shares it. The script allows it by name, and only while its own resolved
 # tree stays empty. A caret requirement: Cargo.lock pins the exact version.
 git-attest = "1.6"
+# The second, argued the same way (decisions ADR-0039, ADR-0020): amont-quiet
+# is the one implementation of the quiet-run active entry (docs/quiet-runs.md),
+# which amont-agent copied and drifted from in five ways. It is std-only and
+# ours, moved out of this crate's active.rs so the other writers can share it;
+# scripts/check-no-deps.sh allows it by name while its own tree stays empty.
+amont-quiet.workspace = true
 
