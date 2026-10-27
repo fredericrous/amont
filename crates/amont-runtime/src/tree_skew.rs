@@ -269,7 +269,7 @@ mod tests {
     /// Point `AMONT_NPM_DRIFT_DIR` at a real npm project to see what the
     /// comparison says about its installed tree.
     #[test]
-    #[ignore]
+    #[ignore = "a manual probe: needs AMONT_NPM_DRIFT_DIR pointing at a real npm project"]
     fn tree_skew_probe_a_real_project() {
         let dir = std::env::var("AMONT_NPM_DRIFT_DIR").expect("AMONT_NPM_DRIFT_DIR");
         eprintln!("npm_drift: {:?}", npm_drift(Path::new(&dir)));
