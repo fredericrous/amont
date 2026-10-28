@@ -139,6 +139,20 @@ over nothing.
   an attestation never tells CI the gate is covered. CI and the push-side
   checks see it.
 
+- **the `heavy` marker**, opt-in: prefix the command with `heavy ` when it
+  compiles or executes the product (a test suite, a type checker, a build).
+  A heavy check takes one of the machine's
+  [host slots](configuration.md#amonthostslots--how-many-heavy-checks-one-machine-runs-at-once)
+  before it runs, and the repository's busy policy (`set onBusy`) says what
+  it does when none frees. A check that moves a built-in heavy gate
+  (`pre-commit cargo-test`) is heavy without the marker. An amont older than
+  1.61 reads `heavy` as part of the command, so add it once everyone reading
+  the file has upgraded.
+
+  ```
+  pre-commit  plugin-test  *.ts  block  heavy make plugin
+  ```
+
 ## There is no shell
 
 No pipes, no redirection, no globbing, no quoting. `make smoke` works; `find . |
@@ -235,7 +249,8 @@ Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.bodyWrap`, `autoRebase`, `timeout`, `lockWait`, `testPushedTree`,
 `snapshotPrepare`, `snapshotDeps`, `snapshotCarry`, `order`, `treeLint`,
 `treeLintSlack`, `treeLintWait`, `treeLintRehearsalTimeout`,
-`snapshotPrepareOutputs`, and `minVersion` — the last being the team's version
+`snapshotPrepareOutputs`, `planExempt`, `onBusy`, `slotWait`, and
+`minVersion` — the last being the team's version
 floor: a binary older than `set minVersion 1.11.0` says so once per stage,
 warn-only, instead of silently lacking the checks the team added since.
 
@@ -257,6 +272,12 @@ flags is written plainly:
 set snapshotPrepare pnpm prisma generate
 set snapshotCarry .env
 ```
+
+`onBusy` (`wait` or `defer`) and `slotWait` (whole seconds, 1 to 3600) are
+strict like `planExempt`: any other value, or the key set twice, is a broken
+line. `set onBusy defer` moves a heavy gate to CI when the machine is busy,
+so declare it only where CI runs that gate; see
+[configuration](configuration.md#amontonbusy--what-a-heavy-check-does-on-a-busy-host).
 
 Any other
 key is refused with its line number — most deliberately `amont.fix`,
