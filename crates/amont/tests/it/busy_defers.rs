@@ -242,12 +242,16 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
 #[test]
 fn quiet_mode_still_says_a_check_was_deferred() {
     let (repo, _) = paired_repo();
-    repo.git(&["config", "amont.quiet", "true"]);
+    repo.git(&["config", "amont.quiet", "always"]);
     let slots = slot_dir("quiet");
     let _holder = Holder::hold(&slots.join("slot-0"));
     repo.stage("a.txt", "one\n");
     let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[("NO_COLOR", "1")]);
     assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("check(s) passed"),
+        "quiet mode is on (passes rolled up into a count): {out}"
+    );
     assert!(
         out.contains("check(s) deferred to CI, no host slot freed: pre-commit-gate"),
         "{out}"
@@ -379,6 +383,18 @@ fn a_push_mixing_a_stamped_and_a_deferred_commit_defers_and_is_not_attested() {
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "b.txt", "feat: b");
     let line = push_line("feat/x", &base, &head(&repo));
+    // The push half first, signing off: it holds wherever ssh-keygen is
+    // missing and `attested` returns early.
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("deferred to CI at commit on 1 pushed commit"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("gated at commit instead"),
+        "never Gated: {out}"
+    );
     let Some(gates) = attested(&repo, &slots, &line) else {
         return;
     };
@@ -411,6 +427,9 @@ fn a_forged_deferral_only_moves_the_gate_to_ci() {
         &tree,
     ]);
     let line = push_line("feat/x", &base, &head(&repo));
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("deferred to CI at commit"), "{out}");
     let Some(gates) = attested(&repo, &slots, &line) else {
         return;
     };
