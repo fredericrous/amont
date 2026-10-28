@@ -613,16 +613,29 @@ mod tests {
         assert_eq!(resolve_busy(Some(""), &none), BusyPolicy::Wait);
     }
 
-    /// The count rises with a slot and falls only after its lock is gone.
+    /// A slot raises the process's count while held, and once dropped its
+    /// lock is free. (The order inside `Drop` — lock first, then count — is
+    /// what keeps a sibling from reading zero while the flock is still held;
+    /// a count read from another thread is racy, so the observable half is
+    /// checked: the lock is free once the slot is gone.)
     #[test]
-    fn a_dropped_slot_releases_its_lock_before_its_count() {
-        let d = scratch("held");
-        safe_dir(&d).unwrap();
+    fn a_held_slot_is_counted_and_a_dropped_one_is_free() {
+        let slot_dir = scratch("held");
+        safe_dir(&slot_dir).unwrap();
+        let path = slot_dir.join("slot-0");
         let before = HELD.load(Ordering::SeqCst);
-        let slot = Slot::new(platform::try_lock(&d.join("slot-0")).unwrap().unwrap());
+        let slot = Slot::new(platform::try_lock(&path).unwrap().unwrap());
         assert!(HELD.load(Ordering::SeqCst) > before);
+        assert!(platform::try_lock(&path).unwrap().is_none(), "held");
         drop(slot);
-        let _ = std::fs::remove_dir_all(&d);
+        let freed = (0..100).any(|_| {
+            matches!(platform::try_lock(&path), Ok(Some(_))) || {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(freed, "a dropped slot was not released within 2 s");
+        let _ = std::fs::remove_dir_all(&slot_dir); // best-effort: a scratch dir
     }
 
     #[test]

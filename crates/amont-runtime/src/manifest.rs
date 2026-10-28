@@ -674,7 +674,7 @@ impl Check for External {
         match &self.kind {
             Kind::Runnable { heavy: true, .. } => crate::host_slots::Weight::Heavy,
             Kind::Runnable { .. } if moved => crate::host_slots::Weight::Heavy,
-            _ => crate::host_slots::Weight::Light,
+            Kind::Runnable { .. } | Kind::Unusable { .. } => crate::host_slots::Weight::Light,
         }
     }
 
@@ -2649,12 +2649,12 @@ mod tests {
     fn heavy_is_a_marker_and_a_moved_gate_is_heavy() {
         use crate::check::Check;
         use crate::host_slots::Weight;
-        let d =
+        let parsed =
             usable(&parse_lines("pre-commit plugin-test *.ts block heavy files make plugin")[0])
                 .clone();
-        assert!(d.heavy && d.files);
-        assert_eq!(d.program, "make");
-        assert_eq!(d.args, vec!["plugin".to_string()]);
+        assert!(parsed.heavy && parsed.files);
+        assert_eq!(parsed.program, "make");
+        assert_eq!(parsed.args, vec!["plugin".to_string()]);
         let externals = parse(
             "pre-commit plugin-test *.ts block heavy make plugin\n\
              pre-commit cargo-test *.rs block cargo test --locked\n\
@@ -2680,16 +2680,22 @@ mod tests {
     /// seconds in 1..=3600, each once; anything else is a broken line.
     #[test]
     fn the_busy_policy_keys_are_strict_and_set_once() {
-        let set = |l: &Line| match l {
-            Line::Policy {
+        let set = |line: &Line| {
+            let Line::Policy {
                 what: PolicyLine::Set { key, value },
                 ..
-            } => Some((key.clone(), value.clone())),
-            _ => None,
+            } = line
+            else {
+                return None;
+            };
+            Some((key.clone(), value.clone()))
         };
-        let v = parse_lines("set onBusy DEFER\nset slotWait 90\n");
-        assert_eq!(set(&v[0]), Some(("amont.onBusy".into(), "defer".into())));
-        assert_eq!(set(&v[1]), Some(("amont.slotWait".into(), "90".into())));
+        let lines = parse_lines("set onBusy DEFER\nset slotWait 90\n");
+        assert_eq!(
+            set(&lines[0]),
+            Some(("amont.onBusy".into(), "defer".into()))
+        );
+        assert_eq!(set(&lines[1]), Some(("amont.slotWait".into(), "90".into())));
         for bad in [
             "set onBusy later",
             "set onBusy defer # busy",
@@ -2697,17 +2703,17 @@ mod tests {
             "set slotWait 3601",
             "set slotWait 1m",
         ] {
-            let v = parse_lines(bad);
-            assert!(set(&v[0]).is_none(), "{bad:?} must not be a policy");
+            let lines = parse_lines(bad);
+            assert!(set(&lines[0]).is_none(), "{bad:?} must not be a policy");
             assert!(
-                matches!(why(&v[0]), ParseError::BadBusyPolicy { .. }),
+                matches!(why(&lines[0]), ParseError::BadBusyPolicy { .. }),
                 "{bad:?}"
             );
         }
-        let v = parse_lines("set onBusy defer\nset onBusy wait\n");
-        assert!(set(&v[0]).is_some());
+        let lines = parse_lines("set onBusy defer\nset onBusy wait\n");
+        assert!(set(&lines[0]).is_some());
         assert!(matches!(
-            why(&v[1]),
+            why(&lines[1]),
             ParseError::BadBusyPolicy { key: "onBusy", .. }
         ));
     }

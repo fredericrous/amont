@@ -566,7 +566,7 @@ pub fn record_deferred(tree: &str, gates: &[String]) {
             note.deferred.push(g.clone());
         }
     }
-    let _ = write_note(tree, &note);
+    let _ = write_note(tree, &note); // best-effort: a lost line runs the push twin, the safe way
 }
 
 /// Which of `commits` carry a deferral of `gate` on their tree's note (or
