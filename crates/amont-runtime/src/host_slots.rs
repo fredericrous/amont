@@ -266,6 +266,12 @@ impl CheckGuard {
     }
 }
 
+/// Whether the check running on this thread was deferred by the busy
+/// policy: what it says after that is about its refused spawn.
+pub fn deferred_here() -> bool {
+    CURRENT.with(|c| c.borrow().deferred.is_some())
+}
+
 /// The error a refused spawn returns. Only a way to stop the spawn: what the
 /// check makes of it does not matter, because [`CheckGuard::deferred`] wins.
 fn refusal() -> std::io::Error {

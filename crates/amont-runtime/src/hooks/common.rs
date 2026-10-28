@@ -1793,6 +1793,12 @@ pub fn fail(msg: &str) {
     crate::live::say(&format!("{} {msg}", error_sign()));
 }
 pub fn warn(msg: &str) {
+    // A check the busy policy deferred has its spawn refused, and whatever
+    // it then says about that ("could not run …") is not a finding: the
+    // dispatcher's deferral line is the one thing to say (ADR-0013).
+    if crate::host_slots::deferred_here() {
+        return;
+    }
     crate::live::say(&format!("{} {msg}", warning_sign()));
 }
 /// A line with no sign of its own — what a check's direct `println!` becomes,

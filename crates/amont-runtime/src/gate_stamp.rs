@@ -1291,6 +1291,29 @@ mod tests {
         assert_eq!(note.runs[1].outcome, RunOutcome::Failed);
     }
 
+    /// A deferral line (ADR-0013) round-trips, is never a token, and is not
+    /// trimmed with the run history: more than [`MAX_RUNS`] later runs on the
+    /// same tree must not make the push twin forget the commit deferred it.
+    #[test]
+    fn a_deferral_is_never_a_token_and_outlives_the_run_trim() {
+        let mut note = Note::parse("amont-gate-v1 lint\ndeferred cargo-test\n");
+        assert_eq!(note.tokens, vec!["lint"]);
+        assert_eq!(note.deferred, vec!["cargo-test"]);
+        let runs: Vec<Run> = (0..MAX_RUNS as u64 + 10)
+            .map(|i| Run {
+                at: 1_726_900_000 + i,
+                gate: "pre-push-audit-js".into(),
+                outcome: RunOutcome::Passed,
+                ms: 1,
+            })
+            .collect();
+        note.add_runs(&runs);
+        let again = Note::parse(&note.render());
+        assert_eq!(again.runs.len(), MAX_RUNS);
+        assert_eq!(again.deferred, vec!["cargo-test"]);
+        assert_eq!(again.tokens, vec!["lint"]);
+    }
+
     /// A note somebody else wrote into our ref is not evidence either. The
     /// token line is the trust boundary for BOTH halves of the note.
     #[test]

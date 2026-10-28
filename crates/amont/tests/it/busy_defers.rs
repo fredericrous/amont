@@ -177,6 +177,81 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
     let _ = std::fs::remove_dir_all(&slots);
 }
 
+/// A push of one commit stamped at commit and one deferred: the twin defers,
+/// and is never `Gated`, which would put it in the attestation as passed.
+#[test]
+fn a_push_mixing_a_stamped_and_a_deferred_commit_defers() {
+    let (r, base) = paired_repo();
+    let slots = slot_dir("mixed");
+    r.stage("a.txt", "one\n");
+    let (code, out) = hook(&r, "pre-commit", &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(runs(&r, "gate.log"), 1, "a free host runs the gate: {out}");
+    r.commit("feat: a");
+    let (code, out) = hook(&r, "post-commit", &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+
+    let holder = Holder::hold(&slots.join("slot-0"));
+    r.stage("b.txt", "two\n");
+    let (code, out) = hook(&r, "pre-commit", &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("deferred to CI"), "{out}");
+    r.commit("feat: b");
+    let tip = head(&r);
+
+    let line = format!("refs/heads/feat/x {tip} refs/heads/feat/x {base}\n");
+    let (code, out) = hook(&r, "pre-push", &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("deferred to CI at commit on 1 pushed commit"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("gated at commit instead"),
+        "never Gated: {out}"
+    );
+    assert_eq!(runs(&r, "gate.log"), 1, "the twin must not run: {out}");
+    drop(holder);
+    let _ = std::fs::remove_dir_all(&slots);
+}
+
+/// Three Heavy push gates on a busy host: the first waits `slotWait`, the
+/// rest defer at once, so the push waits one `slotWait`, not three.
+#[test]
+fn a_busy_push_waits_one_slot_wait_not_one_per_gate() {
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        "set onBusy defer\nset slotWait 3\n\
+         pre-push  one    *.txt  block  heavy sh -c true\n\
+         pre-push  two    *.txt  block  heavy sh -c true\n\
+         pre-push  three  *.txt  block  heavy sh -c true\n",
+    );
+    r.commit("chore: base");
+    trust(&r);
+    let base = head(&r);
+    r.stage("a.txt", "one\n");
+    r.commit("feat: a");
+    let tip = head(&r);
+    let slots = slot_dir("serial");
+    let _holder = Holder::hold(&slots.join("slot-0"));
+    let line = format!("refs/heads/feat/x {tip} refs/heads/feat/x {base}\n");
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&r, "pre-push", &slots, &line, &[]);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.matches("deferred to CI,").count(), 3, "{out}");
+    assert!(
+        !out.contains("could not run"),
+        "a refused spawn is not a finding: {out}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(8),
+        "one wait of 3 s, not three: took {took:?}\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&slots);
+}
+
 /// One slot, two Heavy checks of the same commit, nobody else on the host:
 /// the second waits behind the first instead of deferring behind its own
 /// commit's work.
