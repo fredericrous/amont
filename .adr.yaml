@@ -80,6 +80,9 @@ keys:
   hooks.host-concurrency:
     description: How many checks that compile or execute the product one host runs at once
     scopes: [hook-binary]
+  hooks.busy-policy:
+    description: What a heavy check does when no host slot frees in time
+    scopes: [hook-binary]
   hooks.clippy-scope:
     description: What pre-commit clippy judges
     scopes: [pre-commit]
