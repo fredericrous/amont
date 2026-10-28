@@ -76,20 +76,20 @@ Exhaustive `match`es on `Outcome` are found by the compiler. Every `_ =>` arm an
 
 ## Phases (one amont PR, then the rollout)
 
-1. **ADR.** amont `adr/0013-a-busy-host-defers-to-ci.md`:
+1. ✅ **ADR.** (`d1da219`) amont `adr/0013-a-busy-host-defers-to-ci.md`:
    - replaces ADR-0009's head of `hooks.host-concurrency`, to add declared weight and the busy policy;
    - adds the first decision on a new key, `hooks.busy-policy`, declared in `.adr.yaml`;
    - runs `aval heads --write`.
 
    No fleet ADR: `ci.attested-skip` is unchanged.
-2. **Weight.** The `heavy` flag and the moved-gate rule. `weight_of` widens to take the check, and the registry test is kept.
-3. **Policy and deferral.** The `onBusy` and `slotWait` keys, `host_slots::settle`, the typed spawn refusal, the process-wide held-slot count, `Outcome::Deferred` and `RunOutcome::Deferred`, announce and summary.
-4. **Docs.**
+2. ✅ **Weight.** (`3bc1ddf`) The `heavy` flag and the moved-gate rule. `weight_of` widens to take the check, and the registry test is kept.
+3. ✅ **Policy and deferral.** (`3bc1ddf`, `88688b3`) The `onBusy` and `slotWait` keys, `host_slots::settle`, the typed spawn refusal, the process-wide held-slot count, `Outcome::Deferred` and `RunOutcome::Deferred`, announce and summary.
+4. ✅ **Docs.** (`3bc1ddf`)
    - `docs/configuration.md`: `onBusy`, `slotWait`, and the "host concurrency" section.
    - `docs/custom-checks.md`: the `heavy` flag.
    - `docs/ci.md`: deferral as a CI backstop.
    - `amont agents-md` regenerated.
-5. **Release** amont (the `tag-release` skill), then `brew upgrade`, and check that `~/.local/bin/amont` does not shadow it.
+5. **Release** (next phase) amont (the `tag-release` skill), then `brew upgrade`, and check that `~/.local/bin/amont` does not shadow it.
 6. **Rollout.** First confirm that every amont reading these `amont.conf` files (brew, `~/.local/bin`, CI, npm pins) is at the release: an older one runs `heavy make plugin` as the command (`manifest.rs:1397-1414`). Then add `set onBusy defer` to amont and relais, the two contention sources. For relais, also add `heavy` to plugin-test, since its GitHub workflow already runs `make plugin` every time (`.github/workflows/ci.yaml:167`) and runs `cargo test` unless the attestation lists `pre-push-cargo-test` (`ci.yaml:119-120`). Other GitHub repos follow, one line each, each after its workflow has been checked.
 
 Implementation of phases 2–4 goes through relais (bounded, `cargo test` acceptance), per the routing rule.
@@ -117,5 +117,50 @@ Implementation of phases 2–4 goes through relais (bounded, `cargo test` accept
   - In relais under real load, commit a `.ts` change and see `deferred` instead of 5 s timeouts. Record how many of the `amont.hostSlots` slots were held each time plugin-test deferred or failed.
   - On the PR, read the attest step's `gates` output and see the test step run (step conclusion read explicitly).
 - **After release (14 days, amont and relais):** Heavy gates deferred out of all Heavy gates run; plugin-test timeout failures against the four in a row before; how many deferred gates CI then failed. Roll back to `onBusy wait` in a repo if more than 50% of its Heavy gates defer or the timeout failures do not fall.
+
+## Decision log
+
+- 2026-10-28: implemented directly, not through relais: run A ended `blocked (baseline_unrunnable)`, amont's baseline timing out at 3600 s at a 5-minute load of 240, the third such run in amont since 10-14.
+- Departures from the Design, each smaller than what it replaces:
+  - no `host_slots::settle`: `before_spawn` answers nested and disabled first, before the queue row, so a nested amont still pays no host-key scan;
+  - `weight_of` keeps its name-only meaning for built-ins; a new `Check::weight` (default `weight_of`) is overridden by declared checks;
+  - the commit-time deferral is a `deferred <gate>` line on the tree note, apart from the `run` history, not a `run … deferred` line: the `MAX_RUNS` trim cannot forget it (Codex #2), and `RunOutcome::Deferred` still records the run;
+  - the "run now" hint is `AMONT_ON_BUSY=wait amont run <id>`, not the gate's command: it works for built-ins too, and runs the gate as amont would.
+- A deferred check's own `warn` lines are silenced on its thread (`88688b3`): a declared check printed "could not run sh" beside every deferral.
+- A rehearsal always runs with `AMONT_ON_BUSY=wait` (Codex #3, carried): a rehearsal whose gates all deferred would report "passed".
+- Gate flakes seen while committing at loads of 100–250, none reproducible alone (0 of 3 on this tree and on `3bc1ddf` for `index_fidelity`): `rehearsal::stop_cancels_…`, `index_fidelity::ctrl_c_mid_run_…`, two `tree_gates` timing tests, and `linters::ruff_fixes_…` (`uvx ruff` probe failed once, answered in 0.24 s after). Commits were retried once the 5-minute load was under 80.
+
+## Verification results
+
+Observed before the push, on `383d7e1` unless named. Each row: input → expected → actual.
+
+- Unit, `cargo test -p amont-runtime --lib`:
+  - `heavy_is_a_marker_and_a_moved_gate_is_heavy`: `heavy files make plugin`, `cargo-test`, `lint` → Heavy, Heavy, Light, `heavy` not in argv → passed.
+  - `the_busy_policy_keys_are_strict_and_set_once`: valid, bad value, `# comment`, 0, 3601, `1m`, set twice → policy, else `BadBusyPolicy` → passed.
+  - `the_busy_policy_is_env_then_file_then_wait`: env × file × default → env wins, a bad env value falls back to the file → passed.
+  - `a_held_slot_is_counted_and_a_dropped_one_is_free` → count rises, lock held, free after drop → passed.
+  - `a_deferral_is_never_a_token_and_outlives_the_run_trim`: 74 runs on a note with a deferral → 64 runs kept, deferral kept, not a token → passed.
+  - `attestable` excludes `Deferred`: by construction (a Deferred check never enters `passed`); asserted end to end by the two signed tests below.
+- Integration, `crates/amont/tests/it/busy_defers.rs`, slot held by a `perl` flock unless named, all unpinned:
+  - `a_busy_commit_defers_and_its_push_twin_defers_too`: `block` gate, `slotWait 1` → commit exits 0, says the deferral and the `run now` hint, gate not run, no `gate@` marker token; push says "deferred to CI at commit", never "gated", twin not run, no push token; `AMONT_ON_BUSY=wait` push with the slot free runs the twin → passed.
+  - `quiet_mode_still_says_a_check_was_deferred`: `amont.quiet always` → "check(s) passed" roll-up and the deferral line → passed.
+  - `a_documentation_commit_after_a_deferred_one_keeps_the_deferral` → twin deferred on 1 pushed commit, not run → passed.
+  - `a_deferred_branch_does_not_excuse_an_unchecked_one`: two refs → twin runs, once per ref as declared push gates do → passed.
+  - `a_push_mixing_a_stamped_and_a_deferred_commit_defers_and_is_not_attested`: commit A free (ran), commit B deferred, attest on, bare origin → "deferred … on 1 pushed commit", never Gated; signed `gates` has `pre-push-light`, not `pre-push-gate`; twin not run → passed.
+  - `a_forged_deferral_only_moves_the_gate_to_ci`: hand-written `deferred gate` note on an unchecked tree, attest on → twin deferred, not run, not in signed `gates` → passed.
+  - `a_busy_push_waits_one_slot_wait_not_one_per_gate`: 3 Heavy push gates, `slotWait 3` → 3 deferrals, no "could not run", under 8 s → passed.
+  - `a_commit_never_defers_behind_its_own_checks`: 2 Heavy 2-s checks, 1 slot, no outside holder → no deferral, both ran → passed.
+  - `a_heavy_check_out_of_scope_never_waits`: `.md` staged against a `*.txt` gate → no deferral, under 30 s → passed.
+  - `onBusy wait` default: the existing `tests/timing.rs` host-slot test is `#[ignore]` (load scenario, `make test-load`), not run here; every non-busy test in the suite runs under the default.
+- Locally: the pre-commit gate's `cargo test --locked` on `383d7e1` → exit 0, 518 of 518 integration tests, the nine above named in the log → passed.
+- Measured before choosing `slotWait`, live after release, and the 14-day measure: phases 5–6, not part of this branch.
+
+## Implementation review
+
+- Verdict: approve-with-changes, three passes (round 1, Delta, fresh round 1 after a test-only commit).
+- Fixed: exhaustive `Kind` match; a reason on every `let _ =`; names; six missing checks written (both signed-attestation ones); slot test strengthened; `amont.quiet always` (`true` silently meant auto); unsigned push half asserted before signing.
+- Deliberate: the nothing-to-do test checks an out-of-scope gate, because a declared check always spawns its command and a built-in's lazy slot is ADR-0009's, unchanged here.
+- Deliberate: in the mixed test, the "twin did not run" assertion stays after the signing early return; without `ssh-keygen` that property is asserted by three unsigned tests.
+- Cost: 114k + 133k + 69k tokens; 134 s, 30 s, 52 s.
 
 <!-- panel: repos=amont,relais reviewers=architect,backend,language,po,tui,unix,codex body-sha=91972bb3d0c2 -->
