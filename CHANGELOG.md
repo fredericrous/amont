@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.61.0
+
+### Added
+
+- **A busy host can defer heavy gates to CI** (ADR-0013). `set onBusy defer`
+  in `amont.conf`, with `set slotWait <seconds>` (default 60), turns a heavy
+  check whose host slot does not free in time into a deferral: it does not
+  run, never blocks, earns no stamp and is never attested, so CI runs it.
+  The hook says which checks it deferred and how to run one now
+  (`AMONT_ON_BUSY=wait amont run <id>`). The default, `wait`, is the
+  behaviour so far. Declare `defer` only where CI runs every heavy gate.
+- **Declared checks can be heavy**: the `heavy` marker on an `amont.conf`
+  line, or a line that moves a built-in heavy gate (`pre-commit
+  cargo-test`), now queues for a host slot like clippy and the built-in
+  suites. An amont older than this reads `heavy` as part of the command, so
+  add it once everyone reading the file has upgraded.
+
+### Changed
+
+- **A gate deferred at commit defers at push too**, instead of running the
+  suite with the remote's connection open; a deferral can only move a gate
+  to CI, never make it pass. A commit never defers behind its own checks, a
+  push waits at most one `slotWait`, and a rehearsal always waits.
+- **For contributors**: CI pins aval 1.11.0, which reads the refreshed
+  fleet pack's `governs:` rule fields.
+
 ## v1.60.0
 
 ### Added
