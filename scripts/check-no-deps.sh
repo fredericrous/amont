@@ -75,11 +75,11 @@ fi
 # (ADR-0039), the one implementation of the quiet-run active entry. Each is
 # allowed by name, and only while its OWN tree is empty, checked below: a
 # dependency it gains would reach the commit path through it.
-ALLOWED="git-attest amont-quiet"
+ALLOWED="git-attest amont-quiet amont-slots"
 #
 # The one legitimate `|| true` in this file: `grep -v` exits 1 when nothing
 # matches, and nothing matching IS the success case here.
-ext=$(printf '%s\n' "$crates" | grep -vE '^(amont|amont-runtime|git-attest|amont-quiet)$' || true)
+ext=$(printf '%s\n' "$crates" | grep -vE '^(amont|amont-runtime|git-attest|amont-quiet|amont-slots)$' || true)
 
 if [ -n "$ext" ]; then
   echo "amont gained external dependencies:" >&2
@@ -101,4 +101,4 @@ for leaf in $ALLOWED; do
     exit 1
   fi
 done
-echo "amont: no external dependencies (git-attest and amont-quiet, std-only, are the allowed crates)"
+echo "amont: no external dependencies (git-attest, amont-quiet and amont-slots, std-only, are the allowed crates)"

@@ -46,8 +46,13 @@ name = "amont-runtime"
 version = "1.61.1"
 dependencies = [
  "amont-quiet",
+ "amont-slots",
  "git-attest",
 ]
+
+[[package]]
+name = "amont-slots"
+version = "1.61.1"
 
 [[package]]
 name = "anyhow"

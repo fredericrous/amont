@@ -628,9 +628,9 @@ jobs:
           # Idempotency comes from cargo's own answer instead. Re-running a
           # release must not fail on a crate that is already up, and "already
           # uploaded" is exactly that answer — anything else is a real failure.
-          # amont-quiet first: amont-runtime depends on it, and crates.io
+          # amont-quiet and amont-slots first: amont-runtime depends on both, and crates.io
           # resolves that dependency by version.
-          for crate in amont-quiet amont-runtime amont amont-fleet; do
+          for crate in amont-quiet amont-slots amont-runtime amont amont-fleet; do
             echo "→ publishing $crate $VERSION"
             if out=$(cargo publish -p "$crate" 2>&1); then
               printf '%s\n' "$out"

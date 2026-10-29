@@ -1,36 +1,23 @@
-//! Host-wide slots for heavy checks (ADR-0009, `hooks.host-concurrency`).
+//! Host slots for heavy checks (ADR-0014, `hooks.host-concurrency`).
 //!
 //! Several worktrees, sessions and agents on one machine each run their own
 //! clippy, test suite and type checker, and each of those already uses every
-//! core. Run together they thrash the same cores and the same cargo lock,
-//! and the kill clocks counted that thrash as the check's own time. A check
-//! that compiles or executes the product is therefore Heavy, and takes one
-//! of `amont.hostSlots` slots — `flock` on a file under one fixed per-user
-//! directory — before its first tool runs. While it waits, its clocks have
-//! not started, because its tool has not.
+//! core. A check that compiles or executes the product is therefore Heavy,
+//! and takes a host slot before its first tool runs. The protocol (the slot
+//! directory, the lock, the queue, admission, the holder record) is the
+//! `amont-slots` crate, the one implementation relais links too; this module
+//! is the hook's half: which checks are Heavy, the busy policy, deferral, and
+//! the queue row.
 //!
 //! The slot is taken LAZILY, at the first tool spawn of a heavy check, not
 //! when the check starts: a clippy with no Rust staged returns at once and
 //! must not wait behind somebody else's suite to do nothing.
-//!
-//! Fairness is polling, not first come first served.
-//! holds-until: more than a handful of gates contend on one host, when a
-//! queue file with tickets is needed.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// The environment variable a held slot exports to every tool it runs, and
-/// that a nested amont reads to skip queueing: amont's own
-/// `pre-push-cargo-test` runs fixtures that run amont, and those must not
-/// wait for the slot their own parent holds.
-pub const HELD_ENV: &str = "AMONT_HOST_SLOT";
-
-/// A diagnostic, and the seam the tests use: the slot directory, instead of
-/// the fixed per-user one.
-pub const DIR_ENV: &str = "AMONT_SLOT_DIR";
+pub use amont_slots::{DIR_ENV, HELD_ENV};
 
 /// The checks that compile or execute the product. Pinned by a registry
 /// test: every name here is a built-in.
@@ -62,64 +49,30 @@ pub fn weight_of(name: &str) -> Weight {
 /// Why a heavy check ran without a slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
-    /// `amont.hostSlots 0`.
-    Disabled,
-    /// A slot is already held by the amont that runs this one.
-    Nested,
     /// The slot directory is not one this user alone owns.
     DirUnsafe(String),
     /// No `flock` here: Windows, the stated divergence.
     Unsupported,
-    /// No slot freed within `amont.timeout`.
+    /// No slot freed within the budget.
     TimedOut(Duration),
     /// A slot file could not be opened or locked for a reason other than
     /// "another holder has it".
     Io(String),
 }
 
-/// What [`acquire`] got.
-pub enum Acquired {
-    Slot(Slot),
-    Unqueued(Reason),
-}
-
-/// How many slots THIS process holds, across its threads. `CURRENT` is
-/// thread-local, so a pre-commit check cannot see that a sibling thread
-/// holds a slot; this can, and a check never defers while it is non-zero
-/// (ADR-0013: a commit never defers behind its own checks).
-static HELD: AtomicUsize = AtomicUsize::new(0);
-
 /// Set once a check of this process deferred: the host was measured busy,
 /// and a later Heavy check of the same run defers without waiting again, so
 /// a push waits at most one `slotWait`.
 static BUSY_SEEN: AtomicBool = AtomicBool::new(false);
 
-/// A held slot: released when dropped, and by the kernel if amont dies.
-pub struct Slot {
-    file: Option<std::fs::File>,
-}
-
-impl Slot {
-    fn new(file: std::fs::File) -> Slot {
-        HELD.fetch_add(1, Ordering::SeqCst);
-        Slot { file: Some(file) }
+/// `amont.hostSlots`, a host key: unset sizes the slots from the machine
+/// (`Sizing::Auto`), N fixes them, `0` turns them off (`None`).
+pub fn sizing(settings: &crate::config::Settings) -> Option<amont_slots::Sizing> {
+    match crate::config::host_integer_or(settings, "amont.hostSlots", -1, 0..=64) {
+        0 => None,
+        n if n < 0 => Some(amont_slots::Sizing::Auto),
+        n => Some(amont_slots::Sizing::Fixed(n as u32)),
     }
-}
-
-impl Drop for Slot {
-    /// The lock first, then the count: the count never reads zero while
-    /// this process still holds a flock, so a sibling never defers behind it.
-    fn drop(&mut self) {
-        drop(self.file.take());
-        HELD.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-/// `amont.hostSlots`: a host key, default a quarter of the cores and at
-/// least one, `0` disables.
-pub fn configured(settings: &crate::config::Settings) -> u64 {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as i64);
-    crate::config::host_integer_or(settings, "amont.hostSlots", (cores / 4).max(1), 0..=64) as u64
 }
 
 /// The environment override of `amont.onBusy`, for one run:
@@ -170,62 +123,6 @@ fn resolve_busy(from_env: Option<&str>, settings: &crate::config::Settings) -> B
     }
 }
 
-/// The slot directory: `AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/amont-slots`
-/// on Linux, else `/tmp/amont-slots-<uid>`. A FIXED path, never
-/// `std::env::temp_dir()`, which follows a `$TMPDIR` that macOS and agent
-/// sandboxes set per session — every session would get a queue of its own.
-pub fn dir() -> PathBuf {
-    if let Some(d) = std::env::var_os(DIR_ENV).filter(|d| !d.is_empty()) {
-        return PathBuf::from(d);
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d).join("amont-slots");
-    }
-    PathBuf::from(format!("/tmp/amont-slots-{}", platform::uid()))
-}
-
-/// Make `dir` if needed, then refuse it unless it is a real directory this
-/// user owns with mode 0700: on a shared `/tmp`, another user could create
-/// it first and hold every slot.
-pub fn safe_dir(dir: &std::path::Path) -> Result<(), String> {
-    platform::make_private(dir)?;
-    platform::check_private(dir)
-}
-
-/// Take one of `n` slots, waiting at most `budget`.
-pub fn acquire(n: u64, budget: Duration) -> Acquired {
-    if n == 0 {
-        return Acquired::Unqueued(Reason::Disabled);
-    }
-    if !platform::SUPPORTED {
-        return Acquired::Unqueued(Reason::Unsupported);
-    }
-    let dir = dir();
-    if let Err(why) = safe_dir(&dir) {
-        return Acquired::Unqueued(Reason::DirUnsafe(why));
-    }
-    let started = Instant::now();
-    loop {
-        for i in 0..n {
-            let path = dir.join(format!("slot-{i}"));
-            match platform::try_lock(&path) {
-                Ok(Some(file)) => return Acquired::Slot(Slot::new(file)),
-                Ok(None) => {}
-                // Not "busy": an error waiting would only repeat, and a
-                // full queue must not be claimed when nobody was seen.
-                Err(e) => {
-                    return Acquired::Unqueued(Reason::Io(format!("{}: {e}", path.display())))
-                }
-            }
-        }
-        if started.elapsed() >= budget {
-            return Acquired::Unqueued(Reason::TimedOut(started.elapsed()));
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
 /// What the check running on THIS thread is, as far as slots go.
 #[derive(Default)]
 struct Current {
@@ -235,7 +132,7 @@ struct Current {
     /// The slot question has been answered for this check (held, or
     /// unqueued for a reason).
     settled: bool,
-    held: Option<Slot>,
+    held: Option<amont_slots::Lease>,
     queued: Duration,
     /// Set when the busy policy deferred this check (ADR-0013): how long it
     /// waited. Read by the dispatcher through [`CheckGuard::deferred`], and it
@@ -317,9 +214,9 @@ fn nested() -> bool {
 /// this thread holds a slot, so the caller exports [`HELD_ENV`]; an `Err`
 /// when the busy policy deferred the check, so the caller does not spawn.
 pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool> {
-    let (pending, deferred) = CURRENT.with(|c| {
+    let (pending, deferred, name) = CURRENT.with(|c| {
         let c = c.borrow();
-        (c.heavy && !c.settled, c.deferred.is_some())
+        (c.heavy && !c.settled, c.deferred.is_some(), c.name.clone())
     });
     // A check that caught the first refusal and tries another tool is
     // refused at once, not after a second wait.
@@ -330,8 +227,12 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         // Nested first: a nested amont must not pay the host-key scan for a
         // slot count it is about to ignore. Neither answer queues, so neither
         // can defer.
-        let n = if nested() { 0 } else { configured(settings) };
-        if n == 0 {
+        let sizing = if nested() { None } else { sizing(settings) };
+        let Some(sizing) = sizing else {
+            CURRENT.with(|c| c.borrow_mut().settled = true);
+            return Ok(false);
+        };
+        if !amont_slots::SUPPORTED {
             CURRENT.with(|c| c.borrow_mut().settled = true);
             return Ok(false);
         }
@@ -346,24 +247,25 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
             BusyPolicy::Defer { slot_wait } => slot_wait,
         };
+        let cap = u64::from(sizing.cap());
         let sink = crate::live::current_sink();
         if let Some((stage, idx)) = &sink {
-            stage.queue(*idx, Some((Instant::now(), n)));
+            stage.queue(*idx, Some((Instant::now(), cap)));
         }
         let started = Instant::now();
-        let mut got = acquire(n, budget);
-        if let (BusyPolicy::Defer { .. }, Acquired::Unqueued(Reason::TimedOut(_))) = (policy, &got)
-        {
+        let holder = amont_slots::Holder::here("amont", &name);
+        let mut got = wait_for_slot(sizing, holder.clone(), budget);
+        if let (BusyPolicy::Defer { .. }, Err(Reason::TimedOut(_))) = (policy, &got) {
             // A sibling check of this process holds a slot: the host is busy
             // with this commit's own work, which is not a reason to defer.
-            // Wait as `wait` does, up to the ceiling.
-            got = if HELD.load(Ordering::SeqCst) > 0 {
-                acquire(n, ceiling.saturating_sub(started.elapsed()))
+            // Wait as `wait` does, up to the ceiling; else one more pass, as a
+            // sibling may have released between the last poll and now.
+            let rest = if amont_slots::held_in_process() > 0 {
+                ceiling.saturating_sub(started.elapsed())
             } else {
-                // One more pass: a sibling may have released between the
-                // last poll and the count's read.
-                acquire(n, Duration::ZERO)
+                Duration::ZERO
             };
+            got = wait_for_slot(sizing, holder, rest);
         }
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, None);
@@ -372,21 +274,27 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         CURRENT.with(|c| c.borrow_mut().queued += waited);
         // Piped output never shows the region, and a heartbeat only comes
         // after a minute: say once where the time went.
-        if matches!(got, Acquired::Slot(_)) && waited >= Duration::from_secs(1) {
+        if got.is_ok() && waited >= Duration::from_secs(1) {
             crate::hooks::common::say(&format!(
-                "  (waited {} for a host slot, {} {n})",
+                "  (waited {} for a host slot, {} {cap})",
                 crate::hooks::common::human_secs(waited.as_secs()),
                 crate::ui::highlight("amont.hostSlots")
             ));
         }
-        let defer = matches!(policy, BusyPolicy::Defer { .. })
-            && matches!(got, Acquired::Unqueued(Reason::TimedOut(_)));
+        let defer =
+            matches!(policy, BusyPolicy::Defer { .. }) && matches!(got, Err(Reason::TimedOut(_)));
+        let outcome = match (&got, defer) {
+            (Ok(_), _) => "admitted",
+            (Err(_), true) => "deferred",
+            (Err(_), false) => "unqueued",
+        };
+        amont_slots::record_wait(&amont_slots::dir(), "amont", 1, waited.as_millis(), outcome);
         let held = match got {
-            Acquired::Slot(slot) => Some(slot),
+            Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
-            Acquired::Unqueued(_) if defer => None,
-            Acquired::Unqueued(reason) => {
-                note(&reason, n);
+            Err(_) if defer => None,
+            Err(reason) => {
+                note(&reason, cap);
                 None
             }
         };
@@ -408,9 +316,57 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
     Ok(CURRENT.with(|c| c.borrow().held.is_some()))
 }
 
-/// One line for the reasons a person can act on; nothing for the ones
-/// that are the normal case (off, nested, the platform).
-fn note(reason: &Reason, n: u64) {
+/// Wait up to `budget` for one slot, saying once whom the check waits
+/// behind.
+fn wait_for_slot(
+    sizing: amont_slots::Sizing,
+    holder: amont_slots::Holder,
+    budget: Duration,
+) -> Result<amont_slots::Lease, Reason> {
+    let started = Instant::now();
+    let mut waiter = match amont_slots::Waiter::new(sizing, 1, holder) {
+        Ok(w) => w,
+        Err(e) if e.kind() == std::io::ErrorKind::Other => {
+            return Err(Reason::DirUnsafe(e.to_string()))
+        }
+        Err(e) => return Err(Reason::Io(e.to_string())),
+    };
+    let mut said = false;
+    loop {
+        match waiter.poll() {
+            Ok(amont_slots::Poll::Granted(lease)) => return Ok(lease),
+            Ok(amont_slots::Poll::Waiting(queue)) => {
+                if !said && (!queue.holders.is_empty() || queue.unknown > 0) {
+                    said = true;
+                    crate::hooks::common::say(&format!("  {}", behind(&queue)));
+                }
+            }
+            Err(e) => return Err(Reason::Io(e.to_string())),
+        }
+        if started.elapsed() >= budget {
+            return Err(Reason::TimedOut(started.elapsed()));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// `queued behind relais: cargo test (amont-wt-x, 4m) · 2 waiting`.
+pub fn behind(queue: &amont_slots::Queue) -> String {
+    let now = amont_slots::now_ms();
+    let mut who: Vec<String> = queue.holders.iter().map(|h| h.describe(now)).collect();
+    if queue.unknown > 0 {
+        who.push(format!("{} unknown (old client)", queue.unknown));
+    }
+    format!(
+        "queued behind {} · {} waiting",
+        who.join(", "),
+        queue.waiting.max(1)
+    )
+}
+
+/// One line for the reasons a person can act on; nothing for the normal
+/// case (the platform).
+fn note(reason: &Reason, cap: u64) {
     match reason {
         Reason::DirUnsafe(why) => crate::hooks::common::warn(&format!(
             "host slots are off for this check: {why}. Remove it, or set {} to a directory \
@@ -418,165 +374,20 @@ fn note(reason: &Reason, n: u64) {
             crate::ui::highlight(DIR_ENV)
         )),
         Reason::TimedOut(waited) => crate::hooks::common::warn(&format!(
-            "no host slot freed in {} ({} heavy checks were running on this machine, \
-             {} {n}); running it anyway",
+            "no host slot freed in {} ({} {cap}); running it anyway",
             crate::hooks::common::human_secs(waited.as_secs()),
-            n,
             crate::ui::highlight("amont.hostSlots")
         )),
         Reason::Io(why) => {
             crate::hooks::common::warn(&format!("host slots are off for this check: {why}"))
         }
-        Reason::Disabled | Reason::Nested | Reason::Unsupported => {}
-    }
-}
-
-#[cfg(unix)]
-mod platform {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    use std::os::unix::io::AsRawFd;
-    use std::path::Path;
-
-    pub const SUPPORTED: bool = true;
-
-    extern "C" {
-        #[link_name = "flock"]
-        fn libc_flock(fd: i32, op: i32) -> i32;
-        #[link_name = "getuid"]
-        fn libc_getuid() -> u32;
-    }
-    const LOCK_EX: i32 = 2;
-    const LOCK_NB: i32 = 4;
-
-    pub fn uid() -> u32 {
-        // SAFETY: getuid takes nothing and cannot fail.
-        unsafe { libc_getuid() }
-    }
-
-    pub fn make_private(dir: &Path) -> Result<(), String> {
-        if dir.symlink_metadata().is_ok() {
-            return Ok(());
-        }
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))
-    }
-
-    pub fn check_private(dir: &Path) -> Result<(), String> {
-        let meta = dir
-            .symlink_metadata()
-            .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-        if meta.file_type().is_symlink() {
-            return Err(format!("{} is a symbolic link", dir.display()));
-        }
-        if !meta.is_dir() {
-            return Err(format!("{} is not a directory", dir.display()));
-        }
-        if meta.uid() != uid() {
-            return Err(format!("{} belongs to another user", dir.display()));
-        }
-        let mode = meta.permissions().mode() & 0o777;
-        if mode != 0o700 {
-            return Err(format!("{} has mode {mode:o}, not 700", dir.display()));
-        }
-        Ok(())
-    }
-
-    /// `Ok(None)` only when another holder has the lock (EWOULDBLOCK);
-    /// every other failure is an error the caller reports.
-    pub fn try_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)?;
-        // SAFETY: a valid fd we own; flock touches no memory.
-        if unsafe { libc_flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
-            return Ok(Some(file));
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() == std::io::ErrorKind::WouldBlock {
-            Ok(None)
-        } else {
-            Err(e)
-        }
-    }
-}
-
-#[cfg(not(unix))]
-mod platform {
-    use std::path::Path;
-
-    pub const SUPPORTED: bool = false;
-
-    pub fn uid() -> u32 {
-        0
-    }
-    pub fn make_private(_dir: &Path) -> Result<(), String> {
-        Ok(())
-    }
-    pub fn check_private(_dir: &Path) -> Result<(), String> {
-        Ok(())
-    }
-    pub fn try_lock(_path: &Path) -> std::io::Result<Option<std::fs::File>> {
-        Ok(None)
+        Reason::Unsupported => {}
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("amont-slots-test-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
-    /// A fresh directory is made 0700 and accepted; a 0755 one, a symlink
-    /// and a file are refused.
-    #[test]
-    fn only_a_private_directory_is_accepted() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = scratch("private");
-        assert_eq!(safe_dir(&d), Ok(()));
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(safe_dir(&d).unwrap_err().contains("mode 755"));
-        let link = scratch("link");
-        std::os::unix::fs::symlink(&d, &link).unwrap();
-        assert!(safe_dir(&link).unwrap_err().contains("symbolic link"));
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// Two slots: two holders get one each, a third finds none within its
-    /// budget, and a dropped slot is free again.
-    #[test]
-    fn slots_are_exclusive_and_released_on_drop() {
-        let d = scratch("exclusive");
-        safe_dir(&d).unwrap();
-        let a = platform::try_lock(&d.join("slot-0"))
-            .expect("no error")
-            .expect("first");
-        assert!(platform::try_lock(&d.join("slot-0"))
-            .expect("busy is not an error")
-            .is_none());
-        drop(a);
-        // Released on the last close. A thread of another test that forks
-        // in the instant before its exec holds a copy of every descriptor
-        // until then (O_CLOEXEC closes it at exec, not at fork), so allow
-        // that instant rather than assert a release that is a race away.
-        let freed = (0..100).any(|_| {
-            matches!(platform::try_lock(&d.join("slot-0")), Ok(Some(_))) || {
-                std::thread::sleep(Duration::from_millis(20));
-                false
-            }
-        });
-        assert!(freed, "a dropped slot was not released within 2 s");
-        let _ = std::fs::remove_dir_all(&d);
-    }
 
     fn settings_from(conf: &str) -> crate::config::Settings {
         let lines = crate::manifest::parse_lines(conf);
@@ -611,31 +422,6 @@ mod tests {
             }
         );
         assert_eq!(resolve_busy(Some(""), &none), BusyPolicy::Wait);
-    }
-
-    /// A slot raises the process's count while held, and once dropped its
-    /// lock is free. (The order inside `Drop` — lock first, then count — is
-    /// what keeps a sibling from reading zero while the flock is still held;
-    /// a count read from another thread is racy, so the observable half is
-    /// checked: the lock is free once the slot is gone.)
-    #[test]
-    fn a_held_slot_is_counted_and_a_dropped_one_is_free() {
-        let slot_dir = scratch("held");
-        safe_dir(&slot_dir).unwrap();
-        let path = slot_dir.join("slot-0");
-        let before = HELD.load(Ordering::SeqCst);
-        let slot = Slot::new(platform::try_lock(&path).unwrap().unwrap());
-        assert!(HELD.load(Ordering::SeqCst) > before);
-        assert!(platform::try_lock(&path).unwrap().is_none(), "held");
-        drop(slot);
-        let freed = (0..100).any(|_| {
-            matches!(platform::try_lock(&path), Ok(Some(_))) || {
-                std::thread::sleep(Duration::from_millis(20));
-                false
-            }
-        });
-        assert!(freed, "a dropped slot was not released within 2 s");
-        let _ = std::fs::remove_dir_all(&slot_dir); // best-effort: a scratch dir
     }
 
     #[test]
@@ -681,12 +467,5 @@ mod tests {
         assert_eq!(current_check().as_deref(), Some("clippy"));
         assert!(!before_spawn(&settings).unwrap());
         assert!(CURRENT.with(|c| c.borrow().settled));
-    }
-
-    /// An unopenable slot file is an error, not a full queue.
-    #[test]
-    fn an_unopenable_slot_is_an_error_not_busy() {
-        let d = scratch("missing").join("absent-subdir").join("slot-0");
-        assert!(platform::try_lock(&d).is_err());
     }
 }

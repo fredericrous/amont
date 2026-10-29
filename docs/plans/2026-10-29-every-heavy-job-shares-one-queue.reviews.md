@@ -1,0 +1,23 @@
+# Every heavy job on the host shares one slot queue: full reviews
+
+- **backend, round 1: approve-with-changes, 43k tokens, 101 s.** All accepted:
+  - high: the load test counts the holders' own load (measure it before phase 2; you choose);
+  - medium: a 60 s ramp, and the floor under the stamp's lock;
+  - high: `--max-wait`;
+  - medium: `.who` unlinked before unlock, liveness by pid;
+  - medium: the floor admits any weight;
+  - medium: relais `"off"`;
+  - high: `waits.jsonl`;
+  - medium: version skew made visible;
+  - medium: observable live checks.
+- **codex (final review): approve-with-changes.** All high, all accepted:
+  - holder metadata in `holders/`, so old relais does not count it as capacity;
+  - a timeout exits 75 and launches nothing;
+  - tickets and admission under one admission flock;
+  - descriptor handling, superseded by your decision;
+  - a persistent poll waiter that keeps relais's heartbeats and budgets.
+- **backend, round 2: approve-with-changes, 28k tokens, 53 s.**
+  - Accepted: high, the advice explains exit 75, and `--on-timeout=run` counts as non-compliant.
+  - 👉 decided by you: high, detached daemons, which conflicted with Codex #4; "the wrapper alone holds the slot".
+  - Accepted: medium, one admission lock; medium, the lock taken `LOCK_NB` inside each caller's own deadline.
+- **backend, delta: approve, 23k tokens, 24 s.** Carried into implementation: see the end of a process group by polling `kill(-pgid, 0)` at a stated interval, and document daemons that stay in the group (`nohup x &`).

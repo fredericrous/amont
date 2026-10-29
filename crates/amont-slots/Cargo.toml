@@ -1,0 +1,21 @@
+[package]
+name = "amont-slots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Inherited from [workspace.package]: 1.74, amont's commit-path floor, because
+# amont-runtime depends on this crate.
+rust-version.workspace = true
+description = "Host slots: one machine-wide queue every heavy job on the host takes its turn in"
+readme = "README.md"
+keywords = ["amont", "git-hooks", "slots"]
+categories = ["development-tools"]
+
+# NO DEPENDENCIES, and that is the condition of its use (amont ADR-0014,
+# decisions ADR-0049): amont-runtime, on the commit path, depends on this
+# crate, and scripts/check-no-deps.sh allows it there by name only while its
+# own resolved tree is empty. It is the one implementation of the contract in
+# docs/host-slots.md; relais links it instead of carrying a copy.
+[dependencies]
