@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 6eccc54fe45a75bc7b77e20bf38c9635a36eaab8
+tree 3de03fa03ea263ad1d99358abeb1161253e256c0
+canon 2585dd9d7c244763f164e834575ddc135219c030
+patch b346d3deeb3fcb5af949d52060c753846145ffa8
+plan docs/plans/2026-10-28-busy-host-defers-to-ci.md 5c2da8f9107ed5ec21c27eca6e66a4fdc6ae147c528e7656a9c8dceb9fb79b7e
+review reviewed c88d60fc4cc9de2cf5ea2fca61016d9537539bea27feffa05f50d32abcbe5a5d
+preview not-required
+producer amont-agent 3.8.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAECA/7M5vyd9A1r+WRnwizLM5CLCIqekePzuUb6BKxNfegnH9L
+WRTMMxThrGYYSrLsgAnpp2+BaKHQQQbIti5n0N
+-----END SSH SIGNATURE-----
