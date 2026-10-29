@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.63.0
+
+### Changed
+
+- **A commit's own heavy checks are no longer spaced apart.** The host
+  slots admit at most one new job every 60 s, so that separate jobs on an
+  idle machine do not all start at once. That spacing also applied to one
+  commit's own checks, and one commit waited 10m48s behind its siblings. A
+  check whose process already holds a slot now skips it; the load test and
+  the cap still apply.
+- **For crate users**: `amont_slots::Probe` gains `own_held`, the slots the
+  asking process holds. A new public field, hence a minor version.
+
 ## v1.62.0
 
 ### Added
