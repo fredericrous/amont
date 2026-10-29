@@ -1372,6 +1372,132 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `amont uninstall --repo`: this repository's shims and bookkeeping, and
+/// nothing else. The template dir, `init.templateDir` and the binary are
+/// machine state, which an installer that armed one repository must leave
+/// exactly as it found them.
+pub fn uninstall_repo() -> Result<(), String> {
+    uninstall_repo_hooks()
+}
+
+/// How much of amont is in a hooks directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledState {
+    /// All six shims.
+    Present,
+    /// None, and every hook could be read.
+    Absent,
+    Partial,
+    /// A hook could not be read, or git would not answer: never "absent".
+    Unknown,
+}
+
+impl InstalledState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InstalledState::Present => "present",
+            InstalledState::Absent => "absent",
+            InstalledState::Partial => "partial",
+            InstalledState::Unknown => "unknown",
+        }
+    }
+}
+
+/// Whether our shims are in a hooks directory, and the binary each bakes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Installed {
+    pub state: InstalledState,
+    pub hooks_dir: Option<PathBuf>,
+    /// `(hook name, baked binary path)` for each shim of ours.
+    pub shims: Vec<(&'static str, Option<String>)>,
+}
+
+impl Installed {
+    fn unknown() -> Installed {
+        Installed {
+            state: InstalledState::Unknown,
+            hooks_dir: None,
+            shims: Vec::new(),
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        let shims: Vec<String> = self
+            .shims
+            .iter()
+            .map(|(name, bin)| {
+                crate::json::object(&[
+                    crate::json::string_field("name", name),
+                    crate::json::opt_string_field("binary", bin.as_deref()),
+                ])
+            })
+            .collect();
+        let dir = self.hooks_dir.as_ref().map(|d| d.display().to_string());
+        crate::json::object(&[
+            crate::json::string_field("state", self.state.as_str()),
+            crate::json::opt_string_field("hooks_dir", dir.as_deref()),
+            format!("\"shims\":{}", crate::json::array(&shims)),
+        ])
+    }
+}
+
+/// Read the shims in `dir` from the files themselves, never from the list of
+/// checks: what is installed is what is on disk.
+pub fn installed_in(dir: &Path) -> Installed {
+    let mut shims = Vec::new();
+    let mut unreadable = false;
+    for name in DISPATCHERS {
+        let path = dir.join(name);
+        match hookfile::classify(&path) {
+            HookFile::Ours => shims.push((name, baked_binary(&path))),
+            HookFile::Unknown { .. }
+            | HookFile::Foreign(hookfile::ForeignWhy::Unreadable { .. }) => unreadable = true,
+            HookFile::Absent
+            | HookFile::Symlink { .. }
+            | HookFile::NotARegularFile
+            | HookFile::Foreign(
+                hookfile::ForeignWhy::HandWritten | hookfile::ForeignWhy::NotUtf8,
+            ) => {}
+            // Unix only: the variant does not exist on Windows.
+            #[cfg(unix)]
+            HookFile::Foreign(hookfile::ForeignWhy::MultiplyLinked { .. }) => {}
+        }
+    }
+    let state = match (shims.len(), unreadable) {
+        (n, _) if n == DISPATCHERS.len() => InstalledState::Present,
+        (_, true) => InstalledState::Unknown,
+        (0, false) => InstalledState::Absent,
+        _ => InstalledState::Partial,
+    };
+    Installed {
+        state,
+        hooks_dir: Some(dir.to_path_buf()),
+        shims,
+    }
+}
+
+/// The repository's hooks, where git dispatches from.
+pub fn installed_here() -> Installed {
+    match repo_hooks() {
+        RepoHooks::Own(dir) | RepoHooks::Redirected { to: dir, .. } => installed_in(&dir),
+        RepoHooks::Nowhere | RepoHooks::Unanswerable { .. } => Installed::unknown(),
+    }
+}
+
+/// The machine's template dir, which every `git clone` copies hooks from.
+pub fn installed_in_template_dir() -> Installed {
+    installed_in(&template_hooks_dir())
+}
+
+/// The absolute path `install` baked into a shim (`BAKED="…"`), if any.
+fn baked_binary(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines().find_map(|l| {
+        let v = l.strip_prefix("BAKED=\"")?.strip_suffix('"')?;
+        (!v.is_empty() && v != PLACEHOLDER).then(|| v.to_string())
+    })
+}
+
 /// Everything this tool ever wrote into ONE repository, forgotten — the
 /// single list, so the two uninstall paths cannot drift apart.
 ///

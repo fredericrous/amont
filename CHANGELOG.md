@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont uninstall --repo`** removes this repository's shims and
+  bookkeeping and nothing else: the machine's template dir, `init.templateDir`
+  and the binary stay exactly as they were. Like a plain uninstall it forgets
+  the repository's attestations and gate stamps and revokes its `amont.conf`
+  trust, so arming it again needs `amont trust`. It is what an installer that
+  armed one repository runs to disarm it (`grh`, ADR-0050).
+- **`amont list --json` says what is installed.** Two new fields,
+  `installed` (this repository) and `template_dir` (the machine's), read the
+  shim files themselves: `present`, `absent`, `partial` or `unknown`, with the
+  binary each shim bakes. The format stays `amont-list-v1`.
 ## v1.63.0
 
 ### Changed
