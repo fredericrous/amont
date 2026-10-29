@@ -128,7 +128,7 @@ Implementation is routed through relais per task where a run can finish here. am
 
 Observed before the push, on `3007117`.
 
-- **`amont-slots` unit tests, 12 passed:**
+- **`amont-slots` unit tests, 13 passed on `9b6bb11`:**
   - the floor admits under load;
   - auto admits a second holder only when idle and after 60 s;
   - fixed sizing stops at the cap and names the holder;
@@ -140,7 +140,8 @@ Observed before the push, on `3007117`.
   - a dropped lease frees its slot and record;
   - a private directory is required;
   - a third waiter is still queued at 90 s and admitted at 120 s;
-  - a held admission lock answers "waiting" without blocking.
+  - a held admission lock answers "waiting" without blocking;
+  - the auto cap is half the cores, at least one (12 → 6, 2 → 1, 1 → 1).
 - **amont-runtime, 8 passed:** slot_cmd flag parsing (`--x v`, `--x=v`, unknown → error) and dash splitting; host_slots weight, policy and nested tests.
 - **Integration, `tests/it/slot_run.rs` + `busy_defers.rs`, 13 passed:**
   - one slot, two wrappers: the second prints `queued behind amont slot run: sh -c sleep 3` and runs after the first; exit 3 passes through; `waits.jsonl` has 2 `admitted` lines;
@@ -155,6 +156,7 @@ Observed before the push, on `3007117`.
   - `slot run --help` → help, rc 0.
 - **Commit gate on `3007117`:** clippy and `cargo test --locked` → exit 0.
 - **PR #379's first CI run:** the attestations job refused the tree, because `docs/host-slots.md` was in no gate's declared inputs. Fixed in `07ce1a5`: `make attest-inputs` → expected every tracked file covered for all ten gates → actual `check-attest-inputs: ok`.
+- **PR #379's second CI run:** `hooks (ubuntu/macos)` failed the Auto-sizing unit tests on 2-core runners. Admission took the cap from the real machine but the load from the Probe. Fixed in `9b6bb11` with `Sizing::cap_for(probe.cores)`: expected Auto admits a second holder in the tests whatever the host's core count; actual 13/13 crate tests pass.
 - **Push rehearsal on `964ee2f`:** passed on the third run, at a 5-minute load of 39. The first two failed on `index_fidelity::ctrl_c_mid_run…` alone, which passes 3/3 run alone and failed the same way before this branch.
 - **Not run yet:**
   - the live checks on the real slot directory across two sessions, and the load measurement (the host never fell under load 3 today). They are phase 3's precondition.
@@ -171,6 +173,7 @@ Observed before the push, on `3007117`.
   - two tests added: the ramp at 90 s, and the held admission lock.
 - Deliberate: pid-reuse naming, no lock-hold field, the direct-child release, and the status probe; all recorded above.
 - Third pass, after the CI fix `07ce1a5`: approve-with-changes. Its one low finding is the two Verification rows above.
-- Cost: 91k + 105k + 81k tokens; 77 s, 36 s, 46 s.
+- Fourth pass, after `9b6bb11`: approve-with-changes. Its one low finding is the rows above.
+- Cost: 91k + 105k + 81k + 91k tokens; 77 s, 36 s, 46 s, 33 s.
 
 <!-- panel: repos=amont,relais,amont-agent,decisions reviewers=backend,codex body-sha=76ca38ab5f73 -->
