@@ -2,7 +2,7 @@
 status: active
 branch: feat/one-host-slot-queue
 repos: [amont, relais, amont-agent, decisions]
-adrs: [ADR-0013, ADR-0014]
+adrs: [ADR-0013, ADR-0014, decisions:ADR-0049]
 ---
 # Every heavy job on the host shares one slot queue
 
@@ -82,7 +82,7 @@ Waiters say who they wait behind, in amont's row and in relais's `WaitingForSlot
 
 1. **ADRs.**
    - amont `adr/0014-every-heavy-job-shares-one-queue.md`: replaces ADR-0013's head of `hooks.host-concurrency` (load-aware admission, fair order, holder metadata, the `slot run` surface).
-   - The fleet corpus: the slot protocol joins the list of shared contracts under `harness.shared-code`, in the decisions repo.
+   - The fleet corpus: decisions ADR-0049 replaces ADR-0044's head of `harness.tool-boundaries`: amont owns the host slots, implemented once in `amont-slots`; `harness.shared-code` needs no change.
 2. **amont.** The `amont-slots` crate and the `host_slots.rs` move onto it; admission, tickets and `.who` files; `amont slot run` and `amont slots`; `docs/host-slots.md`. Every acquire appends one JSON line to `&lt;slot dir&gt;/waits.jsonl` (tool, weight, waited_ms, load1, outcome admitted|deferred|unqueued), the source of the day-14 p50/p95. Release 1.62.0.
 3. **relais.** Use `amont-slots`, default the shared slots on, and report the holder in `WaitingForSlot`. Release.
 4. **amont-agent.** The `heavy-build-unqueued` rule at advise. Release.
@@ -111,5 +111,10 @@ Implementation is routed through relais per task where a run can finish here. am
   - with `sysctl -n vm.loadavg` ≥ 12 and one holder, a second `amont slot run -- true` queues until the holder exits, and `waits.jsonl` records its waited_ms;
   - `amont slots` during a relais run lists relais.
 - **After 14 days:** the rule's firings per 1000 Bash calls and its compliance rate from `amont-agent harness-review`; slot wait p50/p95; gate timeout failures against before. Bars to tighten: compliance under 50% → deny with a remedy; a p95 wait above 10 min → revisit the cap.
+
+## Decision log
+
+- 2026-10-29, phase 1: the fleet half is decisions ADR-0049 on `harness.tool-boundaries`, not an edit to `harness.shared-code`: that choice is a rule with no list of contracts to extend, and the owner list lives in `tool-boundaries` (implementation review, decisions branch).
+- Phase 4 reads holders from `amont slots --json`, never `holders/*.who` directly (`harness.cross-tool-reads`; ADR-0049 names `amont slot run` and `amont slots` as amont-agent's only surface).
 
 <!-- panel: repos=amont,relais,amont-agent,decisions reviewers=backend,codex body-sha=76ca38ab5f73 -->
