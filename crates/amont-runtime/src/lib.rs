@@ -657,6 +657,11 @@ pub fn print_json(
             format!("\"bypasses\":{}", bypasses_json(bypasses)),
             format!("\"downgrades\":{}", downgrades_json(downgrades)),
             json::bool_field("conventions_apply", conventions_apply),
+            format!("\"installed\":{}", install::installed_here().to_json()),
+            format!(
+                "\"template_dir\":{}",
+                install::installed_in_template_dir().to_json()
+            ),
         ])
     );
 }

@@ -1012,3 +1012,149 @@ fn path_with(dir: &str) -> std::ffi::OsString {
     dirs.extend(std::env::split_paths(&inherited));
     std::env::join_paths(dirs).expect("join PATH")
 }
+
+/// Every file under `dir`, with its bytes: what "byte-identical" compares.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(snapshot(&p));
+        } else {
+            out.push((p.clone(), std::fs::read(&p).expect("read")));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The `"template_dir"` object's `hooks_dir`, read from `list --json`.
+fn template_hooks_dir(s: &Sandbox, repo: &Path) -> PathBuf {
+    let (code, out) = run_verb(s, repo, &["list", "--json"]);
+    assert_eq!(code, 0, "list --json failed:\n{out}");
+    let tail = out
+        .split("\"template_dir\":")
+        .nth(1)
+        .expect("template_dir field");
+    let dir = tail.split("\"hooks_dir\":\"").nth(1).expect("hooks_dir");
+    PathBuf::from(dir.split('"').next().expect("closing quote"))
+}
+
+/// `uninstall --repo` takes this repository's shims and leaves the machine
+/// alone: the template dir every clone copies from, and the global git config
+/// that points at it, are byte for byte what they were.
+#[test]
+fn uninstall_repo_leaves_the_template_dir_and_global_config_untouched() {
+    let s = Sandbox::new("uninstall-repo");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "setup install failed:\n{out}");
+    let gitconfig = s.path(".gitconfig");
+    std::fs::write(&gitconfig, "[init]\n\ttemplateDir = /somewhere\n").expect("write");
+    let templates = template_hooks_dir(&s, &repo);
+    let before = snapshot(&templates);
+    assert!(
+        !before.is_empty(),
+        "install filled no template dir at {}",
+        templates.display()
+    );
+
+    let (code, out) = run_verb(&s, &repo, &["uninstall", "--repo"]);
+    assert_eq!(code, 0, "uninstall --repo failed:\n{out}");
+
+    assert!(
+        !repo.join(".git/hooks/pre-commit").exists(),
+        "the repo shim survived:\n{out}"
+    );
+    assert_eq!(
+        snapshot(&templates),
+        before,
+        "the template dir changed:\n{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&gitconfig).expect("read"),
+        "[init]\n\ttemplateDir = /somewhere\n"
+    );
+}
+
+/// With no template dir at all, `uninstall --repo` does not create one.
+#[test]
+fn uninstall_repo_without_a_template_dir_creates_none() {
+    let s = Sandbox::new("uninstall-repo-none");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "setup install failed:\n{out}");
+    let templates = template_hooks_dir(&s, &repo);
+    std::fs::remove_dir_all(&templates).expect("remove template dir");
+
+    let (code, out) = run_verb(&s, &repo, &["uninstall", "--repo"]);
+    assert_eq!(code, 0, "uninstall --repo failed:\n{out}");
+    assert!(
+        !templates.exists(),
+        "uninstall --repo created {}",
+        templates.display()
+    );
+    assert!(!repo.join(".git/hooks/pre-commit").exists());
+}
+
+#[test]
+fn uninstall_repo_and_binary_together_are_a_usage_error() {
+    let s = Sandbox::new("uninstall-repo-binary");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = run_verb(&s, &repo, &["uninstall", "--repo", "--binary"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("mutually exclusive"), "{out}");
+}
+
+/// `list --json` says what is installed from the shim files themselves:
+/// absent before install, present with the baked binary after, partial when
+/// one is gone, and unknown outside a repository.
+#[test]
+fn list_json_reports_the_installed_shims() {
+    let s = Sandbox::new("list-installed");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let state = |cwd: &Path| {
+        let (code, out) = run_verb(&s, cwd, &["list", "--json"]);
+        let tail = out
+            .split("\"installed\":{\"state\":\"")
+            .nth(1)
+            .map(str::to_string);
+        (
+            code,
+            tail.and_then(|t| t.split('"').next().map(str::to_string)),
+            out,
+        )
+    };
+
+    let (_, st, out) = state(&repo);
+    assert_eq!(st.as_deref(), Some("absent"), "{out}");
+
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "install failed:\n{out}");
+    let (_, st, out) = state(&repo);
+    assert_eq!(st.as_deref(), Some("present"), "{out}");
+    let installed = out
+        .split("\"template_dir\":")
+        .next()
+        .expect("installed part");
+    assert!(
+        installed.contains("\"binary\":\"/"),
+        "no baked binary reported:\n{out}"
+    );
+
+    std::fs::remove_file(repo.join(".git/hooks/post-commit")).expect("remove one shim");
+    let (_, st, out) = state(&repo);
+    assert_eq!(st.as_deref(), Some("partial"), "{out}");
+
+    let outside = s.path("plain");
+    std::fs::create_dir_all(&outside).expect("mkdir");
+    let (_, st, out) = state(&outside);
+    assert_eq!(st.as_deref(), Some("unknown"), "{out}");
+}

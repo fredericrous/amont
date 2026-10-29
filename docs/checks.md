@@ -75,7 +75,17 @@ a field does not change it, which is why the top level is an object rather
 than a bare array.
 
 **Envelope**: `format`, `stage_filter`, `pushed`, `checks`, `commit_style`,
-`branch_style`, `bypasses`, `downgrades`, `conventions_apply`.
+`branch_style`, `bypasses`, `downgrades`, `conventions_apply`, `installed`,
+`template_dir`.
+
+**`installed` and `template_dir`**: whether amont's six shims are in this
+repository's hooks directory (where git dispatches from) and in the machine's
+template dir, read from the shim files themselves. Each is
+`{"state", "hooks_dir", "shims": [{"name", "binary"}]}`, where `state` is
+`present` (all six), `absent`, `partial`, or `unknown` (outside a repository,
+git would not answer, or a hook could not be read), and `binary` is the
+absolute path a shim bakes, `null` when it bakes none. An installer reads
+these to decide what it may remove; `unknown` must never be read as absent.
 
 **Each entry of `checks`**:
 

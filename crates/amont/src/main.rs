@@ -53,6 +53,7 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  calls from `prepare`; never copies a binary, never prompts,
                  never re-bakes from inside a push snapshot
   uninstall      remove OUR six shims and nothing else [--binary: the binary too]
+                 [--repo: this repository only; the template dir is left as is]
   setup          the commit-style questions, current values as defaults
                  [--local|--global] [--dry-run]
   trust          show what amont.conf declares, and accept it
@@ -388,7 +389,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Setup => (&["--local", "--global", "--dry-run"], &[]),
         Sub::Install => (&["--force"], &[]),
         Sub::Init | Sub::Restore => (&[], &[]),
-        Sub::Uninstall => (&["--binary"], &[]),
+        Sub::Uninstall => (&["--binary", "--repo"], &[]),
         Sub::Run => (&["--all-files", "--quiet", "--raw"], &["--hooks-dir"]),
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
@@ -525,9 +526,21 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // nobody to have typed an option and nothing it should be asked to do
         // beyond wiring this one repository.
         Sub::Init => report(amont_runtime::install::init()),
-        Sub::Uninstall => report(amont_runtime::install::uninstall(
-            args.iter().any(|a| a == "--binary"),
-        )),
+        // `--repo` is this repository only: the machine's template dir and
+        // global git config stay byte-identical, so an installer that armed
+        // one repository can disarm it without touching anything else.
+        Sub::Uninstall => {
+            let binary = args.iter().any(|a| a == "--binary");
+            if args.iter().any(|a| a == "--repo") {
+                if binary {
+                    eprintln!("amont: uninstall --repo and --binary are mutually exclusive");
+                    return 2;
+                }
+                report(amont_runtime::install::uninstall_repo())
+            } else {
+                report(amont_runtime::install::uninstall(binary))
+            }
+        }
         // `amont setup` — the four commit-style keys, asked once. A separate
         // verb rather than a prompt inside `install`, which has to stay
         // answerable by nobody: it runs under `amont-fleet install`, in
