@@ -156,13 +156,16 @@ fn ctrl_c_mid_run_still_restores_and_dies_by_the_signal() {
     r.stage("x.json", VALID);
     r.write("x.json", BROKEN);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
-        .arg("--hooks-dir")
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
-        .current_dir(&r.dir)
-        .spawn()
-        .expect("spawn amont pre-commit");
+        .current_dir(&r.dir);
+    // Spawned by hand, so pinned by hand: without it the slow check queues
+    // on the real host slots behind the very suite running this test, and
+    // on a busy host never starts within the deadline below.
+    crate::common::Repo::pin_host_env(&mut cmd);
+    let mut child = cmd.spawn().expect("spawn amont pre-commit");
 
     // Wait for the CHECK to say it is running, never a fixed sleep. The old
     // 300ms guess flaked under load twice in one day: it could land INSIDE
