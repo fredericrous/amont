@@ -6,6 +6,31 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.62.0
+
+### Added
+
+- **One host queue for every heavy job** (ADR-0014). The host slots are now
+  `amont-slots`, a new std-only crate on crates.io and the one
+  implementation relais will link instead of its copy. Waiters are served in
+  order, a waiter says whom it waits behind (`queued behind relais: cargo
+  test (amont-wt-x, 4m)`), and every acquisition is logged to
+  `waits.jsonl` in the slot directory. `docs/host-slots.md` is the contract.
+- **`amont slot run -- <command>`** runs any heavy command in that queue.
+  It passes the exit status through, and exits 75 without running anything
+  when no slot frees within `--max-wait` (default 90 s), unless
+  `--on-timeout run`. **`amont slots [--json]`** lists holders and waiters.
+
+### Changed
+
+- **The slot count follows the machine** when `amont.hostSlots` is unset: at
+  most half the cores, a new holder only while the one-minute load is below
+  the core count, at most one per 60 s, and the first always. It used to be
+  a fixed quarter of the cores. `git config --global amont.hostSlots N`
+  fixes it as before.
+- **Only the process that took a slot holds it**: a daemon a command leaves
+  behind never keeps a slot.
+
 ## v1.61.1
 
 ### Fixed
