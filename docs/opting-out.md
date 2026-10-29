@@ -95,6 +95,7 @@ first move when adopting a check into an existing repository with a backlog.
 
 ```sh
 amont uninstall              # this repository
+amont uninstall --repo       # this repository only: the template dir stays
 amont uninstall --binary     # …and the binary from ~/.local/bin
 amont-fleet uninstall --root ~/Developer
 ```

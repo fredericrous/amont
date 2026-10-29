@@ -53,7 +53,8 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  calls from `prepare`; never copies a binary, never prompts,
                  never re-bakes from inside a push snapshot
   uninstall      remove OUR six shims and nothing else [--binary: the binary too]
-                 [--repo: this repository only; the template dir is left as is]
+                 [--repo: this repository only; the template dir is left as is;
+                  it forgets attestations and revokes amont.conf trust]
   setup          the commit-style questions, current values as defaults
                  [--local|--global] [--dry-run]
   trust          show what amont.conf declares, and accept it

@@ -1054,7 +1054,7 @@ fn uninstall_repo_leaves_the_template_dir_and_global_config_untouched() {
     let (code, out) = run_verb(&s, &repo, &["install"]);
     assert_eq!(code, 0, "setup install failed:\n{out}");
     let gitconfig = s.path(".gitconfig");
-    std::fs::write(&gitconfig, "[init]\n\ttemplateDir = /somewhere\n").expect("write");
+    let config_before = std::fs::read(&gitconfig).ok();
     let templates = template_hooks_dir(&s, &repo);
     let before = snapshot(&templates);
     assert!(
@@ -1076,8 +1076,9 @@ fn uninstall_repo_leaves_the_template_dir_and_global_config_untouched() {
         "the template dir changed:\n{out}"
     );
     assert_eq!(
-        std::fs::read_to_string(&gitconfig).expect("read"),
-        "[init]\n\ttemplateDir = /somewhere\n"
+        std::fs::read(&gitconfig).ok(),
+        config_before,
+        "the global git config changed"
     );
 }
 
@@ -1157,4 +1158,30 @@ fn list_json_reports_the_installed_shims() {
     std::fs::create_dir_all(&outside).expect("mkdir");
     let (_, st, out) = state(&outside);
     assert_eq!(st.as_deref(), Some("unknown"), "{out}");
+}
+
+/// A hook that cannot be read makes the state `unknown`, never `absent` or
+/// `partial`: an installer must not read "cannot tell" as "not there".
+#[cfg(unix)]
+#[test]
+fn an_unreadable_hook_reports_unknown() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
+    if unsafe { libc_geteuid() } == 0 {
+        return; // root reads a mode-000 file, so there is nothing to observe
+    }
+    let s = Sandbox::new("list-unreadable");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let (code, out) = run_verb(&s, &repo, &["install"]);
+    assert_eq!(code, 0, "install failed:\n{out}");
+    let hook = repo.join(".git/hooks/pre-commit");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    let (_, out) = run_verb(&s, &repo, &["list", "--json"]);
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
+    assert!(
+        out.contains("\"installed\":{\"state\":\"unknown\""),
+        "{out}"
+    );
 }

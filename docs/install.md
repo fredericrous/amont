@@ -372,9 +372,14 @@ Full reasoning: [index fidelity and run modes](index-fidelity-and-run-modes.md) 
 
 ```sh
 amont uninstall              # this repository
+amont uninstall --repo       # this repository only: the template dir stays
 amont uninstall --binary     # …and remove the binary from ~/.local/bin
 amont-fleet uninstall --root ~/Developer
 ```
+
+`--repo` leaves the machine alone: the template dir every clone copies from,
+`init.templateDir` and the binary stay byte for byte as they were. It is what
+an installer that armed one repository runs to disarm it.
 
 Uninstall removes **our six shims and nothing else**. A hook you wrote
 yourself is left alone and named in the output, whatever it is — a hook it

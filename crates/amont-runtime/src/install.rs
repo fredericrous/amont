@@ -1380,12 +1380,33 @@ pub fn uninstall_repo() -> Result<(), String> {
     uninstall_repo_hooks()
 }
 
+/// How much of amont is in a hooks directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledState {
+    /// All six shims.
+    Present,
+    /// None, and every hook could be read.
+    Absent,
+    Partial,
+    /// A hook could not be read, or git would not answer: never "absent".
+    Unknown,
+}
+
+impl InstalledState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InstalledState::Present => "present",
+            InstalledState::Absent => "absent",
+            InstalledState::Partial => "partial",
+            InstalledState::Unknown => "unknown",
+        }
+    }
+}
+
 /// Whether our shims are in a hooks directory, and the binary each bakes.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Installed {
-    /// `present` (all six), `absent` (none), `partial`, or `unknown` when a
-    /// hooks directory could not be read or git would not answer.
-    pub state: &'static str,
+    pub state: InstalledState,
     pub hooks_dir: Option<PathBuf>,
     /// `(hook name, baked binary path)` for each shim of ours.
     pub shims: Vec<(&'static str, Option<String>)>,
@@ -1394,7 +1415,7 @@ pub struct Installed {
 impl Installed {
     fn unknown() -> Installed {
         Installed {
-            state: "unknown",
+            state: InstalledState::Unknown,
             hooks_dir: None,
             shims: Vec::new(),
         }
@@ -1413,7 +1434,7 @@ impl Installed {
             .collect();
         let dir = self.hooks_dir.as_ref().map(|d| d.display().to_string());
         crate::json::object(&[
-            crate::json::string_field("state", self.state),
+            crate::json::string_field("state", self.state.as_str()),
             crate::json::opt_string_field("hooks_dir", dir.as_deref()),
             format!("\"shims\":{}", crate::json::array(&shims)),
         ])
@@ -1429,15 +1450,23 @@ pub fn installed_in(dir: &Path) -> Installed {
         let path = dir.join(name);
         match hookfile::classify(&path) {
             HookFile::Ours => shims.push((name, baked_binary(&path))),
-            HookFile::Unknown { .. } => unreadable = true,
-            _ => {}
+            HookFile::Unknown { .. }
+            | HookFile::Foreign(hookfile::ForeignWhy::Unreadable { .. }) => unreadable = true,
+            HookFile::Absent
+            | HookFile::Symlink { .. }
+            | HookFile::NotARegularFile
+            | HookFile::Foreign(
+                hookfile::ForeignWhy::HandWritten
+                | hookfile::ForeignWhy::NotUtf8
+                | hookfile::ForeignWhy::MultiplyLinked { .. },
+            ) => {}
         }
     }
     let state = match (shims.len(), unreadable) {
-        (n, _) if n == DISPATCHERS.len() => "present",
-        (_, true) => "unknown",
-        (0, false) => "absent",
-        _ => "partial",
+        (n, _) if n == DISPATCHERS.len() => InstalledState::Present,
+        (_, true) => InstalledState::Unknown,
+        (0, false) => InstalledState::Absent,
+        _ => InstalledState::Partial,
     };
     Installed {
         state,
