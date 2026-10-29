@@ -59,10 +59,16 @@ pub enum Sizing {
 }
 
 impl Sizing {
-    /// How many slot files count.
+    /// How many slot files count on this machine.
     pub fn cap(self) -> u32 {
+        self.cap_for(cores())
+    }
+
+    /// How many slot files count on a machine with `cores` cores: the one
+    /// admission reads, so the cap and the load test see the same machine.
+    pub fn cap_for(self, cores: u32) -> u32 {
         match self {
-            Sizing::Auto => (cores() / 2).max(1),
+            Sizing::Auto => (cores / 2).max(1),
             Sizing::Fixed(n) => n.max(1),
         }
     }
@@ -308,7 +314,7 @@ impl Waiter {
             .as_ref()
             .and_then(|m| live.iter().position(|t| t == m))
             .unwrap_or(0);
-        let cap = self.sizing.cap();
+        let cap = self.sizing.cap_for(probe.cores);
         let Probed { free, held } = probe_slots(&self.dir, cap)?;
         let weight = self.weight.min(cap) as usize;
         let admit = position == 0 && free.len() >= weight && {
@@ -832,6 +838,16 @@ mod tests {
         let q = waiting(w.poll_with(idle(0)).unwrap());
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(q, Queue::default());
+    }
+
+    /// The automatic cap follows the machine admission sees: half its
+    /// cores, at least one.
+    #[test]
+    fn the_auto_cap_is_half_the_cores_at_least_one() {
+        assert_eq!(Sizing::Auto.cap_for(12), 6);
+        assert_eq!(Sizing::Auto.cap_for(2), 1);
+        assert_eq!(Sizing::Auto.cap_for(1), 1);
+        assert_eq!(Sizing::Fixed(3).cap_for(64), 3);
     }
 
     /// Fixed sizing ignores load and ramp, and stops at the cap.
