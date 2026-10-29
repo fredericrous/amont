@@ -1456,10 +1456,11 @@ pub fn installed_in(dir: &Path) -> Installed {
             | HookFile::Symlink { .. }
             | HookFile::NotARegularFile
             | HookFile::Foreign(
-                hookfile::ForeignWhy::HandWritten
-                | hookfile::ForeignWhy::NotUtf8
-                | hookfile::ForeignWhy::MultiplyLinked { .. },
+                hookfile::ForeignWhy::HandWritten | hookfile::ForeignWhy::NotUtf8,
             ) => {}
+            // Unix only: the variant does not exist on Windows.
+            #[cfg(unix)]
+            HookFile::Foreign(hookfile::ForeignWhy::MultiplyLinked { .. }) => {}
         }
     }
     let state = match (shims.len(), unreadable) {
