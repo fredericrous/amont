@@ -1145,8 +1145,9 @@ fn list_json_reports_the_installed_shims() {
         .split("\"template_dir\":")
         .next()
         .expect("installed part");
+    // A path, not null: `/…` on unix, `C:\\…` (escaped) on Windows.
     assert!(
-        installed.contains("\"binary\":\"/"),
+        installed.contains("\"binary\":\"") && !installed.contains("\"binary\":null"),
         "no baked binary reported:\n{out}"
     );
 
