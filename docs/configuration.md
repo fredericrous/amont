@@ -766,7 +766,7 @@ Linux and macOS read the load; elsewhere the factor is 1.
 ### `amont.hostSlots` — how many heavy checks one machine runs at once
 
 ```sh
-git config --global amont.hostSlots 2   # default: a quarter of the cores, at least 1; 0 = off
+git config --global amont.hostSlots 2   # default: automatic, from the machine; 0 = off
 ```
 
 Clippy, `go vet`, pyright and the test suites compile or execute the
@@ -786,10 +786,22 @@ session shares one queue whatever its `$TMPDIR`. amont refuses that
 directory unless it is a real directory you own with mode 0700, and then
 runs the check unqueued with one line saying why. What a slot that never
 frees means is the repository's [busy policy](#amontonbusy--what-a-heavy-check-does-on-a-busy-host):
-by default, after `amont.timeout`, the check runs unqueued with a note. Fairness is polling,
-not first come first served. A held slot is released when the check ends,
-and by the kernel if amont dies; an amont started by a check that holds a
-slot (`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
+by default, after `amont.timeout`, the check runs unqueued with a note. Waiters are served first come,
+first served. A held slot is released when the check ends, and by the kernel
+if amont dies. An amont started by a check that holds a slot
+(`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
+
+Unset, the count follows the machine (ADR-0014): at most half the cores
+(`max(1, cores/2)`). A free slot is taken only while the one-minute load is
+below the core count, and at most one new holder is admitted every 60 s. The
+first waiter on an empty host always gets one. A number fixes the count,
+with no load test.
+
+The same queue serves everything heavy on the machine, not only amont's
+hooks: relais's verification commands, and any command run as
+`amont slot run -- <command>`. A waiter says whom it waits behind
+(`queued behind relais: cargo test (amont-wt-x, 4m)`), and `amont slots`
+lists the holders. The protocol is [docs/host-slots.md](host-slots.md).
 
 ### `amont.onBusy` — what a heavy check does on a busy host
 

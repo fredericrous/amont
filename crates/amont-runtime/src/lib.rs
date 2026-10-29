@@ -76,6 +76,7 @@ pub mod registry;
 pub mod rehearsal;
 pub mod setup;
 pub mod skew;
+pub mod slot_cmd;
 pub mod snapshot_prep;
 pub mod staged_only;
 pub mod tree_cache;

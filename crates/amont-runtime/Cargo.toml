@@ -47,4 +47,5 @@ git-attest = "1.6"
 # ours, moved out of this crate's active.rs so the other writers can share it;
 # scripts/check-no-deps.sh allows it by name while its own tree stays empty.
 amont-quiet.workspace = true
+amont-slots.workspace = true
 

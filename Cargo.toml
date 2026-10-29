@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/amont", "crates/amont-fleet", "crates/amont-quiet", "crates/amont-runtime"]
+members = ["crates/amont", "crates/amont-fleet", "crates/amont-quiet", "crates/amont-runtime", "crates/amont-slots"]
 
 # The floor for the COMMIT PATH — `amont` and `amont-runtime`, which
 # inherit this. Not a guess: 1.73 was run against those two crates and failed
@@ -42,6 +42,9 @@ amont-runtime = { path = "crates/amont-runtime", version = "1.24.0" }
 # floor is the workspace version: cargo requires a path dependency to satisfy
 # its own requirement, so it can name no release later than this checkout.
 amont-quiet = { path = "crates/amont-quiet", version = "1.61.1" }
+# The host slots (amont ADR-0014, decisions ADR-0049): std-only, the one
+# implementation relais links too. Same floor rule as amont-quiet.
+amont-slots = { path = "crates/amont-slots", version = "1.61.1" }
 
 # Shared release posture. The hook binary runs on every commit, so size and
 # start-up cost are features.

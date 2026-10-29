@@ -100,6 +100,11 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  4 accepted but the expected tip was not observed (2 is usage)
                  [--force: lease on the tip it just read] [--json: stdout]
                  [--dry-run: resolve the target only; no network, no push]
+  slot run       run a heavy command in a host slot, queued with every other
+                 one on this machine; exits 75 without running it when no
+                 slot frees in time [--weight N] [--max-wait S, default 90]
+                 [--on-timeout run|exit] -- <command…>
+  slots          who holds the host slots, and how many wait [--json]
   warm           fill the cache of every cold `tree` gate, so the next commit
                  can prove it within its slack (after a cold commit this
                  runs in the background by itself) [--worker]
@@ -143,6 +148,8 @@ enum Sub {
     TreeParity,
     Warm,
     Land,
+    Slot,
+    Slots,
 }
 
 impl Sub {
@@ -177,6 +184,8 @@ impl Sub {
             Sub::TreeParity => 14,
             Sub::Warm => 15,
             Sub::Land => 16,
+            Sub::Slot => 17,
+            Sub::Slots => 18,
         }
     }
 }
@@ -186,7 +195,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 17] = [
+const SUBCOMMANDS: [(&str, Sub); 19] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -204,6 +213,8 @@ const SUBCOMMANDS: [(&str, Sub); 17] = [
     ("tree-parity", Sub::TreeParity),
     ("warm", Sub::Warm),
     ("land", Sub::Land),
+    ("slot", Sub::Slot),
+    ("slots", Sub::Slots),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -392,6 +403,8 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
         Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
+        Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
+        Sub::Slots => (&["--json"], &[]),
     }
 }
 
@@ -443,16 +456,23 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
     // because parse() tested `--help` only at argv[0] and install scanned
     // only for `--force`. Asking a program what it does must never be a
     // mutating action.
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    // `amont slot run -- <cmd>`: everything after `--` is the command's own,
+    // and `cargo test --help` there is cargo's question, not amont's.
+    let own = if sub == Sub::Slot {
+        amont_runtime::slot_cmd::split_at_dashes(args).0
+    } else {
+        args
+    };
+    if own.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return 0;
     }
-    if args.iter().any(|a| a == "--version" || a == "-V") {
+    if own.iter().any(|a| a == "--version" || a == "-V") {
         println!("amont {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     let (flags, valued) = known_flags(sub);
-    if let Some(bad) = unknown_flag(args, flags, valued) {
+    if let Some(bad) = unknown_flag(own, flags, valued) {
         eprintln!("amont: unknown flag {bad:?} for `{}`", verb_name(sub));
         eprint!("{USAGE}");
         // A script that parses stdout under `--json` gets a document for the
@@ -535,6 +555,10 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         }
         // `amont land` — push the branch, then prove the remote ref moved.
         Sub::Land => amont_runtime::land::command(args),
+        // `amont slot run -- <cmd>` and `amont slots` (ADR-0014): the host
+        // slots for any heavy command, and who holds them.
+        Sub::Slot => amont_runtime::slot_cmd::slot_command(args),
+        Sub::Slots => amont_runtime::slot_cmd::slots_command(args),
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one

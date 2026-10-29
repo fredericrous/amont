@@ -70,8 +70,11 @@ mod rust_tools;
 mod scope_dirs;
 mod scope_opt_in;
 mod secrets;
+// `amont slot run` holds flock slots: unix only, as busy_defers.
 mod severity;
 mod sigpipe;
+#[cfg(unix)]
+mod slot_run;
 mod snapshot_deps;
 mod spawn_budget;
 mod tool_tables;
