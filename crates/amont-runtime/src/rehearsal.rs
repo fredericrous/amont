@@ -621,6 +621,10 @@ pub fn worker() -> Result<Outcome, String> {
         .arg("pre-push")
         .current_dir(snapshot.path())
         .env(ENV, "1")
+        // A rehearsal is how a gate runs with no push waiting on it, so it
+        // waits for a slot rather than defer: a rehearsal whose gates all
+        // deferred would report "passed" having run nothing (ADR-0013).
+        .env(crate::host_slots::ON_BUSY_ENV, "wait")
         .stdin(Stdio::piped());
     strip_repo_env(&mut cmd);
     let line = format!(

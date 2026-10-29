@@ -82,6 +82,14 @@ pub enum ParseError {
     /// tolerant reading that matches only exactly `set planExempt off`, so any
     /// other shape would silently mean "on" to them: it is loud here instead.
     BadPlanExempt(String),
+    /// `set onBusy` other than `wait`/`defer`, `set slotWait` other than a
+    /// whole number of seconds in 1..=3600, or either one set twice. Strict
+    /// like `planExempt`: a busy policy that silently meant something else
+    /// would move a gate to CI, or keep it here, without saying so.
+    BadBusyPolicy {
+        key: &'static str,
+        why: String,
+    },
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -131,6 +139,7 @@ impl std::fmt::Display for ParseError {
             ),
             ParseError::BadPolicyLine(usage) => write!(f, "a policy line is `{usage}`"),
             ParseError::BadPlanExempt(why) => write!(f, "set planExempt: {why}"),
+            ParseError::BadBusyPolicy { key, why } => write!(f, "set {key}: {why}"),
             ParseError::UnsettableKey(k) => write!(
                 f,
                 "set {k:?} is not a policy-settable key — see docs/custom-checks.md"
@@ -191,6 +200,9 @@ pub struct Declared {
     /// The command column began `docs-skip ` — do not run on a commit whose
     /// staged change only edits existing documentation (`staged_docs_only`).
     pub docs_skip: bool,
+    /// The command column carried the `heavy` marker: the check compiles or
+    /// executes the product and takes a host slot (ADR-0013).
+    pub heavy: bool,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -441,6 +453,12 @@ pub const SETTABLE: &[&str] = &[
     // read the committed line itself, trusted or not, and the line is strict:
     // exactly `on` or `off`, once.
     "planExempt",
+    // What a Heavy check does when no host slot frees (ADR-0013). `defer`
+    // moves the gate to CI, so a repository says it only where its CI runs
+    // that gate; strict like `planExempt`: exactly `wait` or `defer`, and a
+    // whole number of seconds for `slotWait`, each once.
+    "onBusy",
+    "slotWait",
 ];
 
 impl PolicyLine {
@@ -588,6 +606,8 @@ pub enum Kind {
         files: bool,
         /// The command column began `docs-skip ` — see `Declared::docs_skip`.
         docs_skip: bool,
+        /// The command column carried `heavy` — see `Declared::heavy`.
+        heavy: bool,
     },
     Unusable {
         why: String,
@@ -641,6 +661,20 @@ impl Check for External {
             // Never consulted: an unusable check reports `Unavailable`, which
             // no severity can turn into a block.
             Kind::Unusable { .. } => Severity::Warn,
+        }
+    }
+
+    /// Heavy when the line says `heavy`, or when it MOVES a built-in Heavy
+    /// gate: `pre-commit cargo-test` runs the suite `pre-push-cargo-test`
+    /// would, and must queue as that gate does (ADR-0013).
+    fn weight(&self) -> crate::host_slots::Weight {
+        let moved = crate::host_slots::HEAVY
+            .iter()
+            .any(|h| crate::short_name(h) == self.short_name);
+        match &self.kind {
+            Kind::Runnable { heavy: true, .. } => crate::host_slots::Weight::Heavy,
+            Kind::Runnable { .. } if moved => crate::host_slots::Weight::Heavy,
+            Kind::Runnable { .. } | Kind::Unusable { .. } => crate::host_slots::Weight::Light,
         }
     }
 
@@ -1310,6 +1344,53 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                             }
                         }
                     }
+                    Some(canonical) if *canonical == "onBusy" || *canonical == "slotWait" => {
+                        let canonical: &'static str = canonical;
+                        let bad = if canonical == "onBusy" {
+                            (!(value.eq_ignore_ascii_case("wait")
+                                || value.eq_ignore_ascii_case("defer")))
+                            .then(|| format!("the value is `wait` or `defer`, not {value:?}"))
+                        } else {
+                            match value.parse::<u64>() {
+                                Ok(1..=3600) => None,
+                                _ => Some(format!(
+                                    "the value is a whole number of seconds from 1 to 3600, not {value:?}"
+                                )),
+                            }
+                        };
+                        let full = format!("amont.{canonical}");
+                        let twice = earlier.iter().any(|l| {
+                            matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. }
+                                if *key == full)
+                        });
+                        match (bad, twice) {
+                            (Some(why), _) => broken_at(
+                                lineno,
+                                format!("{MANIFEST}:{lineno}"),
+                                None,
+                                ParseError::BadBusyPolicy {
+                                    key: canonical,
+                                    why,
+                                },
+                            ),
+                            (None, true) => broken_at(
+                                lineno,
+                                format!("{MANIFEST}:{lineno}"),
+                                None,
+                                ParseError::BadBusyPolicy {
+                                    key: canonical,
+                                    why: "it is set twice".to_string(),
+                                },
+                            ),
+                            (None, false) => Line::Policy {
+                                what: PolicyLine::Set {
+                                    key: full,
+                                    value: value.to_ascii_lowercase(),
+                                },
+                                lineno,
+                            },
+                        }
+                    }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
                             key: format!("amont.{canonical}"),
@@ -1394,6 +1475,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let mut wants_fix = false;
     let mut wants_files = false;
     let mut wants_docs_skip = false;
+    let mut wants_heavy = false;
     loop {
         if let Some(rest) = command.strip_prefix("fix ") {
             command = rest.trim_start();
@@ -1408,6 +1490,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         if let Some(rest) = command.strip_prefix("docs-skip ") {
             command = rest.trim_start();
             wants_docs_skip = true;
+            continue;
+        }
+        if let Some(rest) = command.strip_prefix("heavy ") {
+            command = rest.trim_start();
+            wants_heavy = true;
             continue;
         }
         break;
@@ -1427,6 +1514,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         fix: if wants_fix { Fix::Rewrite } else { Fix::None },
         files: wants_files,
         docs_skip: wants_docs_skip,
+        heavy: wants_heavy,
         name: declared.to_string(),
         stage,
         severity,
@@ -1640,6 +1728,7 @@ impl From<Line> for External {
                 fix: d.fix,
                 files: d.files,
                 docs_skip: d.docs_skip,
+                heavy: d.heavy,
             },
             Err(why) => Kind::Unusable {
                 why,
@@ -2551,6 +2640,82 @@ mod tests {
                 assert_eq!(d.exts, e.scope().files);
             }
         }
+    }
+
+    /// `heavy` is a marker, not part of the command, in any order with the
+    /// others; a declared check is Heavy by it, or by moving a built-in
+    /// Heavy gate (ADR-0013), and Light otherwise.
+    #[test]
+    fn heavy_is_a_marker_and_a_moved_gate_is_heavy() {
+        use crate::check::Check;
+        use crate::host_slots::Weight;
+        let parsed =
+            usable(&parse_lines("pre-commit plugin-test *.ts block heavy files make plugin")[0])
+                .clone();
+        assert!(parsed.heavy && parsed.files);
+        assert_eq!(parsed.program, "make");
+        assert_eq!(parsed.args, vec!["plugin".to_string()]);
+        let externals = parse(
+            "pre-commit plugin-test *.ts block heavy make plugin\n\
+             pre-commit cargo-test *.rs block cargo test --locked\n\
+             pre-commit lint *.sh block shellcheck\n",
+        );
+        let weight = |name: &str| {
+            externals
+                .iter()
+                .find(|e| e.short_name == name)
+                .map(|e| e.weight())
+                .unwrap()
+        };
+        assert_eq!(weight("plugin-test"), Weight::Heavy);
+        assert_eq!(
+            weight("cargo-test"),
+            Weight::Heavy,
+            "moves pre-push-cargo-test"
+        );
+        assert_eq!(weight("lint"), Weight::Light);
+    }
+
+    /// `onBusy` is exactly `wait` or `defer`, `slotWait` a whole number of
+    /// seconds in 1..=3600, each once; anything else is a broken line.
+    #[test]
+    fn the_busy_policy_keys_are_strict_and_set_once() {
+        let set = |line: &Line| {
+            let Line::Policy {
+                what: PolicyLine::Set { key, value },
+                ..
+            } = line
+            else {
+                return None;
+            };
+            Some((key.clone(), value.clone()))
+        };
+        let lines = parse_lines("set onBusy DEFER\nset slotWait 90\n");
+        assert_eq!(
+            set(&lines[0]),
+            Some(("amont.onBusy".into(), "defer".into()))
+        );
+        assert_eq!(set(&lines[1]), Some(("amont.slotWait".into(), "90".into())));
+        for bad in [
+            "set onBusy later",
+            "set onBusy defer # busy",
+            "set slotWait 0",
+            "set slotWait 3601",
+            "set slotWait 1m",
+        ] {
+            let lines = parse_lines(bad);
+            assert!(set(&lines[0]).is_none(), "{bad:?} must not be a policy");
+            assert!(
+                matches!(why(&lines[0]), ParseError::BadBusyPolicy { .. }),
+                "{bad:?}"
+            );
+        }
+        let lines = parse_lines("set onBusy defer\nset onBusy wait\n");
+        assert!(set(&lines[0]).is_some());
+        assert!(matches!(
+            why(&lines[1]),
+            ParseError::BadBusyPolicy { key: "onBusy", .. }
+        ));
     }
 
     #[test]

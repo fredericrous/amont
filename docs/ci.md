@@ -236,6 +236,14 @@ did not happen. `--no-verify` skips pre-push entirely, mints nothing, and
 CI quietly does the full job — which is the backstop doing exactly what it
 is for.
 
+### A gate the busy host deferred
+
+Under `set onBusy defer` (ADR-0013), a heavy gate whose host slot did not
+free in time is deferred: it does not run locally and is never attested, so
+the attest step leaves it out of `gates` and the CI step runs it, exactly as
+for a gate that was never run. Nothing in CI changes. What a repository owes
+is the promise behind the line: every heavy gate it may defer has a CI step.
+
 ## Reusing a result when only plans changed: declared inputs
 
 Every cache above is keyed by the whole tree, so a commit that changes only

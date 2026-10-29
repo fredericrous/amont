@@ -302,6 +302,11 @@ pub enum Outcome {
     /// and a check that is inert by the registry's own account has no
     /// business announcing that it could not run).
     Inert,
+    /// DEFERRED TO CI — a Heavy check whose host slot did not free within
+    /// `slotWait` under `onBusy defer` (ADR-0013). It did not run, so nothing
+    /// may be stamped or attested and CI runs it; it never blocks, whatever
+    /// the severity, because nothing was judged.
+    Deferred,
 }
 
 /// What a HOOK concluded — the only thing git actually reads.
@@ -441,6 +446,11 @@ pub trait Check: Sync {
     /// and that is exactly the declaration the mode asks for.
     fn reach(&self) -> Reach {
         Reach::Convention
+    }
+    /// Whether the check takes a host slot (ADR-0009, ADR-0013). Built-ins
+    /// are Heavy by name; a declared check answers for itself.
+    fn weight(&self) -> crate::host_slots::Weight {
+        crate::host_slots::weight_of(self.name())
     }
     fn run(&self, ctx: &Ctx) -> Outcome;
 }

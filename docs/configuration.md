@@ -775,18 +775,67 @@ agents running them at once thrash the same cores and the same cargo lock.
 So a heavy check takes one of these slots before its first tool runs, and
 waits — its clocks not yet started — while all are taken; the progress line
 says `· queued 42s (slots 2/2)`. A check that turns out to have nothing to
-do never queues.
+do never queues. A check declared in `amont.conf` is heavy when its line
+carries the `heavy` marker, or when it moves a built-in heavy gate (its name
+is that gate's short name, as `pre-commit cargo-test` is for
+`pre-push-cargo-test`).
 
 The slots are `flock` locks on files in `/tmp/amont-slots-<uid>`
 (`$XDG_RUNTIME_DIR/amont-slots` on Linux when set), a fixed path so every
 session shares one queue whatever its `$TMPDIR`. amont refuses that
 directory unless it is a real directory you own with mode 0700, and then
-runs the check unqueued with one line saying why. A slot that never frees
-within `amont.timeout` runs the check unqueued too, with a note: the queue
-is a courtesy to the machine, not a gate on the code. Fairness is polling,
+runs the check unqueued with one line saying why. What a slot that never
+frees means is the repository's [busy policy](#amontonbusy--what-a-heavy-check-does-on-a-busy-host):
+by default, after `amont.timeout`, the check runs unqueued with a note. Fairness is polling,
 not first come first served. A held slot is released when the check ends,
 and by the kernel if amont dies; an amont started by a check that holds a
 slot (`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
+
+### `amont.onBusy` — what a heavy check does on a busy host
+
+```
+set onBusy defer   # in amont.conf; default wait
+set slotWait 60    # seconds, 1 to 3600; only under defer
+```
+
+The host keys above say how many heavy checks one machine runs; this one,
+set by the repository (ADR-0013), says what happens when no slot frees.
+
+- **`wait`** (the default): wait up to `amont.timeout`, then run unqueued,
+  with a note.
+- **`defer`**: wait up to `slotWait`, then **defer the check to CI**. It does
+  not run, it never blocks (a `block` check included), it earns no stamp and
+  it is never attested, so CI's attest step does not list it and CI runs it.
+  The hook says so, with the command to run it now:
+
+  ```
+  ! 1 check(s) deferred to CI, no host slot freed: pre-commit-cargo-test
+    run now: AMONT_ON_BUSY=wait amont run pre-commit-cargo-test · stop deferring: set onBusy wait
+  ```
+
+Declare `defer` only where the repository's CI runs every heavy gate: a
+deferred gate is still required, and CI is where it now runs.
+
+Three rules keep `defer` from deferring work it should not:
+
+- **Never behind its own checks.** A check defers only when this amont holds
+  no slot. Two heavy checks of one commit on an otherwise idle machine wait
+  for each other, as under `wait`.
+- **One wait per push.** Once a push gate defers, the later heavy gates of
+  that push defer without waiting again.
+- **The push twin defers too.** A commit-time gate deferred at commit leaves
+  a `deferred <gate>` line on its tree's note. Its pre-push twin (the same
+  name, or the built-in it moves) then defers rather than run the suite with
+  the remote's connection held open. That line can only move a gate to CI,
+  never stamp it.
+
+Precedence, highest first: `AMONT_ON_BUSY` in the environment
+(`AMONT_ON_BUSY=wait git push` runs what the file would defer), then
+`git config amont.onBusy` in the repository, then `set onBusy` in a trusted
+`amont.conf`, then `--global`, then `wait`: the same ladder as every `set`
+key. A rehearsal (`amont rehearse`) always waits: it is how a gate runs
+with no push waiting on it. Load from processes outside the hooks holds no
+slot and causes no deferral.
 
 ## `amont.minVersion` — the amont this repository means
 

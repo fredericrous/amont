@@ -19,6 +19,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The environment variable a held slot exports to every tool it runs, and
@@ -82,9 +83,36 @@ pub enum Acquired {
     Unqueued(Reason),
 }
 
+/// How many slots THIS process holds, across its threads. `CURRENT` is
+/// thread-local, so a pre-commit check cannot see that a sibling thread
+/// holds a slot; this can, and a check never defers while it is non-zero
+/// (ADR-0013: a commit never defers behind its own checks).
+static HELD: AtomicUsize = AtomicUsize::new(0);
+
+/// Set once a check of this process deferred: the host was measured busy,
+/// and a later Heavy check of the same run defers without waiting again, so
+/// a push waits at most one `slotWait`.
+static BUSY_SEEN: AtomicBool = AtomicBool::new(false);
+
 /// A held slot: released when dropped, and by the kernel if amont dies.
 pub struct Slot {
-    _file: std::fs::File,
+    file: Option<std::fs::File>,
+}
+
+impl Slot {
+    fn new(file: std::fs::File) -> Slot {
+        HELD.fetch_add(1, Ordering::SeqCst);
+        Slot { file: Some(file) }
+    }
+}
+
+impl Drop for Slot {
+    /// The lock first, then the count: the count never reads zero while
+    /// this process still holds a flock, so a sibling never defers behind it.
+    fn drop(&mut self) {
+        drop(self.file.take());
+        HELD.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// `amont.hostSlots`: a host key, default a quarter of the cores and at
@@ -92,6 +120,54 @@ pub struct Slot {
 pub fn configured(settings: &crate::config::Settings) -> u64 {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as i64);
     crate::config::host_integer_or(settings, "amont.hostSlots", (cores / 4).max(1), 0..=64) as u64
+}
+
+/// The environment override of `amont.onBusy`, for one run:
+/// `AMONT_ON_BUSY=wait git push` runs a gate the file would defer.
+pub const ON_BUSY_ENV: &str = "AMONT_ON_BUSY";
+
+/// What a Heavy check does when no slot frees in time (ADR-0013,
+/// `hooks.busy-policy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyPolicy {
+    /// Wait up to `amont.timeout`, then run unqueued with a note: ADR-0009's
+    /// behaviour, and the default.
+    Wait,
+    /// Wait up to `slot_wait`, then defer the check to CI.
+    Defer { slot_wait: Duration },
+}
+
+/// The busy policy in force: `AMONT_ON_BUSY`, then `amont.onBusy` (git
+/// config, or `set onBusy` in a trusted `amont.conf`), then `wait`.
+pub fn busy_policy(settings: &crate::config::Settings) -> BusyPolicy {
+    resolve_busy(std::env::var(ON_BUSY_ENV).ok().as_deref(), settings)
+}
+
+/// [`busy_policy`] with the environment value handed in: the testable seam,
+/// because setting a variable in a threaded test binary races its siblings.
+fn resolve_busy(from_env: Option<&str>, settings: &crate::config::Settings) -> BusyPolicy {
+    let from_env = from_env.filter(|v| !v.is_empty());
+    let mode = match from_env.map(str::to_ascii_lowercase).as_deref() {
+        Some("wait") => "wait",
+        Some("defer") => "defer",
+        Some(other) => {
+            crate::config::complain(
+                ON_BUSY_ENV,
+                &format!("{other:?} is not one of wait, defer"),
+                "amont.onBusy",
+            );
+            crate::config::enumerated_or(settings, "amont.onBusy", &["wait", "defer"], "wait")
+        }
+        None => crate::config::enumerated_or(settings, "amont.onBusy", &["wait", "defer"], "wait"),
+    };
+    if mode == "defer" {
+        let secs = crate::config::integer_or(settings, "amont.slotWait", 60, 1..=3600) as u64;
+        BusyPolicy::Defer {
+            slot_wait: Duration::from_secs(secs),
+        }
+    } else {
+        BusyPolicy::Wait
+    }
 }
 
 /// The slot directory: `AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/amont-slots`
@@ -134,7 +210,7 @@ pub fn acquire(n: u64, budget: Duration) -> Acquired {
         for i in 0..n {
             let path = dir.join(format!("slot-{i}"));
             match platform::try_lock(&path) {
-                Ok(Some(file)) => return Acquired::Slot(Slot { _file: file }),
+                Ok(Some(file)) => return Acquired::Slot(Slot::new(file)),
                 Ok(None) => {}
                 // Not "busy": an error waiting would only repeat, and a
                 // full queue must not be claimed when nobody was seen.
@@ -161,6 +237,12 @@ struct Current {
     settled: bool,
     held: Option<Slot>,
     queued: Duration,
+    /// Set when the busy policy deferred this check (ADR-0013): how long it
+    /// waited. Read by the dispatcher through [`CheckGuard::deferred`], and it
+    /// overrides whatever the check returned, so a check whose own error
+    /// handling turns the refused spawn into `Unavailable` or `Failed` still
+    /// ends Deferred.
+    deferred: Option<Duration>,
 }
 
 thread_local! {
@@ -176,6 +258,24 @@ impl CheckGuard {
     pub fn queued(&self) -> Duration {
         CURRENT.with(|c| c.borrow().queued)
     }
+
+    /// Whether the busy policy deferred this check, and after how long a
+    /// wait. Read before the guard drops.
+    pub fn deferred(&self) -> Option<Duration> {
+        CURRENT.with(|c| c.borrow().deferred)
+    }
+}
+
+/// Whether the check running on this thread was deferred by the busy
+/// policy: what it says after that is about its refused spawn.
+pub fn deferred_here() -> bool {
+    CURRENT.with(|c| c.borrow().deferred.is_some())
+}
+
+/// The error a refused spawn returns. Only a way to stop the spawn: what the
+/// check makes of it does not matter, because [`CheckGuard::deferred`] wins.
+fn refusal() -> std::io::Error {
+    std::io::Error::other("deferred to CI: no host slot freed (amont.onBusy defer)")
 }
 
 impl Drop for CheckGuard {
@@ -184,12 +284,14 @@ impl Drop for CheckGuard {
     }
 }
 
-/// The dispatcher is about to run `name` on this thread.
-pub fn enter_check(name: &str) -> CheckGuard {
+/// The dispatcher is about to run `name`, of `weight`, on this thread. The
+/// weight comes from the check (`Check::weight`), not the name: a declared
+/// check is Heavy by its line, which no name says.
+pub fn enter_check(name: &str, weight: Weight) -> CheckGuard {
     CURRENT.with(|c| {
         *c.borrow_mut() = Current {
             name: name.to_string(),
-            heavy: weight_of(name) == Weight::Heavy,
+            heavy: weight == Weight::Heavy,
             ..Current::default()
         }
     });
@@ -212,61 +314,98 @@ fn nested() -> bool {
 
 /// Called before a tool is spawned. For the first tool of a heavy check,
 /// waits for a slot, showing the wait in the check's row. Returns whether
-/// this thread holds a slot, so the caller exports [`HELD_ENV`].
-pub fn before_spawn(settings: &crate::config::Settings) -> bool {
-    let pending = CURRENT.with(|c| {
+/// this thread holds a slot, so the caller exports [`HELD_ENV`]; an `Err`
+/// when the busy policy deferred the check, so the caller does not spawn.
+pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool> {
+    let (pending, deferred) = CURRENT.with(|c| {
         let c = c.borrow();
-        c.heavy && !c.settled
+        (c.heavy && !c.settled, c.deferred.is_some())
     });
+    // A check that caught the first refusal and tries another tool is
+    // refused at once, not after a second wait.
+    if deferred {
+        return Err(refusal());
+    }
     if pending {
-        // Nested first: a nested amont must not pay the host-key scan for
-        // a slot count it is about to ignore.
+        // Nested first: a nested amont must not pay the host-key scan for a
+        // slot count it is about to ignore. Neither answer queues, so neither
+        // can defer.
         let n = if nested() { 0 } else { configured(settings) };
-        let outcome = if nested() {
-            Acquired::Unqueued(Reason::Nested)
-        } else if n == 0 {
-            Acquired::Unqueued(Reason::Disabled)
-        } else {
-            let budget = match crate::hooks::common::check_timeout(settings) {
-                0 => 3600,
-                s => s,
-            };
-            let sink = crate::live::current_sink();
-            if let Some((stage, idx)) = &sink {
-                stage.queue(*idx, Some((Instant::now(), n)));
-            }
-            let started = Instant::now();
-            let got = acquire(n, Duration::from_secs(budget));
-            if let Some((stage, idx)) = &sink {
-                stage.queue(*idx, None);
-            }
-            let waited = started.elapsed();
-            CURRENT.with(|c| c.borrow_mut().queued += waited);
-            // Piped output never shows the region, and a heartbeat only
-            // comes after a minute: say once where the time went.
-            if matches!(got, Acquired::Slot(_)) && waited >= Duration::from_secs(1) {
-                crate::hooks::common::say(&format!(
-                    "  (waited {} for a host slot, {} {n})",
-                    crate::hooks::common::human_secs(waited.as_secs()),
-                    crate::ui::highlight("amont.hostSlots")
-                ));
-            }
-            got
+        if n == 0 {
+            CURRENT.with(|c| c.borrow_mut().settled = true);
+            return Ok(false);
+        }
+        let policy = busy_policy(settings);
+        let ceiling = Duration::from_secs(match crate::hooks::common::check_timeout(settings) {
+            0 => 3600,
+            s => s,
+        });
+        let budget = match policy {
+            BusyPolicy::Wait => ceiling,
+            // The host was already measured busy by this run: defer now.
+            BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
+            BusyPolicy::Defer { slot_wait } => slot_wait,
         };
-        let held = match outcome {
+        let sink = crate::live::current_sink();
+        if let Some((stage, idx)) = &sink {
+            stage.queue(*idx, Some((Instant::now(), n)));
+        }
+        let started = Instant::now();
+        let mut got = acquire(n, budget);
+        if let (BusyPolicy::Defer { .. }, Acquired::Unqueued(Reason::TimedOut(_))) = (policy, &got)
+        {
+            // A sibling check of this process holds a slot: the host is busy
+            // with this commit's own work, which is not a reason to defer.
+            // Wait as `wait` does, up to the ceiling.
+            got = if HELD.load(Ordering::SeqCst) > 0 {
+                acquire(n, ceiling.saturating_sub(started.elapsed()))
+            } else {
+                // One more pass: a sibling may have released between the
+                // last poll and the count's read.
+                acquire(n, Duration::ZERO)
+            };
+        }
+        if let Some((stage, idx)) = &sink {
+            stage.queue(*idx, None);
+        }
+        let waited = started.elapsed();
+        CURRENT.with(|c| c.borrow_mut().queued += waited);
+        // Piped output never shows the region, and a heartbeat only comes
+        // after a minute: say once where the time went.
+        if matches!(got, Acquired::Slot(_)) && waited >= Duration::from_secs(1) {
+            crate::hooks::common::say(&format!(
+                "  (waited {} for a host slot, {} {n})",
+                crate::hooks::common::human_secs(waited.as_secs()),
+                crate::ui::highlight("amont.hostSlots")
+            ));
+        }
+        let defer = matches!(policy, BusyPolicy::Defer { .. })
+            && matches!(got, Acquired::Unqueued(Reason::TimedOut(_)));
+        let held = match got {
             Acquired::Slot(slot) => Some(slot),
+            // The deferral line is the dispatcher's, not this note.
+            Acquired::Unqueued(_) if defer => None,
             Acquired::Unqueued(reason) => {
                 note(&reason, n);
                 None
             }
         };
+        if defer {
+            BUSY_SEEN.store(true, Ordering::SeqCst);
+        }
         CURRENT.with(|c| {
             let mut c = c.borrow_mut();
             c.held = held;
             c.settled = true;
+            if defer {
+                c.deferred = Some(waited);
+            }
         });
+        if defer {
+            return Err(refusal());
+        }
     }
-    CURRENT.with(|c| c.borrow().held.is_some())
+    Ok(CURRENT.with(|c| c.borrow().held.is_some()))
 }
 
 /// One line for the reasons a person can act on; nothing for the ones
@@ -439,6 +578,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    fn settings_from(conf: &str) -> crate::config::Settings {
+        let lines = crate::manifest::parse_lines(conf);
+        let (policy, _) = crate::policy::Policy::from_lines(&lines);
+        crate::config::Settings::new(policy)
+    }
+
+    /// `AMONT_ON_BUSY`, then `amont.conf`, then `wait`; a bad environment
+    /// value is ignored for the file's.
+    #[test]
+    fn the_busy_policy_is_env_then_file_then_wait() {
+        let none = settings_from("");
+        let defer = settings_from("set onBusy defer\nset slotWait 5\n");
+        assert_eq!(resolve_busy(None, &none), BusyPolicy::Wait);
+        assert_eq!(
+            resolve_busy(None, &defer),
+            BusyPolicy::Defer {
+                slot_wait: Duration::from_secs(5)
+            }
+        );
+        assert_eq!(resolve_busy(Some("wait"), &defer), BusyPolicy::Wait);
+        assert_eq!(
+            resolve_busy(Some("DEFER"), &none),
+            BusyPolicy::Defer {
+                slot_wait: Duration::from_secs(60)
+            }
+        );
+        assert_eq!(
+            resolve_busy(Some("later"), &defer),
+            BusyPolicy::Defer {
+                slot_wait: Duration::from_secs(5)
+            }
+        );
+        assert_eq!(resolve_busy(Some(""), &none), BusyPolicy::Wait);
+    }
+
+    /// A slot raises the process's count while held, and once dropped its
+    /// lock is free. (The order inside `Drop` — lock first, then count — is
+    /// what keeps a sibling from reading zero while the flock is still held;
+    /// a count read from another thread is racy, so the observable half is
+    /// checked: the lock is free once the slot is gone.)
+    #[test]
+    fn a_held_slot_is_counted_and_a_dropped_one_is_free() {
+        let slot_dir = scratch("held");
+        safe_dir(&slot_dir).unwrap();
+        let path = slot_dir.join("slot-0");
+        let before = HELD.load(Ordering::SeqCst);
+        let slot = Slot::new(platform::try_lock(&path).unwrap().unwrap());
+        assert!(HELD.load(Ordering::SeqCst) > before);
+        assert!(platform::try_lock(&path).unwrap().is_none(), "held");
+        drop(slot);
+        let freed = (0..100).any(|_| {
+            matches!(platform::try_lock(&path), Ok(Some(_))) || {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(freed, "a dropped slot was not released within 2 s");
+        let _ = std::fs::remove_dir_all(&slot_dir); // best-effort: a scratch dir
+    }
+
     #[test]
     fn heavy_is_the_list() {
         assert_eq!(weight_of("pre-commit-clippy"), Weight::Heavy);
@@ -471,16 +670,16 @@ mod tests {
     #[test]
     fn a_light_check_never_takes_a_slot() {
         let settings = crate::config::Settings::default();
-        let _g = enter_check("pre-commit-cargo-fmt");
-        assert!(!before_spawn(&settings));
+        let _g = enter_check("pre-commit-cargo-fmt", weight_of("pre-commit-cargo-fmt"));
+        assert!(!before_spawn(&settings).unwrap());
     }
 
     #[test]
     fn a_nested_heavy_check_settles_without_a_slot() {
         let settings = crate::config::Settings::default();
-        let _g = enter_check("pre-commit-clippy");
+        let _g = enter_check("pre-commit-clippy", weight_of("pre-commit-clippy"));
         assert_eq!(current_check().as_deref(), Some("clippy"));
-        assert!(!before_spawn(&settings));
+        assert!(!before_spawn(&settings).unwrap());
         assert!(CURRENT.with(|c| c.borrow().settled));
     }
 

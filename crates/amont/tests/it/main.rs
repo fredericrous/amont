@@ -22,6 +22,9 @@ mod ban_terms;
 mod branch_pattern;
 mod branch_pattern_early;
 mod branch_protect_early;
+// Host slots are `flock` files: Windows has none, so nothing there defers.
+#[cfg(unix)]
+mod busy_defers;
 mod check_verb;
 mod ci_attest_scripts;
 mod cli_dispatch;

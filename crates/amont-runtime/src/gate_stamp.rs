@@ -60,6 +60,19 @@
 //! [`crate::gate_evidence`]; nothing in this module's skip decisions consults
 //! them, so a corrupted or forged one cannot make a check be skipped.
 //!
+//! One more kind of line, and the one exception to that rule (ADR-0013):
+//!
+//! ```text
+//! deferred cargo-test
+//! ```
+//!
+//! A commit-time gate the busy policy deferred to CI. Pre-push reads it
+//! ([`deferred_for`]) so the gate's push twin defers too instead of running
+//! the suite with the remote's connection held open. It can only ever move a
+//! gate to CI — it is never a token, never stamps, never attests — so a
+//! forged line makes CI run more, never less. Kept apart from the `run`
+//! history, whose [`MAX_RUNS`] trim must not forget it.
+//!
 //! The note's key is the tree, which makes the record a per-FINGERPRINT one
 //! for free: two runs of one gate against one tree are two lines in one note,
 //! and if they disagree the gate is flaky on content that did not change.
@@ -159,6 +172,8 @@ pub enum RunOutcome {
     /// Not started: its last run would not fit in this commit's cover plus
     /// the slack.
     Slow,
+    /// Not run: the busy policy deferred it to CI (ADR-0013).
+    Deferred,
 }
 
 impl RunOutcome {
@@ -176,6 +191,7 @@ impl RunOutcome {
             RunOutcome::Withheld => "withheld",
             RunOutcome::Cancelled => "cancelled",
             RunOutcome::Slow => "slow",
+            RunOutcome::Deferred => "deferred",
         }
     }
 
@@ -196,6 +212,7 @@ impl RunOutcome {
             "withheld" => RunOutcome::Withheld,
             "cancelled" => RunOutcome::Cancelled,
             "slow" => RunOutcome::Slow,
+            "deferred" => RunOutcome::Deferred,
             _ => return None,
         })
     }
@@ -265,8 +282,14 @@ impl Run {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Note {
     pub tokens: Vec<String>,
+    /// Commit-time gates deferred to CI on this content; see the module
+    /// documentation. Never trimmed with the runs.
+    pub deferred: Vec<String>,
     pub runs: Vec<Run>,
 }
+
+/// The first word of a deferral line.
+const DEFERRED: &str = "deferred";
 
 impl Note {
     /// Parse a note body. A first line that is not ours yields an EMPTY note:
@@ -281,9 +304,23 @@ impl Note {
         if tokens.next() != Some(FORMAT) {
             return Note::default();
         }
+        let mut deferred = Vec::new();
+        let mut runs = Vec::new();
+        for line in lines {
+            let mut t = line.split_whitespace();
+            match (t.next(), t.next(), t.next()) {
+                (Some(DEFERRED), Some(gate), None) => {
+                    if !deferred.iter().any(|d| d == gate) {
+                        deferred.push(gate.to_string());
+                    }
+                }
+                _ => runs.extend(Run::parse(line)),
+            }
+        }
         Note {
             tokens: tokens.map(str::to_string).collect(),
-            runs: lines.filter_map(Run::parse).collect(),
+            deferred,
+            runs,
         }
     }
 
@@ -291,6 +328,10 @@ impl Note {
     /// always been, so every reader that stops there sees no change at all.
     pub fn render(&self) -> String {
         let mut body = format!("{FORMAT} {}", self.tokens.join(" "));
+        for gate in &self.deferred {
+            body.push('\n');
+            body.push_str(&format!("{DEFERRED} {gate}"));
+        }
         for run in &self.runs {
             body.push('\n');
             body.push_str(&run.render());
@@ -506,6 +547,54 @@ pub fn record_runs(key: &str, runs: &[Run]) {
     let mut note = note_at(key);
     note.add_runs(&runs);
     let _ = write_note(key, &note);
+}
+
+/// pre-commit: record on `tree` (the staged tree, which is the commit's)
+/// that the busy policy deferred `gates`, by their commit-time script names.
+/// Best-effort and silent: a lost line runs the push twin, the safe way.
+pub fn record_deferred(tree: &str, gates: &[String]) {
+    let gates: Vec<&String> = gates
+        .iter()
+        .filter(|g| !g.is_empty() && !g.contains(char::is_whitespace))
+        .collect();
+    if gates.is_empty() {
+        return;
+    }
+    let mut note = note_at(tree);
+    for g in gates {
+        if !note.deferred.contains(g) {
+            note.deferred.push(g.clone());
+        }
+    }
+    let _ = write_note(tree, &note); // best-effort: a lost line runs the push twin, the safe way
+}
+
+/// Which of `commits` carry a deferral of `gate` on their tree's note (or
+/// their own). Read only to defer a push twin, never to skip one: a commit
+/// in this set still has no stamp.
+pub fn deferred_for(commits: &[String], gate: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if commits.is_empty() {
+        return out;
+    }
+    let mut args: Vec<&str> = vec!["log", "--no-walk", "--format=%H %T"];
+    args.extend(commits.iter().map(String::as_str));
+    let Some(list) = crate::git::stdout(&args) else {
+        return out;
+    };
+    for line in list.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(commit), Some(tree)) = (it.next(), it.next()) else {
+            continue;
+        };
+        if [commit, tree]
+            .iter()
+            .any(|key| note_at(key).deferred.iter().any(|d| d == gate))
+        {
+            out.insert(commit.to_string());
+        }
+    }
+    out
 }
 
 /// `$GIT_DIR/amont-gate` — the worktree-PRIVATE gitdir, deliberately: the
@@ -1200,6 +1289,29 @@ mod tests {
         assert_eq!(note.tokens, vec!["test"]);
         assert_eq!(note.runs.len(), 2, "{:?}", note.runs);
         assert_eq!(note.runs[1].outcome, RunOutcome::Failed);
+    }
+
+    /// A deferral line (ADR-0013) round-trips, is never a token, and is not
+    /// trimmed with the run history: more than [`MAX_RUNS`] later runs on the
+    /// same tree must not make the push twin forget the commit deferred it.
+    #[test]
+    fn a_deferral_is_never_a_token_and_outlives_the_run_trim() {
+        let mut note = Note::parse("amont-gate-v1 lint\ndeferred cargo-test\n");
+        assert_eq!(note.tokens, vec!["lint"]);
+        assert_eq!(note.deferred, vec!["cargo-test"]);
+        let runs: Vec<Run> = (0..MAX_RUNS as u64 + 10)
+            .map(|i| Run {
+                at: 1_726_900_000 + i,
+                gate: "pre-push-audit-js".into(),
+                outcome: RunOutcome::Passed,
+                ms: 1,
+            })
+            .collect();
+        note.add_runs(&runs);
+        let again = Note::parse(&note.render());
+        assert_eq!(again.runs.len(), MAX_RUNS);
+        assert_eq!(again.deferred, vec!["cargo-test"]);
+        assert_eq!(again.tokens, vec!["lint"]);
     }
 
     /// A note somebody else wrote into our ref is not evidence either. The

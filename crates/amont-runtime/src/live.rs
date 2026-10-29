@@ -797,7 +797,8 @@ fn is_failure(outcome: Option<crate::check::Outcome>) -> bool {
             | Outcome::Warned
             | Outcome::Fixed
             | Outcome::Unavailable
-            | Outcome::Inert,
+            | Outcome::Inert
+            | Outcome::Deferred,
         ) => false,
     }
 }

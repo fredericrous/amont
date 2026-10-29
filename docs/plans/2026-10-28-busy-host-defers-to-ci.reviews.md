@@ -1,0 +1,39 @@
+# A busy host defers heavy gates to CI: full reviews
+
+- **architect (round 1), approve-with-changes, 33k tokens, 38 s.**
+  - Accepted: high, the push twin must defer (the push idle-connection reset).
+  - Accepted: high, no deferral behind the commit's own siblings.
+  - Rejected: medium, an eager entry function. The slot stays lazy.
+  - Accepted: low, `Reason::Io`.
+- **po (round 1), approve-with-changes, 28k tokens, 37 s.**
+  - Accepted: high, load from outside the hooks is a non-goal, and the slot count is recorded.
+  - Accepted: medium, a 14-day measurement with a rollback bar.
+  - Accepted: low, cite the relais `ci.yaml` lines.
+- **tui (round 1), approve-with-changes, 28k tokens, 34 s.**
+  - Accepted: high, keep the queue row while waiting.
+  - Accepted: medium ×2, a roll-up line with `warning_sign`, the run-now command and `set onBusy wait`.
+  - Rejected: medium, falling back with a warning. It is a broken line instead.
+  - Accepted: low, quiet mode, piped output and `NO_COLOR`.
+- **language/rust (round 1), approve-with-changes, 37k tokens, 62 s.**
+  - Accepted: high, `settle()` for the nested and disabled cases.
+  - Accepted: high, the slot stays lazy and the spawn is refused with a typed error.
+  - Accepted: medium, a sibling test.
+  - Accepted: high, the tests unpin `AMONT_HOST_SLOT`.
+  - Accepted: medium, hand review of `_ =>` and `matches!`, and a block-severity test.
+- **unix (round 1), approve-with-changes, 33k tokens, 50 s.**
+  - Accepted: high, the unpinned test.
+  - Accepted: medium, a push waits at most one `slotWait`.
+  - Rejected: medium, an eager slot after the file filter.
+  - Accepted: medium, `AMONT_ON_BUSY` precedence.
+  - Accepted: low, `Io`.
+- **backend, round 1: approve-with-changes, 36k tokens, 84 s.** Accepted: high, the unpinned test; high, every amont at the release before rollout; medium, broken-line parsing; medium, `TimedOut` note replaced; medium, measure `slotWait`; low, an observable local check. Rejected: high, eager slot for declared checks. Rust's lazy slot covers it.
+- **backend, round 2: approve-with-changes, 39k tokens, 51 s.** Accepted: high, a process-wide `HELD` count; high, the run-line invariant amended; high, contradicting verification fixed; medium, phase 3 text.
+- **backend, re-bind: approve-with-changes, 23k tokens, 26 s.** Accepted: high, the twin rule does not depend on load at push.
+- **backend, re-bind: approve-with-changes, 30k tokens, 38 s.** Accepted: high, `PairVerdict::Deferred`, never `Gated`.
+- **backend, re-bind: approve, 22k tokens, 13 s.**
+- **language/rust, final: approve-with-changes, 33k tokens, 45 s.** Accepted: high, deferral recorded in `CURRENT` and overriding the check's outcome; high, `HELD` race fixed (`SeqCst`, a last `try_lock`, file released before `fetch_sub`). Re-bind: approve, 25k tokens, 25 s.
+- **backend, final: approve, 25k tokens, 30 s.** Carried into implementation: `before_spawn` refuses at once once a deferral is recorded.
+- **codex (final review), approve-with-changes.**
+  - Accepted: high, deferral resolved through the per-commit pairing traversal.
+  - Accepted: high, deferral kept outside `MAX_RUNS`.
+  - Carried into implementation: medium, rehearsal must not report "passed" when gates deferred.

@@ -135,6 +135,10 @@ pub(crate) enum PairVerdict {
     /// A pair exists but this many pushed commits carry no record of it —
     /// run, saying why the declaration's word was not enough.
     Unstamped(usize),
+    /// No pushed commit is unstamped except this many, whose gate the busy
+    /// policy deferred at commit (ADR-0013): defer the twin to CI as well.
+    /// Never `Gated`, which would attest a suite that ran nowhere.
+    Deferred(usize),
 }
 
 /// Judge a pre-push gate against its commit-time pair, with exactly the npm
@@ -197,7 +201,15 @@ pub(crate) fn pair_verdict(
         .map(|h| "0".repeat(h.len()))
         .unwrap_or_else(|| "0".repeat(40));
     let mut unstamped = 0usize;
+    let mut deferred = 0usize;
     let mut judged_any = false;
+    // Under `onBusy defer`, a commit whose gate the busy policy deferred is
+    // not "unstamped": its twin defers too (ADR-0013). `AMONT_ON_BUSY=wait`
+    // turns this off and the twin runs.
+    let defer = matches!(
+        crate::host_slots::busy_policy(settings),
+        crate::host_slots::BusyPolicy::Defer { .. }
+    );
     for r in push.get() {
         let changed = crate::pushrefs::changed_files_for(r, &zero);
         // `covers`, NOT `matches`, and the difference is the whole reason
@@ -241,19 +253,32 @@ pub(crate) fn pair_verdict(
         // stamp that did not exist. Opt-in was settled for the repository
         // above; per commit the only question is whether it touched the
         // scope.
-        unstamped += per_commit
+        let missing: Vec<String> = per_commit
             .iter()
             .filter(|(_, files)| pair.scope.touches(files))
             .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair_token)))
-            .count();
+            .map(|(commit, _)| commit.clone())
+            .collect();
+        let excused = if defer {
+            crate::gate_stamp::deferred_for(&missing, &pair.script)
+        } else {
+            Default::default()
+        };
+        deferred += excused.len();
+        unstamped += missing.len() - excused.len();
     }
     if !judged_any {
         return PairVerdict::NotPaired;
     }
-    if unstamped == 0 {
-        PairVerdict::Gated
-    } else {
+    // Never `Gated` when a deferral covers a commit: `Gated` puts the twin
+    // in `passed`, which the signed attestation names, and CI would then skip
+    // a suite that ran nowhere.
+    if unstamped > 0 {
         PairVerdict::Unstamped(unstamped)
+    } else if deferred > 0 {
+        PairVerdict::Deferred(deferred)
+    } else {
+        PairVerdict::Gated
     }
 }
 

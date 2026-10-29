@@ -496,6 +496,25 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     }
     let ran: Vec<&str> = ran.iter().map(String::as_str).collect();
     crate::gate_stamp::record(&ran);
+    // The blocking declarations the busy policy deferred, by script name, on
+    // the staged tree (the commit's, under the hold): pre-push reads them to
+    // defer the push twin too (ADR-0013). Never a token: nothing is stamped.
+    let deferred: Vec<String> =
+        crate::hooks::run_tests::blocking_commit_decls(ctx.settings, &ctx.manifest.externals)
+            .into_iter()
+            .filter(|d| {
+                checks
+                    .iter()
+                    .zip(&outcomes)
+                    .any(|(c, o)| c.name() == d.id && matches!(o, Outcome::Deferred))
+            })
+            .map(|d| d.script)
+            .collect();
+    if !deferred.is_empty() {
+        if let Some(tree) = crate::git::stdout(&["write-tree"]) {
+            crate::gate_stamp::record_deferred(&tree, &deferred);
+        }
+    }
     // Under the hold, the index IS the commit's tree: its evidence goes there.
     if !ctx.manifest.tree.is_empty() {
         if let Some(tree) = crate::git::stdout(&["write-tree"]) {
@@ -605,8 +624,8 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
             };
-            let slot = crate::host_slots::enter_check(check.name());
-            let outcome = check.run(&sub);
+            let slot = crate::host_slots::enter_check(check.name(), check.weight());
+            let outcome = deferred_or(&slot, check.run(&sub));
             if let Some(f) = &flush {
                 f.outcome(outcome);
             }
@@ -644,6 +663,9 @@ struct Report<'a> {
     downgraded: Vec<&'a str>,
     /// Could not run. Distinct from "passed", which is the whole point.
     unavailable: Vec<&'a str>,
+    /// Deferred to CI by the busy policy (ADR-0013). Not passed, not a gap
+    /// on this machine's part either: said so, with what to do about it.
+    deferred: Vec<&'a str>,
     /// How many passed outright. Only read when `amont.quiet` swallowed their
     /// individual lines — a run that says nothing at all is indistinguishable
     /// from a gate that never ran, and that is the one thing this crate will
@@ -675,6 +697,7 @@ fn classify<'a>(
             // Judged nothing, said nothing: not a pass to count, not a gap
             // to announce.
             Outcome::Inert => {}
+            Outcome::Deferred => report.deferred.push(check.name()),
             Outcome::Failed => match severities.of(*check) {
                 Severity::Block => report.blocked.push(check.name()),
                 Severity::Warn => report.downgraded.push(check.name()),
@@ -709,6 +732,9 @@ fn announce(settings: &crate::config::Settings, report: &Report) {
             report.unavailable.len(),
             report.unavailable.join(", ")
         );
+    }
+    if !report.deferred.is_empty() {
+        announce_deferred(&report.deferred);
     }
     if !report.downgraded.is_empty() {
         println!(
@@ -899,8 +925,8 @@ fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
     let _sink = stage.enter(0);
     let flush = crate::live::FinishOnDrop::new(ctx.settings, &stage, 0);
     let outcome = {
-        let _slot = crate::host_slots::enter_check(check.name());
-        check.run(ctx)
+        let slot = crate::host_slots::enter_check(check.name(), check.weight());
+        deferred_or(&slot, check.run(ctx))
     };
     flush.outcome(outcome);
     // The block prints here, before anything the caller says after it.
@@ -915,7 +941,8 @@ fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
         | Outcome::Warned
         | Outcome::Fixed
         | Outcome::Unavailable
-        | Outcome::Inert => false,
+        | Outcome::Inert
+        | Outcome::Deferred => false,
     };
     Verdict::blocking(blocks)
 }
@@ -1162,6 +1189,22 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                         if n == 1 { "ies" } else { "y" },
                     );
                 }
+                crate::hooks::run_tests::PairVerdict::Deferred(n) => {
+                    crate::say!(
+                        "{} {} was deferred to CI at commit on {n} pushed commit{} \
+                         — deferring it here too",
+                        warning_sign(),
+                        highlight(name),
+                        if n == 1 { "" } else { "s" },
+                    );
+                    evidence.push(crate::gate_stamp::Run {
+                        at: crate::gate_evidence::now(),
+                        gate: check.name().to_string(),
+                        outcome: crate::gate_stamp::RunOutcome::Deferred,
+                        ms: 0,
+                    });
+                    continue;
+                }
                 crate::hooks::run_tests::PairVerdict::NotPaired => {}
             }
         }
@@ -1177,8 +1220,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
-        let slot = crate::host_slots::enter_check(check.name());
-        let outcome = check.run(&sub);
+        let slot = crate::host_slots::enter_check(check.name(), check.weight());
+        let outcome = deferred_or(&slot, check.run(&sub));
         if let Some(f) = &flush {
             f.outcome(outcome);
         }
@@ -1207,6 +1250,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 )
             }
             Outcome::Warned => {}
+            // Not run, never fatal, never passed: CI runs it (ADR-0013).
+            Outcome::Deferred => announce_deferred(&[check.name()]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
             // a gap (nothing is missing). The dispatcher asked the registry's
             // opt-in question above; this is a check answering it for itself.
@@ -1327,6 +1372,36 @@ fn run_outcome(outcome: Outcome) -> crate::gate_stamp::RunOutcome {
         Outcome::Fixed => R::Fixed,
         Outcome::Unavailable => R::Unavailable,
         Outcome::Inert => R::Inert,
+        Outcome::Deferred => R::Deferred,
+    }
+}
+
+/// The check's outcome, unless the busy policy deferred it: then Deferred,
+/// whatever the check made of its refused spawn (ADR-0013).
+fn deferred_or(slot: &crate::host_slots::CheckGuard, outcome: Outcome) -> Outcome {
+    if slot.deferred().is_some() {
+        Outcome::Deferred
+    } else {
+        outcome
+    }
+}
+
+/// The deferral roll-up: which checks, then how to run one now and how to
+/// stop deferring. Printed in quiet mode too, like `could not run`: a gate
+/// skipped without a word looks exactly like a pass.
+fn announce_deferred(names: &[&str]) {
+    println!(
+        "{} {} check(s) deferred to CI, no host slot freed: {}",
+        warning_sign(),
+        names.len(),
+        names.join(", ")
+    );
+    if let Some(first) = names.first() {
+        println!(
+            "  run now: {} · stop deferring: {}",
+            highlight(&format!("AMONT_ON_BUSY=wait amont run {first}")),
+            highlight("set onBusy wait"),
+        );
     }
 }
 
