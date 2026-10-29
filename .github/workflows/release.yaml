@@ -517,6 +517,24 @@ jobs:
               printf '%s\n' "$out"
               if printf '%s' "$out" | grep -qiE "cannot publish over|previously published|EPUBLISHCONFLICT"; then
                 echo "  already published — continuing"
+              elif printf '%s' "$out" | grep -qE "TLOG_CREATE_ENTRY_ERROR|\(409\) an equivalent entry already exists"; then
+                # `--provenance` logs the tarball in Sigstore BEFORE the
+                # registry is asked, and these tarballs are reproducible: a
+                # re-run of a version already up gets Sigstore's 409, never
+                # the registry's "previously published" above. Ask the
+                # registry which it is (1.61.0 stopped half-published on a
+                # 409 from npm's own retry, and every re-run 409'd again).
+                local pkg ver
+                pkg=$(node -p "require('./$dir/package.json').name")
+                ver=$(node -p "require('./$dir/package.json').version")
+                if [ "$(npm view "$pkg@$ver" version 2>/dev/null)" = "$ver" ]; then
+                  echo "  already published (Sigstore 409) — continuing"
+                else
+                  echo "::error::$pkg@$ver is NOT on npm, and Sigstore already logs this exact tarball (409)."
+                  echo "::error::No re-run can publish it with provenance: the tarball is the same, so the log answer is too."
+                  echo "::error::Release the next patch version; its tarballs are new entries."
+                  exit 1
+                fi
               elif printf '%s' "$out" | grep -q "E403"; then
                 # Every one of these packages is created by its FIRST publish,
                 # and creating a package is a different permission from updating
