@@ -16,6 +16,7 @@
 - [The trust model](trust.md)
 - [The provenance record](provenance.md)
 - [The quiet-run active entry](quiet-runs.md)
+- [Host slots](host-slots.md)
 - [Custom checks](custom-checks.md)
 
 # Project
