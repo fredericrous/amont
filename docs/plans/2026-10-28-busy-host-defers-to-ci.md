@@ -153,6 +153,9 @@ Observed before the push, on `383d7e1` unless named. Each row: input → expecte
   - `a_heavy_check_out_of_scope_never_waits`: `.md` staged against a `*.txt` gate → no deferral, under 30 s → passed.
   - `onBusy wait` default: the existing `tests/timing.rs` host-slot test is `#[ignore]` (load scenario, `make test-load`), not run here; every non-busy test in the suite runs under the default.
 - Locally: the pre-commit gate's `cargo test --locked` on `383d7e1` → exit 0, 518 of 518 integration tests, the nine above named in the log → passed.
+- PR #375's first CI run, two red checks, fixed in `e334b0a`:
+  - "windows": `busy_defers.rs` uses `std::os::unix` → module gated `#[cfg(unix)]`; on Windows host slots are off (`SUPPORTED = false`), so nothing defers there → the next CI run.
+  - "architecture decisions resolve": the refreshed fleet pack carries `governs:` fields aval 1.9.0 rejects → `AVAL_VERSION` 1.11.0 and the regenerated `aval-heads.sh`; locally `aval check` → "59 decision records, no findings", `aval hook install --check` → "up to date" (exit 0) → passed.
 - Measured before choosing `slotWait`, live after release, and the 14-day measure: phases 5–6, not part of this branch.
 
 ## Implementation review
@@ -161,6 +164,7 @@ Observed before the push, on `383d7e1` unless named. Each row: input → expecte
 - Fixed: exhaustive `Kind` match; a reason on every `let _ =`; names; six missing checks written (both signed-attestation ones); slot test strengthened; `amont.quiet always` (`true` silently meant auto); unsigned push half asserted before signing.
 - Deliberate: the nothing-to-do test checks an out-of-scope gate, because a declared check always spawns its command and a built-in's lazy slot is ADR-0009's, unchanged here.
 - Deliberate: in the mixed test, the "twin did not run" assertion stays after the signing early return; without `ssh-keygen` that property is asserted by three unsigned tests.
-- Cost: 114k + 133k + 69k tokens; 134 s, 30 s, 52 s.
+- Fourth pass, after the CI fix `e334b0a`: approve; its one low finding is the two Verification rows above.
+- Cost: 114k + 133k + 69k + 60k tokens; 134 s, 30 s, 52 s, 44 s.
 
 <!-- panel: repos=amont,relais reviewers=architect,backend,language,po,tui,unix,codex body-sha=91972bb3d0c2 -->
