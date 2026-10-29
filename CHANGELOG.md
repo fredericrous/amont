@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## Unreleased
+## v1.64.0
 
 ### Added
 
@@ -20,6 +20,7 @@ missing here.
   `installed` (this repository) and `template_dir` (the machine's), read the
   shim files themselves: `present`, `absent`, `partial` or `unknown`, with the
   binary each shim bakes. The format stays `amont-list-v1`.
+
 ## v1.63.0
 
 ### Changed
