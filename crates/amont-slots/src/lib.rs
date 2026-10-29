@@ -441,7 +441,7 @@ pub fn record_wait(dir: &Path, tool: &str, weight: u32, waited_ms: u128, outcome
         .open(dir.join("waits.jsonl"))
     {
         let _ = f.write_all(line.as_bytes()); // best-effort: a lost line costs one sample
-    }
+    } // else best-effort: an unopenable log costs one sample, never a slot
 }
 
 /// Milliseconds since the epoch.
@@ -803,6 +803,35 @@ mod tests {
         waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
         waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
         let _second = granted(b.poll_with(idle(t0 + 61_000)).unwrap());
+    }
+
+    /// Three long jobs on an idle host: the ramp admits one per 60 s, so the
+    /// third is still waiting at 90 s (the wrapper's default `--max-wait`,
+    /// where it exits 75) and gets its slot at 120 s.
+    #[test]
+    fn the_ramp_keeps_a_third_waiter_queued_past_ninety_seconds() {
+        let d = scratch("three");
+        let t0 = 50_000_000;
+        let mut a = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "a")).unwrap();
+        let _a = granted(a.poll_with(idle(t0)).unwrap());
+        let mut b = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "b")).unwrap();
+        let mut c = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "c")).unwrap();
+        let _b = granted(b.poll_with(idle(t0 + 60_000)).unwrap());
+        waiting(c.poll_with(idle(t0 + 90_000)).unwrap());
+        let _c = granted(c.poll_with(idle(t0 + 120_000)).unwrap());
+    }
+
+    /// A process holding the admission lock (stopped, or stuck on I/O) never
+    /// blocks a waiter: the poll answers at once, waiting.
+    #[test]
+    fn a_held_admission_lock_never_blocks_a_poll() {
+        let d = scratch("admission");
+        let mut w = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let _stuck = platform::try_lock(&d.join("admission")).unwrap().unwrap();
+        let started = Instant::now();
+        let q = waiting(w.poll_with(idle(0)).unwrap());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(q, Queue::default());
     }
 
     /// Fixed sizing ignores load and ramp, and stops at the cap.

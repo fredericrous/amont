@@ -421,6 +421,12 @@ fn unknown_flag(args: &[OsString], flags: &[&str], valued: &[&str]) -> Option<St
         if !a.starts_with('-') {
             continue;
         }
+        // `--flag=value` names the same flag, with its value inline.
+        if let Some((name, _)) = a.split_once('=') {
+            if valued.contains(&name) {
+                continue;
+            }
+        }
         if valued.contains(&a) {
             skip_value = true;
             continue;

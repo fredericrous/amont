@@ -40,14 +40,61 @@ pub fn split_at_dashes(args: &[OsString]) -> (&[OsString], &[OsString]) {
     }
 }
 
-fn value<'a>(args: &'a [OsString], flag: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.to_str())
+/// The flags `slot run` takes, each with a value.
+const VALUED: &[&str] = &["--weight", "--max-wait", "--on-timeout"];
+
+/// Read `own` (the words before `--`) into flag values, as `--flag value`
+/// or `--flag=value`. Anything else is a usage error.
+fn parse(own: &[OsString]) -> Result<Vec<(&'static str, String)>, String> {
+    let mut out = Vec::new();
+    let mut words = own.iter();
+    while let Some(word) = words.next() {
+        let word = word.to_str().ok_or("an argument is not valid UTF-8")?;
+        let (name, inline) = match word.split_once('=') {
+            Some((n, v)) => (n, Some(v.to_string())),
+            None => (word, None),
+        };
+        let Some(flag) = VALUED.iter().find(|f| **f == name) else {
+            return Err(format!("unknown argument {word:?}"));
+        };
+        let value = match inline {
+            Some(v) => v,
+            None => words
+                .next()
+                .and_then(|v| v.to_str())
+                .ok_or(format!("{flag} needs a value"))?
+                .to_string(),
+        };
+        out.push((*flag, value));
+    }
+    Ok(out)
+}
+
+fn value<'a>(flags: &'a [(&'static str, String)], flag: &str) -> Option<&'a str> {
+    flags
+        .iter()
+        .find(|(f, _)| *f == flag)
+        .map(|(_, v)| v.as_str())
+}
+
+/// How the command runs: inside a held slot, or with none.
+#[derive(Clone, Copy)]
+enum Launch {
+    /// A slot is held for it (here or by an ancestor): `AMONT_HOST_SLOT=held`.
+    Held,
+    /// No slot: off, unsupported, unavailable, or `--on-timeout run`.
+    Unqueued,
 }
 
 fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
+    let own = match parse(own) {
+        Ok(flags) => flags,
+        Err(why) => {
+            eprintln!("amont: slot run: {why}");
+            return 2;
+        }
+    };
+    let own = own.as_slice();
     let Some((program, rest)) = cmd.split_first() else {
         eprintln!("amont: `amont slot run` needs a command after `--`");
         return 2;
@@ -88,7 +135,15 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let settings = crate::config::Settings::default();
     let sizing = crate::host_slots::sizing(&settings);
     let (Some(sizing), false, true) = (sizing, nested, amont_slots::SUPPORTED) else {
-        return spawn(program, rest, nested);
+        return spawn(
+            program,
+            rest,
+            if nested {
+                Launch::Held
+            } else {
+                Launch::Unqueued
+            },
+        );
     };
 
     let dir = amont_slots::dir();
@@ -101,7 +156,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         Ok(w) => w,
         Err(e) => {
             eprintln!("amont: host slots unavailable ({e}); running unqueued");
-            return spawn(program, rest, false);
+            return spawn(program, rest, Launch::Unqueued);
         }
     };
     let mut last_said: Option<Instant> = None;
@@ -117,7 +172,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             }
             Err(e) => {
                 eprintln!("amont: host slots unavailable ({e}); running unqueued");
-                return spawn(program, rest, false);
+                return spawn(program, rest, Launch::Unqueued);
             }
         }
         if started.elapsed() >= max_wait {
@@ -134,7 +189,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
                 "amont: no host slot freed in {}s; running unqueued (--on-timeout run)",
                 max_wait.as_secs()
             );
-            return spawn(program, rest, false);
+            return spawn(program, rest, Launch::Unqueued);
         }
         amont_slots::record_wait(&dir, "amont slot run", weight, waited, "timeout");
         eprintln!(
@@ -145,18 +200,21 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         return BUSY_EXIT;
     };
     amont_slots::record_wait(&dir, "amont slot run", weight, waited, "admitted");
-    let code = spawn(program, rest, true);
+    let code = spawn(program, rest, Launch::Held);
     drop(lease);
     code
 }
 
 /// Run the command, inheriting stdio, and pass its exit status through: the
 /// code, or 128 + the signal that ended it.
-fn spawn(program: &OsString, rest: &[OsString], held: bool) -> i32 {
+fn spawn(program: &OsString, rest: &[OsString], launch: Launch) -> i32 {
     let mut cmd = Command::new(program);
     cmd.args(rest);
-    if held {
-        cmd.env(amont_slots::HELD_ENV, "held");
+    match launch {
+        Launch::Held => {
+            cmd.env(amont_slots::HELD_ENV, "held");
+        }
+        Launch::Unqueued => {}
     }
     match cmd.status() {
         Ok(status) => exit_code(status),
@@ -183,10 +241,18 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 
 /// `amont slots [--json]`.
 pub fn slots_command(args: &[OsString]) -> i32 {
-    let json = args.iter().any(|a| a == "--json");
+    if let Some(bad) = args.iter().find(|a| *a != "--json") {
+        eprintln!("amont: slots: unknown argument {:?}", bad.to_string_lossy());
+        return 2;
+    }
+    let json = !args.is_empty();
     let settings = crate::config::Settings::default();
     let Some(sizing) = crate::host_slots::sizing(&settings) else {
-        println!("host slots are off (amont.hostSlots 0)");
+        if json {
+            println!("{{\"cap\":0,\"held\":0,\"holders\":[],\"unknown\":0,\"waiting\":0}}");
+        } else {
+            println!("host slots are off (amont.hostSlots 0)");
+        }
         return 0;
     };
     let status = match amont_slots::status(sizing) {
@@ -238,6 +304,20 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn flags_take_a_separate_or_an_inline_value_and_nothing_else() {
+        let flags = parse(&os(&["--weight", "2", "--on-timeout=run"])).unwrap();
+        assert_eq!(value(&flags, "--weight"), Some("2"));
+        assert_eq!(value(&flags, "--on-timeout"), Some("run"));
+        assert!(parse(&os(&["--wieght", "2"]))
+            .unwrap_err()
+            .contains("unknown"));
+        assert!(parse(&os(&["extra"])).unwrap_err().contains("unknown"));
+        assert!(parse(&os(&["--max-wait"]))
+            .unwrap_err()
+            .contains("needs a value"));
     }
 
     #[test]
