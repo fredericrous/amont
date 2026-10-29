@@ -1145,11 +1145,23 @@ fn list_json_reports_the_installed_shims() {
         .split("\"template_dir\":")
         .next()
         .expect("installed part");
-    // A path, not null: `/…` on unix, `C:\\…` (escaped) on Windows.
-    assert!(
-        installed.contains("\"binary\":\"") && !installed.contains("\"binary\":null"),
-        "no baked binary reported:\n{out}"
-    );
+    // Every shim reports the absolute path it bakes: `/…` on unix, `C:\…`
+    // on Windows (escaped as `\\` in the JSON).
+    let binaries: Vec<String> = installed
+        .split("\"binary\":")
+        .skip(1)
+        .map(|rest| {
+            let value = rest.strip_prefix('"').expect("a string, not null");
+            value[..value.find('"').expect("closing quote")].replace("\\\\", "\\")
+        })
+        .collect();
+    assert_eq!(binaries.len(), 6, "{out}");
+    for binary in &binaries {
+        assert!(
+            Path::new(binary).is_absolute(),
+            "{binary} is not absolute:\n{out}"
+        );
+    }
 
     std::fs::remove_file(repo.join(".git/hooks/post-commit")).expect("remove one shim");
     let (_, st, out) = state(&repo);
