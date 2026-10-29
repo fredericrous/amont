@@ -6,6 +6,17 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.61.1
+
+### Fixed
+
+- **npm has 1.61.x again.** The 1.61.0 npm publish stopped half-way:
+  Sigstore answered 409 for a tarball npm's own retry had already logged,
+  and no re-run could get past it, since the same tarball gets the same
+  answer. 1.61.1 is 1.61.0's code, published everywhere. A release re-run
+  now treats that 409 as "already published" when the registry has the
+  version, and names the cause when it does not.
+
 ## v1.61.0
 
 ### Added
