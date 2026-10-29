@@ -154,6 +154,8 @@ Observed before the push, on `3007117`.
   - `AMONT_HOST_SLOTS=0 slots --json` → `{"cap":0,…}`;
   - `slot run --help` → help, rc 0.
 - **Commit gate on `3007117`:** clippy and `cargo test --locked` → exit 0.
+- **PR #379's first CI run:** the attestations job refused the tree, because `docs/host-slots.md` was in no gate's declared inputs. Fixed in `07ce1a5`: `make attest-inputs` → expected every tracked file covered for all ten gates → actual `check-attest-inputs: ok`.
+- **Push rehearsal on `964ee2f`:** passed on the third run, at a 5-minute load of 39. The first two failed on `index_fidelity::ctrl_c_mid_run…` alone, which passes 3/3 run alone and failed the same way before this branch.
 - **Not run yet:**
   - the live checks on the real slot directory across two sessions, and the load measurement (the host never fell under load 3 today). They are phase 3's precondition.
   - the 14-day measure (phase 5).
@@ -168,6 +170,7 @@ Observed before the push, on `3007117`.
   - a same-line reason for the discard;
   - two tests added: the ramp at 90 s, and the held admission lock.
 - Deliberate: pid-reuse naming, no lock-hold field, the direct-child release, and the status probe; all recorded above.
-- Cost: 91k + 105k tokens; 77 s and 36 s.
+- Third pass, after the CI fix `07ce1a5`: approve-with-changes. Its one low finding is the two Verification rows above.
+- Cost: 91k + 105k + 81k tokens; 77 s, 36 s, 46 s.
 
 <!-- panel: repos=amont,relais,amont-agent,decisions reviewers=backend,codex body-sha=76ca38ab5f73 -->
