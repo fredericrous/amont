@@ -33,7 +33,9 @@ none, under the admission lock, when:
   always admitted, whatever its weight up to the cap;
 - **`amont.hostSlots` is unset (automatic):** a free slot exists, the
   one-minute load is below the core count, and at least 60 s have passed
-  since the last admission. The cap is `max(1, cores/2)`;
+  since the last admission, unless the waiter's own process already holds a
+  slot (one commit's checks are not spaced apart). The cap is
+  `max(1, cores/2)`;
 - **`amont.hostSlots N`:** N free slots are enough, with no load test and no
   ramp. `0` turns slots off.
 

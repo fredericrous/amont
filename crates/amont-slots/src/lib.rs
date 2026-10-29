@@ -240,6 +240,8 @@ pub struct Probe {
     pub load1: Option<f64>,
     pub cores: u32,
     pub now_ms: u128,
+    /// Slots the asking process already holds ([`held_in_process`]).
+    pub own_held: usize,
 }
 
 impl Probe {
@@ -248,6 +250,7 @@ impl Probe {
             load1: load1(),
             cores: cores(),
             now_ms: now_ms(),
+            own_held: held_in_process(),
         }
     }
 }
@@ -325,7 +328,13 @@ impl Waiter {
                     floor || {
                         let below = probe.load1.map_or(true, |l| l < f64::from(probe.cores));
                         let since = probe.now_ms.saturating_sub(admitted_at(&self.dir));
-                        below && since >= RAMP.as_millis()
+                        // A sibling of a holder in this process (one commit's
+                        // own checks) skips the ramp: the ramp spaces
+                        // separate jobs, and spacing one commit's checks only
+                        // made it slower (10m48s observed). The load test and
+                        // the cap still apply.
+                        let ramped = since >= RAMP.as_millis() || probe.own_held > 0;
+                        below && ramped
                     }
                 }
             }
@@ -759,11 +768,14 @@ mod tests {
         d
     }
 
+    /// An idle host, asked by a process that holds no slot: separate
+    /// processes, though the tests run in one.
     fn idle(now_ms: u128) -> Probe {
         Probe {
             load1: Some(1.0),
             cores: 12,
             now_ms,
+            own_held: 0,
         }
     }
 
@@ -772,6 +784,7 @@ mod tests {
             load1: Some(20.0),
             cores: 12,
             now_ms,
+            own_held: 0,
         }
     }
 
@@ -809,6 +822,25 @@ mod tests {
         waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
         waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
         let _second = granted(b.poll_with(idle(t0 + 61_000)).unwrap());
+    }
+
+    /// A sibling of a holder in the same process (one commit's checks)
+    /// skips the ramp, but not the load test or the cap.
+    #[test]
+    fn a_sibling_of_a_holder_skips_the_ramp_but_not_the_load_test() {
+        let d = scratch("sibling");
+        let t0 = 70_000_000;
+        let mut a = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "a")).unwrap();
+        let _a = granted(a.poll_with(idle(t0)).unwrap());
+        let sibling = |now_ms, load1| Probe {
+            load1: Some(load1),
+            cores: 12,
+            now_ms,
+            own_held: 1,
+        };
+        let mut b = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "b")).unwrap();
+        waiting(b.poll_with(sibling(t0 + 1_000, 20.0)).unwrap()); // busy: still waits
+        let _b = granted(b.poll_with(sibling(t0 + 1_000, 1.0)).unwrap()); // idle: no ramp
     }
 
     /// Three long jobs on an idle host: the ramp admits one per 60 s, so the
