@@ -20,6 +20,7 @@ Pointer. The plan and its review panel live in decisions, with ADR-0050
 | unreadable hook | pre-commit chmod 000 | unknown | as expected (`an_unreadable_hook_reports_unknown`) |
 | lint, host | `cargo clippy --all-targets -D warnings` | clean | clean (the gate deferred it on a busy host; run by hand) |
 | ctrl-c fixture pinned (pre-existing flake on main, blocked the push) | `index_fidelity::ctrl_c_mid_run…` at load 69 | pass | passed in 7 s (failed 3/3 in the full gate before the pin) |
+| list --json binary is absolute on every platform | `install::list_json_reports_the_installed_shims` | 6 shims, each binary absolute | passed locally; the Windows CI failure on `"binary":"/"` led to this assertion |
 | Windows build | `cargo check -p amont-runtime --target x86_64-pc-windows-gnu` | builds | builds, no warnings |
 
 ## Implementation review
