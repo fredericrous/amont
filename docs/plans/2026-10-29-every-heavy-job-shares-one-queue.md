@@ -80,11 +80,11 @@ Waiters say who they wait behind, in amont's row and in relais's `WaitingForSlot
 
 ## Phases
 
-1. **ADRs.**
+1. ✅ **ADRs.** (`487e46f`; decisions#110)
    - amont `adr/0014-every-heavy-job-shares-one-queue.md`: replaces ADR-0013's head of `hooks.host-concurrency` (load-aware admission, fair order, holder metadata, the `slot run` surface).
    - The fleet corpus: decisions ADR-0049 replaces ADR-0044's head of `harness.tool-boundaries`: amont owns the host slots, implemented once in `amont-slots`; `harness.shared-code` needs no change.
-2. **amont.** The `amont-slots` crate and the `host_slots.rs` move onto it; admission, tickets and `.who` files; `amont slot run` and `amont slots`; `docs/host-slots.md`. Every acquire appends one JSON line to `&lt;slot dir&gt;/waits.jsonl` (tool, weight, waited_ms, load1, outcome admitted|deferred|unqueued), the source of the day-14 p50/p95. Release 1.62.0.
-3. **relais.** Use `amont-slots`, default the shared slots on, and report the holder in `WaitingForSlot`. Release.
+2. ✅ **amont.** (`19ed657`, `3007117`) The `amont-slots` crate and the `host_slots.rs` move onto it; admission, tickets and `.who` files; `amont slot run` and `amont slots`; `docs/host-slots.md`. Every acquire appends one JSON line to `&lt;slot dir&gt;/waits.jsonl` (tool, weight, waited_ms, load1, outcome admitted|deferred|unqueued), the source of the day-14 p50/p95. Release 1.62.0.
+3. **relais.** (next phase) Use `amont-slots`, default the shared slots on, and report the holder in `WaitingForSlot`. Release.
 4. **amont-agent.** The `heavy-build-unqueued` rule at advise. Release.
 5. **Measure for 14 days, then decide** whether to tighten the rule, and whether the cap and the ramp hold.
 
@@ -116,5 +116,58 @@ Implementation is routed through relais per task where a run can finish here. am
 
 - 2026-10-29, phase 1: the fleet half is decisions ADR-0049 on `harness.tool-boundaries`, not an edit to `harness.shared-code`: that choice is a rule with no list of contracts to extend, and the owner list lives in `tool-boundaries` (implementation review, decisions branch).
 - Phase 4 reads holders from `amont slots --json`, never `holders/*.who` directly (`harness.cross-tool-reads`; ADR-0049 names `amont slot run` and `amont slots` as amont-agent's only surface).
+- 2026-10-29, phase 2 ships before the load measurement: the person said "go ahead with the crate" after being told the measurement gates relais's adoption. In 1.62.0 amont's own hooks use `Sizing::Auto`; if one `cargo test` holder alone keeps load1 ≥ 12 here, hooks run one at a time (3 slots before). `git config --global amont.hostSlots 3` restores the old count. The measurement still gates phase 3.
+- Deviations, each smaller than the design (implementation review):
+  - `amont slot run` frees the slot when its DIRECT child exits, not when the child's process group ends. The child stays in the wrapper's process group, so a Ctrl-C or a tree kill reaches both; there is no signal forwarding.
+  - A `.who` record is trusted while its pid is alive. std has no portable process start time, so a reused pid can misname a holder in a message. Admission never reads `.who`, so there is no capacity effect.
+  - `waits.jsonl` carries no admission-lock hold time. A held admission lock is tested to make a poll answer "waiting" at once instead.
+  - `amont slots` probes the slot flocks under the admission lock for microseconds. An old client polling every 200 ms only retries.
+- Tickets are created hidden, locked, then renamed into `queue/`. The rename keeps the lock, so the create-then-lock race closes without the admission lock (Codex #3's intent, by a simpler means).
+
+## Verification results
+
+Observed before the push, on `3007117`.
+
+- **`amont-slots` unit tests, 12 passed:**
+  - the floor admits under load;
+  - auto admits a second holder only when idle and after 60 s;
+  - fixed sizing stops at the cap and names the holder;
+  - only the oldest ticket is served;
+  - a dropped waiter leaves the queue;
+  - weight 2 is all or none;
+  - a dead holder's record reads as unknown;
+  - the record round-trips;
+  - a dropped lease frees its slot and record;
+  - a private directory is required;
+  - a third waiter is still queued at 90 s and admitted at 120 s;
+  - a held admission lock answers "waiting" without blocking.
+- **amont-runtime, 8 passed:** slot_cmd flag parsing (`--x v`, `--x=v`, unknown → error) and dash splitting; host_slots weight, policy and nested tests.
+- **Integration, `tests/it/slot_run.rs` + `busy_defers.rs`, 13 passed:**
+  - one slot, two wrappers: the second prints `queued behind amont slot run: sh -c sleep 3` and runs after the first; exit 3 passes through; `waits.jsonl` has 2 `admitted` lines;
+  - `--max-wait 1` → exit 75 and the marker is not created; `--on-timeout run` → runs and says "running unqueued";
+  - a nested wrapper runs at once, and the wrapped `--help` reaches the command;
+  - a detached daemon (`(sleep 20 &); exit 0`) does not keep the slot: the next wrapper runs in under 4 s;
+  - all nine ADR-0013 busy-defer tests pass, now on the new queue.
+- **Piloted (`target/debug/amont`, one fixed slot):**
+  - `slots --json` mid-hold listed `"tool":"amont slot run"`;
+  - `--on-timeout=run --max-wait=1` → rc 0; `--wieght 2` → rc 2; `slots extra` → rc 2;
+  - `AMONT_HOST_SLOTS=0 slots --json` → `{"cap":0,…}`;
+  - `slot run --help` → help, rc 0.
+- **Commit gate on `3007117`:** clippy and `cargo test --locked` → exit 0.
+- **Not run yet:**
+  - the live checks on the real slot directory across two sessions, and the load measurement (the host never fell under load 3 today). They are phase 3's precondition.
+  - the 14-day measure (phase 5).
+
+## Implementation review
+
+- Verdict: approve-with-changes, round 1 then Delta.
+- Fixed:
+  - `Launch` enum instead of a flag argument;
+  - `--name=value` accepted, and any unknown argument exits 2;
+  - `slots --json` stays JSON when slots are off;
+  - a same-line reason for the discard;
+  - two tests added: the ramp at 90 s, and the held admission lock.
+- Deliberate: pid-reuse naming, no lock-hold field, the direct-child release, and the status probe; all recorded above.
+- Cost: 91k + 105k tokens; 77 s and 36 s.
 
 <!-- panel: repos=amont,relais,amont-agent,decisions reviewers=backend,codex body-sha=76ca38ab5f73 -->
