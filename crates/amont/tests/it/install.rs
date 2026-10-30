@@ -36,7 +36,7 @@ impl Sandbox {
     /// Run the installer with HOME and XDG pointed inside the sandbox, so a bug
     /// cannot reach the developer's real configuration.
     fn install(&self, cwd: &Path) -> (i32, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+        let mut cmd = crate::common::amont_cmd();
         cmd.arg("install")
             .current_dir(cwd)
             .env("HOME", &self.0)
@@ -161,7 +161,7 @@ unsafe fn libc_geteuid() -> u32 {
 }
 
 fn run_verb(s: &Sandbox, cwd: &Path, args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .args(args)
         .current_dir(cwd)
         .env("HOME", &s.0)
@@ -681,7 +681,7 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
 /// Run the installer with a custom `$AMONT_BIN_DIR`, the way somebody who
 /// keeps their tools outside `~/.local/bin` would.
 fn install_with_bin_dir(s: &Sandbox, cwd: &Path, bin_dir: &Path) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("install")
         .current_dir(cwd)
         .env("HOME", &s.0)
@@ -787,7 +787,7 @@ fn the_default_bin_dir_is_not_flagged() {
 /// Run the installer with a chosen `PATH`, and with `$AMONT_BIN_DIR`
 /// deliberately UNSET — the package-manager case.
 fn install_on_path(s: &Sandbox, cwd: &Path, path: &str) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("install")
         .current_dir(cwd)
         .env("HOME", &s.0)

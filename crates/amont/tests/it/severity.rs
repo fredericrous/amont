@@ -9,7 +9,7 @@
 use crate::common;
 use common::Repo;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Content that makes `pre-commit-merge-conflict` fail. Built rather than
 /// written literally, or this file trips the very check it exercises.
@@ -23,7 +23,7 @@ fn conflicted() -> String {
 }
 
 fn pre_push(r: &Repo) -> (i32, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")

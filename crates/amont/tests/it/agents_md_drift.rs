@@ -61,7 +61,7 @@ fn with_fixing_on_the_block_is_regenerated_and_restaged() {
 fn a_current_block_passes() {
     let r = Repo::new();
     r.commit("init");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("agents-md")
         .current_dir(&r.dir)
         .output()

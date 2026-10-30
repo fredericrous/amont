@@ -8,7 +8,7 @@ use common::Repo;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn shim(r: &Repo, body: &str) {
     let dir = r.path(".git/toolshims");
@@ -38,7 +38,7 @@ fn push(r: &Repo, from: &str) -> (i32, String) {
         r.path(".git/toolshims").display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-pytest")

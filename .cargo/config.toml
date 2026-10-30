@@ -12,9 +12,15 @@
 # The slot and load fixtures remove both and set their own. The test
 # `cargo_pins_the_host_knobs_for_tests` in host_slots.rs fails if this file
 # stops reaching the tests.
+#
+# `force`: without it a value the shell already exports wins, and an empty
+# AMONT_HOST_SLOT reads as "not held" — a fixture then queued on the real
+# slots behind the suite running it. Fixtures that start amont also pin
+# both through `common::amont_cmd`, which holds when cargo runs from
+# outside this repository and never reads this file.
 [env]
-AMONT_HOST_SLOT = "held"
-AMONT_IDLE_LOAD_SCALE = "1"
+AMONT_HOST_SLOT = { value = "held", force = true }
+AMONT_IDLE_LOAD_SCALE = { value = "1", force = true }
 # Shortens amont's own fixed waits by this factor in the test build only
 # (crates/amont-runtime/src/clock.rs), and the fixtures' sleeps with them
 # (`common::secs`): a quiet run's log line, land's re-read, the tree-lint

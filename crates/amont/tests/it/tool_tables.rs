@@ -31,7 +31,7 @@
 use crate::common;
 use common::{missing, HookRun, Repo};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// When a row runs.
 #[derive(Clone, Copy)]
@@ -219,7 +219,7 @@ fn run(row: &Row) -> Option<(Repo, HookRun)> {
     #[cfg(not(unix))]
     let path: Option<String> = None;
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg(row.hook)

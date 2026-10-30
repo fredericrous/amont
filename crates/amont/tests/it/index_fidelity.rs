@@ -116,7 +116,7 @@ fn a_conflicted_path_aborts_the_stage() {
 /// `install`'s offer, which needs a confirming tty.
 #[cfg(unix)]
 fn trust(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -156,15 +156,11 @@ fn ctrl_c_mid_run_still_restores_and_dies_by_the_signal() {
     r.stage("x.json", VALID);
     r.write("x.json", BROKEN);
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
         .current_dir(&r.dir);
-    // Spawned by hand, so pinned by hand: without it the slow check queues
-    // on the real host slots behind the very suite running this test, and
-    // on a busy host never starts within the deadline below.
-    crate::common::Repo::pin_host_env(&mut cmd);
     let mut child = cmd.spawn().expect("spawn amont pre-commit");
 
     // Wait for the CHECK to say it is running, never a fixed sleep. The old
@@ -234,7 +230,7 @@ fn restore_puts_back_held_files() {
         "fixture: tree reset to the index"
     );
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("restore")
         .current_dir(&r.dir)
         .output()
@@ -249,7 +245,7 @@ fn restore_puts_back_held_files() {
 fn restore_with_nothing_parked_is_fine() {
     let r = Repo::new();
     seed(&r);
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("restore")
         .current_dir(&r.dir)
         .output()
@@ -290,14 +286,14 @@ fn signal_mid_check_restores(signal: &str) {
     r.stage("x.json", VALID);
     r.write("x.json", BROKEN);
     r.stage("amont.conf", "pre-commit  slow  *  block  sleep  5\n");
-    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trusted = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
         .expect("amont trust");
     assert!(trusted.status.success(), "could not trust the manifest");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
@@ -676,7 +672,7 @@ fn restore_command_finds_the_stash_from_a_linked_worktree() {
     std::fs::write(store.join("x.json"), BROKEN).expect("write");
     git_in(&wt, &["checkout", "--", "."]);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("restore")
         .current_dir(&wt)
         .output()
@@ -799,7 +795,7 @@ fn a_legacy_suffix_store_is_still_recovered() {
     std::fs::write(store.join("x.json"), BROKEN).expect("write payload");
     std::fs::write(store.join("gone.txt.amont-absent"), b"").expect("write absent marker");
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("restore")
         .current_dir(&r.dir)
         .output()

@@ -9,12 +9,12 @@ use crate::common;
 
 use common::Repo;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// `check` with content piped in, for a buffer that was never saved.
 /// `Repo::run` nulls stdin, so this one builds its own command.
 fn check_stdin(repo: &Repo, name: &str, content: &str) -> (i32, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .args(["check", "--stdin-filename", name])
         .current_dir(repo.path(""))
         .stdin(Stdio::piped())

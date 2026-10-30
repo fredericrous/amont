@@ -47,7 +47,7 @@ fn a_forgotten_lockfile_blocks_without_asking() {
     r.commit("chore: seed the lockfile");
     r.stage("package.json", "{\"name\":\"t\"}\n");
 
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit-package-lock")

@@ -8,11 +8,10 @@
 use crate::common;
 
 use common::Repo;
-use std::process::Command;
 
 fn manifest(r: &Repo, body: &str) {
     r.stage("amont.conf", body);
-    Command::new(env!("CARGO_BIN_EXE_amont"))
+    crate::common::amont_cmd()
         .arg("trust")
         .current_dir(r.path(""))
         .output()

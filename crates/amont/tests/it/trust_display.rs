@@ -13,12 +13,11 @@
 
 use crate::common;
 use common::Repo;
-use std::process::Command;
 
 /// Run a subcommand with colour off, so any escape byte in the output can only
 /// have come from the repository rather than from our own painting.
 fn run(r: &Repo, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .args(args)
         .current_dir(&r.dir)
         .env("NO_COLOR", "1")

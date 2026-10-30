@@ -8,11 +8,11 @@
 use crate::common;
 use common::{missing, Repo};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn pre_push(r: &Repo, tip: &str, base: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {tip} refs/heads/feat/x {base}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -213,7 +213,7 @@ fn a_snapshot_that_ran_does_stamp_its_tip() {
 }
 
 fn trust(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .stdin(Stdio::null())

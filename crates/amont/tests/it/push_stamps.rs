@@ -20,12 +20,12 @@ use crate::common;
 use common::{missing, Repo};
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Drive the pre-push DISPATCHER over one ref line, capturing output.
 fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -60,7 +60,7 @@ fn head(r: &Repo) -> String {
 
 fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg(verb)
             .current_dir(&r.dir)
             .stdin(Stdio::null())
@@ -135,7 +135,7 @@ fn tooled_repo() -> (Repo, String, std::path::PathBuf) {
 #[cfg(unix)]
 fn push_with_path(r: &Repo, from: &str, to: &str, bin: &std::path::Path) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")

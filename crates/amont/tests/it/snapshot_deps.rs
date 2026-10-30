@@ -119,7 +119,7 @@ fn path_with(prefix: Option<&Path>) -> std::ffi::OsString {
 
 /// `amont <args>` in the repo, with the stubs first on PATH when `stubbed`.
 fn amont(r: &Repo, args: &[&str], stubbed: bool) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     cmd.env("GIT_CONFIG_GLOBAL", r.dir.join("fake-gitconfig"));
@@ -144,7 +144,7 @@ fn rehearse(r: &Repo, flags: &[&str]) -> (i32, String) {
 
 fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.dir.join(".git/hooks"))
         .arg("pre-push")
@@ -211,7 +211,7 @@ fn wait_for(what: &str, mut pred: impl FnMut() -> bool) {
 
 fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg(verb)
             .current_dir(&r.dir)
             .stdin(Stdio::null())

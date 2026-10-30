@@ -6,10 +6,9 @@
 
 use crate::common;
 use common::{missing, Repo};
-use std::process::Command;
 
 fn run(r: &Repo, args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("run")
         .args(args)
         .current_dir(&r.dir)
@@ -139,14 +138,14 @@ fn all_files_takes_no_hold() {
     r.commit("chore: seed");
     // Something unstaged, so a hold would have work to do.
     r.write("x.json", "{ \"a\": 999 }\n");
-    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trusted = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
         .expect("amont trust");
     assert!(trusted.status.success(), "could not trust the manifest");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("run")
         .arg("--all-files")
         .current_dir(&r.dir)
@@ -224,7 +223,7 @@ fn all_files_never_stages_anything() {
         "pre-commit  fmt  *.js  block  fix ./rewrite.sh\n",
     );
     r.commit("chore: seed");
-    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trusted = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()

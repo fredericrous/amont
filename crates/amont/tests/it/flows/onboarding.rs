@@ -89,6 +89,7 @@ impl Machine {
         let mut c = Command::new(program);
         c.current_dir(cwd).stdin(Stdio::null());
         Repo::strip_git_env_impl(&mut c);
+        Repo::pin_host_env(&mut c);
         c.env("HOME", &self.root)
             .env("USERPROFILE", &self.root)
             .env("XDG_CONFIG_HOME", self.path(".config"));

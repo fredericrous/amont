@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 /// the zsh suite used.
 fn push_range(r: &Repo, from: &str, to: &str) -> i32 {
     let line = format!("refs/heads/main {to} refs/heads/main {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-run-tests-js")
@@ -100,7 +100,7 @@ fn a_failure_skips_the_rest_of_the_gate() {
 fn push_new_branch(r: &Repo, branch: &str, tip: &str) -> i32 {
     let zero = "0".repeat(tip.len());
     let line = format!("refs/heads/{branch} {tip} refs/heads/{branch} {zero}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-run-tests-js")
@@ -267,7 +267,7 @@ fn a_file_reverted_later_in_the_same_push_still_selects_its_package() {
 /// Same as `push_range`, but keeps stdout so the message can be read.
 fn push_range_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
     let line = format!("refs/heads/main {to} refs/heads/main {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-run-tests-js")
@@ -310,7 +310,7 @@ fn repo_with_failing_typecheck() -> (Repo, String) {
 }
 
 fn trust_manifest(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -328,7 +328,7 @@ fn trust_manifest(r: &Repo) {
 /// commit-time declaration only for commits that CARRY its stamp, and the
 /// stamp comes from pre-commit + post-commit actually running.
 fn install_hooks(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("init")
         .current_dir(&r.dir)
         .stdin(Stdio::null())
@@ -827,7 +827,7 @@ fn a_linked_worktree_commit_earns_a_stamp_the_push_sees() {
         .trim()
         .to_string();
     let line = format!("refs/heads/feat/wt {tip} refs/heads/feat/wt {base}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-run-tests-js")

@@ -19,7 +19,7 @@
 use crate::common;
 use common::Repo;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Content that makes `pre-commit-merge-conflict` fail. Built rather than
 /// written literally, or this file trips the very check it exercises —
@@ -36,7 +36,7 @@ fn conflicted() -> String {
 /// Feed `pre-push` a ref line on stdin, as git does.
 fn pre_push(r: &Repo, remote_ref: &str) -> (i32, String) {
     let line = format!("refs/heads/local aaa {remote_ref} bbb\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -248,7 +248,7 @@ fn no_color_suppresses_every_escape_sequence() {
     // by default" premise below false through no fault of the code under
     // test. Pin both explicitly rather than trusting whatever the shell that
     // happens to run `cargo test` left behind.
-    let with_colour = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let with_colour = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
@@ -263,7 +263,7 @@ fn no_color_suppresses_every_escape_sequence() {
         "colour is on by default: {with_colour_stdout:?}"
     );
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
@@ -288,7 +288,7 @@ fn no_color_suppresses_every_escape_sequence() {
 fn term_dumb_suppresses_colour() {
     let r = Repo::new();
     r.stage("a.txt", "x\n");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
@@ -310,7 +310,7 @@ fn list_reports_what_would_run_here() {
     r.stage("src/main.rs", "fn main() {}\n");
     r.commit("feat: a rust repo");
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("list")
         // Asserting on the LAYOUT, so ask for it without SGR rather than
         // matching around escape sequences.
@@ -403,7 +403,7 @@ fn list_distinguishes_skipped_from_inert() {
     r.commit("feat: a rust repo");
     r.git(&["config", "--add", "hook.skip", "pre-commit-clippy"]);
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("list")
         .current_dir(&r.dir)
         .output()
@@ -417,7 +417,7 @@ fn list_distinguishes_skipped_from_inert() {
 // ---- list --json ---------------------------------------------------------
 
 fn list_json(r: &Repo, extra: &[&str]) -> serde_json::Value {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("list")
         .arg("--json")
         .args(extra)
@@ -500,7 +500,7 @@ fn list_json_rejects_an_unknown_stage() {
     let r = Repo::new();
     r.stage("a.txt", "x\n");
     r.commit("init");
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("list")
         .arg("--stage")
         .arg("nonsense")
@@ -519,7 +519,7 @@ fn list_json_declared_check_shows_its_command() {
         "pre-commit  lint-shell  *.sh  block  scripts/lint.sh\n",
     );
     r.commit("chore: declare a check");
-    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trusted = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -559,7 +559,7 @@ fn list_json_reports_an_untrusted_line_s_own_severity() {
     assert!(find_check(&v, "pre-commit-broken")["manifest_severity"].is_null());
     assert!(find_check(&v, "pre-commit-clippy")["manifest_severity"].is_null());
 
-    let trusted = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trusted = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -577,7 +577,7 @@ fn list_pushed_no_upstream_fails_clearly() {
     r.stage("a.txt", "x\n");
     r.commit("init");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("list")
         .arg("--json")
         .arg("--pushed")
@@ -588,7 +588,7 @@ fn list_pushed_no_upstream_fails_clearly() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
     assert!(v["error"].as_str().unwrap().contains("upstream"), "{v}");
 
-    let out_text = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out_text = crate::common::amont_cmd()
         .arg("list")
         .arg("--pushed")
         .current_dir(&r.dir)

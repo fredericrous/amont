@@ -7,7 +7,7 @@ use crate::common;
 use common::Repo;
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// A fake `cargo` that reports one version and accepts every subcommand.
 fn shim_cargo(r: &Repo, version: &str) {
@@ -61,7 +61,7 @@ fn clippy(r: &Repo) -> (i32, String) {
 /// The same check with an explicit PATH: the no-rustup case needs one that
 /// carries git and nothing of the host's toolchains.
 fn clippy_with_path(r: &Repo, path: &str) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit-clippy")

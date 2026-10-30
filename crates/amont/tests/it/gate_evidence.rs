@@ -14,7 +14,7 @@ use crate::common;
 use common::{missing, Repo};
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn head(r: &Repo) -> String {
     String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
@@ -30,7 +30,7 @@ fn tree(r: &Repo) -> String {
 
 fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -59,7 +59,7 @@ fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
 
 fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg(verb)
             .current_dir(&r.dir)
             .stdin(Stdio::null())

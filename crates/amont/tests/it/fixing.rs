@@ -82,7 +82,7 @@ fn manifest_with_fixer(r: &Repo) {
         "amont.conf",
         &format!("pre-commit  fmt  *.js  block  fix ./{REWRITER}\n"),
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -153,7 +153,7 @@ fn concurrent_restages_do_not_collide() {
              pre-commit  fmt-c  *.js  block  fix ./{ONE_FILE_REWRITER} c.js\n"
         ),
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()

@@ -154,10 +154,8 @@ impl Repo {
     /// `pre-push-cargo-test`. The file lives inside the repo's temp directory,
     /// so it is removed on drop with everything else.
     pub fn run(&self, args: &[&str]) -> HookRun {
-        let mut cmd = Command::new(bin());
+        let mut cmd = amont_cmd();
         cmd.args(args).current_dir(&self.dir).stdin(Stdio::null());
-        Self::strip_git_env_impl(&mut cmd);
-        Self::pin_host_env(&mut cmd);
         cmd.env("GIT_CONFIG_GLOBAL", self.dir.join("fake-gitconfig"));
         let out = cmd.output().expect("run amont");
         HookRun {
@@ -172,15 +170,13 @@ impl Repo {
     /// checkout's hooks, they do not get their own — but the process runs
     /// with `cwd` set to wherever the commit is actually happening.
     pub fn hook_at(&self, cwd: &Path, name: &str, args: &[&str]) -> HookRun {
-        let mut cmd = Command::new(bin());
+        let mut cmd = amont_cmd();
         cmd.arg("--hooks-dir")
             .arg(self.dir.join(".git/hooks"))
             .arg(name)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null());
-        Self::strip_git_env_impl(&mut cmd);
-        Self::pin_host_env(&mut cmd);
         let out = cmd.output().expect("run amont");
         HookRun {
             code: out.status.code().unwrap_or(-1),
@@ -430,6 +426,19 @@ fn make_executable(_p: &Path) {}
 /// at it via CARGO_BIN_EXE_*.
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_amont")
+}
+
+/// The binary under test, as every fixture starts it: git's exported
+/// environment removed ([`Repo::strip_git_env_impl`]) and the host knobs
+/// pinned ([`Repo::pin_host_env`]). `.cargo/config.toml` pins them too, but
+/// only when cargo runs from inside this repository. Only the slot and load
+/// fixtures build the command themselves; `host_env_pinned.rs` holds the
+/// list.
+pub fn amont_cmd() -> Command {
+    let mut cmd = Command::new(bin());
+    Repo::strip_git_env_impl(&mut cmd);
+    Repo::pin_host_env(&mut cmd);
+    cmd
 }
 
 /// True when a tool the case genuinely needs is absent — and it SAYS SO.

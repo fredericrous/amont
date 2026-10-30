@@ -10,7 +10,7 @@
 use crate::common;
 use common::{missing, Repo};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// A minimal, dependency-free crate — no network, no registry.
 fn crate_files(r: &Repo, body: &str) {
@@ -23,7 +23,7 @@ fn crate_files(r: &Repo, body: &str) {
 
 fn pre_push(r: &Repo, from: &str, to: &str) -> i32 {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-cargo-test")
@@ -108,7 +108,7 @@ fn the_test_gate_does_not_leak_git_env_to_the_suite() {
 
     // Run the gate with git's variables set, as git itself would.
     let line = format!("refs/heads/feat/x {} refs/heads/feat/x {base}\n", head(&r));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-cargo-test")
@@ -216,7 +216,7 @@ fn each_ref_in_a_multi_ref_push_is_tested_against_its_own_tip() {
         "refs/heads/a {tip_a} refs/heads/a {zero}\n\
          refs/heads/b {tip_b} refs/heads/b {zero}\n"
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-cargo-test")
