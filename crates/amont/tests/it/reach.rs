@@ -6,7 +6,7 @@
 use crate::common;
 use common::Repo;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn declared_mode(r: &Repo) {
     r.git(&["config", "amont.conventions", "declared"]);
@@ -47,7 +47,7 @@ fn pre_push_keeps_only_the_safety_net_where_undeclared() {
         "refs/heads/main {head} refs/heads/main {}\n",
         "0".repeat(40)
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")

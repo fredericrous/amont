@@ -45,7 +45,7 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
         shims.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
         .env_remove("AMONT_IDLE_LOAD_SCALE")
@@ -127,7 +127,7 @@ fn post_commit_in_an_ungated_repo_stays_near_free() {
         shims.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
         .env_remove("AMONT_IDLE_LOAD_SCALE")
@@ -173,7 +173,7 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
         "amont.conf",
         "severity lint-json-yaml warn\nskip yamllint\nset largeFileWarn 1\nset commit.subjectMax 50\n",
     );
-    let trust = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let trust = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
         .env_remove("AMONT_IDLE_LOAD_SCALE")
@@ -212,7 +212,7 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
         shims.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
         .env_remove("AMONT_IDLE_LOAD_SCALE")
@@ -260,7 +260,7 @@ fn the_host_key_scan_costs_one_spawn_when_a_tool_runs() {
     let spawns_with = |pin: bool| -> usize {
         let r = Repo::new();
         r.stage("amont.conf", "pre-commit  noop  *  block  true\n");
-        let trust = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+        let trust = crate::common::amont_cmd()
             .arg("trust")
             .current_dir(&r.dir)
             .output()
@@ -289,7 +289,7 @@ fn the_host_key_scan_costs_one_spawn_when_a_tool_runs() {
         .expect("write");
         std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amont"));
+        let mut cmd = crate::common::amont_cmd();
         cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
         if pin {
             cmd.env("AMONT_IDLE_LOAD_SCALE", "1");

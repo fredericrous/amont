@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 pub(crate) fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg(verb)
             .current_dir(&r.dir)
             .stdin(Stdio::null())
@@ -46,7 +46,7 @@ pub(crate) fn stamped(r: &Repo, rev: &str) -> String {
 
 /// `amont warm`, in the foreground: fills every cold gate's cache.
 pub(crate) fn warm(r: &Repo) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("warm")
         .current_dir(&r.dir)
         .stdin(Stdio::null())
@@ -234,7 +234,7 @@ fn a_killed_amont_leaves_no_gate_running() {
     );
     r.stage(".gitignore", "slow.pid\n");
     r.commit("chore: a slow gate");
-    let mut amont = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut amont = crate::common::amont_cmd()
         .arg("warm")
         .current_dir(&r.dir)
         .stdin(Stdio::null())
@@ -402,7 +402,7 @@ fn an_unproven_tree_is_not_attested_and_says_so() {
 
 /// `amont rehearse --wait`, as the rehearsal tests run it.
 fn rehearse_wait(r: &Repo) -> String {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.args(["rehearse", "--wait"])
         .current_dir(&r.dir)
         .stdin(Stdio::null());
@@ -713,14 +713,14 @@ fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
     attesting(&r);
     r.git(&["config", "amont.treeLintWait", "3"]);
     // Start the rehearsal in the background, and wait until it is linting.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("rehearse").current_dir(&r.dir).stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     cmd.env("GIT_CONFIG_GLOBAL", r.dir.join("fake-gitconfig"));
     assert!(cmd.output().expect("amont rehearse").status.success());
     let until = Instant::now() + Duration::from_secs(30);
     let linting = || {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont"));
+        let mut c = crate::common::amont_cmd();
         c.args(["rehearse", "--status"])
             .current_dir(&r.dir)
             .stdin(Stdio::null());
@@ -745,7 +745,7 @@ fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
         "{pushed}"
     );
     // Leave nothing behind: stop the rehearsal and its sleeping gate.
-    let mut stop = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut stop = crate::common::amont_cmd();
     stop.args(["rehearse", "--stop"])
         .current_dir(&r.dir)
         .stdin(Stdio::null());

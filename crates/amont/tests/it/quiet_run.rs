@@ -25,7 +25,7 @@ fn declare(r: &Repo, severity: &str, script_name: &str) {
         "amont.conf",
         &format!("pre-commit  probe  *  {severity}  ./{script_name}\n"),
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -34,7 +34,7 @@ fn declare(r: &Repo, severity: &str, script_name: &str) {
 }
 
 fn run(r: &Repo, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     // Entries go to the repo's own scratch dir, never the person's real state
     // dir, and carry no session a live relais pane would draw.
     cmd.arg("run")

@@ -8,14 +8,14 @@ use crate::common;
 use common::Repo;
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn aws_key() -> String {
     format!("{}{}{}", "AK", "IA", "IOSFODNN7EXAMPLE")
 }
 
 fn run_check(r: &Repo, check: &str, stdin_line: Option<String>) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg(check)

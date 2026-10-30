@@ -42,7 +42,6 @@
 mod common;
 
 use common::Repo;
-use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 /// One timing test at a time.
@@ -61,7 +60,7 @@ fn alone() -> MutexGuard<'static, ()> {
 /// gate instead.
 fn manifest(r: &Repo, body: &str) {
     r.stage("amont.conf", body);
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(r.path(""))
         .output()

@@ -10,7 +10,7 @@
 
 use crate::common;
 use common::Repo;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Write the manifest AND trust it — same shape as external.rs, because
 /// every test about what policy DOES has to grant consent first.
@@ -20,7 +20,7 @@ fn manifest(r: &Repo, body: &str) {
 }
 
 fn trust(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -36,7 +36,7 @@ fn stage_bad_json(r: &Repo) {
 /// Run the pre-commit stage with extra environment — the ladder tests need
 /// GIT_CONFIG_GLOBAL (a sandboxed global) and GIT_CONFIG_* (command scope).
 fn pre_commit_env(r: &Repo, env: &[(&str, &str)]) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")

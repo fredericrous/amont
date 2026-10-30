@@ -10,7 +10,7 @@
 use crate::common;
 use common::Repo;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// A committed script that records having run and exits how it is told.
 ///
@@ -53,7 +53,7 @@ fn manifest(r: &Repo, body: &str) {
 }
 
 fn trust(r: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -62,7 +62,7 @@ fn trust(r: &Repo) {
 }
 
 fn pre_push(r: &Repo) -> (i32, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -92,7 +92,7 @@ fn pre_push(r: &Repo) -> (i32, String) {
 /// A push of `remote..local`, as git presents it on stdin.
 fn push_range(r: &Repo, remote: &str, local: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {local} refs/heads/feat/x {remote}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -144,7 +144,7 @@ fn a_declared_pre_push_check_runs_after_the_built_ins() {
     // authorised long ago. The old line said `bbb`, which under the corrected
     // check is "already there, nothing to validate".
     r.git(&["checkout", "-q", "-b", "nonsense-branch-name"]);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")

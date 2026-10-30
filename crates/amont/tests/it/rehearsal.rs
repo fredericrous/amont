@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 /// Drive the pre-push DISPATCHER over one ref line, capturing output.
 fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
     let line = format!("refs/heads/feat/x {to} refs/heads/feat/x {from}\n");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push")
@@ -54,7 +54,7 @@ fn push_out(r: &Repo, from: &str, to: &str) -> (i32, String) {
 
 /// `amont rehearse …` from the repo, the way a person or the agent types it.
 fn rehearse(r: &Repo, flags: &[&str]) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("rehearse")
         .args(flags)
         .current_dir(&r.dir)
@@ -80,7 +80,7 @@ fn head(r: &Repo) -> String {
 
 fn trust_and_install(r: &Repo) {
     for verb in ["trust", "init"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg(verb)
             .current_dir(&r.dir)
             .stdin(Stdio::null())

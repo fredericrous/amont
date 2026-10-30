@@ -11,10 +11,9 @@
 
 use crate::common;
 use common::Repo;
-use std::process::Command;
 
 fn run_check(r: &Repo) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("run")
         .arg("pre-commit-branch-pattern")
         .current_dir(&r.dir)

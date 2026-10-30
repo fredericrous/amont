@@ -35,7 +35,7 @@
 use super::{amont, git_commit, head};
 use crate::common::Repo;
 use crate::external::probe;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(unix)]
 const PASS: &str = "pass.sh";
@@ -84,7 +84,7 @@ fn unset(r: &Repo, key: &str) {
 
 /// `amont <args>`'s stdout alone: what `list` and `list --json` print.
 fn stdout(r: &Repo, args: &[&str]) -> String {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     String::from_utf8_lossy(&cmd.output().expect("run amont").stdout).into_owned()

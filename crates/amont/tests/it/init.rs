@@ -37,7 +37,7 @@ impl Sandbox {
     /// `/dev/tty` and blocks. A test that left stdin attached would pass while
     /// the real thing hung.
     fn init(&self, cwd: &Path) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .arg("init")
             .current_dir(cwd)
             .env("HOME", &self.0)
@@ -312,7 +312,7 @@ fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
     let other = s.path("other");
     init_repo(&other);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("init")
         .current_dir(&other)
         .env("HOME", s.path(""))

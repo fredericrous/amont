@@ -34,7 +34,7 @@ impl Sandbox {
         rel.split('/').fold(self.0.clone(), |p, c| p.join(c))
     }
     fn run(&self, cwd: &Path, args: &[&str]) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+        let out = crate::common::amont_cmd()
             .args(args)
             .current_dir(cwd)
             .env("HOME", &self.0)

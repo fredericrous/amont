@@ -32,7 +32,7 @@ macro_rules! step_eq {
 }
 
 use crate::common::Repo;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 /// Whether a command succeeded, and everything it printed: stdout, then
 /// stderr, where git puts what its hooks say.
@@ -50,7 +50,7 @@ fn said(out: &Output) -> (bool, String) {
 /// `amont <args>` from the repository, as a person types it: no hook mode,
 /// and their own git config (trust lives there).
 fn amont(r: &Repo, args: &[&str]) -> (bool, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     said(&cmd.output().expect("run amont"))

@@ -41,6 +41,7 @@ mod gate_evidence;
 mod gate_pairs;
 mod git_state;
 mod helm;
+mod host_env_pinned;
 mod index_fidelity;
 mod init;
 mod install;

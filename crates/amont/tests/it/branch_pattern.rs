@@ -35,7 +35,7 @@ fn head(r: &Repo) -> String {
 
 /// Feed the check one pre-push line and return whether it passed.
 fn push_refs(r: &Repo, lines: &str) -> (bool, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let mut child = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-branch-pattern")

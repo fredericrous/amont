@@ -11,7 +11,7 @@ use crate::common;
 use common::Repo;
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// A fake tool that answers `--version`, records every other invocation's
 /// argv to `argv.txt`, and exits 0.
@@ -43,7 +43,7 @@ fn run_check(r: &Repo, check: &str) -> String {
         .find(|p| p.is_file())
         .expect("git on PATH");
     let _ = std::os::unix::fs::symlink(git, dir.join("git"));
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg(check)

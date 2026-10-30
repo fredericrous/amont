@@ -5,7 +5,7 @@ use crate::common;
 use common::Repo;
 
 fn run_check(r: &Repo) -> (i32, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit-large-files")

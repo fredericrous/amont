@@ -69,7 +69,7 @@ fn hook_from_worktree(
     main_hooks_dir: &std::path::Path,
     worktree: &std::path::Path,
 ) -> (i32, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(main_hooks_dir)
         .arg("pre-commit")

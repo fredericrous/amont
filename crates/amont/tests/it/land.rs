@@ -89,7 +89,7 @@ pub(crate) fn head(fx: &Fx) -> String {
 }
 
 fn land_with(fx: &Fx, args: &[&str], path_prefix: Option<&std::path::Path>) -> Ran {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("land")
         .args(args)
         .current_dir(&fx.r.dir)

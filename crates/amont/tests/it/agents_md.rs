@@ -11,10 +11,9 @@
 
 use crate::common;
 use common::Repo;
-use std::process::Command;
 
 fn run_agents_md(r: &Repo, extra: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("agents-md")
         .args(extra)
         .current_dir(&r.dir)
@@ -115,7 +114,7 @@ fn outside_a_repository_it_writes_nothing_and_says_so() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont"))
+    let out = crate::common::amont_cmd()
         .arg("agents-md")
         .current_dir(&dir)
         .env("GIT_CEILING_DIRECTORIES", &dir)

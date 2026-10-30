@@ -229,7 +229,7 @@ fn a_hung_remote_is_cut_at_the_deadline() {
     );
 
     let started = std::time::Instant::now();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_amont"));
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-pull-rebase")
@@ -264,8 +264,8 @@ fn a_hung_remote_is_cut_at_the_deadline() {
 /// Run the hook as git does, with `line` on stdin: the refs this push carries.
 fn hook_with_push(r: &Repo, line: &str) -> (i32, String) {
     use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont"));
+    use std::process::Stdio;
+    let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-push-pull-rebase")
