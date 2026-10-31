@@ -6,6 +6,15 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **`amont --bogus --help` prints the help and exits 0**: help wins over a
+  word amont does not know (cli.help.help-and-version). An unknown word alone
+  is still a usage error with exit 2, and a hook's own arguments, `--help`
+  included, still reach the hook untouched.
+
 ## v1.64.0
 
 ### Added
