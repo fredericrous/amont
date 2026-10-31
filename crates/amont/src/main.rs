@@ -283,6 +283,10 @@ fn parse(argv: Vec<OsString>) -> Invocation {
         };
     }
 
+    // Help wins over a word we do not know (cli.help.help-and-version), but
+    // only where the answer would be a usage error: a real hook invocation
+    // passes `--help` through to the hook untouched.
+    let wants_help = argv.iter().any(|a| a == "--help" || a == "-h");
     let mut hooks_dir: Option<PathBuf> = None;
     let mut name: Option<String> = None;
     let mut args: Vec<OsString> = Vec::new();
@@ -311,6 +315,7 @@ fn parse(argv: Vec<OsString>) -> Invocation {
             name,
             args,
         },
+        _ if wants_help => Invocation::Help,
         (None, Some(name)) => Invocation::Usage(format!(
             "{name:?} is not a subcommand, and hook mode needs --hooks-dir <dir> before the hook name"
         )),
@@ -1368,6 +1373,21 @@ mod tests {
         // A hook name with no --hooks-dir is a usage error that says so,
         // rather than a hook run against a directory nobody named.
         assert!(matches!(parse(argv(&["pre-push"])), Invocation::Usage(_)));
+    }
+
+    #[test]
+    fn help_wins_over_an_unknown_word_but_not_over_a_hook() {
+        assert_eq!(parse(argv(&["--bogus", "--help"])), Invocation::Help);
+        assert_eq!(parse(argv(&["--bogus", "-h"])), Invocation::Help);
+        assert!(matches!(
+            parse(argv(&["--bogus-flag-for-probe"])),
+            Invocation::Usage(_)
+        ));
+        // A hook's own arguments are the hook's, `--help` included.
+        assert!(matches!(
+            parse(argv(&["--hooks-dir", "/h", "pre-push", "--help"])),
+            Invocation::Hook { .. }
+        ));
     }
 
     /// The help text has to actually describe the program. It used to be one
