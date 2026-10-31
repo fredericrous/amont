@@ -797,6 +797,12 @@ below the core count, and at most one new holder is admitted every 60 s. The
 first waiter on an empty host always gets one. A number fixes the count,
 with no load test.
 
+Each holder is also bounded in width: a heavy check or `amont slot run`
+command runs `max(1, weight × cores / cap)` jobs, through `MAKEFLAGS`,
+`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS`. The
+check's own environment wins, then the parent's, then amont's computed
+width. See [docs/host-slots.md](host-slots.md#width).
+
 The same queue serves everything heavy on the machine, not only amont's
 hooks: relais's verification commands, and any command run as
 `amont slot run -- <command>`. A waiter says whom it waits behind

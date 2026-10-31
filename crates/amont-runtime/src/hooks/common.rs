@@ -963,6 +963,7 @@ pub fn status_within(
     if crate::host_slots::before_spawn(settings)? {
         cmd.env(crate::host_slots::HELD_ENV, "held");
     }
+    crate::host_slots::bound(cmd);
     status_within_secs(cmd, check_timeout(settings))
 }
 
@@ -992,6 +993,7 @@ fn run_observed(
     if crate::host_slots::before_spawn(settings)? {
         cmd.env(crate::host_slots::HELD_ENV, "held");
     }
+    crate::host_slots::bound(cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let activity = Activity::new();
     let on_output = std::sync::Arc::new(on_output);

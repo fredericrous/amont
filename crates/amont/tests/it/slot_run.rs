@@ -210,3 +210,135 @@ fn a_detached_daemon_does_not_keep_the_slot() {
     );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
 }
+
+const WIDTH_KEYS: [&str; 4] = [
+    "MAKEFLAGS",
+    "CARGO_BUILD_JOBS",
+    "RUST_TEST_THREADS",
+    "NEXTEST_TEST_THREADS",
+];
+
+/// `amont slot run -- env` with `cap` slots, the width keys cleared first
+/// (a `make check` parent exports its own MAKEFLAGS), then `preset` set.
+fn env_under(slots: &Path, cap: &str, flags: &[&str], preset: &[(&str, &str)]) -> String {
+    let mut args = vec!["slot", "run"];
+    args.extend_from_slice(flags);
+    args.extend_from_slice(&["--", "env"]);
+    let mut cmd = amont(slots, &args);
+    cmd.env("AMONT_HOST_SLOTS", cap);
+    for key in WIDTH_KEYS {
+        cmd.env_remove(key);
+    }
+    for (k, v) in preset {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("slot run env");
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn var<'a>(env: &'a str, key: &str) -> Option<&'a str> {
+    env.lines()
+        .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
+}
+
+fn cores() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
+}
+
+/// A held command runs `weight × cores / cap` wide, through all four keys,
+/// and `amont slots` shows the width beside the holder.
+#[test]
+fn a_held_command_is_bounded_to_its_share_of_the_cores() {
+    let slots = slot_dir("width");
+    for weight in [1u32, 3] {
+        let env = env_under(&slots, "4", &["--weight", &weight.to_string()], &[]);
+        let n = (weight * cores() / 4).max(1);
+        assert_eq!(
+            var(&env, "CARGO_BUILD_JOBS"),
+            Some(n.to_string().as_str()),
+            "{env}"
+        );
+        assert_eq!(
+            var(&env, "RUST_TEST_THREADS"),
+            Some(n.to_string().as_str()),
+            "{env}"
+        );
+        assert_eq!(
+            var(&env, "NEXTEST_TEST_THREADS"),
+            Some(n.to_string().as_str()),
+            "{env}"
+        );
+        assert_eq!(
+            var(&env, "MAKEFLAGS"),
+            Some(format!("-j{n}").as_str()),
+            "{env}"
+        );
+    }
+    let holder = spawn(&slots, &["slot", "run", "--", "sleep", "3"]);
+    let json = until_held(&slots);
+    assert!(
+        json.contains(&format!("\"jobs\":{}", cores().max(1))),
+        "{json}"
+    );
+    let out = amont(&slots, &["slots"]).output().expect("amont slots");
+    assert!(
+        text(&out).contains(&format!("jobs {}", cores().max(1))),
+        "{}",
+        text(&out)
+    );
+    let _ = holder.wait_with_output();
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
+}
+
+/// The command's own setting wins, an empty one is replaced, and a
+/// MAKEFLAGS with flags but no job bound gains one.
+#[test]
+fn a_preset_width_wins_and_an_empty_one_does_not() {
+    let slots = slot_dir("preset");
+    let env = env_under(
+        &slots,
+        "4",
+        &[],
+        &[
+            ("CARGO_BUILD_JOBS", "9"),
+            ("RUST_TEST_THREADS", ""),
+            ("MAKEFLAGS", "--no-print-directory"),
+        ],
+    );
+    let n = (cores() / 4).max(1);
+    assert_eq!(var(&env, "CARGO_BUILD_JOBS"), Some("9"), "{env}");
+    assert_eq!(
+        var(&env, "RUST_TEST_THREADS"),
+        Some(n.to_string().as_str()),
+        "{env}"
+    );
+    assert_eq!(
+        var(&env, "MAKEFLAGS"),
+        Some(format!("--no-print-directory -j{n}").as_str()),
+        "{env}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
+}
+
+/// A command that runs unqueued after the slot wait timed out is bounded
+/// too: that happens when the host is busiest.
+#[test]
+fn an_unqueued_command_after_a_timeout_is_bounded_too() {
+    let slots = slot_dir("unqueued");
+    let first = spawn(&slots, &["slot", "run", "--", "sleep", "5"]);
+    until_held(&slots);
+    let env = env_under(
+        &slots,
+        "1",
+        &["--max-wait", "1", "--on-timeout", "run"],
+        &[],
+    );
+    assert_eq!(
+        var(&env, "CARGO_BUILD_JOBS"),
+        Some(cores().max(1).to_string().as_str()),
+        "{env}"
+    );
+    let _ = first.wait_with_output();
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
+}

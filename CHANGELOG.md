@@ -8,6 +8,19 @@ missing here.
 
 ## Unreleased
 
+### Changed
+
+- **A heavy check runs at its share of the cores, not all of them.** A hook
+  check or `amont slot run` command now gets `MAKEFLAGS`, `CARGO_BUILD_JOBS`,
+  `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` set to
+  `max(1, weight × cores / cap)`, the formula relais already used, so six
+  holders on 12 cores no longer run 72 jobs at once. That includes a check
+  that runs unqueued after its slot wait. A value the check or its parent
+  already set wins. `amont slots` and `waits.jsonl` show each holder's
+  `jobs`. In `amont-slots`, `parallelism`, `width_env`, `bound_width` and
+  `record_wait_jobs` are new, `Holder` gains `jobs`, and `record_wait` is
+  unchanged.
+
 ### Fixed
 
 - **`amont --bogus --help` prints the help and exits 0**: help wins over a
