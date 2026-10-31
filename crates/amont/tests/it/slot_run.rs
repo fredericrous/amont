@@ -253,25 +253,25 @@ fn a_held_command_is_bounded_to_its_share_of_the_cores() {
     let slots = slot_dir("width");
     for weight in [1u32, 3] {
         let env = env_under(&slots, "4", &["--weight", &weight.to_string()], &[]);
-        let n = (weight * cores() / 4).max(1);
+        let jobs = (weight * cores() / 4).max(1);
         assert_eq!(
             var(&env, "CARGO_BUILD_JOBS"),
-            Some(n.to_string().as_str()),
+            Some(jobs.to_string().as_str()),
             "{env}"
         );
         assert_eq!(
             var(&env, "RUST_TEST_THREADS"),
-            Some(n.to_string().as_str()),
+            Some(jobs.to_string().as_str()),
             "{env}"
         );
         assert_eq!(
             var(&env, "NEXTEST_TEST_THREADS"),
-            Some(n.to_string().as_str()),
+            Some(jobs.to_string().as_str()),
             "{env}"
         );
         assert_eq!(
             var(&env, "MAKEFLAGS"),
-            Some(format!("-j{n}").as_str()),
+            Some(format!("-j{jobs}").as_str()),
             "{env}"
         );
     }
@@ -287,7 +287,7 @@ fn a_held_command_is_bounded_to_its_share_of_the_cores() {
         "{}",
         text(&out)
     );
-    let _ = holder.wait_with_output();
+    let _ = holder.wait_with_output(); // best-effort: reap the holder
     let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
 }
 
@@ -306,16 +306,16 @@ fn a_preset_width_wins_and_an_empty_one_does_not() {
             ("MAKEFLAGS", "--no-print-directory"),
         ],
     );
-    let n = (cores() / 4).max(1);
+    let jobs = (cores() / 4).max(1);
     assert_eq!(var(&env, "CARGO_BUILD_JOBS"), Some("9"), "{env}");
     assert_eq!(
         var(&env, "RUST_TEST_THREADS"),
-        Some(n.to_string().as_str()),
+        Some(jobs.to_string().as_str()),
         "{env}"
     );
     assert_eq!(
         var(&env, "MAKEFLAGS"),
-        Some(format!("--no-print-directory -j{n}").as_str()),
+        Some(format!("--no-print-directory -j{jobs}").as_str()),
         "{env}"
     );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
@@ -339,6 +339,6 @@ fn an_unqueued_command_after_a_timeout_is_bounded_too() {
         Some(cores().max(1).to_string().as_str()),
         "{env}"
     );
-    let _ = first.wait_with_output();
+    let _ = first.wait_with_output(); // best-effort: reap the holder
     let _ = std::fs::remove_dir_all(&slots); // best-effort: scratch
 }

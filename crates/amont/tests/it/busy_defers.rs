@@ -526,3 +526,57 @@ fn a_heavy_check_out_of_scope_never_waits() {
     );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
+
+/// A heavy hook check runs at its share of the cores: with the slot free it
+/// is held, and on a busy host under `onBusy wait` it runs unqueued after
+/// the wait. Both get `CARGO_BUILD_JOBS` = cores / 1 slot, and every width
+/// key, because the busiest moment is exactly when an unbounded run hurts.
+#[test]
+fn a_heavy_hook_check_is_bounded_held_or_unqueued() {
+    let repo = Repo::new();
+    repo.stage(
+        "gate.sh",
+        "printf '%s %s %s\\n' \"$CARGO_BUILD_JOBS\" \"$RUST_TEST_THREADS\" \"$MAKEFLAGS\" >> width.log\n",
+    );
+    repo.stage(
+        "amont.conf",
+        "set onBusy wait\nset timeout 3\n\
+         pre-commit  gate  *.txt  block  heavy sh gate.sh\n",
+    );
+    repo.commit("chore: base");
+    trust(&repo);
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let expected = format!("{cores} {cores} -j{cores}");
+    let clear: [(&str, &str); 3] = [
+        ("CARGO_BUILD_JOBS", ""),
+        ("RUST_TEST_THREADS", ""),
+        ("MAKEFLAGS", ""),
+    ];
+
+    let slots = slot_dir("width-held");
+    repo.stage("a.txt", "one\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &clear);
+    assert_eq!(code, 0, "{out}");
+    let log = std::fs::read_to_string(repo.dir.join("width.log")).unwrap_or_default();
+    assert_eq!(log.lines().last(), Some(expected.as_str()), "held: {out}");
+    repo.commit("feat: a");
+
+    let busy = slot_dir("width-busy");
+    let _holder = Holder::hold(&busy.join("slot-0"));
+    repo.stage("b.txt", "two\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &busy, "", &clear);
+    assert_eq!(code, 0, "{out}");
+    let log = std::fs::read_to_string(repo.dir.join("width.log")).unwrap_or_default();
+    assert_eq!(
+        log.lines().count(),
+        2,
+        "the busy run did not run unqueued: {out}"
+    );
+    assert_eq!(
+        log.lines().last(),
+        Some(expected.as_str()),
+        "unqueued: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+    let _ = std::fs::remove_dir_all(&busy); // best-effort: a scratch dir
+}
