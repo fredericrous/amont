@@ -143,8 +143,12 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             } else {
                 Launch::Unqueued
             },
+            None,
         );
     };
+    // The width this command may run at, held or not: an unqueued run after
+    // a timeout happens when the host is busiest, so it is bounded too.
+    let jobs = amont_slots::parallelism(weight, amont_slots::cores(), sizing.cap());
 
     let dir = amont_slots::dir();
     let started = Instant::now();
@@ -156,7 +160,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         Ok(w) => w,
         Err(e) => {
             eprintln!("amont: host slots unavailable ({e}); running unqueued");
-            return spawn(program, rest, Launch::Unqueued);
+            return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
     };
     let mut last_said: Option<Instant> = None;
@@ -172,7 +176,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             }
             Err(e) => {
                 eprintln!("amont: host slots unavailable ({e}); running unqueued");
-                return spawn(program, rest, Launch::Unqueued);
+                return spawn(program, rest, Launch::Unqueued, Some(jobs));
             }
         }
         if started.elapsed() >= max_wait {
@@ -184,12 +188,19 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let waited = started.elapsed().as_millis();
     let Some(lease) = lease else {
         if run_on_timeout {
-            amont_slots::record_wait(&dir, "amont slot run", weight, waited, "unqueued");
+            amont_slots::record_wait_jobs(
+                &dir,
+                "amont slot run",
+                weight,
+                Some(jobs),
+                waited,
+                "unqueued",
+            );
             eprintln!(
                 "amont: no host slot freed in {}s; running unqueued (--on-timeout run)",
                 max_wait.as_secs()
             );
-            return spawn(program, rest, Launch::Unqueued);
+            return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
         amont_slots::record_wait(&dir, "amont slot run", weight, waited, "timeout");
         eprintln!(
@@ -199,17 +210,29 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         );
         return BUSY_EXIT;
     };
-    amont_slots::record_wait(&dir, "amont slot run", weight, waited, "admitted");
-    let code = spawn(program, rest, Launch::Held);
+    amont_slots::record_wait_jobs(
+        &dir,
+        "amont slot run",
+        weight,
+        Some(jobs),
+        waited,
+        "admitted",
+    );
+    let code = spawn(program, rest, Launch::Held, Some(jobs));
     drop(lease);
     code
 }
 
 /// Run the command, inheriting stdio, and pass its exit status through: the
-/// code, or 128 + the signal that ended it.
-fn spawn(program: &OsString, rest: &[OsString], launch: Launch) -> i32 {
+/// code, or 128 + the signal that ended it. `jobs` bounds its width
+/// (`amont_slots::bound_width`); `None` (slots off, unsupported, or nested
+/// under a holder whose own bounds it inherits) sets nothing.
+fn spawn(program: &OsString, rest: &[OsString], launch: Launch, jobs: Option<u32>) -> i32 {
     let mut cmd = Command::new(program);
     cmd.args(rest);
+    if let Some(jobs) = jobs {
+        amont_slots::bound_width(&mut cmd, jobs);
+    }
     match launch {
         Launch::Held => {
             cmd.env(amont_slots::HELD_ENV, "held");
@@ -289,7 +312,8 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     let now = amont_slots::now_ms();
     println!("host slots: {held} of {} held ({mode})", status.cap);
     for h in &status.holders {
-        println!("  {}  pid {}", h.describe(now), h.pid);
+        let jobs = h.jobs.map_or("-".to_string(), |j| j.to_string());
+        println!("  {}  pid {}  jobs {jobs}", h.describe(now), h.pid);
     }
     if status.unknown > 0 {
         println!("  {} unknown (old client)", status.unknown);

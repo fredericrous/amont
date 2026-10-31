@@ -140,6 +140,10 @@ struct Current {
     /// handling turns the refused spawn into `Unavailable` or `Failed` still
     /// ends Deferred.
     deferred: Option<Duration>,
+    /// How many jobs this heavy check's tools may run
+    /// (`amont_slots::parallelism`), held or unqueued; `None` when slots are
+    /// off, unsupported, or nested under a holder whose bounds it inherits.
+    jobs: Option<u32>,
 }
 
 thread_local! {
@@ -248,6 +252,9 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             BusyPolicy::Defer { slot_wait } => slot_wait,
         };
         let cap = u64::from(sizing.cap());
+        // Hook checks take one slot; the width is set whether a slot is
+        // granted or the check runs unqueued, which happens at peak load.
+        let jobs = amont_slots::parallelism(1, amont_slots::cores(), sizing.cap());
         let sink = crate::live::current_sink();
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, Some((Instant::now(), cap)));
@@ -288,7 +295,14 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        amont_slots::record_wait(&amont_slots::dir(), "amont", 1, waited.as_millis(), outcome);
+        amont_slots::record_wait_jobs(
+            &amont_slots::dir(),
+            "amont",
+            1,
+            Some(jobs),
+            waited.as_millis(),
+            outcome,
+        );
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
@@ -305,6 +319,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             let mut c = c.borrow_mut();
             c.held = held;
             c.settled = true;
+            c.jobs = Some(jobs);
             if defer {
                 c.deferred = Some(waited);
             }
@@ -314,6 +329,15 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         }
     }
     Ok(CURRENT.with(|c| c.borrow().held.is_some()))
+}
+
+/// Bound `cmd` to the width this thread's heavy check was given (see
+/// `Current::jobs`); a light check, or slots off, sets nothing. Called by
+/// every runner after [`before_spawn`].
+pub fn bound(cmd: &mut std::process::Command) {
+    if let Some(jobs) = CURRENT.with(|c| c.borrow().jobs) {
+        amont_slots::bound_width(cmd, jobs);
+    }
 }
 
 /// Wait up to `budget` for one slot, saying once whom the check waits
@@ -467,5 +491,19 @@ mod tests {
         assert_eq!(current_check().as_deref(), Some("clippy"));
         assert!(!before_spawn(&settings).unwrap());
         assert!(CURRENT.with(|c| c.borrow().settled));
+        // Nested: the parent's bounds are inherited, so none is set here.
+        let mut cmd = std::process::Command::new("true");
+        bound(&mut cmd);
+        assert_eq!(cmd.get_envs().count(), 0);
+    }
+
+    #[test]
+    fn a_light_check_sets_no_width() {
+        let settings = crate::config::Settings::default();
+        let _g = enter_check("pre-commit-cargo-fmt", weight_of("pre-commit-cargo-fmt"));
+        before_spawn(&settings).unwrap();
+        let mut cmd = std::process::Command::new("true");
+        bound(&mut cmd);
+        assert_eq!(cmd.get_envs().count(), 0);
     }
 }

@@ -21,8 +21,8 @@ why.
 | `admission` | the one admission lock. Every admission decision is made under it, taken with `LOCK_NB` and retried inside the caller's own deadline, so a stopped holder of it never holds a hook past its own deadline. |
 | `admitted-at` | the time of the last admission, in ms since the epoch, for the ramp. |
 | `queue/<nanos>-<pid>-<n>` | a waiter's ticket, flocked for as long as it waits. It is created hidden (`.new-…`), locked, then renamed into place, so a visible ticket is never unlocked. A visible ticket whose lock is free belongs to a waiter that died, and is removed. |
-| `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
-| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`). |
+| `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`, and `jobs` when the writer knows it). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
+| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`), and `jobs` when the writer knows it. |
 
 ## Admission
 
@@ -49,6 +49,30 @@ close-on-exec, so a command's children, and any daemon it leaves behind,
 never hold it. `amont slot run` frees the slot when its command exits.
 `AMONT_HOST_SLOT=held` in a command's environment means its parent holds a
 slot, and an amont or wrapper started under it does not queue again.
+
+## Width
+
+A slot bounds how many heavy jobs run, and the width bounds how hard each
+one runs. Left alone, `cargo` builds and its test harness runs on every
+core, so `cap` holders ran `cap × cores` jobs at once. A holder of `weight`
+slots therefore runs `jobs = max(1, weight × cores / cap)` wide. amont sets
+`MAKEFLAGS=-j{jobs}`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
+`NEXTEST_TEST_THREADS` on every heavy hook check and every `amont slot run`
+command (`amont_slots::bound_width`). relais uses the same formula for its
+verification commands.
+
+- **Precedence:** the check's own environment first, then the parent's
+  environment, then amont's computed width. A key already set to a
+  non-empty value is kept, so a check that sets its own width, or a relais
+  run that bounded its command, wins. An empty value counts as unset.
+  A `MAKEFLAGS` that carries flags but no job bound gains ` -j{jobs}`.
+- **Unqueued runs are bounded too.** A check that runs after its slot wait
+  timed out runs when the host is busiest.
+- **Nothing is set** when slots are off (`amont.hostSlots 0`), unsupported
+  (Windows), or the command is nested under a holder (`AMONT_HOST_SLOT=held`),
+  whose bounds it inherits.
+- `amont slots` shows each holder's `jobs`, or `-` for a record written
+  without it.
 
 ## Old clients
 

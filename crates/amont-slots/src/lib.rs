@@ -81,6 +81,85 @@ pub fn cores() -> u32 {
         .unwrap_or(1)
 }
 
+/// The variables that bound how wide a heavy job runs. A holder that ran at
+/// the tool's default width — `cargo` and its test harness use every core —
+/// made `cap` holders run `cap × cores` jobs at once.
+pub const WIDTH_KEYS: [&str; 4] = [
+    "MAKEFLAGS",
+    "CARGO_BUILD_JOBS",
+    "RUST_TEST_THREADS",
+    "NEXTEST_TEST_THREADS",
+];
+
+/// How many jobs a holder of `weight` slots may start:
+/// `max(1, weight × cores / cap)`. relais's verification commands use the
+/// same formula, so a weight means the same width whoever holds it.
+pub fn parallelism(weight: u32, cores: u32, cap: u32) -> u32 {
+    let jobs = u64::from(weight) * u64::from(cores) / u64::from(cap.max(1));
+    u32::try_from(jobs).unwrap_or(u32::MAX).max(1)
+}
+
+/// What to set so a child runs `jobs` wide, given `current`: the value each
+/// key would have in the child (its own setting, else the inherited one).
+///
+/// A key already set to a non-empty value is kept: the check's own choice,
+/// or a parent's bound (relais exports these to the commands it runs),
+/// wins. An empty value counts as unset — cargo refuses `CARGO_BUILD_JOBS=`.
+/// A `MAKEFLAGS` that carries flags but no job bound (`--no-print-directory`,
+/// `-s`) gains ` -j{jobs}` rather than staying unbounded.
+pub fn width_env(
+    jobs: u32,
+    current: impl Fn(&str) -> Option<String>,
+) -> Vec<(&'static str, String)> {
+    let jobs = jobs.max(1);
+    WIDTH_KEYS
+        .iter()
+        .filter_map(|&key| match current(key).filter(|v| !v.trim().is_empty()) {
+            None if key == "MAKEFLAGS" => Some((key, format!("-j{jobs}"))),
+            None => Some((key, jobs.to_string())),
+            Some(v) if key == "MAKEFLAGS" && !bounds_make(&v) => {
+                Some((key, format!("{} -j{jobs}", v.trim_end())))
+            }
+            Some(_) => None,
+        })
+        .collect()
+}
+
+/// Whether a `MAKEFLAGS` value already bounds make's jobs: a `-j`/`--jobs`
+/// flag, a jobserver, or make's own short form (`j4` in the first word).
+fn bounds_make(flags: &str) -> bool {
+    let mut words = flags.split_whitespace();
+    let first_is_short = words
+        .clone()
+        .next()
+        .is_some_and(|w| !w.starts_with('-') && !w.contains('=') && w.contains('j'));
+    first_is_short
+        || words
+            .any(|w| w.starts_with("-j") || w.starts_with("--jobs") || w.starts_with("--jobserver"))
+}
+
+/// Bound `cmd` to `jobs` wide: [`width_env`] over what the child would see,
+/// the command's own `env` first, then this process's environment.
+pub fn bound_width(cmd: &mut std::process::Command, jobs: u32) {
+    let own: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    let current = |key: &str| match own.iter().find(|(k, _)| k == key) {
+        // `env_remove` on the command: the child sees nothing.
+        Some((_, v)) => v.clone(),
+        None => std::env::var(key).ok(),
+    };
+    for (key, value) in width_env(jobs, current) {
+        cmd.env(key, value);
+    }
+}
+
 /// The one-minute load average, where it can be read.
 /// Copied from amont-runtime's `load.rs` (a leaf reading, ADR-0039 allows
 /// the copy): a crate with no dependencies cannot reach it.
@@ -131,6 +210,9 @@ pub struct Holder {
     /// The agent session, when one is known.
     pub session: String,
     pub started_ms: u128,
+    /// How many jobs the holder may run ([`parallelism`]); absent in a
+    /// record written by an older amont-slots.
+    pub jobs: Option<u32>,
 }
 
 impl Holder {
@@ -145,6 +227,7 @@ impl Holder {
             command: command.to_string(),
             session: std::env::var("CLAUDE_SESSION_ID").unwrap_or_default(),
             started_ms: now_ms(),
+            jobs: None,
         }
     }
 
@@ -161,8 +244,11 @@ impl Holder {
     /// The record as one JSON object: what `holders/slot-N.who` holds, and
     /// what `amont slots --json` lists.
     pub fn to_json(&self) -> String {
+        let jobs = self
+            .jobs
+            .map_or(String::new(), |j| format!(",\"jobs\":{j}"));
         format!(
-            "{{\"pid\":{},\"tool\":\"{}\",\"repo\":\"{}\",\"command\":\"{}\",\"session\":\"{}\",\"started_ms\":{}}}",
+            "{{\"pid\":{},\"tool\":\"{}\",\"repo\":\"{}\",\"command\":\"{}\",\"session\":\"{}\",\"started_ms\":{}{jobs}}}",
             self.pid,
             escape(&self.tool),
             escape(&self.repo),
@@ -180,6 +266,7 @@ impl Holder {
             command: unescape(&raw(s, "command")?),
             session: unescape(&raw(s, "session").unwrap_or_default()),
             started_ms: raw(s, "started_ms")?.parse().ok()?,
+            jobs: raw(s, "jobs").and_then(|j| j.parse().ok()),
         })
     }
 }
@@ -290,10 +377,15 @@ impl Waiter {
             .ok_or_else(|| io::Error::other("a fresh ticket was already locked"))?;
         let visible = queue.join(format!("{nanos:024}-{pid}-{seq}"));
         fs::rename(&hidden, &visible)?;
+        let weight = weight.max(1);
+        let mut holder = holder;
+        if holder.jobs.is_none() {
+            holder.jobs = Some(parallelism(weight, cores(), sizing.cap()));
+        }
         Ok(Waiter {
             dir: dir.to_path_buf(),
             sizing,
-            weight: weight.max(1),
+            weight,
             holder,
             ticket: Some((visible, file)),
         })
@@ -443,9 +535,24 @@ pub fn status_in(dir: &Path, sizing: Sizing) -> io::Result<Status> {
 /// Append one acquisition to `waits.jsonl`: the source of the wait
 /// percentiles the plan measures. Best-effort.
 pub fn record_wait(dir: &Path, tool: &str, weight: u32, waited_ms: u128, outcome: &str) {
+    record_wait_jobs(dir, tool, weight, None, waited_ms, outcome);
+}
+
+/// [`record_wait`] with the width the holder was given, when known: the
+/// line gains `"jobs"`. A separate function so callers of `record_wait`
+/// built against an older amont-slots keep compiling.
+pub fn record_wait_jobs(
+    dir: &Path,
+    tool: &str,
+    weight: u32,
+    jobs: Option<u32>,
+    waited_ms: u128,
+    outcome: &str,
+) {
     let load = load1().map_or("null".to_string(), |l| format!("{l:.2}"));
+    let jobs = jobs.map_or(String::new(), |j| format!(",\"jobs\":{j}"));
     let line = format!(
-        "{{\"at_ms\":{},\"tool\":\"{}\",\"weight\":{weight},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"}}\n",
+        "{{\"at_ms\":{},\"tool\":\"{}\",\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"}}\n",
         now_ms(),
         escape(tool),
         escape(outcome)
@@ -973,8 +1080,132 @@ mod tests {
             command: "cargo test\tx".into(),
             session: "s".into(),
             started_ms: 7,
+            jobs: Some(4),
         };
-        assert_eq!(Holder::from_json(&h.to_json()), Some(h));
+        assert_eq!(Holder::from_json(&h.to_json()), Some(h.clone()));
+        // A record from an older amont-slots has no `jobs`, and still reads.
+        let old = Holder { jobs: None, ..h };
+        assert!(!old.to_json().contains("jobs"));
+        assert_eq!(Holder::from_json(&old.to_json()), Some(old));
+    }
+
+    /// The width a weight buys: relais's formula, never below one job.
+    #[test]
+    fn parallelism_is_weight_times_cores_over_cap() {
+        assert_eq!(parallelism(1, 12, 6), 2);
+        assert_eq!(parallelism(2, 12, 6), 4);
+        assert_eq!(parallelism(3, 12, 6), 6);
+        assert_eq!(parallelism(1, 1, 6), 1);
+        assert_eq!(parallelism(1, 12, 0), 12);
+        assert_eq!(parallelism(u32::MAX, u32::MAX, 1), u32::MAX);
+    }
+
+    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    /// Nothing set: all four keys at the width.
+    #[test]
+    fn an_unset_environment_gets_all_four_keys() {
+        let set = width_env(2, env_of(&[]));
+        assert_eq!(
+            set,
+            vec![
+                ("MAKEFLAGS", "-j2".to_string()),
+                ("CARGO_BUILD_JOBS", "2".to_string()),
+                ("RUST_TEST_THREADS", "2".to_string()),
+                ("NEXTEST_TEST_THREADS", "2".to_string()),
+            ]
+        );
+    }
+
+    /// A key the check or a parent set wins; an empty one is replaced.
+    #[test]
+    fn a_preset_key_wins_and_an_empty_one_does_not() {
+        let set = width_env(
+            2,
+            env_of(&[
+                ("CARGO_BUILD_JOBS", "9"),
+                ("RUST_TEST_THREADS", ""),
+                ("MAKEFLAGS", "-j9"),
+            ]),
+        );
+        assert!(
+            !set.iter().any(|(k, _)| *k == "CARGO_BUILD_JOBS"),
+            "{set:?}"
+        );
+        assert!(!set.iter().any(|(k, _)| *k == "MAKEFLAGS"), "{set:?}");
+        assert!(
+            set.contains(&("RUST_TEST_THREADS", "2".to_string())),
+            "{set:?}"
+        );
+    }
+
+    /// A MAKEFLAGS with flags but no job bound gains one; a jobserver, a
+    /// `--jobs` or make's own short form (`j4`) already bounds it.
+    #[test]
+    fn makeflags_without_a_job_bound_gains_one() {
+        let set = width_env(3, env_of(&[("MAKEFLAGS", "--no-print-directory")]));
+        assert!(
+            set.contains(&("MAKEFLAGS", "--no-print-directory -j3".to_string())),
+            "{set:?}"
+        );
+        for bounded in [
+            "--jobserver-auth=3,4",
+            "--jobs=2",
+            "j4 --no-print-directory",
+            "-s -j8",
+        ] {
+            let set = width_env(3, env_of(&[("MAKEFLAGS", bounded)]));
+            assert!(
+                !set.iter().any(|(k, _)| *k == "MAKEFLAGS"),
+                "{bounded}: {set:?}"
+            );
+        }
+        // `s` alone is make's short form for -s, not a job bound.
+        let set = width_env(3, env_of(&[("MAKEFLAGS", "s")]));
+        assert!(set.contains(&("MAKEFLAGS", "s -j3".to_string())), "{set:?}");
+    }
+
+    /// The command's own setting is read before the inherited one, and an
+    /// `env_remove` counts as unset.
+    #[test]
+    fn bound_width_reads_the_commands_own_env_first() {
+        let mut cmd = std::process::Command::new("true");
+        cmd.env("CARGO_BUILD_JOBS", "7")
+            .env_remove("RUST_TEST_THREADS");
+        bound_width(&mut cmd, 2);
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let get = |key: &str| {
+            envs.iter()
+                .find(|(k, _)| k == key)
+                .and_then(|(_, v)| v.clone())
+        };
+        assert_eq!(get("CARGO_BUILD_JOBS").as_deref(), Some("7"));
+        assert_eq!(get("RUST_TEST_THREADS").as_deref(), Some("2"));
+    }
+
+    /// A waiter's record carries the width its weight buys.
+    #[test]
+    fn a_waiters_record_carries_its_width() {
+        let d = scratch("width");
+        let w = Waiter::new_in(&d, Sizing::Fixed(4), 2, Holder::here("t", "a")).unwrap();
+        assert_eq!(w.holder.jobs, Some(parallelism(2, cores(), 4)));
+        drop(w);
+        let _ = fs::remove_dir_all(&d); // best-effort: scratch
     }
 
     /// A lease removes its records, and its slots are free again.
