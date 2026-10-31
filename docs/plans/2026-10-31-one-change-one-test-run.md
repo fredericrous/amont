@@ -17,6 +17,7 @@ The canonical plan lives in relais at `docs/plans/2026-10-31-one-change-one-test
   - `amont-runtime` `host_slots`: 7 passed, including that a nested or light check sets no width.
   - `slot_cmd`: 2 passed.
   - `it slot_run`: 7 passed, covering weight 1 and 3, a preset kept, an empty preset replaced, `MAKEFLAGS` append, an unqueued run after a timeout, and `amont slots` showing `jobs`.
+  - `it busy_defers a_heavy_hook_check_is_bounded_held_or_unqueued`: 1 passed, covering a heavy pre-commit gate held and unqueued after `onBusy wait` timed out.
 - Piloted on the built binary (12 cores, `AMONT_HOST_SLOTS=6`):
 
   | Input | Expected | Actual |
@@ -32,3 +33,9 @@ The canonical plan lives in relais at `docs/plans/2026-10-31-one-change-one-test
 
 - 2026-10-31: the cost check (cap-based vs held-based width) was not timed: the host never goes idle (load 40–160). The person chose "Ship cap-based now". Rollback rule: revert A2 if a lone pre-push `cargo-test` is more than 25% slower than before.
 - 2026-10-31: A2 was implemented directly, not through relais: the person asked to stop using relais this session because the change is urgent for CPU load.
+
+## Implementation review (A2)
+
+- Approve-with-changes after a Delta. Round 1 (82k tokens, 103 s): one high finding (hook-check wiring untested) and two blocking (an unexplained `let _`, the name `n`), all fixed. Delta (89k tokens, 29 s): all resolved.
+- Deliberate: the busy run does not separately assert `outcome: unqueued`. `Holder::hold` asserts the perl child printed `locked` before the run, so slot-0 is held throughout.
+- Next: PR, merge, amont release, `amont install`, then the post-install `ps eww` check.
