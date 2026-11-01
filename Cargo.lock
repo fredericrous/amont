@@ -19,7 +19,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amont"
-version = "1.65.1"
+version = "1.66.0"
 dependencies = [
  "amont-runtime",
  "serde_json",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "amont-fleet"
-version = "1.65.1"
+version = "1.66.0"
 dependencies = [
  "amont-runtime",
  "crossterm",
@@ -39,11 +39,11 @@ dependencies = [
 
 [[package]]
 name = "amont-quiet"
-version = "1.65.1"
+version = "1.66.0"
 
 [[package]]
 name = "amont-runtime"
-version = "1.65.1"
+version = "1.66.0"
 dependencies = [
  "amont-quiet",
  "amont-slots",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "amont-slots"
-version = "1.65.1"
+version = "1.66.0"
 
 [[package]]
 name = "anyhow"
