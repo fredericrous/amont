@@ -19,6 +19,7 @@ The canonical plan is in decisions at `docs/plans/2026-11-01-one-verdict-build.m
   - `it busy_defers`: 11 passed, including the new `a_plan_commit_after_a_deferred_one_is_never_gated` and the stricter docs test that now runs the hooks.
   - `amont-runtime` manifest: 51 passed.
   - The stamp, scope, bypass and attest integration tests: 19, 14, 3 and 30 passed.
+- **CI:** amont#388's first run failed `flows::push::the_push_journey` at step `amend`, as the fix predicts: a reword stages nothing, so it now stamps nothing of its own. With that assertion dropped, `cargo test -p amont --test it flows::` gives 7 passed.
 - **CI is the full-suite check:** `make check` across every crate.
 
 ## Implementation review
@@ -26,3 +27,4 @@ The canonical plan is in decisions at `docs/plans/2026-11-01-one-verdict-build.m
 - Approve-with-changes, round 1.
 - Fixed: the verification record (above).
 - Deliberate: the new test's attestation assertion needs `ssh-keygen`, which is present on macOS and in CI. Without it, the push assertions still catch the bug.
+- Delta (after the journey-test change): approve. Follow-up, low: the push.rs comment above step `amend` still mentions the note-union case. That case is covered by `gate_stamp::tests::the_commit_note_does_not_hide_the_tree_notes_push_tokens`.
