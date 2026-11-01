@@ -647,3 +647,64 @@ fn a_heavy_hook_check_is_bounded_held_or_unqueued() {
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
     let _ = std::fs::remove_dir_all(&busy); // best-effort: a scratch dir
 }
+
+/// A `warn` gate cannot stop a push, so it never queues for a slot: on a
+/// busy host it defers at once, even under `onBusy wait`, instead of holding
+/// the push and its open connection to the remote for a verdict that blocks
+/// nothing. (adr-lint's `cli-probe` held pushes for 30 minutes this way.)
+#[test]
+fn a_warn_gate_never_waits_for_a_slot() {
+    let repo = Repo::new();
+    repo.stage(
+        "amont.conf",
+        "set onBusy wait\nset timeout 600\n\
+         pre-push  probe  *.txt  warn  heavy sh -c true\n",
+    );
+    repo.commit("chore: base");
+    trust(&repo);
+    let base = head(&repo);
+    repo.stage("a.txt", "one\n");
+    repo.commit("feat: a");
+    let slots = slot_dir("warn");
+    let _holder = Holder::hold(&slots.join("slot-0"));
+    let line = push_line("feat/x", &base, &head(&repo));
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("deferred to CI"), "{out}");
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "a warn gate must not wait for the slot: took {took:?}\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A deferred built-in says nothing about its refused spawn: clippy's
+/// "Clippy warnings" line is a finding it never made.
+#[test]
+fn a_deferred_clippy_reports_no_warnings() {
+    if missing("cargo") {
+        return;
+    }
+    let repo = Repo::new();
+    repo.stage(
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    repo.stage("src/lib.rs", "pub fn a() {}\n");
+    repo.stage("amont.conf", "set onBusy defer\nset slotWait 1\n");
+    repo.commit("chore: base");
+    trust(&repo);
+    let slots = slot_dir("clippy");
+    let _holder = Holder::hold(&slots.join("slot-0"));
+    repo.stage("src/lib.rs", "pub fn a() {}\npub fn b() {}\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("deferred to CI"), "{out}");
+    assert!(
+        !out.contains("Clippy warnings"),
+        "a deferred check makes no finding: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
