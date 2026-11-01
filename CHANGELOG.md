@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.65.1
+## Unreleased
 
 ### Added
 
@@ -22,6 +22,8 @@ missing here.
 - **`amont stamps [--json] [--tree <rev>] [<gate>…]`** reports each gate as
   `stamped`, `attested`, `deferred` or `absent` for a tree, for the gate as it
   is declared now — the published query relais reads instead of the notes.
+
+## v1.65.1
 
 ### Fixed
 
