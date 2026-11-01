@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/run-stamp
 repos: [amont]
 canonical: decisions:docs/plans/2026-11-01-one-verdict-build.md
@@ -40,3 +40,13 @@ This file points to the canonical plan in decisions, `docs/plans/2026-11-01-one-
 
 - **Attestation end to end** (`an_attested_tree_reads_as_attested_even_when_it_is_not_checked_out`, unix): a signer is configured (ed25519 key, `allowed_signers` with `amont-attest`), `run --stamp` stamps the tree, the push skips the suite (`runs` stays 1) and publishes the attestation. The remote's signed note names `pre-push-check`. With the local stamp refs removed, `stamps --json` reports `attested` for both gates. After a new commit, HEAD reads `absent`, `--tree HEAD~1` and the stamped tree id both read `attested`, and the throwaway checkout is gone afterwards.
 - **Tests:** clippy `-D warnings` clean on amont-runtime and amont; `cargo test -p amont --test it -- run_stamp`: 8 passed (under `amont slot run`).
+
+## Implementation review
+
+- Approved after three rounds. Round 1 was approve-with-changes:
+  - 2 blocking: the Windows build, and boolean flag arguments.
+  - 2 medium: no attestation shown end to end, and `--tree <other>` never read attestations.
+  - 1 low: flags ignored with `--stamp`.
+  - All were fixed in `718cb0f`.
+- The Delta found 2 nits: a reason on the line after its discard, and a unix-only import. Both were fixed in "reason on the discard, unix import". The re-bind approved.
+- Still to check: the Windows CI leg on the PR.
