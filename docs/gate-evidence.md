@@ -64,6 +64,49 @@ Four things are worth knowing about the shape:
   report nobody is blocked on. A commit-time gate's twin is recorded when the
   push side runs it.
 
+## Stamps a runner earns, and asking for them
+
+The hooks are not the only writer (ADR-0015). A tool that verifies a tree in a
+clean worktree of its own — relais, in a candidate worktree that shares this
+repository's notes — runs:
+
+```sh
+amont run --stamp [<gate>…]
+```
+
+It runs the named gates (by default every blocking commit-time declaration and
+every scoped push gate this repository opted into) on HEAD, and writes the
+tokens the hooks would:
+
+- **A blocking commit-time declaration** goes on the tree note, under its script name. The pre-commit hook's reuse and the push twin's pairing read it there. The one-shot marker is not used, because it lives in the worktree's own gitdir and dies with a throwaway worktree.
+- **A push gate** goes on the tree and the commit, as a rehearsal does. One whose commit-time twin passed in the same run is reported as covered and does not run again.
+- **A built-in pre-commit check** gets its built-in token on the tree note, as evidence. The commit hook still reruns built-ins, because they read the index.
+
+It refuses a worktree with tracked changes (exit 2), because the gates would
+judge content no tree holds; untracked artefacts a gate leaves behind do not
+count. A gate that fails (exit 1), is deferred by the busy policy, cannot run
+or judges nothing (exit 4) writes no token. Nothing is signed here: the
+pre-push hook signs what it finds stamped, with the key it already uses.
+
+To ask which gates a tree carries a verdict for:
+
+```sh
+amont stamps [--json] [--tree <rev>] [<gate>…]
+```
+
+```json
+{"tree":"<oid>","platform":"x86_64-macos","gates":{"pre-commit-cargo-test":"stamped","pre-push-cargo-test":"stamped"}}
+```
+
+Each gate, for the gate as it is declared now:
+
+- **`stamped`**: a valid local token. For a push gate, its commit-time twin's token counts.
+- **`attested`**: a signed attestation on this platform, read only for the tree checked out here.
+- **`deferred`**: a deferral the commit hook recorded.
+- **`absent`**: none of these.
+
+It exits 0 with an answer, and 2 on usage.
+
 ## The report
 
 ```sh

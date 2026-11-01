@@ -6,6 +6,23 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **`amont run --stamp [<gate>…]`** (ADR-0015) runs the gates on HEAD of a
+  clean worktree and stamps the tree the way the commit and push hooks do, so
+  a later commit or push of that exact tree skips them. It is for a tool that
+  verifies a tree in a worktree of its own (relais). A commit-time gate's
+  token goes on the tree note, a push gate's on the tree and the commit, and a
+  push gate covered by its commit-time twin is not run twice. A dirty
+  worktree is refused (exit 2); a failed gate exits 1; a deferred or unjudged
+  one writes no token and exits 4. Nothing is signed: the pre-push hook still
+  signs what it finds stamped.
+- **`amont stamps [--json] [--tree <rev>] [<gate>…]`** reports each gate as
+  `stamped`, `attested`, `deferred` or `absent` for a tree, for the gate as it
+  is declared now — the published query relais reads instead of the notes.
+
 ## v1.65.1
 
 ### Fixed

@@ -65,6 +65,7 @@ mod reach;
 mod rehearsal;
 mod release_profile;
 mod run_mode;
+mod run_stamp;
 mod run_tests_js;
 mod rust_toolchain;
 mod rust_tools;

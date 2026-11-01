@@ -62,6 +62,12 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   run            rehearse checks without committing: the pre-commit stage,
                  `run pre-push` for the push gate, or one check by name
                  [--all-files] [--hooks-dir <dir>]
+                 `run --stamp [<gate>…]` — run the gates on HEAD of a clean
+                 worktree and stamp the tree, as the commit and push hooks
+                 do, so a later commit or push of that tree skips them
+                 (default: every gate the hooks honour a stamp for). Exits 0
+                 stamped, 1 a gate failed, 2 refused (dirty tree, unknown
+                 gate), 4 a gate was deferred or could not be judged
                  [--quiet | --raw: a captured check's output to a log, one
                  line on a pass (the default when not at a terminal), or
                  the tool's own output as it comes]
@@ -107,6 +113,10 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  slot frees in time [--weight N] [--max-wait S, default 90]
                  [--on-timeout run|exit] -- <command…>
   slots          who holds the host slots, and how many wait [--json]
+  stamps         which gates the tree carries a verdict for: stamped (a local
+                 token for the gate as it is declared now), attested (a signed
+                 note for this platform), deferred, or absent
+                 [--json] [--tree <rev>, default HEAD] [<gate>…]
   warm           fill the cache of every cold `tree` gate, so the next commit
                  can prove it within its slack (after a cold commit this
                  runs in the background by itself) [--worker]
@@ -152,6 +162,7 @@ enum Sub {
     Land,
     Slot,
     Slots,
+    Stamps,
 }
 
 impl Sub {
@@ -188,6 +199,7 @@ impl Sub {
             Sub::Land => 16,
             Sub::Slot => 17,
             Sub::Slots => 18,
+            Sub::Stamps => 19,
         }
     }
 }
@@ -197,7 +209,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 19] = [
+const SUBCOMMANDS: [(&str, Sub); 20] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -217,6 +229,7 @@ const SUBCOMMANDS: [(&str, Sub); 19] = [
     ("land", Sub::Land),
     ("slot", Sub::Slot),
     ("slots", Sub::Slots),
+    ("stamps", Sub::Stamps),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -396,7 +409,10 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Install => (&["--force"], &[]),
         Sub::Init | Sub::Restore => (&[], &[]),
         Sub::Uninstall => (&["--binary", "--repo"], &[]),
-        Sub::Run => (&["--all-files", "--quiet", "--raw"], &["--hooks-dir"]),
+        Sub::Run => (
+            &["--all-files", "--quiet", "--raw", "--stamp"],
+            &["--hooks-dir"],
+        ),
         Sub::Trust => (&["--show", "--revoke"], &[]),
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
@@ -412,6 +428,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
         Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
         Sub::Slots => (&["--json"], &[]),
+        Sub::Stamps => (&["--json"], &["--tree"]),
     }
 }
 
@@ -584,6 +601,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // slots for any heavy command, and who holds them.
         Sub::Slot => amont_runtime::slot_cmd::slot_command(args),
         Sub::Slots => amont_runtime::slot_cmd::slots_command(args),
+        Sub::Stamps => stamps_mode(args),
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one
@@ -925,6 +943,9 @@ fn report(r: Result<(), String>) -> i32 {
 /// stop the verb itself being read as a check name is gone with the ambiguity
 /// that made it necessary.
 fn run_mode(args: &[OsString]) -> i32 {
+    if args.iter().any(|a| a == "--stamp") {
+        return stamp_mode(args);
+    }
     let all_files = args.iter().any(|a| a == "--all-files");
     // A named check runs alone; otherwise the whole pre-commit stage.
     let named = args
@@ -1031,6 +1052,90 @@ fn run_mode(args: &[OsString]) -> i32 {
         None => amont_runtime::dispatch::run_all(&ctx, all_files),
     };
     verdict.exit_code()
+}
+
+/// The positional words of a verb, skipping the values of its valued flags.
+fn positionals(args: &[OsString], valued: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        let Some(a) = a.to_str() else { continue };
+        if valued.contains(&a) {
+            skip = true;
+            continue;
+        }
+        if !a.starts_with('-') {
+            out.push(a.to_string());
+        }
+    }
+    out
+}
+
+/// The manifest and settings of the repository here, policy installed.
+fn load_here() -> (
+    amont_runtime::manifest::Manifest,
+    amont_runtime::config::Settings,
+) {
+    let manifest = amont_runtime::manifest::load(std::path::Path::new(
+        &amont_runtime::hooks::common::repo_root(),
+    ));
+    let settings = amont_runtime::config::Settings::new(manifest.policy.clone());
+    (manifest, settings)
+}
+
+/// `amont run --stamp [<gate>…]` (ADR-0015).
+fn stamp_mode(args: &[OsString]) -> i32 {
+    // `--stamp` judges the whole tree and prints its own report: a flag that
+    // would change either is refused, not ignored.
+    for (flag, why) in [
+        ("--all-files", "--stamp always judges the whole tree"),
+        ("--quiet", "--stamp prints its own report"),
+        ("--raw", "--stamp prints its own report"),
+    ] {
+        if args.iter().any(|a| a == flag) {
+            eprintln!("amont: {why}; drop {flag}");
+            return 2;
+        }
+    }
+    if args
+        .iter()
+        .filter_map(|a| a.to_str())
+        .any(|a| a == "--hooks-dir" || a.starts_with("--hooks-dir="))
+    {
+        eprintln!("amont: --stamp runs the gates itself, not through hooks; drop --hooks-dir");
+        return 2;
+    }
+    let (manifest, settings) = load_here();
+    let names = positionals(args, &["--hooks-dir"]);
+    amont_runtime::run_stamp::stamp(&settings, &manifest, &names)
+}
+
+/// `amont stamps [--json] [--tree <rev>] [<gate>…]` (ADR-0015).
+fn stamps_mode(args: &[OsString]) -> i32 {
+    let tree = match flag_value(args, "--tree") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("amont: {msg}");
+            return 2;
+        }
+    };
+    let (manifest, settings) = load_here();
+    let names = positionals(args, &["--tree"]);
+    amont_runtime::run_stamp::stamps_command(
+        &settings,
+        &manifest,
+        if args.iter().any(|a| a == "--json") {
+            amont_runtime::run_stamp::Output::Json
+        } else {
+            amont_runtime::run_stamp::Output::Text
+        },
+        tree.as_deref(),
+        &names,
+    )
 }
 
 /// `amont agents-md [--check] [--path <file>]`.

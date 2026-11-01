@@ -99,6 +99,9 @@ keys:
     description: How a check is named where a human or a config refers to it
   cli.land-verb:
     description: How a branch is pushed and the remote ref proven to have moved
+  hooks.runner-stamps:
+    description: How a runner other than the commit hook earns a gate stamp for a tree, and how a tree's stamps are queried
+    scopes: [hook-binary]
 
   # Declared and deliberately undecided. `docs/hook-architecture.md` lists this
   # under "Open decisions" and it is still open there, while `docs/checks.md`
