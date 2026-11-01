@@ -74,6 +74,7 @@ pub mod pushed_tree;
 pub mod pushrefs;
 pub mod registry;
 pub mod rehearsal;
+pub mod run_stamp;
 pub mod setup;
 pub mod skew;
 pub mod slot_cmd;

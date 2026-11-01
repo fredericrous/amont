@@ -569,6 +569,12 @@ pub fn record_deferred(tree: &str, gates: &[String]) {
     let _ = write_note(tree, &note); // best-effort: a lost line runs the push twin, the safe way
 }
 
+/// The commit-time gates the busy policy deferred on `tree`, by script name.
+/// What `amont stamps` reports as `deferred`; never a token.
+pub fn deferred_on(tree: &str) -> Vec<String> {
+    note_at(tree).deferred
+}
+
 /// Which of `commits` carry a deferral of `gate` on their tree's note (or
 /// their own). Read only to defer a push twin, never to skip one: a commit
 /// in this set still has no stamp.
