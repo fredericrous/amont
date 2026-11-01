@@ -43,6 +43,7 @@ first occurrence wins, and an unknown line is ignored.
 | `patch <id>` | optional: `git diff --binary <merge-base(origin/main, commit)> <commit> -- . ':!docs/plans'` piped to `git patch-id --verbatim`; omitted when it cannot be computed |
 | `plan <path> <body-sha>` | the plan file in `tree` and its body-sha (`amont-agent plan-sha`) |
 | `review <how> <content-id>` | `reviewed`, `by-patch` (the hook's `reviewed-by-patch`) or `overruled`, and the content id (see "Content id") of the tree the review read |
+| `code-review <role> <how> <content-id>` | optional, one line per code-review profile the plan declares, in profile order, after `review`. `role` is the profile (`backend`, `lang:rust`, …), `how` is `reviewed`, `by-patch`, `carried` or `overruled`, and the content id is the tree that profile's review read. This is the one repeated field: a reader takes every `code-review` line, not the first. A push with no declared profile writes none (amont-agent 3.11.0) |
 | `preview <outcome>` | `approved`, `evidence` or `not-required` |
 | `producer <name> <version>` | who wrote the payload, informational |
 
