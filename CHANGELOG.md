@@ -6,6 +6,15 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.66.1
+
+### Fixed
+
+- **npm carries 1.66.1.** 1.66.0's npm publish failed: Sigstore already
+  logged its platform tarball (409), so no re-run could publish it with
+  provenance. 1.66.1 is the same code as 1.66.0, and the other channels
+  (GitHub release, Homebrew, crates.io) carry both.
+
 ## v1.66.0
 
 ### Added
