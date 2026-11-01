@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A gate with nothing to judge is no longer stamped as passed.** At
+  pre-commit, a declared gate whose scope matched no staged file returned
+  `Passed`, so a commit that only touched files outside its scope (a plan
+  edit, say) was stamped `gate@…` for a run that never happened. When an
+  earlier commit had deferred that gate on a busy host, the two commits
+  could share a canonical key (it ignores `docs/plans/` content), the
+  deferred commit inherited the token, and the push attested the gate to CI.
+  Such a gate is now `Inert`, as a docs-skip already was: nothing is
+  stamped, and the push twin defers or runs as it should.
+
 ## v1.65.0
 
 ### Changed

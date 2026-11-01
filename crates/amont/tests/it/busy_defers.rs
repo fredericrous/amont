@@ -267,9 +267,19 @@ fn a_documentation_commit_after_a_deferred_one_keeps_the_deferral() {
     let slots = slot_dir("docs");
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
-    repo.stage("notes.md", "words\n");
-    repo.commit("docs: notes");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
     drop(holder);
+    // The hooks run on the documentation commit too, on a free host: a
+    // commit made with `--no-verify` alone never earned a stamp, which is
+    // how this test once missed a gate with nothing in scope stamping
+    // itself `Passed`.
+    repo.stage("notes.md", "words\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    repo.commit("docs: notes");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
     let line = push_line("feat/x", &base, &head(&repo));
     let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
     assert_eq!(code, 0, "{out}");
@@ -278,6 +288,63 @@ fn a_documentation_commit_after_a_deferred_one_keeps_the_deferral() {
         "{out}"
     );
     assert_eq!(runs(&repo, "gate.log"), 0, "{out}");
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A plan-only commit after a deferred one (t07 of the programme "one
+/// verdict per tree"): the canonical fingerprint ignores the content of
+/// `docs/plans/`, so the two commits share a canonical key, and a gate that
+/// judged nothing used to stamp itself `Passed` there — the deferred commit
+/// inherited the token and the push attested a suite that ran nowhere. A
+/// gate with nothing in scope is `Inert`: no stamp, the twin defers, and
+/// the signed `gates` line leaves it out.
+#[test]
+fn a_plan_commit_after_a_deferred_one_is_never_gated() {
+    let (repo, _) = paired_repo();
+    repo.stage("docs/plans/p.md", "plan\n");
+    repo.commit("docs(plan): p");
+    let base = head(&repo);
+    let slots = slot_dir("plan");
+    let holder = Holder::hold(&slots.join("slot-0"));
+    commit_deferred(&repo, &slots, "a.txt", "feat: a");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    drop(holder);
+
+    repo.stage("docs/plans/p.md", "plan, edited\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    repo.commit("docs(plan): p, done");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    let tip = head(&repo);
+    let tree = rev(&repo, "HEAD^{tree}");
+    for key in [&tip, &tree] {
+        let note = gate_note(&repo, key);
+        assert!(
+            !note.split_whitespace().any(|t| t.starts_with("gate@")),
+            "a gate that judged nothing is never stamped: {note}"
+        );
+    }
+
+    let line = push_line("feat/x", &base, &tip);
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("deferred to CI at commit on 1 pushed commit"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("gated at commit instead"),
+        "never Gated: {out}"
+    );
+    assert_eq!(runs(&repo, "gate.log"), 0, "the gate ran nowhere: {out}");
+    if let Some(gates) = attested(&repo, &slots, &line) {
+        assert!(
+            !gates.split_whitespace().any(|gate| gate == "pre-push-gate"),
+            "a deferred twin is never attested: {gates}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
 
