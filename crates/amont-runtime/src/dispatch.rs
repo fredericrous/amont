@@ -624,7 +624,7 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
             };
-            let slot = crate::host_slots::enter_check(check.name(), check.weight());
+            let slot = enter(**check, || severities.of(**check));
             let outcome = deferred_or(&slot, check.run(&sub));
             if let Some(f) = &flush {
                 f.outcome(outcome);
@@ -919,13 +919,26 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 
 /// One check by name, in a one-slot stage. The verdict is the one
 /// `registry::lookup` gives a check: blocking only a failed `block` check.
+/// Enter `check` for the host-slot bookkeeping: a heavy check whose severity
+/// is `warn` never waits for a slot (`host_slots::never_waits`). Only a heavy
+/// check can wait, so only it asks `severity`, which the caller answers from
+/// its stage's severity fold when it has one: a git-config read per check
+/// broke the commit's git-spawn budget.
+fn enter(check: &dyn Check, severity: impl FnOnce() -> Severity) -> crate::host_slots::CheckGuard {
+    let guard = crate::host_slots::enter_check(check.name(), check.weight());
+    if check.weight() == crate::host_slots::Weight::Heavy && matches!(severity(), Severity::Warn) {
+        crate::host_slots::never_waits();
+    }
+    guard
+}
+
 fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
     let stage = crate::live::Stage::begin(ctx.settings, &[check.name()]);
     stage.named();
     let _sink = stage.enter(0);
     let flush = crate::live::FinishOnDrop::new(ctx.settings, &stage, 0);
     let outcome = {
-        let slot = crate::host_slots::enter_check(check.name(), check.weight());
+        let slot = enter(check, || crate::registry::severity_of(ctx.settings, check));
         deferred_or(&slot, check.run(ctx))
     };
     flush.outcome(outcome);
@@ -1220,7 +1233,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
-        let slot = crate::host_slots::enter_check(check.name(), check.weight());
+        let slot = enter(*check, || {
+            crate::registry::severity_of(ctx.settings, *check)
+        });
         let outcome = deferred_or(&slot, check.run(&sub));
         if let Some(f) = &flush {
             f.outcome(outcome);

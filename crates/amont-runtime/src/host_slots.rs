@@ -144,6 +144,10 @@ struct Current {
     /// (`amont_slots::parallelism`), held or unqueued; `None` when slots are
     /// off, unsupported, or nested under a holder whose bounds it inherits.
     jobs: Option<u32>,
+    /// The check's severity cannot block the commit or push (`warn`): a
+    /// finding it might make never stops anything, so it never waits for a
+    /// slot. Set by [`never_waits`].
+    cannot_block: bool,
 }
 
 thread_local! {
@@ -199,6 +203,15 @@ pub fn enter_check(name: &str, weight: Weight) -> CheckGuard {
     CheckGuard
 }
 
+/// The check running on this thread cannot block (its severity is `warn`):
+/// on a busy host it takes a free slot or defers to CI at once, under either
+/// busy policy, instead of holding the commit, or the push and its open
+/// connection to the remote, while it queues for a verdict that stops
+/// nothing.
+pub fn never_waits() {
+    CURRENT.with(|c| c.borrow_mut().cannot_block = true);
+}
+
 /// The name of the check running on this thread, without its stage
 /// prefix (`clippy`), when the dispatcher installed one.
 pub fn current_check() -> Option<String> {
@@ -218,9 +231,14 @@ fn nested() -> bool {
 /// this thread holds a slot, so the caller exports [`HELD_ENV`]; an `Err`
 /// when the busy policy deferred the check, so the caller does not spawn.
 pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool> {
-    let (pending, deferred, name) = CURRENT.with(|c| {
+    let (pending, deferred, name, cannot_block) = CURRENT.with(|c| {
         let c = c.borrow();
-        (c.heavy && !c.settled, c.deferred.is_some(), c.name.clone())
+        (
+            c.heavy && !c.settled,
+            c.deferred.is_some(),
+            c.name.clone(),
+            c.cannot_block,
+        )
     });
     // A check that caught the first refusal and tries another tool is
     // refused at once, not after a second wait.
@@ -240,7 +258,13 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             CURRENT.with(|c| c.borrow_mut().settled = true);
             return Ok(false);
         }
-        let policy = busy_policy(settings);
+        let policy = if cannot_block {
+            BusyPolicy::Defer {
+                slot_wait: Duration::ZERO,
+            }
+        } else {
+            busy_policy(settings)
+        };
         let ceiling = Duration::from_secs(match crate::hooks::common::check_timeout(settings) {
             0 => 3600,
             s => s,
@@ -267,7 +291,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             // with this commit's own work, which is not a reason to defer.
             // Wait as `wait` does, up to the ceiling; else one more pass, as a
             // sibling may have released between the last poll and now.
-            let rest = if amont_slots::held_in_process() > 0 {
+            let rest = if amont_slots::held_in_process() > 0 && !cannot_block {
                 ceiling.saturating_sub(started.elapsed())
             } else {
                 Duration::ZERO

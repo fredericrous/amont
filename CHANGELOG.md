@@ -6,6 +6,13 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **A deferred check no longer reports a failure it never had.** When the busy policy defers a heavy check to CI, its refused spawn used to reach the check as a failed run, so a deferred `clippy` printed "Clippy warnings" and a deferred `cargo-test` printed "Rust tests failed. Push aborted." right before the line saying it was deferred and the commit or push went on. A deferred check now prints only the deferral, as `warn` lines already did.
+- **A `warn` check never waits for a host slot.** A check whose severity is `warn` cannot stop a commit or push, so on a busy host it now takes a free slot or defers to CI at once, under either busy policy, instead of holding the push, and its open connection to the remote, while it queues. adr-lint's `cli-probe` held pushes for over 30 minutes this way.
+
 ## v1.66.1
 
 ### Fixed

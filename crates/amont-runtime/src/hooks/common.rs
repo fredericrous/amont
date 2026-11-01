@@ -1792,6 +1792,12 @@ pub fn ok(settings: &crate::config::Settings, msg: &str) {
     crate::live::say(&format!("{} {msg}", valid_sign()));
 }
 pub fn fail(msg: &str) {
+    // As for `warn` below: a deferred check's refused spawn is not a failure,
+    // and saying "Clippy warnings" or "tests failed. Push aborted." before
+    // the deferral line contradicts it (ADR-0013).
+    if crate::host_slots::deferred_here() {
+        return;
+    }
     crate::live::say(&format!("{} {msg}", error_sign()));
 }
 pub fn warn(msg: &str) {
