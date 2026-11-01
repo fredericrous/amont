@@ -336,14 +336,11 @@ fn the_push_journey() {
     step_eq!("changed tree", runs(&r, "suite"), suites + 2);
 
     // Same tree, new commit: its own commit note must not hide the tree's
-    // push stamp.
+    // push stamp. A reword stages nothing, so its pre-commit gate judged
+    // nothing and is inert: the amend writes no stamp of its own (t07), and
+    // any note it does carry must be the commit's own.
     let (ok, out) = git_commit(&r, &["--amend", "-m", "feat: six, reworded"]);
     step!("amend", ok, "{out}");
-    step!(
-        "amend",
-        has_note(&r, "HEAD"),
-        "the amend has a note of its own"
-    );
     step!("amend", has_note(&r, &tree(&r)), "the tree keeps its note");
     step!(
         "amend",
