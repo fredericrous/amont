@@ -1089,8 +1089,24 @@ fn load_here() -> (
 
 /// `amont run --stamp [<gate>…]` (ADR-0015).
 fn stamp_mode(args: &[OsString]) -> i32 {
-    if args.iter().any(|a| a == "--all-files") {
-        eprintln!("amont: --stamp always judges the whole tree; drop --all-files");
+    // `--stamp` judges the whole tree and prints its own report: a flag that
+    // would change either is refused, not ignored.
+    for (flag, why) in [
+        ("--all-files", "--stamp always judges the whole tree"),
+        ("--quiet", "--stamp prints its own report"),
+        ("--raw", "--stamp prints its own report"),
+    ] {
+        if args.iter().any(|a| a == flag) {
+            eprintln!("amont: {why}; drop {flag}");
+            return 2;
+        }
+    }
+    if args
+        .iter()
+        .filter_map(|a| a.to_str())
+        .any(|a| a == "--hooks-dir" || a.starts_with("--hooks-dir="))
+    {
+        eprintln!("amont: --stamp runs the gates itself, not through hooks; drop --hooks-dir");
         return 2;
     }
     let (manifest, settings) = load_here();
@@ -1112,7 +1128,11 @@ fn stamps_mode(args: &[OsString]) -> i32 {
     amont_runtime::run_stamp::stamps_command(
         &settings,
         &manifest,
-        args.iter().any(|a| a == "--json"),
+        if args.iter().any(|a| a == "--json") {
+            amont_runtime::run_stamp::Output::Json
+        } else {
+            amont_runtime::run_stamp::Output::Text
+        },
         tree.as_deref(),
         &names,
     )

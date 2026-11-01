@@ -56,6 +56,13 @@ pub enum Ended {
     NotStamped(&'static str),
 }
 
+/// How `amont stamps` prints its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Output {
+    Json,
+    Text,
+}
+
 /// One gate's state on a tree, as `amont stamps` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -392,44 +399,154 @@ fn report(tree: &str, ended: &[(String, Ended)]) -> i32 {
     code
 }
 
-/// Each gate's state on `tree`: a valid local token, else a signed
-/// attestation for it on this platform (only for the tree checked out here,
-/// which is the one the verifier reads), else a recorded deferral, else
-/// nothing.
+/// The ids that carry a gate's verdict: itself, and its twin at the other
+/// stage. A commit-time declaration and the push gate it pairs with run the
+/// same command on the same tree, so a token or a signed attestation for
+/// either is the verdict of both (the push hook skips on the first, CI on
+/// the second).
+fn verdict_ids(
+    settings: &crate::config::Settings,
+    manifest: &Manifest,
+    check: &dyn Check,
+) -> Vec<String> {
+    let mut ids = vec![check.name().to_string()];
+    match check.stage() {
+        Stage::PrePush => ids.extend(twin_of(settings, manifest, check)),
+        Stage::PreCommit => {
+            let declared =
+                crate::hooks::run_tests::blocking_commit_decls(settings, &manifest.externals)
+                    .into_iter()
+                    .any(|d| d.id == check.name());
+            if declared {
+                ids.extend(
+                    crate::registry::all_stage_checks(Stage::PrePush, manifest)
+                        .into_iter()
+                        .filter(|c| c.pairing_name() == check.pairing_name())
+                        .map(|c| c.name().to_string()),
+                );
+            }
+        }
+    }
+    ids
+}
+
+/// A detached checkout of a commit with no files, removed on drop: the
+/// verifier judges the tree checked out where it is pointed.
+struct Detached {
+    dir: std::path::PathBuf,
+}
+
+impl Detached {
+    fn at(commit: &str) -> Option<Detached> {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("amont-stamps-{}-{n}", std::process::id()));
+        let path = dir.to_str()?;
+        crate::git::succeeds(&[
+            "worktree",
+            "add",
+            "--detach",
+            "--no-checkout",
+            "-q",
+            path,
+            commit,
+        ])
+        .then_some(Detached { dir })
+    }
+}
+
+impl Drop for Detached {
+    fn drop(&mut self) {
+        if let Some(path) = self.dir.to_str() {
+            let _ = crate::git::succeeds(&["worktree", "remove", "--force", path]);
+            // best-effort: scratch, swept below
+        }
+        let _ = std::fs::remove_dir_all(&self.dir); // best-effort: scratch left by a failed remove
+    }
+}
+
+/// A commit holding `tree`, for a caller that was given a bare tree id. Fixed
+/// identity and date, so the same tree is the same commit; nothing refers to
+/// it and gc takes it.
+fn commit_of_tree(tree: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["commit-tree", tree, "-m", "amont stamps"])
+        .env("GIT_AUTHOR_NAME", "amont")
+        .env("GIT_AUTHOR_EMAIL", "amont@localhost")
+        .env("GIT_COMMITTER_NAME", "amont")
+        .env("GIT_COMMITTER_EMAIL", "amont@localhost")
+        .env("GIT_AUTHOR_DATE", "@0 +0000")
+        .env("GIT_COMMITTER_DATE", "@0 +0000")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|c| !c.is_empty())
+}
+
+/// The gate ids a signed attestation covers for `tree` on this platform.
+///
+/// The verifier syncs the notes from origin before it judges (up to 15 s, 45
+/// if origin is dead), so [`states`] asks only when some gate is not already
+/// stamped. For a tree other than the one checked out, a throwaway checkout of
+/// `commit` (or of a commit made for the tree) is what it is pointed at.
+fn attested_for(tree: &str, commit: Option<&str>) -> Vec<String> {
+    let Some(signers) = crate::attest::default_signers() else {
+        return Vec::new();
+    };
+    let platform = crate::attest::platform();
+    let checked_out = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
+    let gates = if checked_out.as_deref() == Some(tree) {
+        crate::attest::covered(&signers, None, Some(&platform))
+    } else {
+        let Some(commit) = commit.map(str::to_string).or_else(|| commit_of_tree(tree)) else {
+            return Vec::new();
+        };
+        let Some(checkout) = Detached::at(&commit) else {
+            return Vec::new();
+        };
+        crate::attest::covered_in(&checkout.dir, &signers, None, Some(&platform))
+    };
+    gates
+        .map(|g| g.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Each gate's state on `tree`: a valid local token (its own or its twin's),
+/// else a signed attestation for it on this platform, else a recorded
+/// deferral, else nothing. `commit` is the commit `tree` was asked for by, if
+/// it was asked for by one.
 pub fn states(
     settings: &crate::config::Settings,
     manifest: &Manifest,
     tree: &str,
+    commit: Option<&str>,
     ids: &[String],
 ) -> Vec<(String, State)> {
     let tokens = crate::gate_stamp::tree_tokens(tree);
     let deferred = crate::gate_stamp::deferred_on(tree);
-    let head_tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
-    let attested: Vec<String> = if head_tree.as_deref() == Some(tree) {
-        crate::attest::default_signers()
-            .and_then(|s| crate::attest::covered(&s, None, Some(&crate::attest::platform())))
-            .map(|g| g.split_whitespace().map(str::to_string).collect())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let attested: std::cell::OnceCell<Vec<String>> = std::cell::OnceCell::new();
     ids.iter()
         .filter_map(|id| crate::registry::one_named(id, manifest).map(|c| (id, c)))
         .map(|(id, check)| {
-            let own = token_for(settings, manifest, check);
-            let twin = twin_of(settings, manifest, check).and_then(|t| {
-                crate::registry::one_named(&t, manifest)
-                    .and_then(|c| token_for(settings, manifest, c))
-            });
-            let stamped = own.iter().chain(twin.iter()).any(|t| tokens.contains(t));
-            let script = crate::short_name(id).to_string();
+            let verdict = verdict_ids(settings, manifest, check);
+            let stamped = verdict
+                .iter()
+                .filter_map(|v| crate::registry::one_named(v, manifest))
+                .filter_map(|c| token_for(settings, manifest, c))
+                .any(|t| tokens.contains(&t));
             let state = if stamped {
                 State::Stamped
-            } else if attested.iter().any(|g| g == id) {
+            } else if attested
+                .get_or_init(|| attested_for(tree, commit))
+                .iter()
+                .any(|g| verdict.contains(g))
+            {
                 State::Attested
             } else if deferred
                 .iter()
-                .any(|d| *d == script || *d == check.pairing_name())
+                .any(|d| *d == crate::short_name(id) || *d == check.pairing_name())
             {
                 State::Deferred
             } else {
@@ -445,7 +562,7 @@ pub fn states(
 pub fn stamps_command(
     settings: &crate::config::Settings,
     manifest: &Manifest,
-    json: bool,
+    output: Output,
     tree: Option<&str>,
     names: &[String],
 ) -> i32 {
@@ -454,6 +571,13 @@ pub fn stamps_command(
         eprintln!("amont: {rev:?} names no tree here");
         return EXIT_REFUSED;
     };
+    // The commit the tree was asked for by, when it was asked for by one.
+    let commit = crate::git::stdout(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{rev}^{{commit}}"),
+    ]);
     let ids = match resolve(settings, manifest, names) {
         Ok(ids) => ids,
         Err(e) => {
@@ -461,8 +585,8 @@ pub fn stamps_command(
             return EXIT_REFUSED;
         }
     };
-    let states = states(settings, manifest, &tree, &ids);
-    if json {
+    let states = states(settings, manifest, &tree, commit.as_deref(), &ids);
+    if output == Output::Json {
         let gates: Vec<String> = states
             .iter()
             .map(|(id, s)| crate::json::string_field(id, s.as_str()))

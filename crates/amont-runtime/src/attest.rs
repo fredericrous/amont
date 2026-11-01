@@ -423,7 +423,20 @@ pub fn covered(
     principal: Option<&str>,
     require_platform: Option<&str>,
 ) -> Option<String> {
-    let v = git_attest::verify::evaluate(here(), signers, principal, require_platform, &[], false);
+    covered_in(here(), signers, principal, require_platform)
+}
+
+/// [`covered`] for the tree checked out in `dir`: a detached checkout of some
+/// other tree answers for that tree (`amont stamps --tree`). The verifier
+/// judges the tree it is pointed at and syncs the notes from origin, so a
+/// caller that can answer without it should not ask.
+pub fn covered_in(
+    dir: &Path,
+    signers: &Path,
+    principal: Option<&str>,
+    require_platform: Option<&str>,
+) -> Option<String> {
+    let v = git_attest::verify::evaluate(dir, signers, principal, require_platform, &[], false);
     for line in v.loud.iter().chain(&v.warnings) {
         eprintln!("amont: {line}");
     }
