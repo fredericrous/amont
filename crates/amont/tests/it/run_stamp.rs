@@ -9,7 +9,6 @@ use crate::common;
 use common::Repo;
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::Stdio;
 
 fn head(r: &Repo) -> String {
@@ -422,6 +421,7 @@ mod busy_host {
     use super::*;
     use std::io::BufRead;
     use std::path::Path;
+    use std::path::PathBuf;
     use std::process::{Child, Command};
 
     /// One slot file held by another process until dropped: the busy host.

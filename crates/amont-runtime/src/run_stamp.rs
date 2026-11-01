@@ -458,8 +458,8 @@ impl Detached {
 impl Drop for Detached {
     fn drop(&mut self) {
         if let Some(path) = self.dir.to_str() {
-            let _ = crate::git::succeeds(&["worktree", "remove", "--force", path]);
-            // best-effort: scratch, swept below
+            let remove = ["worktree", "remove", "--force", path];
+            let _ = crate::git::succeeds(&remove); // best-effort: scratch, swept below
         }
         let _ = std::fs::remove_dir_all(&self.dir); // best-effort: scratch left by a failed remove
     }
