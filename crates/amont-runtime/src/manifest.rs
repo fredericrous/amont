@@ -767,8 +767,15 @@ impl Check for External {
                     );
                     return Outcome::Inert;
                 }
+                // Nothing staged is in scope: the gate judged nothing, so it
+                // is `Inert` for the reason docs-skip is above. `Passed` here
+                // stamped a plan-only commit `gate@…` on its tree and on its
+                // canonical key, which ignores `docs/plans/` content — so a
+                // deferred commit beneath it inherited the token, and the
+                // push attested a suite that ran nowhere (decisions
+                // programme one-verdict-per-tree, t07).
                 let Some(matched) = files_to_judge(scope, files, &staged) else {
-                    return Outcome::Passed;
+                    return Outcome::Inert;
                 };
                 // A blocking gate that already ran clean against exactly this
                 // staged tree is not run again: the attempt that ran it never
