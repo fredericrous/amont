@@ -67,7 +67,8 @@ keeps the `stamps --json` schema unchanged.
 
 **Phase 3c** (its own PR, before the release): the hardening carried from
 the 3a review: `DYING` set in `on_signal` and a park at the top of
-`cluster::run` (the shared entry point, so it covers `run_inner`'s callers),
+`cluster::run` (the cluster path's entry; `tree_run::run` and `run_output`
+already park after `run_inner`),
 a drop guard for the second-signal flag, a SIGTERM test, deleting the Job by
 name when `create` prints no UID, the wording of the bundle-too-big and
 repeated "did not answer" lines, and tests of the Ctrl-C path (the Job
@@ -136,7 +137,7 @@ shorten.
 | `cargo test --test it cluster` | the cluster suite passes | 27 passed on `17223c8` (and on `a685436`); one earlier run on `5c23eeb` had 2 load failures (see below) |
 | `cargo test -p amont-runtime --lib cluster` / `--lib staged_only` | the unit tests pass | 11 / 7 passed |
 | `make lint-cross`, `cargo fmt --check` | exit 0 | exit 0 on `17223c8` |
-| `make check` | exit 0 | exit 0 (builder, on the tree before the last hand fix) |
+| `make check` on `0ed69b0` (the pushed code) | exit 0 | exit 0: 570, 165 and 686 passed, 1 ignored |
 | label deletes red when neutered | red | `a_signal_during_create_deletes_the_runs_jobs_by_label` and `a_create_that_times_out_deletes_the_runs_jobs_by_label` turn red |
 | `DYING` stored in `on_signal` | a test red without it | **none**: with the store and the park reverted, the Ctrl-C test stayed green 10/10, even with the signal landing while a `kubectl get` is alive. The store rests on reasoning: the park in `try_run`'s Err arm now sees `DYING` before the watcher runs. The tests pin the Job cancel, no local run and the scratch cleanup. |
 | temp-ref cleanup on a signal | a test | **none**: the ref exists only inside `git bundle create`, which the fake cannot block; the vacuous assertion was removed. |
@@ -145,7 +146,7 @@ shorten.
 
 ## Implementation review (phase 3c)
 
-- **implementation-review:** round 1 approve-with-changes (signal tests claimed more than they test [high], a vacuous temp-ref assertion, the park site); two Deltas; approve on `5c23eeb` with this record, 11 candidates ruled; the last Delta on `17223c8`.
+- **implementation-review:** round 1 approve-with-changes (signal tests claimed more than they test [high], a vacuous temp-ref assertion, the park site); Delta on `a685436` approve-with-changes (label work outside the 3c paragraph, a broken `create`'s extra wait); Delta on `5c23eeb` approve-with-changes (plan record owed); Delta on `17223c8` approve-with-changes (record wording, the park reason, `make check` on the final tree), all three applied in this commit; 11 candidates ruled.
 - **Profiles:** backend (slot leak mid-create, label clash across hosts), unix (the same leak, `kill --`), tui (false "running on the cluster", a 40 s wait and a second warning, wording), rust (`#[must_use]`, `Call` split into NotStarted and TimedOut, one `Created` state for a run's Job, an accurate label-length comment): each approve-with-changes in round 1; the last Delta on `17223c8`.
-- **Deliberate:** skipping "running on the cluster" after the first unreachable answer is best-effort under concurrent gates (tui); a `kill <pid>` mid-`create` can still leave a Job that lands after the cancel, bounded by its deadline, as the CHANGELOG says (backend, unix); the bundle line runs past 80 columns (tui).
+- **Deliberate:** once a run's Job delete has failed, its state returns to `NotSent`, so a later Ctrl-C does not retry by label; the failure is warned and logged and the deadline bounds it (backend, unix, low); skipping "running on the cluster" after the first unreachable answer is best-effort under concurrent gates (tui); a `kill <pid>` mid-`create` can still leave a Job that lands after the cancel, bounded by its deadline, as the CHANGELOG says (backend, unix); the bundle line runs past 80 columns (tui).
 
