@@ -1427,7 +1427,8 @@ mod interrupted {
             Reach::Group => format!("-{pid}"),
         };
         let sent = std::process::Command::new("kill")
-            .args([format!("-{signal}"), target])
+            // `--` so a group target, `-<pid>`, is never read as an option.
+            .args([format!("-{signal}"), "--".to_string(), target])
             .status()
             .unwrap();
         assert!(sent.success());

@@ -52,6 +52,10 @@ const CPU_LIMIT: &str = "2";
 const CALL_SECS: u64 = 20;
 /// The shared budget for deleting live Jobs when amont is interrupted.
 const CANCEL_SECS: u64 = 10;
+/// The bound on a quiet clean-up by label after a `create` timed out.
+const LABEL_DELETE_SECS: u64 = 5;
+/// The label every Job carries, valued by its run ([`run_label`]).
+const RUN_LABEL_KEY: &str = "amont.run";
 const POLL: Duration = Duration::from_millis(500);
 const MIB: u64 = 1024 * 1024;
 
@@ -126,6 +130,8 @@ struct LiveRun {
     /// The `amont.run` label of every Job this run creates: how a Job whose
     /// `create` is still in flight, or whose answer was lost, is found.
     run_label: String,
+    /// Set just before the first `create`: before it, no Job can be ours.
+    create_started: bool,
     job: Option<String>,
     gate_ref: Option<String>,
 }
@@ -168,10 +174,12 @@ pub fn cancel_live() {
                     );
                 }
             }
+            // No `create` sent yet: nothing on the cluster is this run's.
+            None if !run.create_started => {}
             // Not named yet: `create` may be in flight or its answer lost. The
             // label finds the Job if it exists, and deletes nothing otherwise.
             None => {
-                let selector = format!("amont.run={}", run.run_label);
+                let selector = run_selector(&run.run_label);
                 eprintln!("cancelling cluster Jobs of this run; Ctrl-C again to leave them");
                 if let Err(why) =
                     kube.bounded(&["delete", "job", "-l", &selector, "--wait=false"], left)
@@ -663,7 +671,7 @@ fn say_fallback(short_name: &str, fallback: &Fallback) {
         Fallback::Unreachable(why) => {
             if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
                 crate::hooks::common::warn(&format!(
-                    "the cluster did not answer ({}): {name} and this hook's other cluster gates run here",
+                    "{name} and this hook's other cluster gates run here: the cluster did not answer ({})",
                     crate::ui::sanitize(why)
                 ));
             }
@@ -897,8 +905,11 @@ enum Call {
     Ok(String),
     /// Exit non-zero, with its stderr.
     Refused(String),
-    /// Could not start, or outlived its deadline.
-    Broken(String),
+    /// Could not start: nothing reached the apiserver.
+    NotStarted(String),
+    /// Outlived its deadline, or its wait failed: the request may have
+    /// reached the apiserver all the same.
+    TimedOut(String),
 }
 
 impl Kube {
@@ -942,7 +953,7 @@ impl Kube {
     fn bounded(&self, args: &[&str], secs: u64) -> Result<(), String> {
         match self.capture(args, secs) {
             Call::Ok(_) => Ok(()),
-            Call::Refused(e) | Call::Broken(e) => Err(last_line(&e)),
+            Call::Refused(e) | Call::NotStarted(e) | Call::TimedOut(e) => Err(last_line(&e)),
         }
     }
 
@@ -971,7 +982,7 @@ impl Kube {
                 "fetch-receive failed: {}",
                 last_line(&e)
             ))),
-            Call::Broken(e) => Err(Fallback::Unreachable(e)),
+            Call::NotStarted(e) | Call::TimedOut(e) => Err(Fallback::Unreachable(e)),
         }
     }
 
@@ -1020,7 +1031,7 @@ fn capture(cmd: &mut Command, secs: u64) -> Call {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Call::Broken(format!("kubectl: {e}")),
+        Err(e) => return Call::NotStarted(format!("kubectl: {e}")),
     };
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
@@ -1037,8 +1048,8 @@ fn capture(cmd: &mut Command, secs: u64) -> Call {
     match ran {
         Ok(crate::hooks::common::Ran::Status(s)) if s.success() => Call::Ok(collect(out)),
         Ok(crate::hooks::common::Ran::Status(_)) => Call::Refused(collect(err)),
-        Ok(crate::hooks::common::Ran::TimedOut(_)) => Call::Broken("kubectl timed out".into()),
-        Err(e) => Call::Broken(format!("kubectl: {e}")),
+        Ok(crate::hooks::common::Ran::TimedOut(_)) => Call::TimedOut("kubectl timed out".into()),
+        Err(e) => Call::TimedOut(format!("kubectl: {e}")),
     }
 }
 
@@ -1147,6 +1158,7 @@ fn claim_slot(
         let path = path.to_string_lossy().into_owned();
         let name = format!("{JOB_PREFIX}{slot}");
         let args = ["create", "-f", &path, "-o", "jsonpath={.metadata.uid}"];
+        live_update(scratch.run, |l| l.create_started = true);
         let created = kube.capture(&args, secs_left(deadline, CALL_SECS));
         if crate::tree_run::is_dying() {
             // The signal watcher may have cleaned up before this `create`
@@ -1179,8 +1191,10 @@ fn claim_slot(
                 Refusal::Taken | Refusal::Quota => refusals.push(refusal(&err)),
                 Refusal::Other => return Err(Fallback::Unreachable(last_line(&err))),
             },
-            // Timed out or could not start: the Job may exist all the same.
-            Call::Broken(err) => {
+            Call::NotStarted(err) => return Err(Fallback::Unreachable(err)),
+            // The request may have landed: drop whatever it made, briefly and
+            // quietly; the Job's deadline bounds what a failed delete leaves.
+            Call::TimedOut(err) => {
                 delete_by_label(kube, &scratch.run_label(), spec.gate);
                 return Err(Fallback::Unreachable(err));
             }
@@ -1202,13 +1216,26 @@ fn delete_by_name(kube: &Kube, name: &str, gate: &str) {
 }
 
 /// Ask the apiserver to drop every Job carrying this run's label, without
-/// waiting: for a `create` whose answer was lost.
+/// waiting: for a `create` whose answer was lost. Bounded short and logged
+/// only: the person was already told the cluster did not answer, and a Job
+/// left behind ends at its own deadline.
 fn delete_by_label(kube: &Kube, label: &str, gate: &str) {
-    let selector = format!("amont.run={label}");
+    let selector = run_selector(label);
     let args = ["delete", "job", "-l", &selector, "--wait=false"];
-    if let Err(why) = kube.bounded(&args, CALL_SECS) {
-        say_delete_failed("the Jobs of this run", &why, gate);
+    if let Err(why) = kube.bounded(&args, LABEL_DELETE_SECS) {
+        log_line(
+            gate,
+            &format!(
+                "could not delete the Jobs of this run: {}",
+                crate::ui::sanitize(&why)
+            ),
+        );
     }
+}
+
+/// The label selector of one run's Jobs.
+fn run_selector(label: &str) -> String {
+    format!("{RUN_LABEL_KEY}={label}")
 }
 
 fn say_delete_failed(what: &str, why: &str, gate: &str) {
@@ -1345,9 +1372,28 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
     )
 }
 
-/// Unique to this process and run: a Job carrying it is ours.
+/// Unique to this process and run, across every host sharing the namespace
+/// (pids repeat from host to host, and in containers): the pid, a random
+/// per-process nonce and the run. 37 characters at most, inside a label
+/// value's 63, alphanumeric at both ends.
 fn run_label(run: u64) -> String {
-    format!("{}-{run}", std::process::id())
+    format!("{}-{:016x}-{run}", std::process::id(), process_nonce())
+}
+
+/// 64 random bits, drawn once per process from the standard library's
+/// randomly seeded hasher: no dependency, no file to read.
+fn process_nonce() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        hasher.finish()
+    })
 }
 
 /// A private scratch directory for one cluster run — the Job manifests and
@@ -1387,6 +1433,7 @@ impl Scratch {
                 namespace: kube.namespace.clone(),
                 scratch: dir.clone(),
                 run_label: run_label(run),
+                create_started: false,
                 job: None,
                 gate_ref: None,
             });
@@ -1710,7 +1757,7 @@ fn pod_facts(kube: &Kube, uid: &str, deadline: Instant) -> Result<Option<PodFact
             "kubectl get pods: {}",
             last_line(&e)
         ))),
-        Call::Broken(e) => Err(Fallback::Unreachable(e)),
+        Call::NotStarted(e) | Call::TimedOut(e) => Err(Fallback::Unreachable(e)),
     }
 }
 
@@ -1796,7 +1843,7 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
                     last_line(&e)
                 )))
             }
-            Call::Broken(e) => return Err(Fallback::Unreachable(e)),
+            Call::NotStarted(e) | Call::TimedOut(e) => return Err(Fallback::Unreachable(e)),
         };
         let Some(facts) = parse_job(&json) else {
             return Ok(None);
@@ -1816,6 +1863,23 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
 
 #[cfg(test)]
 mod tests {
+    /// A run label is the pid, a 16-hex-digit nonce and the run: valid as a
+    /// label value, distinct per run, and the same nonce within one process.
+    #[test]
+    fn a_run_label_is_pid_nonce_and_run() {
+        let first = run_label(1);
+        let parts: Vec<&str> = first.split('-').collect();
+        assert_eq!(parts.len(), 3, "{first}");
+        assert_eq!(parts[0], std::process::id().to_string());
+        assert_eq!(parts[1].len(), 16, "{first}");
+        assert!(parts[1].chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+        assert_eq!(parts[2], "1");
+        assert!(first.len() <= 63);
+        let second = run_label(2);
+        assert_ne!(first, second);
+        assert_eq!(second.split('-').nth(1), Some(parts[1]));
+    }
+
     use super::*;
 
     fn cluster_config(prepare: Option<&str>) -> ClusterConfig {
