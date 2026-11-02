@@ -829,6 +829,22 @@ impl Drop for StagedOnly {
     }
 }
 
+/// Set while the signal watcher cancels cluster Jobs: a second signal then
+/// ends amont at once instead of queueing behind the cancel.
+static LEAVE_ON_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// From now on a second signal ends amont at once ([`LEAVE_ON_SIGNAL`]);
+/// [`crate::cluster::cancel_live`] calls it before its deletes.
+pub(crate) fn leave_on_second_signal() {
+    LEAVE_ON_SIGNAL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A second signal queues again, as before the cancel; called once the
+/// cluster deletes are done.
+pub(crate) fn queue_second_signal() {
+    LEAVE_ON_SIGNAL.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Put back files this tool parked, from a later invocation.
 ///
 /// For when even the signal handler was interrupted.
@@ -904,6 +920,10 @@ fn install_signal_handler_once() {
         // that is killing amont never reached them (amont#302).
         crate::tree_run::reap_live();
         StagedOnly::restore(fixing_from_config());
+        // A gate Job on the cluster: asked to go, not waited for (ADR-0016).
+        // After the restore, so a second signal that cuts this short can
+        // only leave a Job to its deadline, never the index parked.
+        crate::cluster::cancel_live();
         // Re-raise with the default handler so the exit status is honest
         // about having been killed.
         let sig = PENDING_SIGNAL.load(Ordering::SeqCst);
@@ -916,6 +936,15 @@ fn install_signal_handler_once() {
     });
 
     extern "C" fn on_signal(sig: i32) {
+        // A second signal while the cluster Jobs are being cancelled: leave
+        // them, and die now. `signal` and `raise` are async-signal-safe.
+        if LEAVE_ON_SIGNAL.load(Ordering::SeqCst) {
+            unsafe {
+                libc_signal(sig, 0); // SIG_DFL
+                libc_raise(sig);
+            }
+            return;
+        }
         PENDING_SIGNAL.store(sig, Ordering::SeqCst);
         let fd = SIGNAL_PIPE_WRITE.load(Ordering::SeqCst);
         if fd >= 0 {

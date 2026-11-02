@@ -855,6 +855,70 @@ key. A rehearsal (`amont rehearse`) always waits: it is how a gate runs
 with no push waiting on it. Load from processes outside the hooks holds no
 slot and causes no deferral.
 
+### `amont.executor` — where a `platform=any` gate runs
+
+```
+set executor cluster              # in amont.conf; default local
+set clusterPrepare pnpm install --frozen-lockfile --prefer-offline --ignore-scripts
+```
+
+```sh
+git config --global amont.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml
+git config --global amont.cluster.image 'forgejo.example/gate-runner:1.2.0@sha256:<64 hex>'
+```
+
+A gate declared `platform=any` (see
+[custom checks](custom-checks.md#your-command-gets-the-file-list)) in a repository whose
+trusted `amont.conf` says `set executor cluster` runs as one Kubernetes Job
+on the homelab cluster, not on this machine (ADR-0016). It takes no
+[host slot](#amonthostslots--how-many-heavy-checks-one-machine-runs-at-once):
+the cluster has its own slots.
+
+**The cluster proves only passes.** amont reads the verdict from what
+Kubernetes recorded: the Job `Complete` with no `DisruptionTarget`, the
+`prepare` and gate containers exited 0, `fetch` reporting the expected tree,
+the pod's `imageID`. Anything else re-runs the gate here, unchanged, and the
+local outcome is the verdict. That covers a gate failure, `OOMKilled`, a
+deadline, a pod not Running within the start wait, a failed prepare, a tree
+mismatch, every slot taken or refused by the quota, a bundle over the cap,
+`kubectl` missing or failing, and any of the keys below missing. Each
+fallback appends `<epoch> <gate> <reason>` to `amont/cluster.log` in the
+common git directory (`git rev-parse --git-common-dir`). In one hook run,
+once the apiserver has failed, the later gates run here without asking it
+again.
+
+On the terminal, a clean run says one line, `<gate>: running on the
+cluster`. A gate that fails there says `<gate> failed on the cluster (exit
+N); running it here for the verdict`, and any other fallback `<gate> runs
+here: the cluster is unavailable (<reason>)`. A machine with no cluster (the
+kubeconfig or the image unset) says nothing, so a repository that sets `set
+executor cluster` does not warn on every hook of such a machine; a key that
+is set but cannot be used warns once per run and names the fix.
+
+A cluster pass is recorded in `refs/notes/amont-gate-cluster`, on the judged
+tree, under its own identity: the gate's command and flags, the
+`clusterPrepare` command, the image digest and the version of the cluster
+contract. The laptop's own executable is not part of it, so a gate whose tool
+exists only in the image is still reused. Changing `amont.cluster.image`
+makes the gate run again. A cluster pass never becomes a local stamp
+(`refs/notes/amont-gate`) or a laptop attestation.
+
+The machine keys, read from git config (`--global` is the usual place):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `amont.cluster.kubeconfig` | none: required | The kubeconfig amont passes as `kubectl --kubeconfig`. The default context is never used. `~` is expanded. |
+| `amont.cluster.image` | none: required | The gate-runner image, pinned as `name:tag@sha256:<digest>`. Without `@sha256:` the gate runs here. |
+| `amont.cluster.namespace` | `amont-gates` | The namespace of the Jobs. |
+| `amont.cluster.slots` | `2` | How many Jobs, `amont-gate-slot-0` and up, may run at once. At most 2. |
+| `amont.cluster.maxBundleMiB` | `50` | Above this size, the bundle of the judged tree is not sent and the gate runs here. |
+| `amont.cluster.startWait` | `30` | Seconds the pod has to reach `fetch` Running before the gate runs here. |
+
+The Job's deadline is [`amont.timeout`](#amonttimeout--the-ceiling-one-checks-command-may-run-for) plus 60 seconds, so
+`amont.timeout 0` (no ceiling) keeps every gate here. Off switches: unset
+`amont.cluster.kubeconfig`, or `git config amont.executor local` in one
+clone, or `set executor local` in the file.
+
 ## `amont.minVersion` — the amont this repository means
 
 ```sh

@@ -153,6 +153,27 @@ over nothing.
   pre-commit  plugin-test  *.ts  block  heavy make plugin
   ```
 
+- **the `platform=any` marker**, opt-in: prefix the command with
+  `platform=any ` when the gate's verdict does not depend on the platform it
+  runs on (a lint, a type check, a cycle check, never a test suite that
+  executes the product). In a repository whose trusted `amont.conf` also says
+  `set executor cluster`, and on a machine with a cluster configured
+  ([`amont.executor`](configuration.md#amontexecutor--where-a-platformany-gate-runs)),
+  the gate runs as one Kubernetes Job on the homelab cluster instead of here,
+  and takes no host slot (ADR-0016). The cluster proves only passes: any
+  failure, there or of the cluster, re-runs the gate here, unchanged, and the
+  local result is the verdict. `platform=any` with `fix` or with `files` is a
+  broken line: the pod rewrites nothing and is not handed the matched files.
+  `platform=` with any other word is broken too. From an untrusted manifest
+  the marker does nothing, like the line it is on. An amont older than 1.67
+  reads `platform=any` as the program name, so the gate fails: add it once
+  everyone reading the file has upgraded.
+
+  ```
+  set executor cluster
+  pre-commit  typecheck  *.ts  block  heavy platform=any pnpm -r typecheck
+  ```
+
 ## There is no shell
 
 No pipes, no redirection, no globbing, no quoting. `make smoke` works; `find . |
@@ -249,8 +270,8 @@ Only these keys are settable: `largeFileWarn`, `largeFileBlock`,
 `commit.bodyWrap`, `autoRebase`, `timeout`, `lockWait`, `testPushedTree`,
 `snapshotPrepare`, `snapshotDeps`, `snapshotCarry`, `order`, `treeLint`,
 `treeLintSlack`, `treeLintWait`, `treeLintRehearsalTimeout`,
-`snapshotPrepareOutputs`, `planExempt`, `onBusy`, `slotWait`, and
-`minVersion` — the last being the team's version
+`snapshotPrepareOutputs`, `planExempt`, `onBusy`, `slotWait`, `executor`,
+`clusterPrepare`, and `minVersion` — the last being the team's version
 floor: a binary older than `set minVersion 1.11.0` says so once per stage,
 warn-only, instead of silently lacking the checks the team added since.
 
@@ -278,6 +299,18 @@ strict like `planExempt`: any other value, or the key set twice, is a broken
 line. `set onBusy defer` moves a heavy gate to CI when the machine is busy,
 so declare it only where CI runs that gate; see
 [configuration](configuration.md#amontonbusy--what-a-heavy-check-does-on-a-busy-host).
+
+`executor` (`cluster` or `local`, default `local`) and `clusterPrepare` (a
+shell command) are strict the same way: another `executor` value, or either
+key set twice, is a broken line. `set executor cluster` sends this
+repository's `platform=any` gates to the cluster; `set clusterPrepare <cmd>`
+is what the Job's `prepare` container runs in the checkout before the gate
+(`pnpm install --frozen-lockfile --prefer-offline --ignore-scripts`, say).
+Both are policy: they bind only from a trusted manifest, and the trust
+prompt shows them. A local `git config amont.executor local` turns the
+cluster off for one clone; nothing local can turn it on, or name the prepare
+command. See
+[configuration](configuration.md#amontexecutor--where-a-platformany-gate-runs).
 
 Any other
 key is refused with its line number — most deliberately `amont.fix`,

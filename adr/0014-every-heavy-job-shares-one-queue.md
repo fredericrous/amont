@@ -80,3 +80,9 @@ works as follows:
   binary, so it still runs with amont absent. amont-agent's advice names
   `amont slot run` only when an `amont` that has it is on PATH; when none is,
   it reports a gap, never a pass.
+- **Amended by ADR-0016: a cluster run takes no host slot.** A
+  `platform=any` gate that runs as a Kubernetes Job on the homelab cluster
+  queues on the cluster's own slots (`amont-gate-slot-<k>`) and quota, not on
+  this host's. Its `kubectl` calls skip `host_slots::before_spawn`. When the
+  cluster does not prove it, the local re-run takes a host slot and honours
+  `onBusy` exactly as any heavy gate does.

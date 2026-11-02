@@ -18,7 +18,9 @@
 use crate::check::Verdict;
 
 pub fn run(settings: &crate::config::Settings, ctx: &crate::registry::Ctx) -> Verdict {
-    let stamped = crate::gate_stamp::bind_to_head();
+    let mut stamped = crate::gate_stamp::bind_to_head();
+    // A gate the cluster proved on this tree was not dodged (ADR-0016).
+    stamped.extend(crate::cluster::covered_at_head(settings, ctx.manifest));
     crate::bypass::note_unverified(ctx.settings, ctx.manifest, &stamped);
     rehearse(settings, false);
     Verdict::Proceed
