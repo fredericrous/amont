@@ -130,7 +130,7 @@ pub fn cancel_live() {
     if live.is_empty() {
         return;
     }
-    crate::staged_only::second_signal_leaves(true);
+    crate::staged_only::leave_on_second_signal();
     let deadline = Instant::now() + Duration::from_secs(CANCEL_SECS);
     for run in live {
         if let Some(gate_ref) = &run.gate_ref {
@@ -148,7 +148,7 @@ pub fn cancel_live() {
             eprintln!("could not cancel cluster Job {job}: {why}");
         }
     }
-    crate::staged_only::second_signal_leaves(false);
+    crate::staged_only::queue_second_signal();
 }
 
 /// Whole seconds until `deadline`, at most `cap`, at least 1.
@@ -541,6 +541,9 @@ pub fn try_run(
             true
         }
         Err(fallback) => {
+            // A signal killed the kubectl children: amont is dying, so no
+            // local re-run may start behind the signal cleanup.
+            crate::tree_run::park_if_dying();
             if matches!(fallback, Fallback::Unreachable(_)) {
                 UNREACHABLE.store(true, Ordering::SeqCst);
             }

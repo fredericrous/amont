@@ -829,18 +829,24 @@ impl Drop for StagedOnly {
     }
 }
 
-/// Put back files this tool parked, from a later invocation.
-///
 /// Set while the signal watcher cancels cluster Jobs: a second signal then
 /// ends amont at once instead of queueing behind the cancel.
 static LEAVE_ON_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// See [`LEAVE_ON_SIGNAL`]; [`crate::cluster::cancel_live`] brackets its
-/// deletes with it.
-pub(crate) fn second_signal_leaves(on: bool) {
-    LEAVE_ON_SIGNAL.store(on, std::sync::atomic::Ordering::SeqCst);
+/// From now on a second signal ends amont at once ([`LEAVE_ON_SIGNAL`]);
+/// [`crate::cluster::cancel_live`] calls it before its deletes.
+pub(crate) fn leave_on_second_signal() {
+    LEAVE_ON_SIGNAL.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// A second signal queues again, as before the cancel; called once the
+/// cluster deletes are done.
+pub(crate) fn queue_second_signal() {
+    LEAVE_ON_SIGNAL.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Put back files this tool parked, from a later invocation.
+///
 /// For when even the signal handler was interrupted.
 pub fn restore_command(settings: &crate::config::Settings) -> Result<(), String> {
     let store = store_dir().ok_or_else(|| "not inside a git repository".to_string())?;

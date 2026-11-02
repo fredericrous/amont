@@ -837,8 +837,8 @@ fn pre_push_stdin_is_intact_after_a_cluster_gate() {
     assert!(c
         .read("job.json")
         .contains(&format!("\"value\":\"{tree}\"")));
-    let n: usize = c.read("n").trim().parse().unwrap();
-    for i in 1..=n {
+    let kubectl_calls: usize = c.read("n").trim().parse().unwrap();
+    for i in 1..=kubectl_calls {
         let path = c.kube.join(format!("stdin-{i}"));
         if path.exists() {
             assert_eq!(std::fs::read(&path).unwrap(), b"", "call {i} saw stdin");

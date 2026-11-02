@@ -118,7 +118,7 @@ static DYING: AtomicBool = AtomicBool::new(false);
 /// Hold the calling thread while amont dies of a signal: the watcher thread
 /// re-raises it with the default disposition, which ends the process. Never
 /// returns once `DYING` is set; returns at once otherwise.
-fn park_if_dying() {
+pub(crate) fn park_if_dying() {
     while DYING.load(Ordering::SeqCst) {
         std::thread::sleep(POLL);
     }
