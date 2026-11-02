@@ -44,3 +44,20 @@ Read the canonical plan's Design (amont code) section.
 - Machine git config:
   - `amont.cluster.kubeconfig = ~/.config/amont/kube/homelab.yaml`;
   - `amont.cluster.image`, copied by the operator as `tag@sha256:`.
+
+## Deferred to 3b
+
+Phase 3a (ADR-0016, the executor and the cluster note ref) shipped without:
+- the `x86_64-linux` attestation block for the `platform=any` gates a cluster
+  token satisfies, and verify passing their ids as `anywhere`;
+- a `cluster` source field in `amont stamps` (a cluster token reads
+  `stamped`, as the plan says, with no field naming where it came from);
+- tests of the Ctrl-C path (the Job cancel, the temp-file and temp-ref
+  cleanup, a second signal leaving the Job), of a rehearsal after a cluster
+  pass, and of push-twin reuse of a commit-time cluster pass. A push twin of
+  a cluster-proved commit gate still runs at push time: pairing reads only
+  local stamps.
+
+Added in 3a beyond the plan: the machine key `amont.cluster.startWait`
+(default 30 s), the bounded wait for `fetch` to be Running, which the tests
+shorten.

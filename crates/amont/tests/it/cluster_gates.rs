@@ -2,10 +2,11 @@
 //!
 //! The fake is a shell script on `PATH`, scripted per case through files in
 //! its directory (`FAKE_KUBE_DIR`): how `create` answers each attempt, whether
-//! `fetch` reaches Running, how the gate container and the Job end. It
-//! records every call's argv, every call's stdin, the Job manifest it was
-//! handed and the bundle `exec -i` streamed, so a test can say what amont
-//! asked of the cluster without a cluster. No network.
+//! `fetch` reaches Running, how the gate container and the Job end. It keys
+//! everything by slot, so two gates of one hook each get their own Job, pod
+//! and verdict. It records every call's argv, every call's stdin, each Job
+//! manifest it was handed and the bundle `exec -i` streamed, so a test can say
+//! what amont asked of the cluster without a cluster. No network.
 
 use crate::common;
 use common::Repo;
@@ -26,12 +27,13 @@ shift 2; shift; shift 2
 val() { cat "$D/$1" 2>/dev/null || printf '%s' "$2"; }
 case "$1" in
   exec)
-    cat > "$D/bundle"; printf '%s\n' "$*" > "$D/exec-args"; touch "$D/received"; exit 0 ;;
+    k=${5#pod-}
+    cat > "$D/bundle-$k"; cp "$D/bundle-$k" "$D/bundle"
+    printf '%s\n' "$*" > "$D/exec-args"; touch "$D/received-$k"; exit 0 ;;
 esac
 cat > "$D/stdin-$n"
 case "$1" in
   create)
-    cp "$3" "$D/job.json"
     a=$(cat "$D/create_n" 2>/dev/null || echo 0); a=$((a+1)); echo "$a" > "$D/create_n"
     mode=$(sed -n "${a}p" "$D/create" 2>/dev/null)
     case "$mode" in
@@ -39,28 +41,36 @@ case "$1" in
       403) echo 'Error from server (Forbidden): jobs.batch "x" is forbidden: exceeded quota: gates' >&2; exit 1 ;;
       down) echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1 ;;
     esac
-    printf 'uid-1234'; exit 0 ;;
+    k=$(grep -o '"name":"amont-gate-slot-[0-9]*"' "$3" | head -1 | sed 's/.*-//; s/"//')
+    mkdir "$D/slot-$k" 2>/dev/null || { echo 'Error from server (AlreadyExists): jobs.batch already exists' >&2; exit 1; }
+    cp "$3" "$D/job-$k.json"; cp "$3" "$D/job.json"
+    mkdir -p "$D/created"; cp "$3" "$(mktemp "$D/created/job.XXXXXX")"
+    printf 'uid-%s' "$k"; exit 0 ;;
   get)
     if [ "$2" = "job" ]; then
+      k=${3##*-}
+      gate=$(grep -o '"amont.dev/gate":"[^"]*"' "$D/job-$k.json" | sed 's/.*:"//; s/"$//')
+      meta=$(printf '"metadata":{"uid":"uid-%s","annotations":{"amont.dev/gate":"%s"}}' "$k" "$gate")
       job=$(val job Complete)
       case "$job" in
-        Complete) printf '{"status":{"conditions":[{"type":"Complete","status":"True"}]}}' ;;
-        *) printf '{"status":{"conditions":[{"type":"Failed","status":"True","reason":"%s"}]}}' "${job#Failed:}" ;;
+        Complete) printf '{%s,"status":{"conditions":[{"type":"Complete","status":"True"}]}}' "$meta" ;;
+        *) printf '{%s,"status":{"conditions":[{"type":"Failed","status":"True","reason":"%s"}]}}' "$meta" "${job#Failed:}" ;;
       esac
       exit 0
     fi
-    if [ ! -f "$D/received" ]; then
+    k=${4##*uid-}
+    if [ ! -f "$D/received-$k" ]; then
       st=$(val start running)
       if [ "$st" = running ]; then s='{"running":{"startedAt":"t"}}'; else s='{"waiting":{"reason":"ContainerCreating"}}'; fi
-      printf '{"items":[{"metadata":{"name":"pod-0"},"status":{"phase":"Pending","initContainerStatuses":[{"name":"fetch","state":%s}]}}]}' "$s"
+      printf '{"items":[{"metadata":{"name":"pod-%s"},"status":{"phase":"Pending","initContainerStatuses":[{"name":"fetch","state":%s}]}}]}' "$k" "$s"
       exit 0
     fi
-    tree=$(grep -o 'EXPECTED_TREE","value":"[0-9a-f]*' "$D/job.json" | sed 's/.*"//')
+    tree=$(grep -o 'EXPECTED_TREE","value":"[0-9a-f]*' "$D/job-$k.json" | sed 's/.*"//')
     msg=$(val fetch_msg "tree $tree")
     cond=''
     [ "$(val disrupted 0)" = 1 ] && cond='{"type":"DisruptionTarget","status":"True"}'
     prep=''
-    if grep -q '"name":"prepare"' "$D/job.json"; then
+    if grep -q '"name":"prepare"' "$D/job-$k.json"; then
       prep=$(printf ',{"name":"prepare","state":{"terminated":{"exitCode":%s}}}' "$(val prepare_exit 0)")
     fi
     if [ "$(val prepare_exit 0)" != 0 ]; then
@@ -68,16 +78,33 @@ case "$1" in
     else
       g=$(printf '{"terminated":{"exitCode":%s,"reason":"%s"}}' "$(val gate_exit 0)" "$(val gate_reason Completed)")
     fi
-    printf '{"items":[{"metadata":{"name":"pod-0"},"status":{"phase":"Succeeded","conditions":[%s],"initContainerStatuses":[{"name":"fetch","state":{"terminated":{"exitCode":0,"message":"%s"}}}%s],"containerStatuses":[{"name":"gate","imageID":"reg/gate@sha256:observed","state":%s}]}}]}' "$cond" "$msg" "$prep" "$g"
+    printf '{"items":[{"metadata":{"name":"pod-%s"},"status":{"phase":"Succeeded","conditions":[%s],"initContainerStatuses":[{"name":"fetch","state":{"terminated":{"exitCode":0,"message":"%s"}}}%s],"containerStatuses":[{"name":"gate","imageID":"reg/gate@sha256:observed","state":%s}]}}]}' "$k" "$cond" "$msg" "$prep" "$g"
     exit 0 ;;
   logs) echo "output of the gate in the pod"; exit 0 ;;
-  delete) printf '%s\n' "$*" >> "$D/deletes"; exit 0 ;;
+  delete)
+    printf '%s\n' "$*" >> "$D/deletes"
+    k=${3##*-}; rmdir "$D/slot-$k" 2>/dev/null; rm -f "$D/received-$k"; exit 0 ;;
 esac
 echo "fake kubectl: unexpected $*" >&2; exit 98
 "#;
 
 /// The local gate: logs each run to `$GATE_LOG`, exits `$LOCAL_EXIT`.
 const LOCAL_GATE: &str = "#!/bin/sh\necho ran >> \"$GATE_LOG\"\nexit \"${LOCAL_EXIT:-0}\"\n";
+
+/// The fake's scripted answers, kept by [`Cluster::reset_records`].
+const ANSWERS: &[&str] = &[
+    "bin",
+    "kubeconfig.yaml",
+    "gate.log",
+    "create",
+    "start",
+    "gate_exit",
+    "gate_reason",
+    "disrupted",
+    "job",
+    "fetch_msg",
+    "prepare_exit",
+];
 
 struct Cluster {
     r: Repo,
@@ -86,9 +113,19 @@ struct Cluster {
 }
 
 impl Cluster {
-    /// A repository whose `amont.conf` is `conf`, committed and — when
-    /// `trust` — trusted, with the machine keys pointing at the fake.
-    fn new(conf: &str, trust: bool) -> Cluster {
+    /// A repository whose committed `amont.conf` is `conf`, trusted and
+    /// installed, with the machine keys pointing at the fake.
+    fn trusted(conf: &str) -> Cluster {
+        let c = Cluster::untrusted(conf);
+        for verb in ["trust", "init"] {
+            let (code, out) = c.amont(&[verb], &[], None);
+            assert_eq!(code, 0, "amont {verb}: {out}");
+        }
+        c
+    }
+
+    /// The same repository, its manifest never trusted.
+    fn untrusted(conf: &str) -> Cluster {
         let r = Repo::new();
         let kube = r.dir.join(".fake-kube");
         std::fs::create_dir_all(kube.join("bin")).unwrap();
@@ -96,17 +133,13 @@ impl Cluster {
         std::fs::write(kube.join("kubeconfig.yaml"), "apiVersion: v1\n").unwrap();
         r.stage(".gitignore", ".fake-kube/\n");
         std::fs::create_dir_all(r.dir.join("scripts")).unwrap();
-        common::fixture_exec(&r.dir.join("scripts/gate.sh"), LOCAL_GATE);
-        r.git(&["add", "scripts/gate.sh"]);
+        for script in ["gate.sh", "a.sh", "b.sh"] {
+            common::fixture_exec(&r.dir.join("scripts").join(script), LOCAL_GATE);
+            r.git(&["add", &format!("scripts/{script}")]);
+        }
         r.stage("amont.conf", conf);
         r.commit("chore: base");
         let c = Cluster { r, kube };
-        if trust {
-            for verb in ["trust", "init"] {
-                let (code, out) = c.amont(&[verb], &[], None);
-                assert_eq!(code, 0, "amont {verb}: {out}");
-            }
-        }
         c.config(
             "amont.cluster.kubeconfig",
             &c.kube.join("kubeconfig.yaml").to_string_lossy(),
@@ -135,18 +168,30 @@ impl Cluster {
 
     /// Forget what the fake recorded, keeping its scripted answers.
     fn reset_records(&self) {
-        for f in [
-            "n",
-            "calls",
-            "received",
-            "bundle",
-            "exec-args",
-            "create_n",
-            "deletes",
-            "job.json",
-        ] {
-            let _ = std::fs::remove_file(self.kube.join(f));
+        for entry in std::fs::read_dir(&self.kube).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if ANSWERS.contains(&name.as_str()) {
+                continue;
+            }
+            let path = entry.path();
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            removed.expect("a record of the fake is ours to remove");
         }
+    }
+
+    /// The Job manifests the fake was handed, in no particular order.
+    fn created_jobs(&self) -> Vec<String> {
+        std::fs::read_dir(self.kube.join("created"))
+            .map(|d| {
+                d.map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn local_runs(&self) -> usize {
@@ -199,11 +244,11 @@ impl Cluster {
         let out = child.wait_with_output().expect("wait");
         (
             out.status.code().unwrap_or(-1),
-            format!(
+            plain(&format!(
                 "{}{}",
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
-            ),
+            )),
         )
     }
 
@@ -245,6 +290,25 @@ impl Cluster {
     }
 }
 
+/// Captured output without colour codes, so a word that `highlight` wraps in
+/// them still reads as the word.
+fn plain(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn out(r: &Repo, args: &[&str]) -> String {
     String::from_utf8_lossy(&r.git(args).stdout)
         .trim()
@@ -256,15 +320,15 @@ const GATE_AT_COMMIT: &str =
 
 /// A trusted repository with the commit-time gate and `a.txt` staged.
 fn staged(conf: &str) -> Cluster {
-    let c = Cluster::new(conf, true);
+    let c = Cluster::trusted(conf);
     c.r.stage("a.txt", "hello\n");
     c
 }
 
-/// A pass on the cluster: the gate does not run here, a cluster token lands
-/// on the staged tree with its provenance, and nothing lands in amont-gate —
-/// not at pre-commit, not when the same tree is judged again (reuse), not at
-/// post-commit.
+/// A pass on the cluster: the gate does not run here, one line says where it
+/// runs, a cluster token lands on the staged tree with its provenance, and
+/// nothing lands in amont-gate — not at pre-commit, not when the same tree
+/// is judged again (reuse), not at post-commit.
 #[test]
 fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
     let c = staged(GATE_AT_COMMIT);
@@ -275,7 +339,11 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
         0,
         "the gate ran on the cluster, not here: {text}"
     );
-    assert!(text.contains("passed on the cluster"), "{text}");
+    assert_eq!(text.matches("running on the cluster").count(), 1, "{text}");
+    assert!(
+        !text.contains("amont-gate-slot-"),
+        "the Job name goes to the record: {text}"
+    );
     let tree = c.staged_tree();
     let note = c.cluster_note(&tree);
     assert!(note.starts_with("amont-gate-v1 pre-commit-lint@"), "{note}");
@@ -283,7 +351,9 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
         note.contains("provenance pre-commit-lint@")
             && note.contains("platform=x86_64-linux")
             && note.contains("image=reg/gate@sha256:observed")
-            && note.contains("job=uid-1234"),
+            && note.contains("job=uid-0")
+            && note.contains("name=amont-gate-slot-0")
+            && note.contains("bundle="),
         "{note}"
     );
     assert!(c.cluster_log().is_empty(), "{}", c.cluster_log());
@@ -315,11 +385,25 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
     assert_eq!(c.local_runs(), 0);
 }
 
+/// What the terminal says when the cluster does not prove a gate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Said {
+    /// Nothing: this machine has no cluster.
+    Nothing,
+    /// One warning that names the fix.
+    TheFix(&'static str),
+    /// The gate failed there and runs here for the verdict.
+    FailedThere,
+    /// The cluster is unavailable.
+    Unavailable,
+}
+
 /// One way the cluster does not prove a pass.
 struct Mode {
     what: &'static str,
     /// What its cluster.log line says.
     why: &'static str,
+    said: Said,
     answers: &'static [(&'static str, &'static str)],
     /// Extra amont.conf lines (a prepare command).
     conf: &'static str,
@@ -329,134 +413,139 @@ struct Mode {
     big: bool,
 }
 
+const fn mode(
+    what: &'static str,
+    why: &'static str,
+    said: Said,
+    answers: &'static [(&'static str, &'static str)],
+) -> Mode {
+    Mode {
+        what,
+        why,
+        said,
+        answers,
+        conf: "",
+        config: None,
+        big: false,
+    }
+}
+
+const FAILED: (&str, &str) = ("job", "Failed:BackoffLimitExceeded");
+
 const MODES: &[Mode] = &[
-    Mode {
-        what: "exit 1",
-        why: "the gate exited 1",
-        answers: &[
-            ("gate_exit", "1"),
-            ("gate_reason", "Error"),
-            ("job", "Failed:BackoffLimitExceeded"),
-        ],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "exit 2",
-        why: "the gate exited 2",
-        answers: &[
-            ("gate_exit", "2"),
-            ("gate_reason", "Error"),
-            ("job", "Failed:BackoffLimitExceeded"),
-        ],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "OOMKilled",
-        why: "OOMKilled",
-        answers: &[
-            ("gate_exit", "137"),
-            ("gate_reason", "OOMKilled"),
-            ("job", "Failed:BackoffLimitExceeded"),
-        ],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "DisruptionTarget",
-        why: "DisruptionTarget",
-        answers: &[
+    mode(
+        "exit 1",
+        "failed on the cluster (exit 1)",
+        Said::FailedThere,
+        &[("gate_exit", "1"), ("gate_reason", "Error"), FAILED],
+    ),
+    mode(
+        "exit 2",
+        "failed on the cluster (exit 2)",
+        Said::FailedThere,
+        &[("gate_exit", "2"), ("gate_reason", "Error"), FAILED],
+    ),
+    mode(
+        "OOMKilled",
+        "exit 137, OOMKilled",
+        Said::FailedThere,
+        &[("gate_exit", "137"), ("gate_reason", "OOMKilled"), FAILED],
+    ),
+    mode(
+        "DisruptionTarget",
+        "DisruptionTarget",
+        Said::Unavailable,
+        &[
             ("gate_exit", "137"),
             ("disrupted", "1"),
             ("job", "Failed:PodFailurePolicy"),
         ],
-        conf: "",
-        config: None,
-        big: false,
-    },
+    ),
+    mode(
+        "DeadlineExceeded",
+        "DeadlineExceeded",
+        Said::Unavailable,
+        &[("job", "Failed:DeadlineExceeded")],
+    ),
+    mode(
+        "Pending past the start deadline",
+        "not Running within 1 s",
+        Said::Unavailable,
+        &[("start", "pending")],
+    ),
     Mode {
-        what: "DeadlineExceeded",
-        why: "DeadlineExceeded",
-        answers: &[("job", "Failed:DeadlineExceeded")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "Pending past the start deadline",
-        why: "not Running within 1 s",
-        answers: &[("start", "pending")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "failed prepare",
-        why: "prepare exited 1",
-        answers: &[("prepare_exit", "1")],
         conf: "set clusterPrepare make deps\n",
-        config: None,
-        big: false,
+        ..mode(
+            "failed prepare",
+            "prepare exit 1",
+            Said::Unavailable,
+            &[("prepare_exit", "1")],
+        )
     },
+    mode(
+        "tree mismatch",
+        "fetch reported",
+        Said::Unavailable,
+        &[("fetch_msg", "tree 0000000000000000000000000000000000000000")],
+    ),
+    mode(
+        "all slots 409",
+        "all slots taken",
+        Said::Unavailable,
+        &[("create", "409\n409\n")],
+    ),
+    mode(
+        "403 quota",
+        "the quota refused every slot",
+        Said::Unavailable,
+        &[("create", "403\n403\n")],
+    ),
+    mode(
+        "apiserver down",
+        "Unable to connect",
+        Said::Unavailable,
+        &[("create", "down\n")],
+    ),
     Mode {
-        what: "tree mismatch",
-        why: "fetch reported",
-        answers: &[("fetch_msg", "tree 0000000000000000000000000000000000000000")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "all slots 409",
-        why: "all slots taken",
-        answers: &[("create", "409\n409\n")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "403 quota",
-        why: "quota refused every slot",
-        answers: &[("create", "403\n403\n")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "apiserver down",
-        why: "Unable to connect",
-        answers: &[("create", "down\n")],
-        conf: "",
-        config: None,
-        big: false,
-    },
-    Mode {
-        what: "missing kubeconfig",
-        why: "kubeconfig is not set",
-        answers: &[],
-        conf: "",
         config: Some(("amont.cluster.kubeconfig", None)),
-        big: false,
+        ..mode(
+            "missing kubeconfig",
+            "kubeconfig is not set",
+            Said::Nothing,
+            &[],
+        )
     },
     Mode {
-        what: "image without @sha256",
-        why: "not pinned",
-        answers: &[],
-        conf: "",
+        config: Some(("amont.cluster.image", None)),
+        ..mode("missing image", "image is not set", Said::Nothing, &[])
+    },
+    Mode {
         config: Some(("amont.cluster.image", Some("reg/gate:1"))),
-        big: false,
+        ..mode(
+            "image without @sha256",
+            "not pinned",
+            Said::TheFix("git config --global amont.cluster.image"),
+            &[],
+        )
     },
     Mode {
-        what: "bundle over the cap",
-        why: "over amont.cluster.maxBundleMiB",
-        answers: &[],
-        conf: "",
+        config: Some(("amont.cluster.kubeconfig", Some("/nonexistent/kubeconfig"))),
+        ..mode(
+            "kubeconfig file missing",
+            "does not exist",
+            Said::TheFix("git config --global amont.cluster.kubeconfig"),
+            &[],
+        )
+    },
+    Mode {
         config: Some(("amont.cluster.maxBundleMiB", Some("1"))),
         big: true,
+        ..mode(
+            "bundle over the cap",
+            "MiB, over amont.cluster.maxBundleMiB (1)",
+            Said::Unavailable,
+            &[],
+        )
     },
 ];
 
@@ -473,9 +562,36 @@ fn noise(len: usize) -> String {
         .collect()
 }
 
+fn assert_said(mode: &Mode, text: &str) {
+    let what = mode.what;
+    match mode.said {
+        Said::Nothing => assert!(
+            !text.contains("runs here") && !text.contains("cluster"),
+            "{what}: a machine with no cluster says nothing: {text}"
+        ),
+        Said::TheFix(fix) => {
+            assert!(text.contains(fix), "{what}: names the fix: {text}");
+            assert!(
+                text.contains("git config amont.executor local"),
+                "{what}: {text}"
+            );
+        }
+        Said::FailedThere => assert!(
+            text.contains("lint failed on the cluster (")
+                && text.contains("running it here for the verdict"),
+            "{what}: {text}"
+        ),
+        Said::Unavailable => assert!(
+            text.contains("lint runs here: the cluster is unavailable ("),
+            "{what}: {text}"
+        ),
+    }
+}
+
 /// Every way the cluster does not prove a pass re-runs the gate here,
 /// unchanged; the local outcome is the verdict; one cluster.log line says
-/// why; no cluster token is written.
+/// why; no cluster token is written; the terminal says it the way the case
+/// deserves.
 #[test]
 fn every_non_pass_reruns_the_gate_locally() {
     for mode in MODES {
@@ -486,38 +602,32 @@ fn every_non_pass_reruns_the_gate_locally() {
         match mode.config {
             Some((key, Some(v))) => c.config(key, v),
             Some((key, None)) => {
-                c.r.git(&["config", "--unset", key]);
+                assert!(c.r.git(&["config", "--unset", key]).status.success());
             }
             None => {}
         }
         if mode.big {
-            c.r.stage("big.txt", &noise(2 * 1024 * 1024));
+            c.r.stage("big.txt", &noise(2 * 1024 * 1024 + 512 * 1024));
         }
         let (code, text) = c.pre_commit(&[]);
-        assert_eq!(
-            code, 0,
-            "{}: the local pass is the verdict: {text}",
-            mode.what
-        );
-        assert_eq!(c.local_runs(), 1, "{}: ran here once: {text}", mode.what);
+        let what = mode.what;
+        assert_eq!(code, 0, "{what}: the local pass is the verdict: {text}");
+        assert_eq!(c.local_runs(), 1, "{what}: ran here once: {text}");
         let log = c.cluster_log();
-        assert_eq!(log.lines().count(), 1, "{}: {log}", mode.what);
+        assert_eq!(log.lines().count(), 1, "{what}: {log}");
         let fields: Vec<&str> = log.splitn(3, ' ').collect();
         assert!(
             fields[0].parse::<u64>().is_ok(),
-            "{}: epoch first: {log}",
-            mode.what
+            "{what}: epoch first: {log}"
         );
-        assert_eq!(fields[1], "pre-commit-lint", "{}: {log}", mode.what);
-        assert!(fields[2].contains(mode.why), "{}: {log}", mode.what);
-        assert_eq!(c.cluster_note(&c.staged_tree()), "", "{}", mode.what);
-        if c.kubectl_calls().contains(" create ")
-            && !mode.answers.iter().any(|(f, _)| *f == "create")
-        {
+        assert_eq!(fields[1], "pre-commit-lint", "{what}: {log}");
+        assert!(fields[2].contains(mode.why), "{what}: {log}");
+        assert_eq!(c.cluster_note(&c.staged_tree()), "", "{what}");
+        assert_said(mode, &text);
+        if c.read("job.json").contains("amont-gate-slot-") {
             assert!(
                 c.read("deletes").contains("delete job"),
-                "{}: Job removed",
-                mode.what
+                "{what}: Job removed"
             );
         }
     }
@@ -534,6 +644,59 @@ fn a_local_failure_after_a_cluster_failure_blocks() {
     assert_ne!(code, 0, "{text}");
     assert_eq!(c.local_runs(), 1);
     assert_eq!(c.cluster_log().lines().count(), 1);
+}
+
+/// A pass git would not record is no pass: the gate runs here.
+#[test]
+fn a_cluster_pass_with_no_record_falls_back() {
+    let c = staged(GATE_AT_COMMIT);
+    let lock = c.r.dir.join(".git/refs/notes/amont-gate-cluster.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, "").unwrap();
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(c.local_runs(), 1, "{text}");
+    assert!(
+        c.cluster_log()
+            .contains("git refused to write the cluster stamp"),
+        "{}",
+        c.cluster_log()
+    );
+}
+
+/// Two `platform=any` gates of one commit run concurrently, each in its own
+/// Job with its own command, and each earns its own token.
+#[test]
+fn concurrent_gates_each_get_their_own_job() {
+    let c = staged(
+        "set executor cluster\n\
+         pre-commit  a  *.txt  block  platform=any scripts/a.sh\n\
+         pre-commit  b  *.txt  block  platform=any scripts/b.sh\n",
+    );
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(c.local_runs(), 0, "both ran on the cluster: {text}");
+    let jobs = c.created_jobs();
+    assert_eq!(jobs.len(), 2, "{jobs:?}");
+    for (gate, script) in [
+        ("pre-commit-a", "scripts/a.sh"),
+        ("pre-commit-b", "scripts/b.sh"),
+    ] {
+        let job = jobs
+            .iter()
+            .find(|j| j.contains(&format!("\"amont.dev/gate\":\"{gate}\"")))
+            .unwrap_or_else(|| panic!("no Job for {gate}: {jobs:?}"));
+        assert!(
+            job.contains(&format!("\"args\":[\"{script}\"]")),
+            "{gate} runs {script}: {job}"
+        );
+    }
+    let note = c.cluster_note(&c.staged_tree());
+    let tokens = note.lines().next().unwrap_or("");
+    assert!(
+        tokens.contains("pre-commit-a@") && tokens.contains("pre-commit-b@"),
+        "{note}"
+    );
 }
 
 /// The Job amont hands `kubectl create` carries the homelab contract, and
@@ -592,7 +755,7 @@ fn the_job_spec_carries_every_required_field() {
         "every call names the kubeconfig: {calls}"
     );
     assert!(
-        calls.contains("get pods -l controller-uid=uid-1234"),
+        calls.contains("get pods -l controller-uid=uid-0"),
         "{calls}"
     );
 }
@@ -625,7 +788,7 @@ fn the_executor_is_local_unless_the_repository_says_cluster() {
 /// kubectl.
 #[test]
 fn an_untrusted_marker_is_ignored() {
-    let c = Cluster::new(GATE_AT_COMMIT, false);
+    let c = Cluster::untrusted(GATE_AT_COMMIT);
     c.r.stage("a.txt", "hello\n");
     let (_code, text) = c.pre_commit(&[]);
     assert_eq!(c.kubectl_calls(), "", "kubectl was never called: {text}");
@@ -659,9 +822,8 @@ fn platform_any_with_fix_or_files_fails_to_parse() {
 /// the push gate intact.
 #[test]
 fn pre_push_stdin_is_intact_after_a_cluster_gate() {
-    let c = Cluster::new(
+    let c = Cluster::trusted(
         "set executor cluster\npre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
-        true,
     );
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     c.r.stage("a.txt", "hello\n");
@@ -741,9 +903,9 @@ fn a_changed_image_invalidates_the_cluster_token() {
 }
 
 /// `amont stamps` reads a cluster token as `stamped` for a trusted
-/// `platform=any` gate.
+/// `platform=any` gate, and as `absent` once the manifest is not trusted.
 #[test]
-fn stamps_reports_a_cluster_token_as_stamped() {
+fn stamps_reads_a_cluster_token_only_from_a_trusted_manifest() {
     let c = staged(GATE_AT_COMMIT);
     let (code, text) = c.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
@@ -755,4 +917,13 @@ fn stamps_reports_a_cluster_token_as_stamped() {
     let (code, text) = c.amont(&["stamps", "--json", "lint"], &[], None);
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("\"pre-commit-lint\":\"stamped\""), "{text}");
+
+    assert!(c
+        .r
+        .git(&["config", "--unset-all", "amont.trusted"])
+        .status
+        .success());
+    let (code, text) = c.amont(&["stamps", "--json", "lint"], &[], None);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("\"pre-commit-lint\":\"absent\""), "{text}");
 }

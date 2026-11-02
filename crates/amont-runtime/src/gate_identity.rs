@@ -79,7 +79,7 @@ pub const CLUSTER_CONTRACT: &str = "amont-cluster-v1";
 /// on this laptop, so the laptop's executable is never inspected — the image
 /// digest stands where the binary identity stands there. `None` for a check
 /// that is not runnable, or a hash git would not make.
-pub fn cluster_token(
+pub(crate) fn cluster_token(
     ext: &External,
     name: &str,
     prepare: Option<&str>,

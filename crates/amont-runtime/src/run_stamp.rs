@@ -284,9 +284,14 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                         manifest,
                         settings,
                     };
-                    finish(settings, manifest, check, run_one(&ctx, check), |tok| {
-                        crate::gate_stamp::stamp_tree(&tree, &[tok])
-                    })
+                    finish(
+                        settings,
+                        manifest,
+                        check,
+                        &tree,
+                        run_one(&ctx, check),
+                        |tok| crate::gate_stamp::stamp_tree(&tree, &[tok]),
+                    )
                 }
             }
             Stage::PrePush => {
@@ -310,9 +315,14 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                                 manifest,
                                 settings,
                             };
-                            finish(settings, manifest, check, run_one(&ctx, check), |tok| {
-                                crate::gate_stamp::stamp_push(&head, &tree, &[tok])
-                            })
+                            finish(
+                                settings,
+                                manifest,
+                                check,
+                                &tree,
+                                run_one(&ctx, check),
+                                |tok| crate::gate_stamp::stamp_push(&head, &tree, &[tok]),
+                            )
                         }
                     }
                 }
@@ -328,13 +338,14 @@ fn finish(
     settings: &crate::config::Settings,
     manifest: &Manifest,
     check: &dyn Check,
+    tree: &str,
     outcome: Outcome,
     write: impl FnOnce(String) -> bool,
 ) -> Ended {
     match outcome {
         // The cluster recorded it in its own ref (ADR-0016); a local token
         // here would claim a run this machine never made.
-        Outcome::Passed if crate::cluster::proved(check.name()) => Ended::Stamped,
+        Outcome::Passed if crate::cluster::proved(check.name(), tree) => Ended::Stamped,
         Outcome::Passed => match token_for(settings, manifest, check) {
             Some(tok) => {
                 if write(tok) {

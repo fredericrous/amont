@@ -477,7 +477,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             })
             // A pass the cluster proved is recorded in its own ref and never
             // becomes a local token (ADR-0016).
-            .filter(|d| !crate::cluster::proved(&d.id))
+            .filter(|d| !crate::cluster::proved_on_index(&d.id))
             // The token, not the bare script: a skip is honoured only for the
             // same command run by the same program (`gate_identity`). A
             // declaration whose program cannot be identified earns no stamp.
@@ -1268,9 +1268,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         match outcome {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
-                // A cluster pass is already recorded in its own ref; a local
-                // push stamp for it would let the laptop vouch for it.
-                if !check.scope().is_unscoped() && !crate::cluster::proved(check.name()) {
+                if !check.scope().is_unscoped() {
                     ran_and_passed.push(check.name().to_string());
                 }
             }
@@ -1378,7 +1376,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // Only local passes enter the laptop's attestation (ADR-0016).
         let local: Vec<String> = passed
             .iter()
-            .filter(|p| !crate::cluster::proved(p))
+            .filter(|p| !crate::cluster::proved_anywhere(p))
             .cloned()
             .collect();
         let mut vouched = attestable(&pre_push_checks, &local, &changed);
@@ -1559,6 +1557,12 @@ fn stamp_tips(
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
+        // A gate the cluster proved on this tree is already recorded in its
+        // own ref: a local push stamp would let the laptop vouch for it.
+        let vouched: Vec<String> = vouched
+            .into_iter()
+            .filter(|g| !crate::cluster::proved(g, &tree))
+            .collect();
         // Tokens, not names; a gate with no identity is not stamped.
         let tokens: Vec<String> = vouched
             .iter()

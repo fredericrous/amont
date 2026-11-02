@@ -982,13 +982,13 @@ pub fn forget() -> bool {
 
 /// The cluster tokens on `tree` (ADR-0016). Read only for a trusted
 /// `platform=any` gate, so a repository with none never pays the spawn.
-pub fn cluster_tokens(tree: &str) -> Vec<String> {
+pub(crate) fn cluster_tokens(tree: &str) -> Vec<String> {
     note_in(CLUSTER_REF, tree).tokens
 }
 
 /// Record a cluster pass: `token` on the note at `tree`, with its provenance
 /// line. Merged, like every writer here; best-effort.
-pub fn stamp_cluster(tree: &str, token: &str, provenance: &str) -> bool {
+pub(crate) fn stamp_cluster(tree: &str, token: &str, provenance: &str) -> bool {
     let mut note = note_in(CLUSTER_REF, tree);
     note.add_tokens(&[token.to_string()]);
     let line = format!("{PROVENANCE} {token} {provenance}");
@@ -998,10 +998,10 @@ pub fn stamp_cluster(tree: &str, token: &str, provenance: &str) -> bool {
     write_note_in(CLUSTER_REF, tree, &note)
 }
 
-/// pre-push: the cluster tokens on each of `commits`' trees. Asked only when
-/// a trusted `platform=any` gate is in play; a commit whose tree carries no
-/// cluster note is absent from the map.
-pub fn cluster_stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
+/// pre-push: the tree and the cluster tokens of each of `commits`. Asked only
+/// when a trusted `platform=any` gate is in play; a commit whose tree carries
+/// no cluster note is absent from the map.
+pub(crate) fn cluster_stamps_for(commits: &[String]) -> HashMap<String, (String, Vec<String>)> {
     let mut out = HashMap::new();
     for commit in commits {
         let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{commit}^{{tree}}")]) else {
@@ -1009,7 +1009,7 @@ pub fn cluster_stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
         };
         let tokens = cluster_tokens(&tree);
         if !tokens.is_empty() {
-            out.insert(commit.clone(), tokens);
+            out.insert(commit.clone(), (tree, tokens));
         }
     }
     out

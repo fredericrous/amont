@@ -887,6 +887,14 @@ common git directory (`git rev-parse --git-common-dir`). In one hook run,
 once the apiserver has failed, the later gates run here without asking it
 again.
 
+On the terminal, a clean run says one line, `<gate>: running on the
+cluster`. A gate that fails there says `<gate> failed on the cluster (exit
+N); running it here for the verdict`, and any other fallback `<gate> runs
+here: the cluster is unavailable (<reason>)`. A machine with no cluster (the
+kubeconfig or the image unset) says nothing, so a repository that sets `set
+executor cluster` does not warn on every hook of such a machine; a key that
+is set but cannot be used warns once per run and names the fix.
+
 A cluster pass is recorded in `refs/notes/amont-gate-cluster`, on the judged
 tree, under its own identity: the gate's command and flags, the
 `clusterPrepare` command, the image digest and the version of the cluster
