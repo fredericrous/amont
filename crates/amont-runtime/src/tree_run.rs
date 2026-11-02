@@ -362,7 +362,16 @@ fn run_inner(
                     // reaped; `kill_tree` signals by its group id, which no
                     // new process can take while a member is alive.
                     kill_tree(&mut child);
-                    return (TreeRun::TimedOut, String::new());
+                    // With the holders dead the pipe closes, so the readers
+                    // reach EOF and the output is whole — what a successful
+                    // tool printed is still its answer.
+                    let until = Instant::now() + GRACE;
+                    while Instant::now() < until && drains.iter().any(|d| !d.is_finished()) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    if !status.success() || drains.iter().any(|d| !d.is_finished()) {
+                        return (TreeRun::TimedOut, String::new());
+                    }
                 }
                 let out = tail
                     .lock()
@@ -464,30 +473,27 @@ mod tests {
     }
 
     /// A probe whose tool EXITS but leaves a child holding the pipe: the
-    /// output wait reaches the deadline, and that child must die with it
-    /// (the leader is already reaped, so this is a different branch from the
-    /// one above).
+    /// output wait reaches the deadline, the child's group dies with it (the
+    /// leader is already reaped, so this is a different branch from the one
+    /// above), and what the tool printed before exiting 0 is still returned.
     #[test]
-    fn run_output_kills_a_child_left_holding_the_pipe() {
+    fn run_output_kills_a_child_left_holding_the_pipe_and_keeps_the_answer() {
         let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let pidfile = dir.join("holder.pid");
+        let pgidfile = dir.join("group.pid");
         let script = format!(
-            "sleep 30 & echo $! > {}; echo 1.2.3; exit 0",
-            pidfile.display()
+            "echo $$ > {}; sleep 30 & echo 1.2.3; exit 0",
+            pgidfile.display()
         );
         let r = run_output(&sh(&script), &dir, soon(1_500), &AtomicBool::new(false));
-        assert_eq!(r, Err(TreeRun::TimedOut));
-        let pid: i32 = std::fs::read_to_string(&pidfile)
+        assert_eq!(r.as_deref().map(str::trim), Ok("1.2.3"));
+        let pgid: u32 = std::fs::read_to_string(&pgidfile)
             .unwrap()
             .trim()
             .parse()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        // SAFETY: probing a pid with signal 0.
-        let alive = unsafe { libc_kill(pid, 0) == 0 };
-        assert!(!alive, "the child {pid} left holding the pipe survived");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!group_alive(pgid), "the group {pgid} outlived the probe");
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir fails nothing
     }
 
     #[test]

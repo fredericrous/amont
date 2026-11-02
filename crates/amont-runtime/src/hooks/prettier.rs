@@ -2,9 +2,8 @@
 //! actually opt into prettier.
 
 use super::common::{
-    fail, first_existing, fixing_enabled, hl, install_command, ok, repo_root, resolve_js_tool,
-    restage, run as run_tool, run_quiet, staged_files, warn, warn_ambient, warn_not_installed,
-    JsTool, Restaged,
+    fail, first_existing, fixing_enabled, hl, ok, repo_root, resolve_js_tool, restage,
+    run as run_tool, run_quiet, staged_files, JsTool, Restaged,
 };
 use crate::check::Outcome;
 use std::path::Path;
@@ -57,30 +56,24 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     }
     let root = repo_root();
 
-    let tool = resolve_js_tool(&root, "prettier");
+    let js = resolve_js_tool(&root, "prettier");
     // A pinned local prettier is itself an opt-in signal; without config AND
     // without a local binary the repo simply does not use prettier.
-    let local_pinned = matches!(tool, JsTool::Pinned(_));
+    let local_pinned = matches!(js.tool, JsTool::Pinned(_));
     if !has_config(&root) && !local_pinned {
         return Outcome::Passed;
     }
-    let argv = match tool {
-        JsTool::Pinned(argv) => argv,
+    let argv = match &js.tool {
+        JsTool::Pinned(argv) => argv.clone(),
         // Runs, and says it is not the repository's copy (ADR-0019).
-        JsTool::Ambient { argv, source } => {
-            warn_ambient(&root, "prettier", &argv, &source);
-            argv
+        JsTool::Ambient { argv, ambient } => {
+            js.warn_ambient(ambient);
+            argv.clone()
         }
-        // PATH's prettier is not the version package.json asked for.
-        JsTool::NotInstalled => {
-            warn_not_installed(&root, "prettier");
-            return Outcome::Unavailable;
-        }
-        JsTool::Missing => {
-            warn(&format!(
-                "prettier config found but no prettier binary. Run {}",
-                hl(&install_command(&root))
-            ));
+        // NotInstalled: PATH's prettier is not the version package.json asked
+        // for. NpxHung, Missing: nothing to run.
+        JsTool::NotInstalled | JsTool::NpxHung | JsTool::Missing => {
+            js.warn_unavailable(true);
             return Outcome::Unavailable;
         }
     };

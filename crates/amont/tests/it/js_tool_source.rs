@@ -12,24 +12,25 @@
 use crate::common;
 use common::Repo;
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// A fake tool at `path`: `--version` runs `version` (shell), anything else
 /// appends its argv to `<log>` and exits 0.
+///
+/// Written through `common::fixture_exec`, which execs it once before the
+/// test: macOS holds a fresh script's first exec while it assesses it, and
+/// that delay would otherwise land inside the five-second probe.
 fn fake(path: &Path, version: &str, log: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-    std::fs::write(
+    common::fixture_exec(
         path,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in --version) {version};; esac\necho \"$@\" >> {}\nexit 0\n",
             log.display()
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 }
 
 fn shims(r: &Repo) -> PathBuf {
@@ -53,7 +54,7 @@ fn run_check_at(r: &Repo, cwd: &Path, check: &str) -> (bool, String, Duration) {
         .map(|d| d.join("git"))
         .find(|p| p.is_file())
         .expect("git on PATH");
-    let _ = std::os::unix::fs::symlink(git, dir.join("git"));
+    let _ = std::os::unix::fs::symlink(git, dir.join("git")); // EEXIST on a second run in one repo: the link is already there
     let started = Instant::now();
     let out = common::amont_cmd()
         .arg("--hooks-dir")
@@ -111,13 +112,18 @@ const DECLARED: &str = "{\"name\":\"x\",\"devDependencies\":{\"prettier\":\"3.9.
 fn an_undeclared_prettier_on_path_runs_and_is_named() {
     let r = prettier_repo(UNDECLARED);
     let bin = shims(&r).join("prettier");
-    fake(&bin, "echo 3.9.10; exit 0", &log(&r));
+    // A warning on stderr first: the probe reads one merged pipe.
+    fake(
+        &bin,
+        "echo 'npm warn something' >&2; echo 3.9.10; exit 0",
+        &log(&r),
+    );
     let (ok, out, _) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
     assert!(ran(&r).contains("--check"), "prettier ran: {out}");
     assert!(
         out.contains(&format!(
-            "prettier 3.9.10 from {} is not pinned in package.json",
+            "prettier 3.9.10 from {} is not in the root package.json",
             bin.display()
         )),
         "{out}"
@@ -146,17 +152,16 @@ fn an_undeclared_prettier_from_npx_is_named_and_npx_starts_once_for_its_version(
     let dir = shims(&r);
     let probes = dir.join("probes.txt");
     // npx answers the probe with a warning on stderr first, as npm does.
-    std::fs::write(
-        dir.join("npx"),
+    common::fixture_exec(
+        &dir.join("npx"),
+        &
         format!(
             "#!/bin/sh\nif [ \"$1 $2 $3\" = \"--no-install prettier --version\" ]; then\n  echo x >> {}\n  echo 'npm warn exec something' >&2\n  echo 3.9.10\n  exit 0\nfi\necho \"$@\" >> {}\nexit 0\n",
             probes.display(),
             log(&r).display()
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(dir.join("npx"), std::fs::Permissions::from_mode(0o755))
-        .expect("chmod");
+    );
+
     let (ok, out, _) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
     assert!(
@@ -164,7 +169,7 @@ fn an_undeclared_prettier_from_npx_is_named_and_npx_starts_once_for_its_version(
         "prettier ran through npx: {out}"
     );
     assert!(
-        out.contains("prettier 3.9.10 from npx's cache (npx --no-install prettier)"),
+        out.contains("prettier 3.9.10 from npx's cache is not in the root package.json"),
         "{out}"
     );
     assert_eq!(
@@ -202,7 +207,7 @@ fn a_pinned_prettier_says_nothing_new_declared_or_not() {
         let (ok, out, _) = run_check(&r, "pre-commit-prettier");
         assert!(ok, "{out}");
         assert!(ran(&r).contains("--check"), "{out}");
-        assert!(!out.contains("not pinned"), "{out}");
+        assert!(!out.contains("root package.json"), "{out}");
         assert!(!out.contains("not installed"), "{out}");
     }
 }
@@ -248,10 +253,7 @@ fn a_version_probe_that_stalls_is_killed_with_its_child_and_the_check_runs() {
     let (ok, out, took) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
     assert!(took < probe_bound(), "took {took:?}");
-    assert!(
-        out.contains("prettier (unknown version: --version did not answer in 5 s)"),
-        "{out}"
-    );
+    assert!(out.contains("prettier (--version took over 5 s)"), "{out}");
     assert!(ran(&r).contains("--check"), "the check still runs: {out}");
     let pgid = std::fs::read_to_string(&pgid).expect("the probe wrote its group");
     std::thread::sleep(Duration::from_millis(100));
@@ -273,6 +275,10 @@ fn a_version_probe_that_leaves_a_child_holding_its_output_is_killed() {
     let (ok, out, took) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
     assert!(took < probe_bound(), "took {took:?}");
+    assert!(
+        out.contains("prettier 3.9.10 from"),
+        "what it printed before exiting is still its version: {out}"
+    );
     let pgid = std::fs::read_to_string(&pgid).expect("the probe wrote its group");
     std::thread::sleep(Duration::from_millis(100));
     assert!(
@@ -307,11 +313,11 @@ fn a_linked_worktree_is_judged_by_its_own_package_json() {
         ran(&r).contains("--check"),
         "undeclared here, so it runs: {out}"
     );
-    assert!(out.contains("not pinned in package.json"), "{out}");
+    assert!(out.contains("is not in the root package.json"), "{out}");
 
     // And the other way: the main checkout declares it, so it does not run
     // there, whatever the linked one says.
-    std::fs::remove_file(log(&r)).ok();
+    std::fs::remove_file(log(&r)).ok(); // absent when nothing ran yet: the next assertion reads it as empty
     r.stage("c.md", "# c\n");
     let (ok, out, _) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
