@@ -835,6 +835,7 @@ static LEAVE_ON_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 
 /// Holds [`LEAVE_ON_SIGNAL`] set; a second signal queues again, as before the
 /// cancel, once it is dropped — on every exit path, a panic included.
+#[must_use = "the flag is cleared when the guard drops"]
 pub(crate) struct LeaveOnSecondSignal(());
 
 impl Drop for LeaveOnSecondSignal {

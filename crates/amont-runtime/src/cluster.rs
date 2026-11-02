@@ -123,6 +123,9 @@ struct LiveRun {
     kubeconfig: PathBuf,
     namespace: String,
     scratch: PathBuf,
+    /// The `amont.run` label of every Job this run creates: how a Job whose
+    /// `create` is still in flight, or whose answer was lost, is found.
+    run_label: String,
     job: Option<String>,
     gate_ref: Option<String>,
 }
@@ -150,15 +153,35 @@ pub fn cancel_live() {
             let _ = crate::git::succeeds(&["update-ref", "-d", gate_ref]); // best-effort: amont is dying
         }
         let _ = std::fs::remove_dir_all(&run.scratch); // best-effort: amont is dying
-        let Some(job) = &run.job else { continue };
-        eprintln!("cancelling cluster Job {job}; Ctrl-C again to leave it");
         let kube = Kube {
             kubeconfig: run.kubeconfig.clone(),
             namespace: run.namespace.clone(),
         };
         let left = secs_left(deadline, CANCEL_SECS);
-        if let Err(why) = kube.bounded(&["delete", "job", job, "--wait=false"], left) {
-            eprintln!("could not cancel cluster Job {job}: {why}");
+        match &run.job {
+            Some(job) => {
+                eprintln!("cancelling cluster Job {job}; Ctrl-C again to leave it");
+                if let Err(why) = kube.bounded(&["delete", "job", job, "--wait=false"], left) {
+                    eprintln!(
+                        "could not cancel cluster Job {job}: {}",
+                        crate::ui::sanitize(&why)
+                    );
+                }
+            }
+            // Not named yet: `create` may be in flight or its answer lost. The
+            // label finds the Job if it exists, and deletes nothing otherwise.
+            None => {
+                let selector = format!("amont.run={}", run.run_label);
+                eprintln!("cancelling cluster Jobs of this run; Ctrl-C again to leave them");
+                if let Err(why) =
+                    kube.bounded(&["delete", "job", "-l", &selector, "--wait=false"], left)
+                {
+                    eprintln!(
+                        "could not cancel the cluster Jobs of this run: {}",
+                        crate::ui::sanitize(&why)
+                    );
+                }
+            }
         }
     }
 }
@@ -212,10 +235,7 @@ impl std::fmt::Display for Fallback {
             Fallback::SlotsTaken => write!(f, "all slots taken"),
             Fallback::QuotaFull => write!(f, "the quota refused every slot"),
             Fallback::BundleTooBig { mib, cap } => {
-                write!(
-                    f,
-                    "bundle is {mib} MiB, over the {cap} MiB cap (amont.cluster.maxBundleMiB)"
-                )
+                write!(f, "bundle-too-big: {mib} MiB, over the {cap} MiB cap")
             }
             Fallback::GateFailed(detail) => write!(f, "failed on the cluster ({detail})"),
             Fallback::NotProved(why) => write!(f, "{why}"),
@@ -479,14 +499,11 @@ pub fn vouched_on_every(
 /// The trees of `tips`, when every one carries `token`, `ext`'s cluster token;
 /// each is marked proved under `ext`'s id.
 fn vouched_trees(ext: &External, tips: &[String], token: &str) -> Option<Vec<String>> {
-    if tips.is_empty() {
-        return None;
-    }
     let stamps = crate::gate_stamp::cluster_stamps_for(tips);
     let hit = tips.iter().all(|t| {
         stamps
             .get(t)
-            .is_some_and(|(_, tokens)| tokens.iter().any(|t| t == token))
+            .is_some_and(|(_, tokens)| tokens.iter().any(|held| held == token))
     });
     if !hit {
         return None;
@@ -511,7 +528,7 @@ pub(crate) fn claim_twin_cluster_pass(
     twin: &External,
     tips: &[String],
 ) -> bool {
-    if !is_platform_any(push) || !is_platform_any(twin) {
+    if tips.is_empty() || !is_platform_any(push) || !is_platform_any(twin) {
         return false;
     }
     let keys = machine_keys();
@@ -597,10 +614,14 @@ pub fn try_run(
         return false;
     }
     let outcome = cluster_config(settings).and_then(|config| {
-        crate::say!(
-            "{}: running on the cluster",
-            crate::ui::highlight(&ext.short_name)
-        );
+        // Not announced once the apiserver has not answered: `run` refuses
+        // it at once and the gate runs here.
+        if !UNREACHABLE.load(Ordering::SeqCst) {
+            crate::say!(
+                "{}: running on the cluster",
+                crate::ui::highlight(&ext.short_name)
+            );
+        }
         run(&config, ext, program, args, judged)
     });
     match outcome {
@@ -639,15 +660,27 @@ fn say_fallback(short_name: &str, fallback: &Fallback) {
             "{name} failed on the cluster ({}); running it here for the verdict",
             crate::ui::sanitize(detail)
         )),
-        Fallback::Unreachable(_) | Fallback::UnreachableEarlier => {
+        Fallback::Unreachable(why) => {
             if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
-                warn_unavailable(&name, fallback);
+                crate::hooks::common::warn(&format!(
+                    "the cluster did not answer ({}): {name} and this hook's other cluster gates run here",
+                    crate::ui::sanitize(why)
+                ));
             }
         }
-        Fallback::SlotsTaken
-        | Fallback::QuotaFull
-        | Fallback::BundleTooBig { .. }
-        | Fallback::NotProved(_) => warn_unavailable(&name, fallback),
+        Fallback::UnreachableEarlier => {
+            if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
+                crate::hooks::common::warn(&format!(
+                    "the cluster did not answer earlier in this hook: {name} runs here"
+                ));
+            }
+        }
+        Fallback::BundleTooBig { mib, cap } => crate::hooks::common::warn(&format!(
+            "{name} runs here: its bundle is {mib} MiB, over the {cap} MiB cap — raise it with `git config amont.cluster.maxBundleMiB <MiB>`"
+        )),
+        Fallback::SlotsTaken | Fallback::QuotaFull | Fallback::NotProved(_) => {
+            warn_unavailable(&name, fallback)
+        }
     }
 }
 
@@ -720,6 +753,7 @@ fn run(
         tree: &tree,
         repo_dir: &repo_dir(),
         argv: &argv,
+        run_label: &scratch.run_label(),
     };
     let job = claim_slot(&kube, &spec, &scratch, deadline)?;
     let outcome = run_in(&kube, config, &job, &scratch, &commit, &tree, deadline);
@@ -1092,6 +1126,8 @@ struct Spec<'a> {
     tree: &'a str,
     repo_dir: &'a str,
     argv: &'a [String],
+    /// The value of the Job's `amont.run` label.
+    run_label: &'a str,
 }
 
 /// Create `amont-gate-slot-<k>` for the first free `k`.
@@ -1111,7 +1147,14 @@ fn claim_slot(
         let path = path.to_string_lossy().into_owned();
         let name = format!("{JOB_PREFIX}{slot}");
         let args = ["create", "-f", &path, "-o", "jsonpath={.metadata.uid}"];
-        match kube.capture(&args, secs_left(deadline, CALL_SECS)) {
+        let created = kube.capture(&args, secs_left(deadline, CALL_SECS));
+        if crate::tree_run::is_dying() {
+            // The signal watcher may have cleaned up before this `create`
+            // landed: whatever it made is ours to drop, then park.
+            delete_by_label(kube, &scratch.run_label(), spec.gate);
+            crate::tree_run::park_if_dying();
+        }
+        match created {
             Call::Ok(uid) if !uid.trim().is_empty() => {
                 live_update(scratch.run, |l| l.job = Some(name.clone()));
                 return Ok(Job {
@@ -1125,7 +1168,9 @@ fn claim_slot(
             Call::Ok(_) => {
                 // The Job exists, only unnamed by its UID: take it down by
                 // name rather than hold the slot until its deadline.
+                live_update(scratch.run, |l| l.job = Some(name.clone()));
                 delete_by_name(kube, &name, spec.gate);
+                live_update(scratch.run, |l| l.job = None);
                 return Err(Fallback::NotProved(
                     "kubectl create printed no Job UID".into(),
                 ));
@@ -1134,7 +1179,11 @@ fn claim_slot(
                 Refusal::Taken | Refusal::Quota => refusals.push(refusal(&err)),
                 Refusal::Other => return Err(Fallback::Unreachable(last_line(&err))),
             },
-            Call::Broken(err) => return Err(Fallback::Unreachable(err)),
+            // Timed out or could not start: the Job may exist all the same.
+            Call::Broken(err) => {
+                delete_by_label(kube, &scratch.run_label(), spec.gate);
+                return Err(Fallback::Unreachable(err));
+            }
         }
     }
     if refusals.iter().all(|r| *r == Refusal::Quota) {
@@ -1148,10 +1197,24 @@ fn claim_slot(
 /// whose UID is unknown. A delete that fails is said and logged.
 fn delete_by_name(kube: &Kube, name: &str, gate: &str) {
     if let Err(why) = kube.bounded(&["delete", "job", name, "--wait=false"], CALL_SECS) {
-        let reason = format!("could not delete Job {name}: {why}");
-        crate::hooks::common::warn(&reason);
-        log_line(gate, &reason);
+        say_delete_failed(&format!("Job {name}"), &why, gate);
     }
+}
+
+/// Ask the apiserver to drop every Job carrying this run's label, without
+/// waiting: for a `create` whose answer was lost.
+fn delete_by_label(kube: &Kube, label: &str, gate: &str) {
+    let selector = format!("amont.run={label}");
+    let args = ["delete", "job", "-l", &selector, "--wait=false"];
+    if let Err(why) = kube.bounded(&args, CALL_SECS) {
+        say_delete_failed("the Jobs of this run", &why, gate);
+    }
+}
+
+fn say_delete_failed(what: &str, why: &str, gate: &str) {
+    let reason = format!("could not delete {what}: {}", crate::ui::sanitize(why));
+    crate::hooks::common::warn(&reason);
+    log_line(gate, &reason);
 }
 
 fn last_line(s: &str) -> String {
@@ -1256,7 +1319,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
     let gate = container("gate", &config.image, spec.argv, &work_mounts);
     format!(
         "{{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\
-         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\"}},\
+         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",\"amont.run\":{run_label}}},\
          \"annotations\":{{\"amont.dev/gate\":{gate_id},\"amont.dev/tree\":{tree}}}}},\
          \"spec\":{{\"backoffLimit\":0,\"activeDeadlineSeconds\":{deadline},\
          \"ttlSecondsAfterFinished\":300,\"template\":{{\"spec\":{{\
@@ -1270,6 +1333,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
          {{\"name\":\"work\",\"emptyDir\":{{}}}},{{\"name\":\"checkout\",\"emptyDir\":{{}}}}],\
          \"initContainers\":[{init}],\"containers\":[{gate}]}}}}}}}}",
         name = json_string(&format!("{JOB_PREFIX}{slot}")),
+        run_label = json_string(spec.run_label),
         gate_id = json_string(spec.gate),
         tree = json_string(spec.tree),
         deadline = config.timeout_secs + 60,
@@ -1279,6 +1343,11 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
         pvc = json_string(&format!("{CACHE_PREFIX}{slot}")),
         init = init.join(","),
     )
+}
+
+/// Unique to this process and run: a Job carrying it is ours.
+fn run_label(run: u64) -> String {
+    format!("{}-{run}", std::process::id())
 }
 
 /// A private scratch directory for one cluster run — the Job manifests and
@@ -1317,10 +1386,16 @@ impl Scratch {
                 kubeconfig: kube.kubeconfig.clone(),
                 namespace: kube.namespace.clone(),
                 scratch: dir.clone(),
+                run_label: run_label(run),
                 job: None,
                 gate_ref: None,
             });
         Ok(Scratch { run, dir })
+    }
+
+    /// The `amont.run` label value of this run's Jobs.
+    fn run_label(&self) -> String {
+        run_label(self.run)
     }
 
     /// A new file in the scratch directory; refused if it exists.
@@ -1798,6 +1873,7 @@ mod tests {
             tree: "abc",
             repo_dir: "amont",
             argv: &argv,
+            run_label: "42-7",
         };
         let json = job_manifest(&spec, 1);
         let doc = crate::json_read::parse(&json).expect("valid JSON");
@@ -1959,9 +2035,6 @@ mod tests {
     #[test]
     fn a_bundle_over_the_cap_says_its_size_in_mib() {
         let f = Fallback::BundleTooBig { mib: 63, cap: 50 };
-        assert_eq!(
-            f.to_string(),
-            "bundle is 63 MiB, over the 50 MiB cap (amont.cluster.maxBundleMiB)"
-        );
+        assert_eq!(f.to_string(), "bundle-too-big: 63 MiB, over the 50 MiB cap");
     }
 }
