@@ -784,14 +784,29 @@ shape nobody has asked for.
 Named because an adoption review asks these first, and an honest "no" is worth
 more than silence.
 
-**Tool versions are not pinned.** §1 fixes *which content* is checked and leaves
-*which tool* open. `resolve_tool` prefers `<root>/node_modules/.bin/<tool>` and
-falls back to `PATH`, so two developers and CI can run three prettier versions
-and disagree about the same commit. `pre-commit` solves this with `rev` pinning
-per hook repository, which is dismissed above as "distribution to strangers" —
-that is its mechanism, not its value. Its value is determinism, and we do not
-have that. Fixing content fidelity while leaving tool fidelity open is half a
-reproducibility story, and the half we have is the less visible one.
+**Tool versions are pinned by the repository, and amont says when they are
+not.** §1 fixes *which content* is checked; ADR-0019 (`build.toolchain-source`)
+fixes *which tool*: the repository pins it. For prettier and eslint,
+`resolve_js_tool` reads the root `package.json` of the checkout being
+committed (only the root one: a tool declared in a workspace package alone
+counts as undeclared unless a `node_modules/.bin` copy exists):
+
+- a `node_modules/.bin` copy (this checkout's, or the main worktree's) runs as
+  before, with no new line;
+- a tool `package.json` declares but nobody installed does NOT run: PATH's copy
+  is not the version the repository asked for. The check says to install
+  (`pnpm install`, or the checkout's manager) and is `Unavailable`, so the
+  commit goes through;
+- an undeclared tool taken from PATH or npx's cache still runs, with two
+  warning lines: what ran (`prettier 3.9.10 from /usr/local/bin/prettier`, or
+  `from npx's cache`), and the command that pins it.
+
+The version comes from one `--version` probe, bounded at five seconds with its
+whole process group killed after (`tree_run::run_output`). Nothing compares a
+`node_modules` copy with the range `package.json` asks for: a stale install
+still runs. `pre-commit` reaches determinism with `rev` pinning per hook
+repository; here the repository's own lockfile is the pin, and the hook's job
+is to stop running anything else silently.
 
 **Nothing here enforces anything.** Hooks are advisory by construction:
 `--no-verify` and `hook.skip` are each one command away, deliberately. So the

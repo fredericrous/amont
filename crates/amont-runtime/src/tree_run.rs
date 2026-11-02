@@ -356,6 +356,12 @@ fn run_inner(
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 if need_output && drains.iter().any(|d| !d.is_finished()) {
+                    // The tool exited, but something it started still holds
+                    // the pipe past the deadline: kill the group, or that
+                    // process outlives the probe. The leader is already
+                    // reaped; `kill_tree` signals by its group id, which no
+                    // new process can take while a member is alive.
+                    kill_tree(&mut child);
                     return (TreeRun::TimedOut, String::new());
                 }
                 let out = tail
@@ -454,6 +460,33 @@ mod tests {
         // SAFETY: probing a pid with signal 0.
         let alive = unsafe { libc_kill(pid, 0) == 0 };
         assert!(!alive, "grandchild {pid} survived the deadline");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A probe whose tool EXITS but leaves a child holding the pipe: the
+    /// output wait reaches the deadline, and that child must die with it
+    /// (the leader is already reaped, so this is a different branch from the
+    /// one above).
+    #[test]
+    fn run_output_kills_a_child_left_holding_the_pipe() {
+        let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("holder.pid");
+        let script = format!(
+            "sleep 30 & echo $! > {}; echo 1.2.3; exit 0",
+            pidfile.display()
+        );
+        let r = run_output(&sh(&script), &dir, soon(1_500), &AtomicBool::new(false));
+        assert_eq!(r, Err(TreeRun::TimedOut));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: probing a pid with signal 0.
+        let alive = unsafe { libc_kill(pid, 0) == 0 };
+        assert!(!alive, "the child {pid} left holding the pipe survived");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
