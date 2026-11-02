@@ -1204,9 +1204,14 @@ impl Scratch {
             .collect();
         let dir =
             std::env::temp_dir().join(format!("amont-cluster-{}-{run}-{gate}", std::process::id()));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        let builder = {
+            let mut builder = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         builder
             .create(&dir)
             .map_err(|e| Fallback::NotProved(format!("scratch directory: {e}")))?;
