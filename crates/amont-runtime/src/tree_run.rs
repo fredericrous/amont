@@ -124,6 +124,15 @@ pub(crate) fn park_if_dying() {
     }
 }
 
+/// Record that amont is dying of a signal, before the watcher thread has run:
+/// from the signal handler itself, so a Ctrl-C that also killed a child can
+/// never be seen by the code that child's death unblocks as "not dying". One
+/// atomic store, which is async-signal-safe.
+#[cfg(unix)]
+pub(crate) fn mark_dying() {
+    DYING.store(true, Ordering::SeqCst);
+}
+
 /// Lists `pgid` in [`LIVE`] for as long as it is held.
 #[cfg(unix)]
 struct Listed(u32);

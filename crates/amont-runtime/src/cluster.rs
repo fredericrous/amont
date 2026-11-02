@@ -64,6 +64,8 @@ static PROVED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
 static UNREACHABLE: AtomicBool = AtomicBool::new(false);
 /// A misconfiguration is said once per run, not once per gate.
 static WARNED: AtomicBool = AtomicBool::new(false);
+/// An unreachable apiserver is said once per run; each gate still logs it.
+static UNREACHABLE_SAID: AtomicBool = AtomicBool::new(false);
 /// What an interrupt must clean up, by run.
 static LIVE: Mutex<Vec<LiveRun>> = Mutex::new(Vec::new());
 /// Serialises writes of the cluster note: concurrent gates of one stage each
@@ -141,7 +143,7 @@ pub fn cancel_live() {
     if live.is_empty() {
         return;
     }
-    crate::staged_only::leave_on_second_signal();
+    let _leaving = crate::staged_only::leave_on_second_signal();
     let deadline = Instant::now() + Duration::from_secs(CANCEL_SECS);
     for run in live {
         if let Some(gate_ref) = &run.gate_ref {
@@ -159,7 +161,6 @@ pub fn cancel_live() {
             eprintln!("could not cancel cluster Job {job}: {why}");
         }
     }
-    crate::staged_only::queue_second_signal();
 }
 
 /// Whole seconds until `deadline`, at most `cap`, at least 1.
@@ -213,7 +214,7 @@ impl std::fmt::Display for Fallback {
             Fallback::BundleTooBig { mib, cap } => {
                 write!(
                     f,
-                    "bundle is {mib} MiB, over amont.cluster.maxBundleMiB ({cap})"
+                    "bundle is {mib} MiB, over the {cap} MiB cap (amont.cluster.maxBundleMiB)"
                 )
             }
             Fallback::GateFailed(detail) => write!(f, "failed on the cluster ({detail})"),
@@ -382,12 +383,23 @@ fn is_platform_any(ext: &External) -> bool {
 /// gate that is not `platform=any`, or no pinned image on this machine.
 /// Never inspects the laptop's executable.
 fn token(settings: &crate::config::Settings, ext: &External) -> Option<String> {
+    token_from(&machine_keys(), settings, ext, &ext.id)
+}
+
+/// [`token`] from machine keys already read, for `ext`'s program, arguments
+/// and file scope under the name `name`: a caller that needs several tokens
+/// reads the keys (one `git config`) once.
+fn token_from(
+    keys: &[(String, String)],
+    settings: &crate::config::Settings,
+    ext: &External,
+    name: &str,
+) -> Option<String> {
     if !is_platform_any(ext) {
         return None;
     }
-    let keys = machine_keys();
-    let digest = digest_of(key(&keys, "amont.cluster.image")?)?;
-    crate::gate_identity::cluster_token(ext, &ext.id, prepare(settings).as_deref(), digest)
+    let digest = digest_of(key(keys, "amont.cluster.image")?)?;
+    crate::gate_identity::cluster_token(ext, name, prepare(settings).as_deref(), digest)
 }
 
 /// What the cluster is asked to judge.
@@ -455,25 +467,26 @@ pub fn vouched_on_every(
     ext: &External,
     tips: &[String],
 ) -> bool {
-    vouched_trees(settings, ext, tips).is_some()
+    if tips.is_empty() {
+        return false;
+    }
+    let Some(token) = token(settings, ext) else {
+        return false;
+    };
+    vouched_trees(ext, tips, &token).is_some()
 }
 
-/// The trees of `tips`, when every one carries `ext`'s cluster token; each is
-/// marked proved under `ext`'s id.
-fn vouched_trees(
-    settings: &crate::config::Settings,
-    ext: &External,
-    tips: &[String],
-) -> Option<Vec<String>> {
+/// The trees of `tips`, when every one carries `token`, `ext`'s cluster token;
+/// each is marked proved under `ext`'s id.
+fn vouched_trees(ext: &External, tips: &[String], token: &str) -> Option<Vec<String>> {
     if tips.is_empty() {
         return None;
     }
-    let token = token(settings, ext)?;
     let stamps = crate::gate_stamp::cluster_stamps_for(tips);
     let hit = tips.iter().all(|t| {
         stamps
             .get(t)
-            .is_some_and(|(_, tokens)| tokens.contains(&token))
+            .is_some_and(|(_, tokens)| tokens.iter().any(|t| t == token))
     });
     if !hit {
         return None;
@@ -501,19 +514,16 @@ pub(crate) fn claim_twin_cluster_pass(
     if !is_platform_any(push) || !is_platform_any(twin) {
         return false;
     }
-    let Some(twin_token) = token(settings, twin) else {
-        return false;
-    };
     let keys = machine_keys();
-    let Some(digest) = key(&keys, "amont.cluster.image").and_then(digest_of) else {
+    let Some(twin_token) = token_from(&keys, settings, twin, &twin.id) else {
         return false;
     };
-    let push_as_twin =
-        crate::gate_identity::cluster_token(push, &twin.id, prepare(settings).as_deref(), digest);
-    if push_as_twin.as_deref() != Some(twin_token.as_str()) {
+    // `push` as it would read under the twin's name: equal tokens mean the
+    // same cluster identity.
+    if token_from(&keys, settings, push, &twin.id).as_deref() != Some(twin_token.as_str()) {
         return false;
     }
-    let Some(trees) = vouched_trees(settings, twin, tips) else {
+    let Some(trees) = vouched_trees(twin, tips, &twin_token) else {
         return false;
     };
     for tree in &trees {
@@ -629,11 +639,23 @@ fn say_fallback(short_name: &str, fallback: &Fallback) {
             "{name} failed on the cluster ({}); running it here for the verdict",
             crate::ui::sanitize(detail)
         )),
-        other => crate::hooks::common::warn(&format!(
-            "{name} runs here: the cluster is unavailable ({})",
-            crate::ui::sanitize(&other.to_string())
-        )),
+        Fallback::Unreachable(_) | Fallback::UnreachableEarlier => {
+            if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
+                warn_unavailable(&name, fallback);
+            }
+        }
+        Fallback::SlotsTaken
+        | Fallback::QuotaFull
+        | Fallback::BundleTooBig { .. }
+        | Fallback::NotProved(_) => warn_unavailable(&name, fallback),
     }
+}
+
+fn warn_unavailable(name: &str, fallback: &Fallback) {
+    crate::hooks::common::warn(&format!(
+        "{name} runs here: the cluster is unavailable ({})",
+        crate::ui::sanitize(&fallback.to_string())
+    ));
 }
 
 /// Append `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
@@ -678,6 +700,8 @@ fn run(
     args: &[String],
     judged: Judged,
 ) -> Result<String, Fallback> {
+    // A signal that killed a kubectl child must not reach a local run.
+    crate::tree_run::park_if_dying();
     if UNREACHABLE.load(Ordering::SeqCst) {
         return Err(Fallback::UnreachableEarlier);
     }
@@ -1099,9 +1123,12 @@ fn claim_slot(
                 });
             }
             Call::Ok(_) => {
+                // The Job exists, only unnamed by its UID: take it down by
+                // name rather than hold the slot until its deadline.
+                delete_by_name(kube, &name, spec.gate);
                 return Err(Fallback::NotProved(
                     "kubectl create printed no Job UID".into(),
-                ))
+                ));
             }
             Call::Refused(err) => match refusal(&err) {
                 Refusal::Taken | Refusal::Quota => refusals.push(refusal(&err)),
@@ -1114,6 +1141,16 @@ fn claim_slot(
         Err(Fallback::QuotaFull)
     } else {
         Err(Fallback::SlotsTaken)
+    }
+}
+
+/// Ask the apiserver to drop the Job `name`, without waiting for it, for a Job
+/// whose UID is unknown. A delete that fails is said and logged.
+fn delete_by_name(kube: &Kube, name: &str, gate: &str) {
+    if let Err(why) = kube.bounded(&["delete", "job", name, "--wait=false"], CALL_SECS) {
+        let reason = format!("could not delete Job {name}: {why}");
+        crate::hooks::common::warn(&reason);
+        log_line(gate, &reason);
     }
 }
 
@@ -1924,7 +1961,7 @@ mod tests {
         let f = Fallback::BundleTooBig { mib: 63, cap: 50 };
         assert_eq!(
             f.to_string(),
-            "bundle is 63 MiB, over amont.cluster.maxBundleMiB (50)"
+            "bundle is 63 MiB, over the 50 MiB cap (amont.cluster.maxBundleMiB)"
         );
     }
 }
