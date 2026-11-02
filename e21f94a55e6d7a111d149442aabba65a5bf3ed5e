@@ -1,0 +1,15 @@
+amont-provenance-v1
+commit 2f541ff16aa5b40726625a2f677b4ec38fc7ed8a
+tree e21f94a55e6d7a111d149442aabba65a5bf3ed5e
+canon 0eaa754b1a6fca254119fa0ddd10285e6177d558
+plan docs/plans/2026-11-02-say-which-prettier-eslint-ran.md 52aaa169174e3e8a32051a1f14d8f49ac675d07433bd9473ef81d1633e24d2d6
+review reviewed 7cc74345352ff2af034dffe67ba60ac87e35fec263d375c27dc994be09dbd187
+preview not-required
+producer amont-agent 3.15.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEA7D9D9TdT7pnLIJoZg2WqSjl5Z9N34yXXD8WSohM2wUXmve4
+6zB/PA08bXZya2aokpMyx6Cbf7GOYhQgWTqX8H
+-----END SSH SIGNATURE-----
