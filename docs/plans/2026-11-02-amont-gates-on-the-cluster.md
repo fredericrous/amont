@@ -86,4 +86,6 @@ shorten.
   - a drop guard for the second-signal flag (rust);
   - a SIGTERM test of the park (backend);
   - delete the Job by name when `create` prints no UID (rust);
-  - the wording of the bundle-too-big and repeated "did not answer" lines (tui).
+  - the wording of the bundle-too-big and repeated "did not answer" lines (tui);
+  - the `Scratch` doc comment says "mode 0700" without "on unix" (all four profiles).
+- **CI fix `85a0460`** (unused `mut` on Windows, a cfg split): all five re-bound and approve on tree `cc7cfcce`, 39 candidates ruled.
