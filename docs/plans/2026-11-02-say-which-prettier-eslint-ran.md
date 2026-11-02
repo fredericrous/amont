@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/ambient-tool-warning
 repos: [amont]
 adrs: [build.toolchain-source (ADR-0019)]
@@ -115,7 +115,7 @@ deferred check (ADR-0013), as every warning is. `amont.quiet` does not hide it.
 - [x] Phase 2: docs. Update the "Tool versions are not pinned" paragraph of
       `docs/index-fidelity-and-run-modes.md` (~line 787), plus CHANGELOG and AGENTS.md (`amont
       agents-md`).
-- [ ] Phase 3: release (`tag-release`, minor bump), install on the laptop as amont is installed
+- [x] Phase 3: release (`tag-release`, minor bump), install on the laptop as amont is installed
       today, and the live check below.
 
 ## Decision log
@@ -155,6 +155,8 @@ deferred check (ADR-0013), as every warning is. `amont.quiet` does not hide it.
 - 2026-11-02: CI jobs that run these checks before installing: none. amont's own CI installs
   eslint and prettier globally (ci.yaml:947), and no test fixture declares either tool; the
   ci.yaml comment now says the global install suits only an undeclared fixture.
+- 2026-11-02 (release): the #402 CHANGELOG entry had landed under the released v1.67.0 heading
+  (the rebase over #401 kept its hunk's anchor); #403 moved it into the v1.68.0 section.
 - 2026-11-02: the commit gate deferred clippy and cargo-test to CI three times (no host slot,
   load 9–15). `make check` ran both on the reviewed code (below), and CI runs them on the push.
 
@@ -173,12 +175,16 @@ Observed 2026-11-02 in this worktree.
 | lint | `cargo clippy -p amont-runtime -p amont --all-targets -D warnings`, `cargo fmt --check` on 680bcda | clean | clean |
 | PATH-row cost | one `prettier --version`, median of 10, load ~10 | small | 192 ms (3.5.3, ~/.local/bin), 810 ms (2.4.0, /usr/local/bin); only in undeclared repos with config |
 | npx row | the npx case | one probe | 1 probe call recorded |
-| live checks | after release (Phase 3) | | open: Phase 3 |
+| release | v1.68.0 (#403, tag on 4d59912) | published everywhere | GitHub release with 7 assets, Homebrew tap, npm `amont`, crates.io 1.68.0; "brew can install what was published" passed. The Intel macOS build waited 15 min for a runner and was cancelled twice (CI and release); re-runs passed. |
+| install | `brew upgrade fredericrous/tap/amont` | 1.68.0 | `amont 1.68.0` at /usr/local/bin |
+| live, undeclared | scratch repo, `.prettierrc`, package.json without prettier, `amont run prettier` | two lines name version and path, it runs | `prettier 3.5.3 from ~/.local/bin/prettier is not in the root package.json` / `Pin it: npm install --save-dev --save-exact prettier@3.5.3`; it ran |
+| live, declared | same repo, `"prettier": "3.9.10"`, no install | install hint, nothing runs, exit 0 | `prettier is in package.json but not installed: run npm install`; exit 0 |
+| live, installed | `npm install` (3.9.10) | no new line | no new line; the pinned 3.9.10 ran |
+| live, greenharness.github.io | a throwaway worktree of origin/main (no node_modules anywhere), staged README | install hint with its manager, exit 0 | `prettier is in package.json but not installed: run pnpm install`; exit 0 |
 
 ## Outcome
 
-Phases 1–2 shipped on `feat/ambient-tool-warning`; Phase 3 (release, install, live checks) is
-next. Surprises: the test clock scale made a scaled 5 s probe too short for a shell to start;
+Shipped in amont v1.68.0 (#402, released by #403), installed on the laptop and checked live. Surprises: the test clock scale made a scaled 5 s probe too short for a shell to start;
 macOS's first-exec assessment of fresh fake scripts landed inside the probe (fixed with
 `common::fixture_exec`); a fake's PATH had no `sleep`, so the stall tests passed for the wrong
 reason until they named `/bin/sleep`.
