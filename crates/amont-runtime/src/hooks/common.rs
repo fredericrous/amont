@@ -210,26 +210,6 @@ pub fn repo_root_checked() -> Result<String, String> {
         .ok_or_else(|| "not inside a git repository".to_string())
 }
 
-/// Resolve a tool, preferring the repo's PINNED copy so the hook matches CI.
-///
-///
-/// Order: `<root>/node_modules/.bin/<tool>`, then the MAIN worktree's (a linked
-/// worktree has no node_modules of its own — this is why the shell version
-/// consulted the git common dir), then PATH.
-pub fn resolve_tool(root: &str, tool: &str) -> Option<Vec<String>> {
-    resolve_tool_from(root, tool).map(|(argv, _)| argv)
-}
-
-/// Where [`resolve_tool_from`] found a tool: told by the step that found it,
-/// never guessed from the path afterwards.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Source {
-    /// A `node_modules/.bin`, this checkout's or the main worktree's.
-    Pinned,
-    /// Taken from the machine, not the repository.
-    Ambient(Ambient),
-}
-
 /// A copy the machine had, and what its `--version` probe said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ambient {
@@ -256,19 +236,10 @@ pub(crate) enum Version {
 /// group is killed (`tree_run::run_output`).
 pub(crate) const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// [`resolve_tool`], also saying where the tool came from.
-pub(crate) fn resolve_tool_from(root: &str, tool: &str) -> Option<(Vec<String>, Source)> {
-    if let Some(p) = pinned_tool(root, tool) {
-        return Some((vec![p], Source::Pinned));
-    }
-    match ambient_tool(root, tool) {
-        Found::Tool(argv, ambient) => Some((argv, Source::Ambient(ambient))),
-        Found::NpxHung | Found::Nothing => None,
-    }
-}
-
-/// The repo's own copy: `<root>/node_modules/.bin`, then the main worktree's.
-fn pinned_tool(root: &str, tool: &str) -> Option<String> {
+/// The repo's own copy: `<root>/node_modules/.bin`, then the main worktree's —
+/// preferred so the hook runs what CI runs (a linked worktree has no
+/// node_modules of its own, hence the git common dir).
+pub(crate) fn pinned_tool(root: &str, tool: &str) -> Option<String> {
     // Same extension problem as `which`: an npm-installed binary is `eslint.cmd`
     // on Windows, so the bare name misses the repo's PINNED copy and the hook
     // silently falls through to an ambient one.
@@ -429,12 +400,12 @@ impl JsUse {
             Version::Unknown => (
                 format!("{name} (unknown version)"),
                 name.to_string(),
-                " (installs the latest, maybe not this one)",
+                " (latest, not necessarily this one)",
             ),
             Version::TimedOut => (
-                format!("{name} (--version took over {secs} s)"),
+                format!("{name} (no --version in {secs} s)"),
                 name.to_string(),
-                " (installs the latest, maybe not this one)",
+                " (latest, not necessarily this one)",
             ),
         };
         warn(&format!(
@@ -458,8 +429,9 @@ impl JsUse {
                 hl(&format!("{} install", self.manager.tool()))
             )),
             JsTool::NpxHung => warn(&format!(
-                "npx --no-install {name} --version did not answer in {} s",
-                PROBE_DEADLINE.as_secs()
+                "npx --no-install {name} --version did not answer in {} s. Pin it: {}",
+                PROBE_DEADLINE.as_secs(),
+                hl(&self.manager.add_dev_command(name))
             )),
             // Installing never brings in a tool package.json does not list:
             // the command that adds it is the one that helps.

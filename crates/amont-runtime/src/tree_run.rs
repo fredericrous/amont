@@ -355,6 +355,14 @@ fn run_inner(
                 {
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                // A cancelled probe answers nothing, whatever it printed: a
+                // caller that cancelled must not get a version to act on.
+                if need_output && cancel.load(Ordering::SeqCst) {
+                    if drains.iter().any(|d| !d.is_finished()) {
+                        kill_tree(&mut child);
+                    }
+                    return (TreeRun::Cancelled, String::new());
+                }
                 if need_output && drains.iter().any(|d| !d.is_finished()) {
                     // The tool exited, but something it started still holds
                     // the pipe past the deadline: kill the group, or that
@@ -492,8 +500,33 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
+        // Polled, not checked once: a killed member answers `kill -0` until it
+        // is reaped.
+        let until = Instant::now() + Duration::from_secs(2);
+        while group_alive(pgid) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(!group_alive(pgid), "the group {pgid} outlived the probe");
         let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir fails nothing
+    }
+
+    /// A probe cancelled while a child holds its pipe answers nothing, even
+    /// though the tool itself exited 0 with a version.
+    #[test]
+    fn run_output_cancelled_returns_no_answer() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&flag);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            setter.store(true, Ordering::SeqCst);
+        });
+        let r = run_output(
+            &sh("sleep 30 & echo 1.2.3; exit 0"),
+            Path::new("."),
+            soon(10_000),
+            &flag,
+        );
+        assert_eq!(r, Err(TreeRun::Cancelled));
     }
 
     #[test]

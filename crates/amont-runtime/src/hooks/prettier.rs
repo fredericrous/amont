@@ -2,7 +2,7 @@
 //! actually opt into prettier.
 
 use super::common::{
-    fail, first_existing, fixing_enabled, hl, ok, repo_root, resolve_js_tool, restage,
+    fail, first_existing, fixing_enabled, hl, ok, pinned_tool, repo_root, resolve_js_tool, restage,
     run as run_tool, run_quiet, staged_files, JsTool, Restaged,
 };
 use crate::check::Outcome;
@@ -56,13 +56,14 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     }
     let root = repo_root();
 
-    let js = resolve_js_tool(&root, "prettier");
     // A pinned local prettier is itself an opt-in signal; without config AND
-    // without a local binary the repo simply does not use prettier.
-    let local_pinned = matches!(js.tool, JsTool::Pinned(_));
-    if !has_config(&root) && !local_pinned {
+    // without a local binary the repo simply does not use prettier. Decided
+    // before resolving, which may probe a PATH copy's `--version`: a repo
+    // that does not use prettier must not pay for that.
+    if !has_config(&root) && pinned_tool(&root, "prettier").is_none() {
         return Outcome::Passed;
     }
+    let js = resolve_js_tool(&root, "prettier");
     let argv = match &js.tool {
         JsTool::Pinned(argv) => argv.clone(),
         // Runs, and says it is not the repository's copy (ADR-0019).

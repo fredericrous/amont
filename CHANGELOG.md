@@ -18,7 +18,10 @@ missing here.
   declares but nobody installed no longer falls back to PATH's copy: the check
   does not run, says `run pnpm install`, and does not block the commit. The
   `--version` probes are bounded at five seconds and kill their whole process
-  group, and a `node_modules/.bin` copy runs exactly as before.
+  group, and a `node_modules/.bin` copy runs exactly as before. A tree-gate
+  version probe whose tool exits 0 but leaves a child holding its output now
+  keeps that answer once the child's group is killed (it used to time out);
+  a cancelled probe still answers nothing.
 
 - **A gate may run on the homelab cluster** (ADR-0016). A declared check
   marked `platform=any`, in a repository whose trusted `amont.conf` says

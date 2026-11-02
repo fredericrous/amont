@@ -253,7 +253,7 @@ fn a_version_probe_that_stalls_is_killed_with_its_child_and_the_check_runs() {
     let (ok, out, took) = run_check(&r, "pre-commit-prettier");
     assert!(ok, "{out}");
     assert!(took < probe_bound(), "took {took:?}");
-    assert!(out.contains("prettier (--version took over 5 s)"), "{out}");
+    assert!(out.contains("prettier (no --version in 5 s)"), "{out}");
     assert!(ran(&r).contains("--check"), "the check still runs: {out}");
     let pgid = std::fs::read_to_string(&pgid).expect("the probe wrote its group");
     std::thread::sleep(Duration::from_millis(100));
@@ -353,6 +353,47 @@ fn a_declared_eslint_that_is_not_installed_never_runs_from_path() {
     assert_eq!(ran(&r), "", "{out}");
     assert!(
         out.contains("eslint is in package.json but not installed: run npm install"),
+        "{out}"
+    );
+}
+
+/// A repo that does not use prettier never starts one, even with a global
+/// prettier on PATH: no config and no pinned copy means nothing to resolve.
+#[test]
+fn a_repo_without_prettier_never_probes_one() {
+    let r = Repo::new();
+    r.stage("package.json", UNDECLARED);
+    r.stage("a.md", "# a\n");
+    let probes = r.path(".git/toolshims/probes.txt");
+    fake(
+        &shims(&r).join("prettier"),
+        &format!("echo x >> {}; echo 3.9.10; exit 0", probes.display()),
+        &log(&r),
+    );
+    let (ok, out, _) = run_check(&r, "pre-commit-prettier");
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read_to_string(&probes).unwrap_or_default(), "");
+    assert_eq!(ran(&r), "", "{out}");
+}
+
+/// npx is there but its probe hangs: the check does not run, says why, and
+/// gives the command that pins the tool instead.
+#[test]
+fn a_hung_npx_probe_says_so_and_how_to_pin() {
+    let r = prettier_repo(UNDECLARED);
+    common::fixture_exec(
+        &shims(&r).join("npx"),
+        &format!(
+            "#!/bin/sh\nif [ \"$3\" = \"--version\" ]; then /bin/sleep 600 & wait; fi\necho \"$@\" >> {}\nexit 0\n",
+            log(&r).display()
+        ),
+    );
+    let (ok, out, took) = run_check(&r, "pre-commit-prettier");
+    assert!(ok, "{out}");
+    assert!(took < probe_bound(), "took {took:?}");
+    assert_eq!(ran(&r), "", "{out}");
+    assert!(
+        out.contains("npx --no-install prettier --version did not answer in 5 s. Pin it: npm install --save-dev --save-exact prettier"),
         "{out}"
     );
 }
