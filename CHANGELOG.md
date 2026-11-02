@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **A gate may run on the homelab cluster** (ADR-0016). A declared check
+  marked `platform=any`, in a repository whose trusted `amont.conf` says
+  `set executor cluster`, runs as one Kubernetes Job when the machine's git
+  config names `amont.cluster.kubeconfig` and an `amont.cluster.image` pinned
+  by `@sha256:`. It takes no host slot. `set clusterPrepare <cmd>` runs a
+  step in the checkout before the gate. The cluster proves only passes: a
+  failure there, or any trouble reaching it, re-runs the gate here unchanged,
+  the local result is the verdict, and one line goes to `amont/cluster.log`.
+  A cluster pass is recorded in `refs/notes/amont-gate-cluster` under its own
+  identity (the command, the prepare step, the image digest), never as a
+  local stamp or a laptop attestation; a commit or push of the same tree
+  reuses it, and a new image runs the gate again. `platform=any` with `fix`
+  or `files` is a broken line. An older amont reads the marker as the program
+  name, so add it once everyone has upgraded.
+
 ## v1.66.2
 
 ### Fixed

@@ -90,6 +90,9 @@ keys:
     description: What a stamped gate result is keyed by, and which readers may skip a gate on it
     scopes: [pre-commit, pre-push]
 
+  hooks.cluster-executor:
+    description: Where a platform-independent declared gate may run, and how a pass from there is recorded
+    scopes: [hook-binary]
   # --- The command line ------------------------------------------------------
   cli.all-files-semantics:
     description: What `--all-files` implies beyond widening the file set
