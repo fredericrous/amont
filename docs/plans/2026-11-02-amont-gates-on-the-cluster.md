@@ -2,7 +2,7 @@
 canonical: decisions:docs/plans/2026-11-02-amont-gates-on-the-cluster.md
 phases: [3]
 status: active
-branch: feat/cluster-gates
+branch: feat/cluster-attest
 ---
 # amont runs platform-independent gates on the homelab cluster (pointer)
 
@@ -47,16 +47,31 @@ Read the canonical plan's Design (amont code) section.
 
 ## Deferred to 3b
 
-Phase 3a (ADR-0016, the executor and the cluster note ref) shipped without:
-- the `x86_64-linux` attestation block for the `platform=any` gates a cluster
-  token satisfies, and verify passing their ids as `anywhere`;
-- a `cluster` source field in `amont stamps` (a cluster token reads
-  `stamped`, as the plan says, with no field naming where it came from);
-- tests of the Ctrl-C path (the Job cancel, the temp-file and temp-ref
-  cleanup, a second signal leaving the Job), of a rehearsal after a cluster
-  pass, and of push-twin reuse of a commit-time cluster pass. A push twin of
-  a cluster-proved commit gate still runs at push time: pairing reads only
-  local stamps.
+Phase 3a (ADR-0016, the executor and the cluster note ref, amont#397)
+shipped without these. **Phase 3b** (branch `feat/cluster-attest`) adds:
+- the `x86_64-linux` attestation block, signed per pushed tip for the
+  trusted `platform=any` gates the cluster proved on that tip's tree, in
+  the same publish as the laptop block;
+- `amont stamps` passing those gate ids to the verifier as `anywhere`
+  (`amont attest covered` keeps passing none);
+- push-twin reuse: a trusted `platform=any` push gate whose commit twin's
+  cluster token is on every tip's tree is gated at commit, and counts as a
+  cluster pass under its own id;
+- tests: the linux block and its absence from the laptop block, 20 pushes
+  of one tree stay under `MAX_BLOCKS`, a linux-only attestation reads
+  `attested`, a rehearsal after a cluster pass, and the push-twin reuse;
+- the `Scratch` doc comment saying the 0700 mode is unix-only.
+
+**Dropped:** a `cluster` source field in `amont stamps`. The canonical plan
+keeps the `stamps --json` schema unchanged.
+
+**Phase 3c** (its own PR, before the release): the hardening carried from
+the 3a review: `DYING` set in `on_signal` and a park at the top of
+`run_inner`, a drop guard for the second-signal flag, a SIGTERM test of the
+park, deleting the Job by name when `create` prints no UID, the wording of
+the bundle-too-big and repeated "did not answer" lines, and tests of the
+Ctrl-C path (the Job cancel, the temp-file and temp-ref cleanup, a second
+signal leaving the Job).
 
 Added in 3a beyond the plan: the machine key `amont.cluster.startWait`
 (default 30 s), the bounded wait for `fetch` to be Running, which the tests
