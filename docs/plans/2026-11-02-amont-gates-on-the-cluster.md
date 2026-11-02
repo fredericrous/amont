@@ -61,3 +61,29 @@ Phase 3a (ADR-0016, the executor and the cluster note ref) shipped without:
 Added in 3a beyond the plan: the machine key `amont.cluster.startWait`
 (default 30 s), the bounded wait for `fetch` to be Running, which the tests
 shorten.
+
+## Phase 3a record
+
+| Check | Expected | Actual |
+|---|---|---|
+| `amont slot run -- make check` on `bcd885b` | exit 0 | exit 0 (lint, test, attest-inputs) |
+| `cargo test --test it cluster` | the cluster suite passes | 13 passed |
+| `cargo test -p amont-runtime --lib cluster` | the unit tests pass | 10 passed |
+| `aval check` | no findings | 70 decision records, no findings |
+| relais verification | the base verdict | **not used**: relais#383, a 0-CPU stall at the `flows::` journeys only under relais. Built with relais's implementation worker and verified in-session. |
+
+## Implementation review (phase 3a)
+
+- **implementation-review:**
+  - round 1 approve-with-changes, 4 blocking (discarded results, flag arguments, names, banners) plus mediums;
+  - a Delta (3 small blockers);
+  - approve on `bcd885b`, with all 39 candidates ruled.
+- **Code-review profiles,** each bound with a fresh `--profile` brief on `bcd885b`:
+  - backend approve-with-changes: round 1 found the concurrent-manifest blocker, now fixed;
+  - rust approve; unix approve (its Ctrl-C high is fixed); tui approve (its warn-on-every-hook high is fixed).
+- **Deliberate, carried into 3b:**
+  - set `DYING` in `on_signal` itself, and park at the top of `run_inner`, to close the narrow race where Ctrl-C kills kubectl and reaches the fallback before the watcher (backend, unix, tui);
+  - a drop guard for the second-signal flag (rust);
+  - a SIGTERM test of the park (backend);
+  - delete the Job by name when `create` prints no UID (rust);
+  - the wording of the bundle-too-big and repeated "did not answer" lines (tui).
