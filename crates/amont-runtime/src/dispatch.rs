@@ -475,6 +475,9 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
                     .zip(&outcomes)
                     .any(|(c, o)| c.name() == d.id && matches!(o, Outcome::Passed | Outcome::Fixed))
             })
+            // A pass the cluster proved is recorded in its own ref and never
+            // becomes a local token (ADR-0016).
+            .filter(|d| !crate::cluster::proved(&d.id))
             // The token, not the bare script: a skip is honoured only for the
             // same command run by the same program (`gate_identity`). A
             // declaration whose program cannot be identified earns no stamp.
@@ -1084,6 +1087,18 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .iter()
                 .all(|t| push_stamps.get(t).is_some_and(|s| s.contains(&token)))
     };
+    // A trusted `platform=any` gate is also vouched for by its cluster token
+    // on every tip's tree (ADR-0016). Asked only for such a gate, so a
+    // repository with none pays no spawn.
+    let cluster_stamped = |name: &str| -> bool {
+        reuse_stamps
+            && ctx
+                .manifest
+                .externals
+                .iter()
+                .find(|e| e.id == name)
+                .is_some_and(|e| crate::cluster::vouched_on_every(settings, e, &tips))
+    };
     // What actually RAN and passed here (as opposed to being vouched for by
     // a stamp) — the set this run may stamp in turn.
     let mut ran_and_passed: Vec<String> = Vec::new();
@@ -1125,7 +1140,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         if rehearsing && check.scope().is_unscoped() {
             continue;
         }
-        if !check.scope().is_unscoped() && stamped_on_every_tip(check.name()) {
+        if !check.scope().is_unscoped()
+            && (stamped_on_every_tip(check.name()) || cluster_stamped(check.name()))
+        {
             crate::say!(
                 "{} {} passed on this exact tree earlier — not repeating it here",
                 valid_sign(),
@@ -1251,7 +1268,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         match outcome {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
-                if !check.scope().is_unscoped() {
+                // A cluster pass is already recorded in its own ref; a local
+                // push stamp for it would let the laptop vouch for it.
+                if !check.scope().is_unscoped() && !crate::cluster::proved(check.name()) {
                     ran_and_passed.push(check.name().to_string());
                 }
             }
@@ -1356,7 +1375,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .map(|a| a.to_string_lossy().into_owned())
             .unwrap_or_default();
         let changed = crate::pushrefs::changed_files(ctx.push.get());
-        let mut vouched = attestable(&pre_push_checks, &passed, &changed);
+        // Only local passes enter the laptop's attestation (ADR-0016).
+        let local: Vec<String> = passed
+            .iter()
+            .filter(|p| !crate::cluster::proved(p))
+            .cloned()
+            .collect();
+        let mut vouched = attestable(&pre_push_checks, &local, &changed);
         vouched.extend(tree_proven);
         crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
     }

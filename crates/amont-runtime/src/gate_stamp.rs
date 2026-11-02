@@ -105,6 +105,18 @@ pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 /// in attest's own inputs ref, so `git notes prune` on it would drop
 /// everything: never run it, and never merge the ref with `cat_sort_uniq`.
 pub const INPUTS_REF: &str = "amont-gate-inputs";
+
+/// Where CLUSTER passes are recorded (ADR-0016): the same note format, keyed
+/// by the judged tree, holding tokens of `gate_identity::cluster_token`.
+/// Never `amont-gate` (ADR-0015): a local token here would let the laptop
+/// sign a pass it never ran.
+pub const CLUSTER_REF: &str = "amont-gate-cluster";
+pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
+
+/// The reserved first word of a provenance line: where a token came from
+/// (platform, observed imageID, Job UID). Never a token, never a run, and
+/// every reader of tokens drops it.
+pub const PROVENANCE: &str = "provenance";
 pub const INPUTS_FULL_REF: &str = "refs/notes/amont-gate-inputs";
 
 /// The marker's filename inside `$GIT_DIR`.
@@ -286,6 +298,8 @@ pub struct Note {
     /// documentation. Never trimmed with the runs.
     pub deferred: Vec<String>,
     pub runs: Vec<Run>,
+    /// [`PROVENANCE`] lines, verbatim, kept through every rewrite.
+    pub provenance: Vec<String>,
 }
 
 /// The first word of a deferral line.
@@ -306,7 +320,12 @@ impl Note {
         }
         let mut deferred = Vec::new();
         let mut runs = Vec::new();
+        let mut provenance = Vec::new();
         for line in lines {
+            if is_provenance(line) {
+                provenance.push(line.trim().to_string());
+                continue;
+            }
             let mut t = line.split_whitespace();
             match (t.next(), t.next(), t.next()) {
                 (Some(DEFERRED), Some(gate), None) => {
@@ -321,6 +340,7 @@ impl Note {
             tokens: tokens.map(str::to_string).collect(),
             deferred,
             runs,
+            provenance,
         }
     }
 
@@ -335,6 +355,10 @@ impl Note {
         for run in &self.runs {
             body.push('\n');
             body.push_str(&run.render());
+        }
+        for line in &self.provenance {
+            body.push('\n');
+            body.push_str(line);
         }
         body
     }
@@ -354,6 +378,12 @@ impl Note {
             self.runs.drain(..self.runs.len() - MAX_RUNS);
         }
     }
+}
+
+/// Is `line` a [`PROVENANCE`] line? Every token reader asks, so a line that
+/// says where a pass came from can never be read as the pass itself.
+pub fn is_provenance(line: &str) -> bool {
+    line.split_whitespace().next() == Some(PROVENANCE)
 }
 
 /// The note at `key`, parsed. An absent note, an absent ref and a git that
@@ -684,7 +714,11 @@ pub fn vouched_for_staged_tree() -> HashSet<String> {
         if let Ok(body) = std::fs::read_to_string(&path) {
             let mut lines = body.lines();
             if lines.next() == Some(FORMAT) && lines.next() == Some(tree.as_str()) {
-                out.extend(lines.filter(|l| !l.trim().is_empty()).map(str::to_string));
+                out.extend(
+                    lines
+                        .filter(|l| !l.trim().is_empty() && !is_provenance(l))
+                        .map(str::to_string),
+                );
             }
         }
     }
@@ -733,7 +767,9 @@ pub fn bind_to_head() -> Vec<String> {
     let Some(tree) = lines.next() else {
         return Vec::new();
     };
-    let scripts: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
+    let scripts: Vec<&str> = lines
+        .filter(|l| !l.trim().is_empty() && !is_provenance(l))
+        .collect();
     if scripts.is_empty() {
         return Vec::new();
     }
@@ -940,7 +976,43 @@ pub fn forget() -> bool {
     let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());
     let notes = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
     let inputs = crate::git::succeeds(&["update-ref", "-d", INPUTS_FULL_REF]);
-    marker || notes || inputs
+    let cluster = crate::git::succeeds(&["update-ref", "-d", CLUSTER_FULL_REF]);
+    marker || notes || inputs || cluster
+}
+
+/// The cluster tokens on `tree` (ADR-0016). Read only for a trusted
+/// `platform=any` gate, so a repository with none never pays the spawn.
+pub fn cluster_tokens(tree: &str) -> Vec<String> {
+    note_in(CLUSTER_REF, tree).tokens
+}
+
+/// Record a cluster pass: `token` on the note at `tree`, with its provenance
+/// line. Merged, like every writer here; best-effort.
+pub fn stamp_cluster(tree: &str, token: &str, provenance: &str) -> bool {
+    let mut note = note_in(CLUSTER_REF, tree);
+    note.add_tokens(&[token.to_string()]);
+    let line = format!("{PROVENANCE} {token} {provenance}");
+    note.provenance
+        .retain(|l| l.split_whitespace().nth(1) != Some(token));
+    note.provenance.push(line);
+    write_note_in(CLUSTER_REF, tree, &note)
+}
+
+/// pre-push: the cluster tokens on each of `commits`' trees. Asked only when
+/// a trusted `platform=any` gate is in play; a commit whose tree carries no
+/// cluster note is absent from the map.
+pub fn cluster_stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
+    let mut out = HashMap::new();
+    for commit in commits {
+        let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{commit}^{{tree}}")]) else {
+            continue;
+        };
+        let tokens = cluster_tokens(&tree);
+        if !tokens.is_empty() {
+            out.insert(commit.clone(), tokens);
+        }
+    }
+    out
 }
 
 /// The same, for a repository this process is not standing in.
@@ -949,7 +1021,8 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
         .is_some_and(|dir| std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok());
     let notes = crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF]);
     let inputs = crate::git::succeeds_in(repo, &["update-ref", "-d", INPUTS_FULL_REF]);
-    marker || notes || inputs
+    let cluster = crate::git::succeeds_in(repo, &["update-ref", "-d", CLUSTER_FULL_REF]);
+    marker || notes || inputs || cluster
 }
 
 #[cfg(test)]

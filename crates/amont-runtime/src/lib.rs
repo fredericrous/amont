@@ -46,6 +46,7 @@ pub mod bypass;
 pub mod capture;
 pub mod check;
 pub mod clock;
+pub mod cluster;
 pub mod commit_style;
 pub mod config;
 pub mod content;

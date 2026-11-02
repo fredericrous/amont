@@ -98,6 +98,22 @@ pub enum ParseError {
     /// hook must not modify the worktree or index — the pushed commit would
     /// then differ from the tree the developer is looking at.
     FixOnPrePush,
+    /// `platform=any` beside `fix`: the cluster proves only passes, and a
+    /// rewrite made in a pod never reaches the index (ADR-0016).
+    PlatformAnyWithFix,
+    /// `platform=any` beside `files`: the pod is not handed the matched set
+    /// (`AMONT_FILES`), so a pass would be over the wrong files (ADR-0016).
+    PlatformAnyWithFiles,
+    /// `platform=<word>` other than `any`. Loud rather than read as the
+    /// program name, which is what an older amont does with it.
+    BadPlatform(String),
+    /// `set executor` other than `cluster`/`local`, or `set executor` /
+    /// `set clusterPrepare` twice. Strict like `onBusy`: where a gate runs
+    /// must never silently mean something else.
+    BadClusterSetting {
+        key: &'static str,
+        why: String,
+    },
     /// `docs-skip` on a pre-push line: a push has no staged change to judge as docs.
     DocsSkipOnPrePush,
     /// A `tree` line with the wrong shape; carries what was wrong.
@@ -175,6 +191,20 @@ impl std::fmt::Display for ParseError {
                 f,
                 "`fix` is only for pre-commit — a pre-push hook must not rewrite files"
             ),
+            ParseError::PlatformAnyWithFix => write!(
+                f,
+                "`platform=any` cannot be combined with `fix` — the cluster proves passes, \
+                 it never rewrites files"
+            ),
+            ParseError::PlatformAnyWithFiles => write!(
+                f,
+                "`platform=any` cannot be combined with `files` — the cluster is not handed \
+                 the matched file set"
+            ),
+            ParseError::BadPlatform(word) => {
+                write!(f, "{word:?}: the only platform marker is `platform=any`")
+            }
+            ParseError::BadClusterSetting { key, why } => write!(f, "set {key}: {why}"),
             ParseError::DocsSkipOnPrePush => write!(
                 f,
                 "`docs-skip` is only for pre-commit — a push has no staged change to judge"
@@ -203,6 +233,10 @@ pub struct Declared {
     /// The command column carried the `heavy` marker: the check compiles or
     /// executes the product and takes a host slot (ADR-0013).
     pub heavy: bool,
+    /// The command column carried `platform=any`: the gate's verdict does not
+    /// depend on the platform, so a trusted repository with `set executor
+    /// cluster` may run it as a Kubernetes Job (ADR-0016).
+    pub platform_any: bool,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -459,6 +493,14 @@ pub const SETTABLE: &[&str] = &[
     // whole number of seconds for `slotWait`, each once.
     "onBusy",
     "slotWait",
+    // Where a `platform=any` gate runs (ADR-0016): `cluster` sends it to the
+    // homelab as one Kubernetes Job, `local` (the default) keeps it here, and
+    // `clusterPrepare` is the shell command the Job's `prepare` container
+    // runs before the gate. Policy, so effective only from a trusted
+    // manifest; strict and set once, like `onBusy`. A local `git config
+    // amont.executor local` may turn it off, never on.
+    "executor",
+    "clusterPrepare",
 ];
 
 impl PolicyLine {
@@ -608,6 +650,10 @@ pub enum Kind {
         docs_skip: bool,
         /// The command column carried `heavy` — see `Declared::heavy`.
         heavy: bool,
+        /// The command column carried `platform=any` — see
+        /// `Declared::platform_any`. A `Runnable` exists only for a trusted
+        /// manifest (`gate`), so this is always the trusted declaration.
+        platform_any: bool,
     },
     Unusable {
         why: String,
@@ -797,6 +843,24 @@ impl Check for External {
                     );
                     return Outcome::Passed;
                 }
+                // The cluster's record, beside the local one and not inside
+                // it: a cluster token needs no program on this machine
+                // (ADR-0016). Only a trusted `platform=any` gate asks.
+                let judged = crate::cluster::Judged::Index;
+                if self.severity() == Severity::Block
+                    && crate::gate_stamp::commit_stamps_enabled(settings)
+                    && crate::cluster::vouched(settings, self, judged)
+                {
+                    crate::say!(
+                        "{} {} passed on the cluster on this exact tree earlier — not repeating it here",
+                        crate::ui::valid_sign(),
+                        crate::ui::highlight(&self.short_name),
+                    );
+                    return Outcome::Passed;
+                }
+                if crate::cluster::try_run(settings, self, program, args, judged) {
+                    return Outcome::Passed;
+                }
                 self.execute(
                     settings,
                     program,
@@ -828,6 +892,12 @@ impl Check for External {
                     let Some(matched) = files_to_judge(scope, files, &changed) else {
                         continue;
                     };
+                    // The cluster first, on exactly this tip's tree: a local
+                    // checkout is made only when the gate falls back here.
+                    let judged = crate::cluster::Judged::Commit(&r.local_oid);
+                    if crate::cluster::try_run(settings, self, program, args, judged) {
+                        continue;
+                    }
                     // `_guard` owns the checkout for the length of this ref's
                     // run; dropping it removes the worktree before the next
                     // ref's begins. `self.id`, because that is what a stamp
@@ -1398,6 +1468,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                             },
                         }
                     }
+                    Some(canonical)
+                        if *canonical == "executor" || *canonical == "clusterPrepare" =>
+                    {
+                        parse_cluster_setting(lineno, canonical, value, earlier)
+                    }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
                             key: format!("amont.{canonical}"),
@@ -1483,6 +1558,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let mut wants_files = false;
     let mut wants_docs_skip = false;
     let mut wants_heavy = false;
+    let mut wants_platform_any = false;
     loop {
         if let Some(rest) = command.strip_prefix("fix ") {
             command = rest.trim_start();
@@ -1504,7 +1580,22 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             wants_heavy = true;
             continue;
         }
+        if let Some(rest) = command.strip_prefix("platform=") {
+            let (word, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if word != "any" {
+                return fail(ParseError::BadPlatform(format!("platform={word}")));
+            }
+            command = rest.trim_start();
+            wants_platform_any = true;
+            continue;
+        }
         break;
+    }
+    if wants_platform_any && wants_fix {
+        return fail(ParseError::PlatformAnyWithFix);
+    }
+    if wants_platform_any && wants_files {
+        return fail(ParseError::PlatformAnyWithFiles);
     }
     if wants_fix && stage == Stage::PrePush {
         return fail(ParseError::FixOnPrePush);
@@ -1522,6 +1613,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         files: wants_files,
         docs_skip: wants_docs_skip,
         heavy: wants_heavy,
+        platform_any: wants_platform_any,
         name: declared.to_string(),
         stage,
         severity,
@@ -1532,6 +1624,52 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         program,
         args: argv.collect(),
     })
+}
+
+/// `set executor cluster|local` or `set clusterPrepare <command>`: strict and
+/// set once (ADR-0016). The executor is stored lowercased; the prepare command
+/// verbatim, since it is a shell command.
+fn parse_cluster_setting(
+    lineno: usize,
+    canonical: &'static str,
+    value: &str,
+    earlier: &[Line],
+) -> Line {
+    let full = format!("amont.{canonical}");
+    let bad = |why: String| {
+        broken_at(
+            lineno,
+            format!("{MANIFEST}:{lineno}"),
+            None,
+            ParseError::BadClusterSetting {
+                key: canonical,
+                why,
+            },
+        )
+    };
+    let is_executor = canonical == "executor";
+    if is_executor
+        && !(value.eq_ignore_ascii_case("cluster") || value.eq_ignore_ascii_case("local"))
+    {
+        return bad(format!("the value is `cluster` or `local`, not {value:?}"));
+    }
+    let twice = earlier.iter().any(
+        |l| matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. } if *key == full),
+    );
+    if twice {
+        return bad("it is set twice".to_string());
+    }
+    Line::Policy {
+        what: PolicyLine::Set {
+            key: full,
+            value: if is_executor {
+                value.to_ascii_lowercase()
+            } else {
+                value.to_string()
+            },
+        },
+        lineno,
+    }
 }
 
 /// The first whitespace-separated token of `s`, and what follows it untouched.
@@ -1736,6 +1874,7 @@ impl From<Line> for External {
                 files: d.files,
                 docs_skip: d.docs_skip,
                 heavy: d.heavy,
+                platform_any: d.platform_any,
             },
             Err(why) => Kind::Unusable {
                 why,
@@ -2681,6 +2820,57 @@ mod tests {
             "moves pre-push-cargo-test"
         );
         assert_eq!(weight("lint"), Weight::Light);
+    }
+
+    /// `platform=any` is a marker in any order with `heavy` and `docs-skip`,
+    /// refused beside `fix` or `files`, and the only `platform=` word.
+    #[test]
+    fn platform_any_is_a_marker_refused_with_fix_or_files() {
+        let line = one("pre-commit lint *.ts block heavy platform=any make lint");
+        let d = usable(&line);
+        assert!(d.platform_any && d.heavy);
+        assert_eq!(d.program, "make");
+        let line = one("pre-commit lint *.ts block platform=any docs-skip make lint");
+        assert!(usable(&line).platform_any && usable(&line).docs_skip);
+        assert!(!usable(&one("pre-commit lint * block make lint")).platform_any);
+        assert_eq!(
+            why(&one("pre-commit lint * block platform=any fix make fmt")),
+            ParseError::PlatformAnyWithFix
+        );
+        assert_eq!(
+            why(&one("pre-commit lint * block files platform=any eslint")),
+            ParseError::PlatformAnyWithFiles
+        );
+        assert_eq!(
+            why(&one("pre-commit lint * block platform=linux make")),
+            ParseError::BadPlatform("platform=linux".into())
+        );
+    }
+
+    /// `set executor` is exactly `cluster` or `local`; it and
+    /// `set clusterPrepare` are each set once.
+    #[test]
+    fn the_cluster_settings_are_strict_and_set_once() {
+        let lines = parse_lines("set executor CLUSTER\nset clusterPrepare pnpm i && pnpm build\n");
+        assert!(
+            matches!(&lines[0], Line::Policy { what: PolicyLine::Set { key, value }, .. }
+            if key == "amont.executor" && value == "cluster")
+        );
+        assert!(
+            matches!(&lines[1], Line::Policy { what: PolicyLine::Set { key, value }, .. }
+            if key == "amont.clusterPrepare" && value == "pnpm i && pnpm build")
+        );
+        for text in [
+            "set executor remote\n",
+            "set executor cluster\nset executor local\n",
+            "set clusterPrepare a\nset clusterPrepare b\n",
+        ] {
+            let last = parse_lines(text).pop().expect("a line");
+            assert!(
+                matches!(why(&last), ParseError::BadClusterSetting { .. }),
+                "{text:?}"
+            );
+        }
     }
 
     /// `onBusy` is exactly `wait` or `defer`, `slotWait` a whole number of

@@ -332,6 +332,9 @@ fn finish(
     write: impl FnOnce(String) -> bool,
 ) -> Ended {
     match outcome {
+        // The cluster recorded it in its own ref (ADR-0016); a local token
+        // here would claim a run this machine never made.
+        Outcome::Passed if crate::cluster::proved(check.name()) => Ended::Stamped,
         Outcome::Passed => match token_for(settings, manifest, check) {
             Some(tok) => {
                 if write(tok) {
@@ -535,7 +538,8 @@ pub fn states(
                 .iter()
                 .filter_map(|v| crate::registry::one_named(v, manifest))
                 .filter_map(|c| token_for(settings, manifest, c))
-                .any(|t| tokens.contains(&t));
+                .any(|t| tokens.contains(&t))
+                || crate::cluster::stamped_on_tree(settings, &manifest.externals, &verdict, tree);
             let state = if stamped {
                 State::Stamped
             } else if attested

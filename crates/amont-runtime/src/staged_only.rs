@@ -903,6 +903,8 @@ fn install_signal_handler_once() {
         // Gates first: they run in their own process groups, so the signal
         // that is killing amont never reached them (amont#302).
         crate::tree_run::reap_live();
+        // A gate Job on the cluster: asked to go, not waited for (ADR-0016).
+        crate::cluster::cancel_live();
         StagedOnly::restore(fixing_from_config());
         // Re-raise with the default handler so the exit status is honest
         // about having been killed.

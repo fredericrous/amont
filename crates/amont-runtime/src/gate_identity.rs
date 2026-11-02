@@ -68,6 +68,42 @@ pub fn external_token(ext: &External, name: &str) -> Option<String> {
     seal(name, &material)
 }
 
+/// The versioned contract between amont and the gate-runner image: the Job
+/// shape, the `fetch` protocol, the verdict rules (ADR-0016). A change to any
+/// of them bumps this, which invalidates every cluster token at once.
+pub const CLUSTER_CONTRACT: &str = "amont-cluster-v1";
+
+/// The token a CLUSTER pass of one declared check is written under, in
+/// `refs/notes/amont-gate-cluster` (ADR-0016). Separate from
+/// [`external_token`] on purpose: the program runs in the pinned image, not
+/// on this laptop, so the laptop's executable is never inspected — the image
+/// digest stands where the binary identity stands there. `None` for a check
+/// that is not runnable, or a hash git would not make.
+pub fn cluster_token(
+    ext: &External,
+    name: &str,
+    prepare: Option<&str>,
+    image_digest: &str,
+) -> Option<String> {
+    let Kind::Runnable {
+        program,
+        args,
+        files,
+        docs_skip,
+        ..
+    } = &ext.kind
+    else {
+        return None;
+    };
+    let material = format!(
+        "{CLUSTER_CONTRACT}\0{name}\0{program}\0{}\0files={files}\0docs-skip={docs_skip}\0\
+         prepare={}\0image={image_digest}",
+        args.join("\u{1f}"),
+        prepare.unwrap_or("")
+    );
+    seal(name, &material)
+}
+
 /// A built-in gate's token.
 pub fn builtin_token(name: &str) -> Option<String> {
     seal(
@@ -206,6 +242,28 @@ mod tests {
         // A good answer IS remembered: no third hash.
         assert!(seal_with(&memo, "gate", "m", flaky).is_some());
         assert_eq!(calls.get(), 2);
+    }
+
+    /// The cluster identity follows the image digest and the prepare command,
+    /// and never needs the program on this machine.
+    #[test]
+    fn a_cluster_token_follows_the_image_and_needs_no_local_binary() {
+        let ext = crate::manifest::parse(
+            "pre-commit lint * block platform=any definitely-not-a-program-xyz --x\n",
+        )
+        .pop()
+        .expect("one check");
+        assert_eq!(external_token(&ext, "lint"), None, "no local binary");
+        let a = cluster_token(&ext, "pre-commit-lint", None, "sha256:aa").expect("hash");
+        let b = cluster_token(&ext, "pre-commit-lint", None, "sha256:bb").expect("hash");
+        let c = cluster_token(&ext, "pre-commit-lint", Some("make deps"), "sha256:aa").expect("h");
+        assert!(a.starts_with("pre-commit-lint@"));
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(
+            cluster_token(&ext, "pre-commit-lint", None, "sha256:aa"),
+            Some(a)
+        );
     }
 
     #[test]

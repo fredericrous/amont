@@ -28,6 +28,9 @@ mod busy_defers;
 mod check_verb;
 mod ci_attest_scripts;
 mod cli_dispatch;
+// The fake `kubectl` is a POSIX shell script.
+#[cfg(unix)]
+mod cluster_gates;
 mod commit_msg;
 mod commit_style;
 mod dispatchers;
