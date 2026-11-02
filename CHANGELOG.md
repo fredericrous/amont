@@ -24,6 +24,13 @@ missing here.
   reuses it, and a new image runs the gate again. `platform=any` with `fix`
   or `files` is a broken line. An older amont reads the marker as the program
   name, so add it once everyone has upgraded.
+- **A cluster pass is attested for CI on `x86_64-linux`.** pre-push signs a
+  second block per pushed tip, `platform x86_64-linux`, naming only the
+  `platform=any` gates the cluster proved on that tip's tree; the laptop's
+  block never names them. `amont stamps` accepts such a block for those
+  gates, so they read `attested`; `amont attest covered` is unchanged. A
+  `platform=any` push gate whose commit twin the cluster proved on every
+  pushed tree is gated at commit, not run again.
 
 ## v1.66.2
 

@@ -43,7 +43,7 @@ const JOB_PREFIX: &str = "amont-gate-slot-";
 const CACHE_PREFIX: &str = "gate-cache-";
 const TEMP_REF_PREFIX: &str = "refs/amont/cluster/";
 /// The platform a cluster pass is recorded under.
-const PLATFORM: &str = "x86_64-linux";
+pub(crate) const PLATFORM: &str = "x86_64-linux";
 /// The main container's memory, request equal to limit, and CPU limit.
 const MEMORY: &str = "4Gi";
 const CPU_LIMIT: &str = "2";
@@ -94,6 +94,17 @@ pub fn proved_anywhere(id: &str) -> bool {
 /// tree, the answer is yes, so no local token is written on a guess.
 pub fn proved_on_index(id: &str) -> bool {
     proved_anywhere(id) && tree_of(Judged::Index).map_or(true, |tree| proved(id, &tree))
+}
+
+/// The ids of the manifest's `platform=any` gates. A `Runnable` exists only
+/// for a trusted manifest, so these are the trusted declarations.
+pub fn platform_any_ids(manifest: &crate::manifest::Manifest) -> Vec<String> {
+    manifest
+        .externals
+        .iter()
+        .filter(|e| is_platform_any(e))
+        .map(|e| e.id.clone())
+        .collect()
 }
 
 fn mark_proved(id: &str, tree: &str) {
@@ -444,24 +455,56 @@ pub fn vouched_on_every(
     ext: &External,
     tips: &[String],
 ) -> bool {
+    vouched_trees(settings, ext, tips).is_some()
+}
+
+/// The trees of `tips`, when every one carries `ext`'s cluster token; each is
+/// marked proved under `ext`'s id.
+fn vouched_trees(
+    settings: &crate::config::Settings,
+    ext: &External,
+    tips: &[String],
+) -> Option<Vec<String>> {
     if tips.is_empty() {
-        return false;
+        return None;
     }
-    let Some(token) = token(settings, ext) else {
-        return false;
-    };
+    let token = token(settings, ext)?;
     let stamps = crate::gate_stamp::cluster_stamps_for(tips);
     let hit = tips.iter().all(|t| {
         stamps
             .get(t)
             .is_some_and(|(_, tokens)| tokens.contains(&token))
     });
-    if hit {
-        for (tree, _) in stamps.values() {
-            mark_proved(&ext.id, tree);
-        }
+    if !hit {
+        return None;
     }
-    hit
+    let trees: Vec<String> = stamps.values().map(|(tree, _)| tree.clone()).collect();
+    for tree in &trees {
+        mark_proved(&ext.id, tree);
+    }
+    Some(trees)
+}
+
+/// pre-push, a `platform=any` gate `push` whose commit-time twin `twin` is
+/// also `platform=any`: does `twin`'s cluster token sit on every tip's tree?
+/// Then the cluster already judged those trees for the same suite, and the
+/// pass counts under `push`'s own id too, so it reaches the linux block.
+pub fn twin_vouched_on_every(
+    settings: &crate::config::Settings,
+    push: &External,
+    twin: &External,
+    tips: &[String],
+) -> bool {
+    if !is_platform_any(push) || !is_platform_any(twin) {
+        return false;
+    }
+    let Some(trees) = vouched_trees(settings, twin, tips) else {
+        return false;
+    };
+    for tree in &trees {
+        mark_proved(&push.id, tree);
+    }
+    true
 }
 
 /// `amont stamps`: does `tree` carry a cluster token for any of `ids`, each
@@ -1187,7 +1230,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
 }
 
 /// A private scratch directory for one cluster run — the Job manifests and
-/// the bundle — created fresh with mode 0700, so no other user can guess,
+/// the bundle — created fresh (mode 0700 on unix), so no other user can guess,
 /// pre-create or redirect a path in it. Removed on drop, with its entry in
 /// the interrupt list.
 struct Scratch {
