@@ -52,6 +52,10 @@ const CPU_LIMIT: &str = "2";
 const CALL_SECS: u64 = 20;
 /// The shared budget for deleting live Jobs when amont is interrupted.
 const CANCEL_SECS: u64 = 10;
+/// The bound on a quiet clean-up by label after a `create` timed out.
+const LABEL_DELETE_SECS: u64 = 5;
+/// The label every Job carries, valued by its run ([`run_label`]).
+const RUN_LABEL_KEY: &str = "amont.run";
 const POLL: Duration = Duration::from_millis(500);
 const MIB: u64 = 1024 * 1024;
 
@@ -64,6 +68,8 @@ static PROVED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
 static UNREACHABLE: AtomicBool = AtomicBool::new(false);
 /// A misconfiguration is said once per run, not once per gate.
 static WARNED: AtomicBool = AtomicBool::new(false);
+/// An unreachable apiserver is said once per run; each gate still logs it.
+static UNREACHABLE_SAID: AtomicBool = AtomicBool::new(false);
 /// What an interrupt must clean up, by run.
 static LIVE: Mutex<Vec<LiveRun>> = Mutex::new(Vec::new());
 /// Serialises writes of the cluster note: concurrent gates of one stage each
@@ -121,8 +127,24 @@ struct LiveRun {
     kubeconfig: PathBuf,
     namespace: String,
     scratch: PathBuf,
-    job: Option<String>,
+    /// The `amont.run` label of every Job this run creates: how a Job whose
+    /// `create` is still in flight, or whose answer was lost, is found.
+    run_label: String,
+    /// Where this run's Job stands, as a cancel must know it.
+    created: Created,
     gate_ref: Option<String>,
+}
+
+/// A run's Job, as far as an interrupt can tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Created {
+    /// No `create` sent, or the Job already deleted: nothing on the cluster
+    /// is this run's.
+    NotSent,
+    /// A `create` was sent; its Job, if any, is found by the run's label.
+    Sent,
+    /// The Job this run holds, by name.
+    Named(String),
 }
 
 fn live_update(run: u64, update: impl FnOnce(&mut LiveRun)) {
@@ -141,25 +163,45 @@ pub fn cancel_live() {
     if live.is_empty() {
         return;
     }
-    crate::staged_only::leave_on_second_signal();
+    let _leaving = crate::staged_only::leave_on_second_signal();
     let deadline = Instant::now() + Duration::from_secs(CANCEL_SECS);
     for run in live {
         if let Some(gate_ref) = &run.gate_ref {
             let _ = crate::git::succeeds(&["update-ref", "-d", gate_ref]); // best-effort: amont is dying
         }
         let _ = std::fs::remove_dir_all(&run.scratch); // best-effort: amont is dying
-        let Some(job) = &run.job else { continue };
-        eprintln!("cancelling cluster Job {job}; Ctrl-C again to leave it");
         let kube = Kube {
             kubeconfig: run.kubeconfig.clone(),
             namespace: run.namespace.clone(),
         };
         let left = secs_left(deadline, CANCEL_SECS);
-        if let Err(why) = kube.bounded(&["delete", "job", job, "--wait=false"], left) {
-            eprintln!("could not cancel cluster Job {job}: {why}");
+        match &run.created {
+            Created::NotSent => {}
+            Created::Named(job) => {
+                eprintln!("cancelling cluster Job {job}; Ctrl-C again to leave it");
+                if let Err(why) = kube.bounded(&["delete", "job", job, "--wait=false"], left) {
+                    eprintln!(
+                        "could not cancel cluster Job {job}: {}",
+                        crate::ui::sanitize(&why)
+                    );
+                }
+            }
+            // Not named yet: `create` may be in flight or its answer lost. The
+            // label finds the Job if it exists, and deletes nothing otherwise.
+            Created::Sent => {
+                let selector = run_selector(&run.run_label);
+                eprintln!("cancelling cluster Jobs of this run; Ctrl-C again to leave them");
+                if let Err(why) =
+                    kube.bounded(&["delete", "job", "-l", &selector, "--wait=false"], left)
+                {
+                    eprintln!(
+                        "could not cancel the cluster Jobs of this run: {}",
+                        crate::ui::sanitize(&why)
+                    );
+                }
+            }
         }
     }
-    crate::staged_only::queue_second_signal();
 }
 
 /// Whole seconds until `deadline`, at most `cap`, at least 1.
@@ -211,10 +253,7 @@ impl std::fmt::Display for Fallback {
             Fallback::SlotsTaken => write!(f, "all slots taken"),
             Fallback::QuotaFull => write!(f, "the quota refused every slot"),
             Fallback::BundleTooBig { mib, cap } => {
-                write!(
-                    f,
-                    "bundle is {mib} MiB, over amont.cluster.maxBundleMiB ({cap})"
-                )
+                write!(f, "bundle-too-big: {mib} MiB, over the {cap} MiB cap")
             }
             Fallback::GateFailed(detail) => write!(f, "failed on the cluster ({detail})"),
             Fallback::NotProved(why) => write!(f, "{why}"),
@@ -382,12 +421,23 @@ fn is_platform_any(ext: &External) -> bool {
 /// gate that is not `platform=any`, or no pinned image on this machine.
 /// Never inspects the laptop's executable.
 fn token(settings: &crate::config::Settings, ext: &External) -> Option<String> {
+    token_from(&machine_keys(), settings, ext, &ext.id)
+}
+
+/// [`token`] from machine keys already read, for `ext`'s program, arguments
+/// and file scope under the name `name`: a caller that needs several tokens
+/// reads the keys (one `git config`) once.
+fn token_from(
+    keys: &[(String, String)],
+    settings: &crate::config::Settings,
+    ext: &External,
+    name: &str,
+) -> Option<String> {
     if !is_platform_any(ext) {
         return None;
     }
-    let keys = machine_keys();
-    let digest = digest_of(key(&keys, "amont.cluster.image")?)?;
-    crate::gate_identity::cluster_token(ext, &ext.id, prepare(settings).as_deref(), digest)
+    let digest = digest_of(key(keys, "amont.cluster.image")?)?;
+    crate::gate_identity::cluster_token(ext, name, prepare(settings).as_deref(), digest)
 }
 
 /// What the cluster is asked to judge.
@@ -455,25 +505,23 @@ pub fn vouched_on_every(
     ext: &External,
     tips: &[String],
 ) -> bool {
-    vouched_trees(settings, ext, tips).is_some()
+    if tips.is_empty() {
+        return false;
+    }
+    let Some(token) = token(settings, ext) else {
+        return false;
+    };
+    vouched_trees(ext, tips, &token).is_some()
 }
 
-/// The trees of `tips`, when every one carries `ext`'s cluster token; each is
-/// marked proved under `ext`'s id.
-fn vouched_trees(
-    settings: &crate::config::Settings,
-    ext: &External,
-    tips: &[String],
-) -> Option<Vec<String>> {
-    if tips.is_empty() {
-        return None;
-    }
-    let token = token(settings, ext)?;
+/// The trees of `tips`, when every one carries `token`, `ext`'s cluster token;
+/// each is marked proved under `ext`'s id.
+fn vouched_trees(ext: &External, tips: &[String], token: &str) -> Option<Vec<String>> {
     let stamps = crate::gate_stamp::cluster_stamps_for(tips);
     let hit = tips.iter().all(|t| {
         stamps
             .get(t)
-            .is_some_and(|(_, tokens)| tokens.contains(&token))
+            .is_some_and(|(_, tokens)| tokens.iter().any(|held| held == token))
     });
     if !hit {
         return None;
@@ -498,22 +546,19 @@ pub(crate) fn claim_twin_cluster_pass(
     twin: &External,
     tips: &[String],
 ) -> bool {
-    if !is_platform_any(push) || !is_platform_any(twin) {
+    if tips.is_empty() || !is_platform_any(push) || !is_platform_any(twin) {
         return false;
     }
-    let Some(twin_token) = token(settings, twin) else {
-        return false;
-    };
     let keys = machine_keys();
-    let Some(digest) = key(&keys, "amont.cluster.image").and_then(digest_of) else {
+    let Some(twin_token) = token_from(&keys, settings, twin, &twin.id) else {
         return false;
     };
-    let push_as_twin =
-        crate::gate_identity::cluster_token(push, &twin.id, prepare(settings).as_deref(), digest);
-    if push_as_twin.as_deref() != Some(twin_token.as_str()) {
+    // `push` as it would read under the twin's name: equal tokens mean the
+    // same cluster identity.
+    if token_from(&keys, settings, push, &twin.id).as_deref() != Some(twin_token.as_str()) {
         return false;
     }
-    let Some(trees) = vouched_trees(settings, twin, tips) else {
+    let Some(trees) = vouched_trees(twin, tips, &twin_token) else {
         return false;
     };
     for tree in &trees {
@@ -587,10 +632,14 @@ pub fn try_run(
         return false;
     }
     let outcome = cluster_config(settings).and_then(|config| {
-        crate::say!(
-            "{}: running on the cluster",
-            crate::ui::highlight(&ext.short_name)
-        );
+        // Not announced once the apiserver has not answered: `run` refuses
+        // it at once and the gate runs here.
+        if !UNREACHABLE.load(Ordering::SeqCst) {
+            crate::say!(
+                "{}: running on the cluster",
+                crate::ui::highlight(&ext.short_name)
+            );
+        }
         run(&config, ext, program, args, judged)
     });
     match outcome {
@@ -629,11 +678,35 @@ fn say_fallback(short_name: &str, fallback: &Fallback) {
             "{name} failed on the cluster ({}); running it here for the verdict",
             crate::ui::sanitize(detail)
         )),
-        other => crate::hooks::common::warn(&format!(
-            "{name} runs here: the cluster is unavailable ({})",
-            crate::ui::sanitize(&other.to_string())
+        Fallback::Unreachable(why) => {
+            if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
+                crate::hooks::common::warn(&format!(
+                    "{name} and this hook's other cluster gates run here: the cluster did not answer ({})",
+                    crate::ui::sanitize(why)
+                ));
+            }
+        }
+        Fallback::UnreachableEarlier => {
+            if !UNREACHABLE_SAID.swap(true, Ordering::SeqCst) {
+                crate::hooks::common::warn(&format!(
+                    "the cluster did not answer earlier in this hook: {name} runs here"
+                ));
+            }
+        }
+        Fallback::BundleTooBig { mib, cap } => crate::hooks::common::warn(&format!(
+            "{name} runs here: its bundle is {mib} MiB, over the {cap} MiB cap — raise it with `git config amont.cluster.maxBundleMiB <MiB>`"
         )),
+        Fallback::SlotsTaken | Fallback::QuotaFull | Fallback::NotProved(_) => {
+            warn_unavailable(&name, fallback)
+        }
     }
+}
+
+fn warn_unavailable(name: &str, fallback: &Fallback) {
+    crate::hooks::common::warn(&format!(
+        "{name} runs here: the cluster is unavailable ({})",
+        crate::ui::sanitize(&fallback.to_string())
+    ));
 }
 
 /// Append `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
@@ -678,6 +751,8 @@ fn run(
     args: &[String],
     judged: Judged,
 ) -> Result<String, Fallback> {
+    // A signal that killed a kubectl child must not reach a local run.
+    crate::tree_run::park_if_dying();
     if UNREACHABLE.load(Ordering::SeqCst) {
         return Err(Fallback::UnreachableEarlier);
     }
@@ -696,6 +771,7 @@ fn run(
         tree: &tree,
         repo_dir: &repo_dir(),
         argv: &argv,
+        run_label: &scratch.run_label(),
     };
     let job = claim_slot(&kube, &spec, &scratch, deadline)?;
     let outcome = run_in(&kube, config, &job, &scratch, &commit, &tree, deadline);
@@ -839,8 +915,11 @@ enum Call {
     Ok(String),
     /// Exit non-zero, with its stderr.
     Refused(String),
-    /// Could not start, or outlived its deadline.
-    Broken(String),
+    /// Could not start: nothing reached the apiserver.
+    NotStarted(String),
+    /// Outlived its deadline, or its wait failed: the request may have
+    /// reached the apiserver all the same.
+    TimedOut(String),
 }
 
 impl Kube {
@@ -884,7 +963,7 @@ impl Kube {
     fn bounded(&self, args: &[&str], secs: u64) -> Result<(), String> {
         match self.capture(args, secs) {
             Call::Ok(_) => Ok(()),
-            Call::Refused(e) | Call::Broken(e) => Err(last_line(&e)),
+            Call::Refused(e) | Call::NotStarted(e) | Call::TimedOut(e) => Err(last_line(&e)),
         }
     }
 
@@ -913,7 +992,7 @@ impl Kube {
                 "fetch-receive failed: {}",
                 last_line(&e)
             ))),
-            Call::Broken(e) => Err(Fallback::Unreachable(e)),
+            Call::NotStarted(e) | Call::TimedOut(e) => Err(Fallback::Unreachable(e)),
         }
     }
 
@@ -962,7 +1041,7 @@ fn capture(cmd: &mut Command, secs: u64) -> Call {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Call::Broken(format!("kubectl: {e}")),
+        Err(e) => return Call::NotStarted(format!("kubectl: {e}")),
     };
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
@@ -979,8 +1058,8 @@ fn capture(cmd: &mut Command, secs: u64) -> Call {
     match ran {
         Ok(crate::hooks::common::Ran::Status(s)) if s.success() => Call::Ok(collect(out)),
         Ok(crate::hooks::common::Ran::Status(_)) => Call::Refused(collect(err)),
-        Ok(crate::hooks::common::Ran::TimedOut(_)) => Call::Broken("kubectl timed out".into()),
-        Err(e) => Call::Broken(format!("kubectl: {e}")),
+        Ok(crate::hooks::common::Ran::TimedOut(_)) => Call::TimedOut("kubectl timed out".into()),
+        Err(e) => Call::TimedOut(format!("kubectl: {e}")),
     }
 }
 
@@ -1057,7 +1136,7 @@ impl Job {
             crate::hooks::common::warn(&reason);
             log_line(gate, &reason);
         }
-        live_update(self.run, |l| l.job = None);
+        live_update(self.run, |l| l.created = Created::NotSent);
     }
 }
 
@@ -1068,6 +1147,8 @@ struct Spec<'a> {
     tree: &'a str,
     repo_dir: &'a str,
     argv: &'a [String],
+    /// The value of the Job's `amont.run` label.
+    run_label: &'a str,
 }
 
 /// Create `amont-gate-slot-<k>` for the first free `k`.
@@ -1087,9 +1168,17 @@ fn claim_slot(
         let path = path.to_string_lossy().into_owned();
         let name = format!("{JOB_PREFIX}{slot}");
         let args = ["create", "-f", &path, "-o", "jsonpath={.metadata.uid}"];
-        match kube.capture(&args, secs_left(deadline, CALL_SECS)) {
+        live_update(scratch.run, |l| l.created = Created::Sent);
+        let created = kube.capture(&args, secs_left(deadline, CALL_SECS));
+        if crate::tree_run::is_dying() {
+            // The signal watcher may have cleaned up before this `create`
+            // landed: whatever it made is ours to drop, then park.
+            delete_by_label(kube, &scratch.run_label(), spec.gate);
+            crate::tree_run::park_if_dying();
+        }
+        match created {
             Call::Ok(uid) if !uid.trim().is_empty() => {
-                live_update(scratch.run, |l| l.job = Some(name.clone()));
+                live_update(scratch.run, |l| l.created = Created::Named(name.clone()));
                 return Ok(Job {
                     run: scratch.run,
                     slot,
@@ -1099,15 +1188,26 @@ fn claim_slot(
                 });
             }
             Call::Ok(_) => {
+                // The Job exists, only unnamed by its UID: take it down by
+                // name rather than hold the slot until its deadline.
+                live_update(scratch.run, |l| l.created = Created::Named(name.clone()));
+                delete_by_name(kube, &name, spec.gate);
+                live_update(scratch.run, |l| l.created = Created::NotSent);
                 return Err(Fallback::NotProved(
                     "kubectl create printed no Job UID".into(),
-                ))
+                ));
             }
             Call::Refused(err) => match refusal(&err) {
                 Refusal::Taken | Refusal::Quota => refusals.push(refusal(&err)),
                 Refusal::Other => return Err(Fallback::Unreachable(last_line(&err))),
             },
-            Call::Broken(err) => return Err(Fallback::Unreachable(err)),
+            Call::NotStarted(err) => return Err(Fallback::Unreachable(err)),
+            // The request may have landed: drop whatever it made, briefly and
+            // quietly; the Job's deadline bounds what a failed delete leaves.
+            Call::TimedOut(err) => {
+                delete_by_label(kube, &scratch.run_label(), spec.gate);
+                return Err(Fallback::Unreachable(err));
+            }
         }
     }
     if refusals.iter().all(|r| *r == Refusal::Quota) {
@@ -1115,6 +1215,43 @@ fn claim_slot(
     } else {
         Err(Fallback::SlotsTaken)
     }
+}
+
+/// Ask the apiserver to drop the Job `name`, without waiting for it, for a Job
+/// whose UID is unknown. A delete that fails is said and logged.
+fn delete_by_name(kube: &Kube, name: &str, gate: &str) {
+    if let Err(why) = kube.bounded(&["delete", "job", name, "--wait=false"], CALL_SECS) {
+        say_delete_failed(&format!("Job {name}"), &why, gate);
+    }
+}
+
+/// Ask the apiserver to drop every Job carrying this run's label, without
+/// waiting: for a `create` whose answer was lost. Bounded short and logged
+/// only: the person was already told the cluster did not answer, and a Job
+/// left behind ends at its own deadline.
+fn delete_by_label(kube: &Kube, label: &str, gate: &str) {
+    let selector = run_selector(label);
+    let args = ["delete", "job", "-l", &selector, "--wait=false"];
+    if let Err(why) = kube.bounded(&args, LABEL_DELETE_SECS) {
+        log_line(
+            gate,
+            &format!(
+                "could not delete the Jobs of this run: {}",
+                crate::ui::sanitize(&why)
+            ),
+        );
+    }
+}
+
+/// The label selector of one run's Jobs.
+fn run_selector(label: &str) -> String {
+    format!("{RUN_LABEL_KEY}={label}")
+}
+
+fn say_delete_failed(what: &str, why: &str, gate: &str) {
+    let reason = format!("could not delete {what}: {}", crate::ui::sanitize(why));
+    crate::hooks::common::warn(&reason);
+    log_line(gate, &reason);
 }
 
 fn last_line(s: &str) -> String {
@@ -1219,7 +1356,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
     let gate = container("gate", &config.image, spec.argv, &work_mounts);
     format!(
         "{{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\
-         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\"}},\
+         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_label_key}:{run_label}}},\
          \"annotations\":{{\"amont.dev/gate\":{gate_id},\"amont.dev/tree\":{tree}}}}},\
          \"spec\":{{\"backoffLimit\":0,\"activeDeadlineSeconds\":{deadline},\
          \"ttlSecondsAfterFinished\":300,\"template\":{{\"spec\":{{\
@@ -1233,6 +1370,8 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
          {{\"name\":\"work\",\"emptyDir\":{{}}}},{{\"name\":\"checkout\",\"emptyDir\":{{}}}}],\
          \"initContainers\":[{init}],\"containers\":[{gate}]}}}}}}}}",
         name = json_string(&format!("{JOB_PREFIX}{slot}")),
+        run_label_key = json_string(RUN_LABEL_KEY),
+        run_label = json_string(spec.run_label),
         gate_id = json_string(spec.gate),
         tree = json_string(spec.tree),
         deadline = config.timeout_secs + 60,
@@ -1242,6 +1381,31 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
         pvc = json_string(&format!("{CACHE_PREFIX}{slot}")),
         init = init.join(","),
     )
+}
+
+/// Unique to this process and run, across every host sharing the namespace
+/// (pids repeat from host to host, and in containers): the pid, a random
+/// per-process nonce and the run. 45 characters at most (a 7-digit pid, 16
+/// hex digits, a 20-digit run), inside a label value's 63, alphanumeric at
+/// both ends.
+fn run_label(run: u64) -> String {
+    format!("{}-{:016x}-{run}", std::process::id(), process_nonce())
+}
+
+/// 64 random bits, drawn once per process from the standard library's
+/// randomly seeded hasher: no dependency, no file to read.
+fn process_nonce() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        hasher.finish()
+    })
 }
 
 /// A private scratch directory for one cluster run — the Job manifests and
@@ -1280,10 +1444,16 @@ impl Scratch {
                 kubeconfig: kube.kubeconfig.clone(),
                 namespace: kube.namespace.clone(),
                 scratch: dir.clone(),
-                job: None,
+                run_label: run_label(run),
+                created: Created::NotSent,
                 gate_ref: None,
             });
         Ok(Scratch { run, dir })
+    }
+
+    /// The `amont.run` label value of this run's Jobs.
+    fn run_label(&self) -> String {
+        run_label(self.run)
     }
 
     /// A new file in the scratch directory; refused if it exists.
@@ -1598,7 +1768,7 @@ fn pod_facts(kube: &Kube, uid: &str, deadline: Instant) -> Result<Option<PodFact
             "kubectl get pods: {}",
             last_line(&e)
         ))),
-        Call::Broken(e) => Err(Fallback::Unreachable(e)),
+        Call::NotStarted(e) | Call::TimedOut(e) => Err(Fallback::Unreachable(e)),
     }
 }
 
@@ -1684,7 +1854,7 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
                     last_line(&e)
                 )))
             }
-            Call::Broken(e) => return Err(Fallback::Unreachable(e)),
+            Call::NotStarted(e) | Call::TimedOut(e) => return Err(Fallback::Unreachable(e)),
         };
         let Some(facts) = parse_job(&json) else {
             return Ok(None);
@@ -1705,6 +1875,22 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A run label is the pid, a 16-hex-digit nonce and the run: valid as a
+    /// label value, distinct per run, and the same nonce within one process.
+    #[test]
+    fn a_run_label_is_pid_nonce_and_run() {
+        let first = run_label(1);
+        let parts: Vec<&str> = first.split('-').collect();
+        assert_eq!(parts.len(), 3, "{first}");
+        assert_eq!(parts[0], std::process::id().to_string());
+        assert_eq!(parts[1].len(), 16, "{first}");
+        assert!(parts[1].chars().all(|c| c.is_ascii_hexdigit()), "{first}");
+        assert_eq!(parts[2], "1");
+        assert!(first.len() <= 63);
+        let second = run_label(2);
+        assert_ne!(first, second);
+        assert_eq!(second.split('-').nth(1), Some(parts[1]));
+    }
 
     fn cluster_config(prepare: Option<&str>) -> ClusterConfig {
         ClusterConfig {
@@ -1761,6 +1947,7 @@ mod tests {
             tree: "abc",
             repo_dir: "amont",
             argv: &argv,
+            run_label: "42-7",
         };
         let json = job_manifest(&spec, 1);
         let doc = crate::json_read::parse(&json).expect("valid JSON");
@@ -1922,9 +2109,6 @@ mod tests {
     #[test]
     fn a_bundle_over_the_cap_says_its_size_in_mib() {
         let f = Fallback::BundleTooBig { mib: 63, cap: 50 };
-        assert_eq!(
-            f.to_string(),
-            "bundle is 63 MiB, over amont.cluster.maxBundleMiB (50)"
-        );
+        assert_eq!(f.to_string(), "bundle-too-big: 63 MiB, over the 50 MiB cap");
     }
 }

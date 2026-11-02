@@ -45,8 +45,11 @@ case "$1" in
     mkdir "$D/slot-$k" 2>/dev/null || { echo 'Error from server (AlreadyExists): jobs.batch already exists' >&2; exit 1; }
     cp "$3" "$D/job-$k.json"; cp "$3" "$D/job.json"
     mkdir -p "$D/created"; cp "$3" "$(mktemp "$D/created/job.XXXXXX")"
-    printf 'uid-%s' "$k"; exit 0 ;;
+    if [ "$mode" = hang ]; then touch "$D/create-started"; sleep 30; [ -d "$D" ] || exit 1; fi
+    [ "$mode" = nouid ] || printf 'uid-%s' "$k"; exit 0 ;;
   get)
+    touch "$D/get-started"
+    if [ -f "$D/get_sleep" ]; then sleep "$(cat "$D/get_sleep")"; [ -d "$D" ] || exit 1; fi
     if [ "$2" = "job" ]; then
       k=${3##*-}
       gate=$(grep -o '"amont.dev/gate":"[^"]*"' "$D/job-$k.json" | sed 's/.*:"//; s/"$//')
@@ -83,6 +86,17 @@ case "$1" in
   logs) echo "output of the gate in the pod"; exit 0 ;;
   delete)
     printf '%s\n' "$*" >> "$D/deletes"
+    if [ -f "$D/delete_sleep" ]; then sleep "$(cat "$D/delete_sleep")"; fi
+    [ -d "$D" ] || exit 1
+    touch "$D/delete-done"
+    if [ "$3" = "-l" ]; then
+      label=${4#amont.run=}
+      for f in "$D"/job-*.json; do
+        [ -f "$f" ] && grep -q "\"amont.run\":\"$label\"" "$f" || continue
+        k=${f##*job-}; k=${k%.json}; rmdir "$D/slot-$k" 2>/dev/null; rm -f "$D/received-$k"
+      done
+      exit 0
+    fi
     k=${3##*-}; rmdir "$D/slot-$k" 2>/dev/null; rm -f "$D/received-$k"; exit 0 ;;
 esac
 echo "fake kubectl: unexpected $*" >&2; exit 98
@@ -104,6 +118,8 @@ const ANSWERS: &[&str] = &[
     "job",
     "fetch_msg",
     "prepare_exit",
+    "delete_sleep",
+    "get_sleep",
 ];
 
 struct Cluster {
@@ -206,9 +222,9 @@ impl Cluster {
         self.read("calls")
     }
 
-    /// `amont <args>`, with the fake first on PATH, the machine's global git
-    /// config and `KUBECONFIG` out of reach, and `stdin` piped in if given.
-    fn amont(&self, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>) -> (i32, String) {
+    /// `amont <args>` as a command: the fake first on PATH, the machine's
+    /// global git config and `KUBECONFIG` out of reach.
+    fn command(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Command {
         let mut cmd = common::amont_cmd();
         let path = format!(
             "{}:{}",
@@ -221,17 +237,23 @@ impl Cluster {
             .env("FAKE_KUBE_DIR", &self.kube)
             .env("GATE_LOG", self.kube.join("gate.log"))
             .env("GIT_CONFIG_GLOBAL", self.r.dir.join(".fake-kube/gitconfig"))
-            .env_remove("KUBECONFIG")
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env_remove("KUBECONFIG");
         for (k, v) in env {
             cmd.env(k, v);
         }
+        cmd
+    }
+
+    /// `amont <args>`, and `stdin` piped in if given.
+    fn amont(&self, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>) -> (i32, String) {
+        let mut cmd = self.command(args, env);
+        cmd.stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("spawn amont");
         if let Some(text) = stdin {
             child
@@ -396,6 +418,10 @@ enum Said {
     FailedThere,
     /// The cluster is unavailable.
     Unavailable,
+    /// The apiserver did not answer.
+    Unreachable,
+    /// The bundle is over the cap.
+    BundleCap,
 }
 
 /// One way the cluster does not prove a pass.
@@ -503,7 +529,7 @@ const MODES: &[Mode] = &[
     mode(
         "apiserver down",
         "Unable to connect",
-        Said::Unavailable,
+        Said::Unreachable,
         &[("create", "down\n")],
     ),
     Mode {
@@ -542,8 +568,8 @@ const MODES: &[Mode] = &[
         big: true,
         ..mode(
             "bundle over the cap",
-            "MiB, over amont.cluster.maxBundleMiB (1)",
-            Said::Unavailable,
+            "MiB, over the 1 MiB cap",
+            Said::BundleCap,
             &[],
         )
     },
@@ -583,6 +609,19 @@ fn assert_said(mode: &Mode, text: &str) {
         ),
         Said::Unavailable => assert!(
             text.contains("lint runs here: the cluster is unavailable ("),
+            "{what}: {text}"
+        ),
+        Said::Unreachable => assert!(
+            text.contains("the cluster did not answer (")
+                && text.contains("lint and this hook's other cluster gates run here"),
+            "{what}: {text}"
+        ),
+        Said::BundleCap => assert!(
+            text.contains("lint runs here: its bundle is ")
+                && text.contains(
+                    "MiB cap — raise it with `git config amont.cluster.maxBundleMiB <MiB>`"
+                )
+                && !text.contains("unavailable"),
             "{what}: {text}"
         ),
     }
@@ -1271,6 +1310,10 @@ fn a_push_twin_with_another_command_runs_itself() {
     c.r.stage("a.txt", "hello\n");
     let (code, text) = c.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
+    assert!(
+        c.kubectl_calls().contains(" create "),
+        "the commit twin's Job ran: {text}"
+    );
     assert!(c
         .r
         .git(&["commit", "-q", "--no-verify", "-m", "feat: a"])
@@ -1283,7 +1326,267 @@ fn a_push_twin_with_another_command_runs_itself() {
     assert_eq!(code, 0, "{text}");
     assert!(!text.contains("gated at commit on the cluster"), "{text}");
     assert!(
-        c.kubectl_calls().contains(" create ") || c.local_runs() > 0,
-        "the push gate ran: {text}"
+        c.kubectl_calls().contains(" create "),
+        "the push gate ran on the cluster itself: {text}"
     );
+    assert_eq!(c.local_runs(), 0, "{text}");
+}
+
+/// `kubectl create` succeeded but printed no UID: the Job exists, so it is
+/// deleted by name, not left to hold its slot until the deadline.
+#[test]
+fn a_job_created_without_a_uid_is_deleted_by_name() {
+    let c = staged(GATE_AT_COMMIT);
+    c.answer("create", "nouid\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "the local pass is the verdict: {text}");
+    assert_eq!(c.local_runs(), 1, "{text}");
+    assert!(
+        c.read("deletes")
+            .contains("delete job amont-gate-slot-0 --wait=false"),
+        "deleted by name, without waiting: {}",
+        c.read("deletes")
+    );
+    assert!(
+        c.cluster_log().contains("printed no Job UID"),
+        "{}",
+        c.cluster_log()
+    );
+}
+
+/// The apiserver not answering is said on the terminal once per hook, however
+/// many gates it affects; each gate still logs its own line.
+#[test]
+fn an_unreachable_cluster_is_said_once_per_hook() {
+    let c = staged(
+        "set executor cluster\n\
+         pre-commit  a  *.txt  block  platform=any scripts/a.sh\n\
+         pre-commit  b  *.txt  block  platform=any scripts/b.sh\n",
+    );
+    c.answer("create", "down\ndown\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(c.local_runs(), 2, "both ran here: {text}");
+    assert_eq!(
+        text.matches("the cluster did not answer").count(),
+        1,
+        "said once: {text}"
+    );
+    assert_eq!(c.cluster_log().lines().count(), 2, "{}", c.cluster_log());
+}
+
+/// `kubectl create` outlives its bound after making the Job: the answer is
+/// lost, so the run's Jobs are deleted by their label, not left to hold the
+/// slot until the deadline.
+#[test]
+fn a_create_that_times_out_deletes_the_runs_jobs_by_label() {
+    let c = staged(GATE_AT_COMMIT);
+    c.answer("create", "hang\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "the local pass is the verdict: {text}");
+    assert_eq!(c.local_runs(), 1, "{text}");
+    assert!(
+        c.read("deletes").contains("delete job -l amont.run="),
+        "{}",
+        c.read("deletes")
+    );
+    assert!(
+        c.read("deletes").contains("--wait=false"),
+        "{}",
+        c.read("deletes")
+    );
+    assert!(!c.kube.join("slot-0").exists(), "the slot is free again");
+}
+
+#[cfg(unix)]
+mod interrupted {
+    use super::*;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::time::{Duration, Instant};
+
+    /// How a signal reaches the hook.
+    #[derive(Clone, Copy)]
+    enum Reach {
+        /// `kill <pid>`: the hook alone.
+        Hook,
+        /// Ctrl-C: the hook's whole process group, its `kubectl` included.
+        Group,
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn send(signal: &str, pid: u32, reach: Reach) {
+        let target = match reach {
+            Reach::Hook => pid.to_string(),
+            Reach::Group => format!("-{pid}"),
+        };
+        let sent = std::process::Command::new("kill")
+            // `--` so a group target, `-<pid>`, is never read as an option.
+            .args([format!("-{signal}"), "--".to_string(), target])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    }
+
+    /// A running pre-commit hook whose cluster Job `fetch` never reaches
+    /// Running, with its temp files under a directory of ours.
+    struct Held {
+        child: std::process::Child,
+        tmp: PathBuf,
+        output: PathBuf,
+    }
+
+    impl Held {
+        /// Start the hook and wait, bounded, for the fake to write the marker
+        /// `ready`: the hook is then inside a `kubectl` call the test scripted
+        /// to stay alive (`get_sleep`, or a `create` that hangs).
+        fn start(c: &Cluster, ready: &str) -> Held {
+            c.config("amont.cluster.startWait", "60");
+            c.answer("start", "pending");
+            let tmp = c.kube.join("tmp");
+            std::fs::create_dir_all(&tmp).unwrap();
+            let output = c.kube.join("hook.out");
+            let log = std::fs::File::create(&output).unwrap();
+            let hooks = c.r.dir.join(".git/hooks").to_string_lossy().into_owned();
+            let child = c
+                .command(
+                    &["--hooks-dir", &hooks, "pre-commit"],
+                    &[("TMPDIR", &tmp.to_string_lossy())],
+                )
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .expect("spawn amont");
+            let held = Held { child, tmp, output };
+            wait_until(ready, || c.kube.join(ready).exists());
+            assert!(held.scratch_dirs() > 0, "the scratch directory exists");
+            held
+        }
+
+        fn scratch_dirs(&self) -> usize {
+            std::fs::read_dir(&self.tmp)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("amont-cluster-")
+                })
+                .count()
+        }
+
+        fn output(&self) -> String {
+            plain(&std::fs::read_to_string(&self.output).unwrap_or_default())
+        }
+
+        /// The hook's end: killed by `signal`, within `within`.
+        fn ends_by(&mut self, signal: i32, within: Duration) {
+            let until = Instant::now() + within;
+            let status = loop {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() >= until {
+                    self.child.kill().unwrap();
+                    panic!("the hook outlived the signal: {}", self.output());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            assert!(!status.success(), "{}", self.output());
+            assert_eq!(status.signal(), Some(signal), "{}", self.output());
+        }
+    }
+
+    /// A signal while a `kubectl get` is alive and the Job is pending. Checks
+    /// what is observable: the Job is deleted without waiting, the gate never
+    /// runs here, the scratch directory is gone, and the hook dies of the
+    /// signal. It does NOT prove the order of the `DYING` store against the
+    /// fallback: with Ctrl-C the `get` dies of the same signal, but the
+    /// watcher wins that race in practice, and the test stays green with the
+    /// store removed.
+    fn a_signal_cancels_the_job_and_never_runs_the_gate_here(
+        name: &str,
+        signal: i32,
+        reach: Reach,
+    ) {
+        let c = staged(GATE_AT_COMMIT);
+        c.answer("get_sleep", "8");
+        let mut held = Held::start(&c, "get-started");
+        send(name, held.child.id(), reach);
+        held.ends_by(signal, Duration::from_secs(30));
+        let deletes = c.read("deletes");
+        assert!(
+            deletes.contains("delete job amont-gate-slot-0 --wait=false"),
+            "{deletes} / {}",
+            held.output()
+        );
+        assert_eq!(c.local_runs(), 0, "{}", held.output());
+        assert_eq!(held.scratch_dirs(), 0, "{}", held.output());
+    }
+
+    #[test]
+    fn sigterm_cancels_the_cluster_job_and_never_runs_the_gate_here() {
+        a_signal_cancels_the_job_and_never_runs_the_gate_here("TERM", 15, Reach::Hook);
+    }
+
+    #[test]
+    fn ctrl_c_cancels_the_cluster_job_and_never_runs_the_gate_here() {
+        a_signal_cancels_the_job_and_never_runs_the_gate_here("INT", 2, Reach::Group);
+    }
+
+    /// A signal while `kubectl create` is in flight, after it made the Job:
+    /// the hook has no name for the Job yet, so the cancel deletes by the
+    /// run's label.
+    #[test]
+    fn a_signal_during_create_deletes_the_runs_jobs_by_label() {
+        let c = staged(GATE_AT_COMMIT);
+        c.answer("create", "hang\n");
+        let mut held = Held::start(&c, "create-started");
+        assert!(c.kube.join("slot-0").exists(), "the Job was made");
+        send("TERM", held.child.id(), Reach::Hook);
+        held.ends_by(15, Duration::from_secs(30));
+        let deletes = c.read("deletes");
+        assert!(
+            deletes.contains("delete job -l amont.run=") && deletes.contains("--wait=false"),
+            "{deletes} / {}",
+            held.output()
+        );
+        assert!(!c.kube.join("slot-0").exists(), "the slot is free again");
+        assert_eq!(c.local_runs(), 0, "{}", held.output());
+        assert_eq!(held.scratch_dirs(), 0, "{}", held.output());
+    }
+
+    /// A second signal while the Job is being cancelled ends amont at once and
+    /// leaves the Job: it does not wait for the delete.
+    #[test]
+    fn a_second_signal_leaves_the_job_and_exits_at_once() {
+        let c = staged(GATE_AT_COMMIT);
+        c.answer("delete_sleep", "6");
+        c.answer("get_sleep", "8");
+        let mut held = Held::start(&c, "get-started");
+        send("TERM", held.child.id(), Reach::Hook);
+        wait_until("the cancel to start", || !c.read("deletes").is_empty());
+        send("TERM", held.child.id(), Reach::Hook);
+        held.ends_by(15, Duration::from_secs(4));
+        assert_eq!(c.local_runs(), 0, "{}", held.output());
+        assert!(
+            held.output().contains("Ctrl-C again to leave it"),
+            "{}",
+            held.output()
+        );
+        // The fake's slow delete outlives the hook: let it finish before the
+        // directory it writes to goes away.
+        wait_until("the fake delete to finish", || {
+            c.kube.join("delete-done").exists()
+        });
+    }
 }

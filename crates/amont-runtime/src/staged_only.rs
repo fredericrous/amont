@@ -833,16 +833,23 @@ impl Drop for StagedOnly {
 /// ends amont at once instead of queueing behind the cancel.
 static LEAVE_ON_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// From now on a second signal ends amont at once ([`LEAVE_ON_SIGNAL`]);
-/// [`crate::cluster::cancel_live`] calls it before its deletes.
-pub(crate) fn leave_on_second_signal() {
-    LEAVE_ON_SIGNAL.store(true, std::sync::atomic::Ordering::SeqCst);
+/// Holds [`LEAVE_ON_SIGNAL`] set; a second signal queues again, as before the
+/// cancel, once it is dropped — on every exit path, a panic included.
+#[must_use = "the flag is cleared when the guard drops"]
+pub(crate) struct LeaveOnSecondSignal(());
+
+impl Drop for LeaveOnSecondSignal {
+    fn drop(&mut self) {
+        LEAVE_ON_SIGNAL.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
-/// A second signal queues again, as before the cancel; called once the
-/// cluster deletes are done.
-pub(crate) fn queue_second_signal() {
-    LEAVE_ON_SIGNAL.store(false, std::sync::atomic::Ordering::SeqCst);
+/// From now on a second signal ends amont at once ([`LEAVE_ON_SIGNAL`]), for
+/// as long as the guard lives; [`crate::cluster::cancel_live`] holds it over
+/// its deletes.
+pub(crate) fn leave_on_second_signal() -> LeaveOnSecondSignal {
+    LEAVE_ON_SIGNAL.store(true, std::sync::atomic::Ordering::SeqCst);
+    LeaveOnSecondSignal(())
 }
 
 /// Put back files this tool parked, from a later invocation.
@@ -936,6 +943,10 @@ fn install_signal_handler_once() {
     });
 
     extern "C" fn on_signal(sig: i32) {
+        // Before anything else: the signal may have killed a child (Ctrl-C
+        // reaches the whole foreground group) whose death unblocks code that
+        // would otherwise fall back to a local run before the watcher runs.
+        crate::tree_run::mark_dying();
         // A second signal while the cluster Jobs are being cancelled: leave
         // them, and die now. `signal` and `raise` are async-signal-safe.
         if LEAVE_ON_SIGNAL.load(Ordering::SeqCst) {
@@ -1156,5 +1167,23 @@ mod tests {
     fn safe_rel_refuses_a_drive_prefix() {
         assert!(safe_rel("C:\\Windows\\System32").is_none());
         assert!(safe_rel("C:x").is_none());
+    }
+
+    /// The flag a second signal reads is armed only while the guard lives:
+    /// an early return or a panic cannot leave it armed.
+    #[test]
+    fn the_second_signal_flag_is_disarmed_when_the_guard_drops() {
+        let armed = || LEAVE_ON_SIGNAL.load(Ordering::SeqCst);
+        {
+            let _guard = leave_on_second_signal();
+            assert!(armed());
+        }
+        assert!(!armed());
+        let panicked = std::panic::catch_unwind(|| {
+            let _guard = leave_on_second_signal();
+            panic!("a cancel that panics");
+        });
+        assert!(panicked.is_err());
+        assert!(!armed());
     }
 }

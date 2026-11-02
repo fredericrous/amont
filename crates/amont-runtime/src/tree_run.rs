@@ -115,6 +115,12 @@ static LIVE: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 /// Set once amont is dying of a signal; see [`reap_live`].
 static DYING: AtomicBool = AtomicBool::new(false);
 
+/// Is amont dying of a signal right now? For code that must undo what it just
+/// did before it parks ([`park_if_dying`]).
+pub(crate) fn is_dying() -> bool {
+    DYING.load(Ordering::SeqCst)
+}
+
 /// Hold the calling thread while amont dies of a signal: the watcher thread
 /// re-raises it with the default disposition, which ends the process. Never
 /// returns once `DYING` is set; returns at once otherwise.
@@ -122,6 +128,15 @@ pub(crate) fn park_if_dying() {
     while DYING.load(Ordering::SeqCst) {
         std::thread::sleep(POLL);
     }
+}
+
+/// Record that amont is dying of a signal, before the watcher thread has run:
+/// from the signal handler itself, so a Ctrl-C that also killed a child can
+/// never be seen by the code that child's death unblocks as "not dying". One
+/// atomic store, which is async-signal-safe.
+#[cfg(unix)]
+pub(crate) fn mark_dying() {
+    DYING.store(true, Ordering::SeqCst);
 }
 
 /// Lists `pgid` in [`LIVE`] for as long as it is held.

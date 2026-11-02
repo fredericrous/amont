@@ -32,6 +32,23 @@ missing here.
   `platform=any` push gate whose commit twin the cluster proved on every
   pushed tree is gated at commit, not run again.
 
+### Fixed
+
+- **Ctrl-C or `kill` during a cluster gate never falls back to a local run,
+  and asks for its Jobs to be deleted.** The signal is recorded in the
+  handler itself, so a gate whose `kubectl` died of the same Ctrl-C can no
+  longer reach the local re-run before the cleanup. Every Job carries an
+  `amont.run` label for its run: the cancel deletes by name once the Job is
+  known, and by that label while `kubectl create` is still in flight or its
+  answer was lost (it timed out, or the signal landed first). A Job whose UID
+  `kubectl create` did not print is deleted by name instead of holding its
+  slot until the deadline. A second signal still ends amont at once and
+  leaves the Job to its deadline.
+  The bundle-too-big line names the size, the cap in MiB and the setting to
+  raise; "the cluster did not answer" is said once per hook, not once per
+  gate (every gate still logs it), and later gates no longer announce a
+  cluster run.
+
 ## v1.66.2
 
 ### Fixed
