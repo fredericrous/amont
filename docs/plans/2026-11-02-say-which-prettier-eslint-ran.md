@@ -92,7 +92,7 @@ deferred check (ADR-0013), as every warning is. `amont.quiet` does not hide it.
 
 ## Phases
 
-- [ ] Phase 1: `resolve_tool_from`, `resolve_js_tool` and the `package.json` scan. Unit tests of the
+- [x] Phase 1: `resolve_tool_from`, `resolve_js_tool` and the `package.json` scan. Unit tests of the
       scan cover: a declared devDependency → declared; a top-level `"prettier": {…}` config → not;
       `"prettier-plugin-x"` in devDependencies → not; prettier only in peer/optional deps or in
       `pnpm.overrides` → not; a `scripts.prettier` key → not; `\"` and `{` inside string values;
@@ -112,7 +112,7 @@ deferred check (ADR-0013), as every warning is. `amont.quiet` does not hide it.
       undeclared but in `node_modules/.bin` → no new line; declared and pinned → no new line.
       An eslint pair covers the declared/undeclared states. The plan also lists any CI job that
       runs these checks before installing.
-- [ ] Phase 2: docs. Update the "Tool versions are not pinned" paragraph of
+- [x] Phase 2: docs. Update the "Tool versions are not pinned" paragraph of
       `docs/index-fidelity-and-run-modes.md` (~line 787), plus CHANGELOG and AGENTS.md (`amont
       agents-md`).
 - [ ] Phase 3: release (`tag-release`, minor bump), install on the laptop as amont is installed
@@ -130,25 +130,65 @@ deferred check (ADR-0013), as every warning is. `amont.quiet` does not hide it.
   stamped (`run_stamp.rs:366`), where it used to run the PATH copy. Any CI job that runs these
   checks before installing loses formatting. Phase 1 lists such jobs (expected: none).
 
+- 2026-11-02 (implementation): where the code departs from the Behaviour text above, after the
+  panel and the code reviews.
+  - The two lines read `prettier 3.9.10 from <path> is not in the root package.json` and
+    `Pin it: npm install --save-dev --save-exact prettier@3.9.10`: under 80 columns (tui). The pin
+    command adds `--save-exact`, because ADR-0019 pins exactly.
+  - Unknown version: `prettier (unknown version)`, and the pin line adds `(latest, not
+    necessarily this one)`. Timeout: `prettier (no --version in 5 s)`, the number from
+    `PROBE_DEADLINE`.
+  - Neither declared nor found: the hint is the add command (installing never adds an undeclared
+    tool). A hung npx probe is its own case: `npx --no-install prettier --version did not answer
+    in 5 s. Pin it: <add command>`, Unavailable.
+  - prettier decides whether the repo uses it (config or pinned copy) before resolving, so a repo
+    without prettier never probes a global one.
+  - `resolve_tool`, `resolve_tool_from` and `Source` were deleted: nothing called them once both
+    checks used `resolve_js_tool`.
+  - `tree_run::run_output`: a probe that exits 0 but leaves a child holding the pipe now kills the
+    group and keeps its answer (it used to time out); a cancelled probe answers nothing. This
+    also reaches `tree_cache`'s version probes, and the CHANGELOG says so.
+  - The probe deadline is not `clock::scaled`: the bound is the behaviour under test.
+  - The Goal's "refuses to run a version the repository did not ask for" means a PATH or npx copy
+    of a declared tool (backend r2#1); Non-goals' "and the main worktree's" means its binary
+    only. This checkout's package.json alone decides (codex#2), tested both ways.
+- 2026-11-02: CI jobs that run these checks before installing: none. amont's own CI installs
+  eslint and prettier globally (ci.yaml:947), and no test fixture declares either tool; the
+  ci.yaml comment now says the global install suits only an undeclared fixture.
+- 2026-11-02: the commit gate deferred clippy and cargo-test to CI three times (no host slot,
+  load 9–15). `make check` ran both on the reviewed code (below), and CI runs them on the push.
+
 ## Verification
 
-- The scan's unit tests: `{"devDependencies":{"prettier":"3.9.10"}}` → declared;
-  `{"prettier":{"semi":false}}` → not declared; a string value containing `\"devDependencies\"` →
-  not declared (plus the Phase 1 cases).
-- Each integration test fails with the change reverted, checked once by hand; the PR names the
-  failing tests.
-- `make check` exits 0, and Windows CI is green (the new tests are skipped there).
-- Timing: a clean commit with an npx-only prettier, before and after the change. Expected: no
-  extra process, and wall time within noise.
-- Live, after install: in a scratch repo with `.prettierrc` and a `package.json` without prettier,
-  stage a `.md` file and commit → the warning names the version and path, and the commit lands. Add
-  `"prettier": "3.9.10"` to devDependencies without installing → the install warning, prettier
-  does not run, and the commit lands. Run the install → no new line.
-- In greenharness.github.io's live checkout (no `node_modules`), `amont run prettier` on a staged
-  file → the install warning and `could not run`, not a run of PATH's prettier, and exit 0.
+Observed 2026-11-02 in this worktree.
+
+| Check | Input | Expected | Actual |
+| --- | --- | --- | --- |
+| scan unit tests | `cargo test -p amont-runtime --lib js_tool_tests` | declared / not-declared cases, BOM, depth | 5/5 pass (incl. 100 000 brackets → not declared, `\"` in strings, `metadata.devDependencies`, cut-off JSON) |
+| probe unit tests | `run_output_*` in tree_run | a pipe holder dies with its group, the answer is kept; a cancelled probe answers nothing | 2/2 pass; `group_alive` polled false |
+| integration | `cargo test -p amont --test it -- js_tool_source` | 13 cases | 13/13 pass (22 s; two wait out the 5 s probe) |
+| can fail | the same 11 first cases against origin/main's runtime | each fails | 10/11 fail; the pinned-copy case passes on main by design (it guards "no new line") |
+| existing rows | `tool_tables` (eslint, prettier missing-binary rows) | still pass | pass |
+| whole gate | `make check` on f06c4ed's tree | exit 0 | exit 0: 574 integration, 690 unit, 165 others (the `--bin t` FAILED lines are a fixture's own) |
+| lint | `cargo clippy -p amont-runtime -p amont --all-targets -D warnings`, `cargo fmt --check` on 680bcda | clean | clean |
+| PATH-row cost | one `prettier --version`, median of 10, load ~10 | small | 192 ms (3.5.3, ~/.local/bin), 810 ms (2.4.0, /usr/local/bin); only in undeclared repos with config |
+| npx row | the npx case | one probe | 1 probe call recorded |
+| live checks | after release (Phase 3) | | open: Phase 3 |
 
 ## Outcome
 
-Filled at close.
+Phases 1–2 shipped on `feat/ambient-tool-warning`; Phase 3 (release, install, live checks) is
+next. Surprises: the test clock scale made a scaled 5 s probe too short for a shell to start;
+macOS's first-exec assessment of fresh fake scripts landed inside the probe (fixed with
+`common::fixture_exec`); a fake's PATH had no `sleep`, so the stall tests passed for the wrong
+reason until they named `/bin/sleep`.
+
+## Implementation review
+
+- implementation-review: approve-with-changes, 3 rounds (73k, 74 s; then two Deltas). Fixed: discards carry reasons, cancelled probe answers nothing, `resolve_tool` deleted, CHANGELOG names the tree_cache effect. Plan records in this commit.
+- backend: approve after 2 Deltas. Fixed: keep a successful probe's answer, hung npx, BOM, group-level test, no probe in a repo without prettier.
+- lang:rust: approve. Fixed: variant types, probe out of the warning, pub(crate), depth limit, one manifest read. deliberate: separate `js_tool_tests` module; `argv.clone()` of a small Vec; one `Pinned | Ambient` arm.
+- unix: approve. Fixed: sanitized tool text, deadline text from the constant, no probe without prettier.
+- tui: approve-with-changes. Fixed: 80-column lines, pin command when missing, unknown-version note. deliberate: the hung-npx line stays one line (rare; a code change would void the reviews); colour off a terminal is `ui::colors_enabled`, its own change.
 
 <!-- panel: repos=amont reviewers=backend,lang:rust,unix,tui,codex body-sha=25247be5b9f9 -->
