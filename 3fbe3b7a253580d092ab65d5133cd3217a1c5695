@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit eafe61e3caa4211492846279b4ea2594a120ae50
+tree 3fbe3b7a253580d092ab65d5133cd3217a1c5695
+canon 1dc77dffaee93daef0fee9bb9020cefee6ad483b
+patch 8f3c1977096d5394d0acb244a2daa12c990bf0cd
+plan docs/plans/2026-11-02-say-which-prettier-eslint-ran.md bec19de3b51d1423464c76d4fd001871e4a78f64c876581b1deeaaa0eed1b6c2
+review reviewed e6afdb127fb49162a8567907b2b8dd895f4f6ddf5e7b233f33613dc891d2433b
+code-review backend reviewed e6afdb127fb49162a8567907b2b8dd895f4f6ddf5e7b233f33613dc891d2433b
+code-review lang:rust reviewed e6afdb127fb49162a8567907b2b8dd895f4f6ddf5e7b233f33613dc891d2433b
+code-review unix reviewed e6afdb127fb49162a8567907b2b8dd895f4f6ddf5e7b233f33613dc891d2433b
+code-review tui reviewed e6afdb127fb49162a8567907b2b8dd895f4f6ddf5e7b233f33613dc891d2433b
+preview not-required
+producer amont-agent 3.14.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEB5M5PHugg4TTrB3RqI+ziv86NPR1RdfvnytztU1oC/l11xE9
++IHDl5+e31yQcctKqMeLQJ3BxA8FSro7xTCOYK
+-----END SSH SIGNATURE-----
