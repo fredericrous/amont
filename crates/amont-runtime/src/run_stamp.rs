@@ -505,14 +505,17 @@ fn commit_of_tree(tree: &str) -> Option<String> {
 /// if origin is dead), so [`states`] asks only when some gate is not already
 /// stamped. For a tree other than the one checked out, a throwaway checkout of
 /// `commit` (or of a commit made for the tree) is what it is pointed at.
-fn attested_for(tree: &str, commit: Option<&str>) -> Vec<String> {
+///
+/// `anywhere` are the trusted `platform=any` gate ids: a linux block the
+/// cluster's pass earned covers them on this platform too.
+fn attested_for(tree: &str, commit: Option<&str>, anywhere: &[String]) -> Vec<String> {
     let Some(signers) = crate::attest::default_signers() else {
         return Vec::new();
     };
     let platform = crate::attest::platform();
     let checked_out = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
     let gates = if checked_out.as_deref() == Some(tree) {
-        crate::attest::covered(&signers, None, Some(&platform))
+        crate::attest::covered(&signers, None, Some(&platform), anywhere)
     } else {
         let Some(commit) = commit.map(str::to_string).or_else(|| commit_of_tree(tree)) else {
             return Vec::new();
@@ -520,7 +523,7 @@ fn attested_for(tree: &str, commit: Option<&str>) -> Vec<String> {
         let Some(checkout) = Detached::at(&commit) else {
             return Vec::new();
         };
-        crate::attest::covered_in(&checkout.dir, &signers, None, Some(&platform))
+        crate::attest::covered_in(&checkout.dir, &signers, None, Some(&platform), anywhere)
     };
     gates
         .map(|g| g.split_whitespace().map(str::to_string).collect())
@@ -541,6 +544,7 @@ pub fn states(
     let tokens = crate::gate_stamp::tree_tokens(tree);
     let deferred = crate::gate_stamp::deferred_on(tree);
     let attested: std::cell::OnceCell<Vec<String>> = std::cell::OnceCell::new();
+    let anywhere = crate::cluster::platform_any_ids(manifest);
     ids.iter()
         .filter_map(|id| crate::registry::one_named(id, manifest).map(|c| (id, c)))
         .map(|(id, check)| {
@@ -554,7 +558,7 @@ pub fn states(
             let state = if stamped {
                 State::Stamped
             } else if attested
-                .get_or_init(|| attested_for(tree, commit))
+                .get_or_init(|| attested_for(tree, commit, &anywhere))
                 .iter()
                 .any(|g| verdict.contains(g))
             {

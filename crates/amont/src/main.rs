@@ -861,7 +861,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 None => Some(amont_runtime::attest::platform()),
             };
             if let Some(gates) =
-                amont_runtime::attest::covered(&signers, principal.as_deref(), want.as_deref())
+                amont_runtime::attest::covered(&signers, principal.as_deref(), want.as_deref(), &[])
             {
                 println!("{gates}");
             }

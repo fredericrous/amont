@@ -927,3 +927,363 @@ fn stamps_reads_a_cluster_token_only_from_a_trusted_manifest() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("\"pre-commit-lint\":\"absent\""), "{text}");
 }
+
+/// `git_attest::format::MAX_BLOCKS`: past it the verifier ignores blocks.
+const MAX_BLOCKS: usize = 32;
+
+const ATTEST_CONF: &str = "set executor cluster\n\
+    pre-push  lint  *.txt  block  platform=any scripts/gate.sh\n\
+    pre-push  local  *.txt  block  scripts/a.sh\n";
+
+impl Cluster {
+    /// A trusted repository that attests: a bare `origin`, a signing key and
+    /// its allowed signers.
+    fn attesting(conf: &str) -> Cluster {
+        let c = Cluster::trusted(conf);
+        let remote = c.remote();
+        assert!(c
+            .r
+            .git(&["init", "-q", "--bare", &remote.display().to_string()])
+            .status
+            .success());
+        c.r.git(&["remote", "add", "origin", &remote.display().to_string()]);
+        let key = c.r.path(".git/attest-key");
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@example.org", "-f"])
+            .arg(&key)
+            .status()
+            .expect("ssh-keygen")
+            .success();
+        assert!(made, "ssh-keygen");
+        let public = std::fs::read_to_string(c.r.path(".git/attest-key.pub")).unwrap();
+        c.r.write(
+            ".github/allowed_signers",
+            &format!(
+                "t@example.org namespaces=\"amont-attest,amont-provenance\" {}\n",
+                public.trim()
+            ),
+        );
+        c.config("amont.attest", "true");
+        c.config("amont.attestKey", &key.display().to_string());
+        c
+    }
+
+    fn remote(&self) -> PathBuf {
+        self.r.dir.join("remote.git")
+    }
+
+    /// The pre-push hook for the ref lines `pushes` (`(ref, tip, base)`), to
+    /// `origin`.
+    fn pre_push_refs(&self, pushes: &[(&str, &str, &str)]) -> (i32, String) {
+        let lines: String = pushes
+            .iter()
+            .map(|(name, tip, base)| format!("refs/heads/{name} {tip} refs/heads/{name} {base}\n"))
+            .collect();
+        let hooks = self.r.dir.join(".git/hooks").to_string_lossy().into_owned();
+        let url = self.remote().to_string_lossy().into_owned();
+        self.amont(
+            &["--hooks-dir", &hooks, "pre-push", "origin", &url],
+            &[],
+            Some(&lines),
+        )
+    }
+
+    fn pre_push(&self, base: &str, tip: &str) -> (i32, String) {
+        self.pre_push_refs(&[("feat/x", tip, base)])
+    }
+
+    /// The signed note on `key` in the remote, empty when there is none.
+    fn remote_note(&self, key: &str) -> String {
+        let shown = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(self.remote())
+            .args(["notes", "--ref", "amont-attest", "show", key])
+            .output()
+            .expect("git notes show");
+        String::from_utf8_lossy(&shown.stdout).into_owned()
+    }
+
+    /// `(platform, gates)` of each block of the remote's note on `key`.
+    fn remote_blocks(&self, key: &str) -> Vec<(String, Vec<String>)> {
+        let note = self.remote_note(key);
+        note.split("amont-attest-v2\n")
+            .skip(1)
+            .map(|block| {
+                let field = |name: &str| {
+                    block
+                        .lines()
+                        .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(' ')))
+                        .unwrap_or("")
+                        .to_string()
+                };
+                (
+                    field("platform"),
+                    field("gates")
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Commit `file` on top of `base` on a branch of its own, and return the
+    /// commit and its tree.
+    fn commit_on(&self, base: &str, branch: &str, file: &str) -> (String, String) {
+        self.r
+            .git(&["checkout", "-q", "--no-track", "-b", branch, base]);
+        self.r.stage(file, "hello\n");
+        self.r.commit(&format!("feat: {file}"));
+        (
+            out(&self.r, &["rev-parse", "HEAD"]),
+            out(&self.r, &["rev-parse", "HEAD^{tree}"]),
+        )
+    }
+}
+
+fn names(blocks: &[(String, Vec<String>)], gate: &str) -> Vec<String> {
+    blocks
+        .iter()
+        .filter(|(_, gates)| gates.iter().any(|g| g == gate))
+        .map(|(platform, _)| platform.clone())
+        .collect()
+}
+
+/// A cluster pass is signed on `x86_64-linux` only; the laptop's own block
+/// names the local gate and never the cluster's.
+#[test]
+fn a_cluster_pass_is_attested_on_linux_and_not_in_the_laptop_block() {
+    if common::missing("ssh-keygen") {
+        return;
+    }
+    let c = Cluster::attesting(ATTEST_CONF);
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
+    let (code, text) = c.pre_push(&base, &tip);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("on x86_64-linux"), "{text}");
+    for key in [&tree, &tip] {
+        let blocks = c.remote_blocks(key);
+        assert_eq!(
+            names(&blocks, "pre-push-lint"),
+            ["x86_64-linux"],
+            "{blocks:?}"
+        );
+        assert_eq!(
+            names(&blocks, "pre-push-local"),
+            [amont_runtime::attest::platform()],
+            "{blocks:?}"
+        );
+        assert!(
+            blocks
+                .iter()
+                .all(|(_, g)| !(g.contains(&"pre-push-lint".to_string())
+                    && g.contains(&"pre-push-local".to_string()))),
+            "the laptop block does not name the cluster gate: {blocks:?}"
+        );
+    }
+}
+
+/// The cluster judged only one tip's tree: the other tip's note carries no
+/// linux block naming the gate.
+#[test]
+fn a_linux_block_is_signed_only_for_the_tree_the_cluster_judged() {
+    if common::missing("ssh-keygen") {
+        return;
+    }
+    let c = Cluster::attesting(ATTEST_CONF);
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    let (judged, judged_tree) = c.commit_on(&base, "feat/a", "a.txt");
+    // `*.md` is outside the gate's `*.txt` scope: the cluster is never asked.
+    let (unjudged, unjudged_tree) = c.commit_on(&base, "feat/b", "b.md");
+    let (code, text) = c.pre_push_refs(&[("feat/a", &judged, &base), ("feat/b", &unjudged, &base)]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(c.created_jobs().len(), 1, "one tree judged: {text}");
+    assert_eq!(
+        names(&c.remote_blocks(&judged_tree), "pre-push-lint"),
+        ["x86_64-linux"]
+    );
+    let other = c.remote_blocks(&unjudged_tree);
+    assert!(
+        names(&other, "pre-push-lint").is_empty(),
+        "no linux pass for a tree the cluster never judged: {other:?}"
+    );
+    assert!(!other.is_empty(), "the other tip is attested: {text}");
+}
+
+/// The payload is deterministic, so twenty pushes of one tree add no block,
+/// and what remains verifies. A push that does change the payload (another
+/// gate set, another amont version) now adds two blocks per key, one per
+/// platform, so the note reaches `MAX_BLOCKS` in half the pushes it did.
+#[test]
+fn repeated_pushes_of_one_tree_do_not_grow_its_note() {
+    if common::missing("ssh-keygen") {
+        return;
+    }
+    let c = Cluster::attesting(ATTEST_CONF);
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
+    for round in 0..20 {
+        let (code, text) = c.pre_push(&base, &tip);
+        assert_eq!(code, 0, "round {round}: {text}");
+    }
+    let blocks = c.remote_blocks(&tree);
+    assert!(blocks.len() <= MAX_BLOCKS, "{blocks:?}");
+    assert_eq!(blocks.len(), 2, "one block per platform: {blocks:?}");
+    let signers = c.r.path(".github/allowed_signers").display().to_string();
+    c.r.git(&["fetch", "-q", "origin", "refs/notes/*:refs/notes/*"]);
+    let (code, text) = c.amont(
+        &[
+            "attest",
+            "covered",
+            "--signers",
+            &signers,
+            "--platform",
+            "any",
+        ],
+        &[],
+        None,
+    );
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("pre-push-lint") && text.contains("pre-push-local"),
+        "the note still verifies: {text}"
+    );
+}
+
+/// With no token of its own, a gate only the linux block covers reads
+/// `attested` in `amont stamps`; CI's `attest covered` never passes `anywhere`,
+/// so a platform that is not linux's finds it uncovered.
+#[test]
+fn stamps_reads_a_linux_only_attestation_and_attest_covered_does_not() {
+    if common::missing("ssh-keygen") {
+        return;
+    }
+    let c = Cluster::attesting(ATTEST_CONF);
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    let (tip, _) = c.commit_on(&base, "feat/x", "a.txt");
+    let (code, text) = c.pre_push(&base, &tip);
+    assert_eq!(code, 0, "{text}");
+    for notes in [
+        "refs/notes/amont-gate-cluster",
+        "refs/notes/amont-gate",
+        "refs/notes/amont-gate-inputs",
+    ] {
+        c.r.git(&["update-ref", "-d", notes]);
+    }
+    let (code, text) = c.amont(&["stamps", "--json", "lint"], &[], None);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("\"pre-push-lint\":\"attested\""), "{text}");
+
+    let signers = c.r.path(".github/allowed_signers").display().to_string();
+    let (code, text) = c.amont(
+        &[
+            "attest",
+            "covered",
+            "--signers",
+            &signers,
+            "--platform",
+            "aarch64-darwin",
+        ],
+        &[],
+        None,
+    );
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("pre-push-lint"), "{text}");
+}
+
+/// A rehearsal after a cluster pass: the push that follows does not repeat
+/// the gate.
+#[test]
+fn a_push_after_a_rehearsal_does_not_repeat_a_cluster_gate() {
+    let c = Cluster::trusted(
+        "set executor cluster\npre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
+    );
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    c.r.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    let (tip, _) = c.commit_on(&base, "feat/x", "a.txt");
+    let (code, text) = c.amont(&["rehearse", "--wait"], &[], None);
+    assert_eq!(code, 0, "{text}");
+    assert!(c.kubectl_calls().contains(" create "), "{text}");
+
+    c.reset_records();
+    let line = format!("refs/heads/feat/x {tip} refs/heads/feat/x {base}\n");
+    let (code, text) = c.hook("pre-push", &[], Some(&line));
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("not repeating it here"), "{text}");
+    assert!(!c.kubectl_calls().contains(" create "), "{text}");
+    assert_eq!(c.local_runs(), 0, "{text}");
+}
+
+/// Both twins are `platform=any`; the commit twin ran on the cluster. The
+/// push says it is gated at commit, runs nothing, and counts as a cluster
+/// pass under its own id.
+#[test]
+fn a_push_twin_reuses_its_commit_twins_cluster_pass() {
+    if common::missing("ssh-keygen") {
+        return;
+    }
+    let c = Cluster::attesting(
+        "set executor cluster\n\
+         pre-commit  lint  *.txt  block  platform=any scripts/gate.sh\n\
+         pre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
+    );
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    c.r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
+    c.r.stage("a.txt", "hello\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert!(c
+        .r
+        .git(&["commit", "-q", "--no-verify", "-m", "feat: a"])
+        .status
+        .success());
+    let tip = out(&c.r, &["rev-parse", "HEAD"]);
+    let tree = out(&c.r, &["rev-parse", "HEAD^{tree}"]);
+
+    c.reset_records();
+    let (code, text) = c.pre_push(&base, &tip);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("gated at commit on the cluster instead — not repeating it here"),
+        "{text}"
+    );
+    assert!(!c.kubectl_calls().contains(" create "), "{text}");
+    assert_eq!(c.local_runs(), 0, "{text}");
+    assert_eq!(
+        names(&c.remote_blocks(&tree), "pre-push-lint"),
+        ["x86_64-linux"],
+        "{text}"
+    );
+}
+
+/// A push twin that runs another command than its commit twin claims nothing
+/// from the commit twin's cluster pass: the push gate runs.
+#[test]
+fn a_push_twin_with_another_command_runs_itself() {
+    let c = Cluster::trusted(
+        "set executor cluster\n\
+         pre-commit  lint  *.txt  block  platform=any scripts/gate.sh\n\
+         pre-push  lint  *.txt  block  platform=any scripts/gate.sh --full\n",
+    );
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    c.r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
+    c.r.stage("a.txt", "hello\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert!(c
+        .r
+        .git(&["commit", "-q", "--no-verify", "-m", "feat: a"])
+        .status
+        .success());
+    let tip = out(&c.r, &["rev-parse", "HEAD"]);
+
+    c.reset_records();
+    let (code, text) = c.pre_push(&base, &tip);
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("gated at commit on the cluster"), "{text}");
+    assert!(
+        c.kubectl_calls().contains(" create ") || c.local_runs() > 0,
+        "the push gate ran: {text}"
+    );
+}

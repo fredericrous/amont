@@ -1156,6 +1156,28 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .externals
             .iter()
             .find(|e| e.stage == Stage::PrePush && e.id == check.name());
+        // A `platform=any` push gate whose commit twin declares the same suite
+        // and was proved on the cluster on every tip's tree is gated at commit
+        // too, and counts as a cluster pass under its own id (ADR-0016).
+        if let Some(push_gate) = declared.filter(|_| reuse_stamps) {
+            let claimed_from_twin = ctx
+                .manifest
+                .externals
+                .iter()
+                .filter(|e| e.stage == Stage::PreCommit && e.short_name == push_gate.short_name)
+                .any(|twin| {
+                    crate::cluster::claim_twin_cluster_pass(settings, push_gate, twin, &tips)
+                });
+            if claimed_from_twin {
+                crate::say!(
+                    "{} {} gated at commit on the cluster instead — not repeating it here",
+                    valid_sign(),
+                    highlight(&push_gate.short_name),
+                );
+                passed.push(check.name().to_string());
+                continue;
+            }
+        }
         let builtin_scope = check.scope();
         let pairing: Option<(&str, &crate::check::Scope)> = match declared {
             Some(ext) => match &ext.kind {
@@ -1373,15 +1395,23 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .map(|a| a.to_string_lossy().into_owned())
             .unwrap_or_default();
         let changed = crate::pushrefs::changed_files(ctx.push.get());
-        // Only local passes enter the laptop's attestation (ADR-0016).
-        let local: Vec<String> = passed
+        // Only local passes enter the laptop's attestation (ADR-0016); the
+        // cluster's go to the linux block, which `attest_push` narrows per tip
+        // to the trees the cluster actually judged.
+        let (cluster_passed, local): (Vec<String>, Vec<String>) = passed
             .iter()
-            .filter(|p| !crate::cluster::proved_anywhere(p))
             .cloned()
-            .collect();
+            .partition(|p| crate::cluster::proved_anywhere(p));
         let mut vouched = attestable(&pre_push_checks, &local, &changed);
         vouched.extend(tree_proven);
-        crate::attest::attest_push(ctx.settings, &remote, ctx.push.get(), &vouched);
+        let cluster_vouched = attestable(&pre_push_checks, &cluster_passed, &changed);
+        crate::attest::attest_push(
+            ctx.settings,
+            &remote,
+            ctx.push.get(),
+            &vouched,
+            &cluster_vouched,
+        );
     }
     // Outside the `passed` branch above on purpose: a push that changes only
     // documentation or its plan still carries a plan and a review to record.

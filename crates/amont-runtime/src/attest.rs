@@ -109,6 +109,12 @@ fn key_path() -> Option<PathBuf> {
 /// "passed". Empty means nothing testlike ran, and an attestation listing
 /// no gates would be a signed way of saying nothing.
 ///
+/// `cluster_gates` are the attestable `platform=any` gates the cluster passed
+/// (ADR-0016). Each pushed tip gets, besides the laptop's block, a second
+/// block on `x86_64-linux` naming only those the cluster proved on THAT tip's
+/// tree: a multi-tip push never signs a linux pass for a tree the cluster did
+/// not judge. Both blocks go out in one publish per notes ref.
+///
 /// What each block says, and every key it is filed under (the tree and the
 /// commit in the main ref; each declared gate's fingerprint and the canonical
 /// tree in the inputs ref), is attest's [`attestation`]. The note goes on the
@@ -124,8 +130,9 @@ pub fn attest_push(
     remote: &str,
     refs: &[PushRef],
     gates: &[String],
+    cluster_gates: &[String],
 ) {
-    if gates.is_empty() || remote.is_empty() || !enabled(settings) {
+    if (gates.is_empty() && cluster_gates.is_empty()) || remote.is_empty() || !enabled(settings) {
         return;
     }
     let Some(key) = key_path() else { return };
@@ -141,6 +148,7 @@ pub fn attest_push(
     let producer = env!("CARGO_PKG_VERSION");
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut input_blocks: Vec<(String, String)> = Vec::new();
+    let mut linux_signed: Vec<String> = Vec::new();
     let (mut n_inputs, mut n_canon) = (0, 0);
     for r in refs {
         if is_zero(&r.local_oid) {
@@ -150,28 +158,50 @@ pub fn attest_push(
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        // The reasons a route is missing are attest's to give in CI's log;
-        // at push time they are noise.
-        let mut reasons = Vec::new();
-        let att = attestation(
-            here(),
-            &tree,
-            &gates_line,
-            &platform(),
-            producer,
-            &mut reasons,
-        );
-        let Ok(sig) = git_attest::sign::sign(NAMESPACE, &att.payload, &key) else {
-            continue;
-        };
-        let body = block(&att.payload, &sig);
-        n_inputs += att.inputs.len();
-        n_canon += usize::from(att.canon.is_some());
-        for k in &att.input_keys {
-            input_blocks.push((k.clone(), body.clone()));
+        let proved_here: Vec<String> = cluster_gates
+            .iter()
+            .filter(|g| crate::cluster::proved(g, &tree))
+            .cloned()
+            .collect();
+        let platforms = [
+            (platform(), gates_line.clone(), Vec::new()),
+            (
+                crate::cluster::PLATFORM.to_string(),
+                proved_here.join(" "),
+                proved_here,
+            ),
+        ];
+        // Both platforms' blocks carry the same input fingerprints for this
+        // ref; the summary counts them once.
+        let mut counted = false;
+        for (on, line, linux_names) in platforms {
+            if line.is_empty() {
+                continue;
+            }
+            // The reasons a route is missing are attest's to give in CI's
+            // log; at push time they are noise.
+            let mut reasons = Vec::new();
+            let att = attestation(here(), &tree, &line, &on, producer, &mut reasons);
+            let Ok(sig) = git_attest::sign::sign(NAMESPACE, &att.payload, &key) else {
+                continue;
+            };
+            let body = block(&att.payload, &sig);
+            if !counted {
+                n_inputs += att.inputs.len();
+                n_canon += usize::from(att.canon.is_some());
+                counted = true;
+            }
+            for k in &att.input_keys {
+                input_blocks.push((k.clone(), body.clone()));
+            }
+            blocks.push((tree.clone(), body.clone()));
+            blocks.push((r.local_oid.clone(), body));
+            for name in linux_names {
+                if !linux_signed.contains(&name) {
+                    linux_signed.push(name);
+                }
+            }
         }
-        blocks.push((tree, body.clone()));
-        blocks.push((r.local_oid.clone(), body));
     }
     if blocks.is_empty() {
         return;
@@ -182,10 +212,28 @@ pub fn attest_push(
     let main_ok = publish(remote, NOTES_REF, &blocks);
     let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_REF, &input_blocks);
     if main_ok {
+        // Each list names its own platform, so the laptop's gates never read
+        // as attested on linux.
+        let mut signed_on = Vec::new();
+        if !gates_line.is_empty() {
+            signed_on.push(format!(
+                "{} on {}",
+                crate::ui::highlight(&gates_line),
+                platform()
+            ));
+        }
+        if !linux_signed.is_empty() {
+            signed_on.push(format!(
+                "{} on {}",
+                crate::ui::highlight(&linux_signed.join(" ")),
+                crate::cluster::PLATFORM
+            ));
+        }
+        let what = signed_on.join("; ");
         crate::say!(
             "{} attested {} for CI ({}{})",
             crate::ui::valid_sign(),
-            crate::ui::highlight(&gates_line),
+            what,
             NOTES_REF,
             if input_blocks.is_empty() {
                 String::new()
@@ -415,15 +463,18 @@ fn publish(remote: &str, notes_ref: &str, blocks: &[(String, String)]) -> bool {
 /// attest's verifier, the one its action and `git-attest covered` run: input
 /// fingerprints, the canonical tree and every block of a note included.
 /// `principal` of `None` accepts whoever the signature says, if that key is in
-/// the signers file. Lines that say the repository's refs changed, or that
+/// the signers file. `anywhere` names the gates accepted from any platform
+/// (`amont stamps` passes the trusted `platform=any` ones; CI's one-liner
+/// passes none). Lines that say the repository's refs changed, or that
 /// something committed is deprecated, go to stderr; fail-open is the caller's
 /// contract, not its option.
 pub fn covered(
     signers: &Path,
     principal: Option<&str>,
     require_platform: Option<&str>,
+    anywhere: &[String],
 ) -> Option<String> {
-    covered_in(here(), signers, principal, require_platform)
+    covered_in(here(), signers, principal, require_platform, anywhere)
 }
 
 /// [`covered`] for the tree checked out in `dir`: a detached checkout of some
@@ -435,8 +486,10 @@ pub fn covered_in(
     signers: &Path,
     principal: Option<&str>,
     require_platform: Option<&str>,
+    anywhere: &[String],
 ) -> Option<String> {
-    let v = git_attest::verify::evaluate(dir, signers, principal, require_platform, &[], false);
+    let v =
+        git_attest::verify::evaluate(dir, signers, principal, require_platform, anywhere, false);
     for line in v.loud.iter().chain(&v.warnings) {
         eprintln!("amont: {line}");
     }
@@ -777,7 +830,7 @@ mod tests {
         std::fs::write(&file, &body).unwrap();
         let gates = ["pre-push-cargo-test".to_string()];
         in_repo(&work, || {
-            attest_push(&test_settings(), "origin", &[push_of(&head)], &gates)
+            attest_push(&test_settings(), "origin", &[push_of(&head)], &gates, &[])
         });
         let attested = git(&remote, &["notes", "--ref", NOTES_REF, "show", &head]);
         in_repo(&work, || {
@@ -1043,6 +1096,7 @@ mod tests {
                 "origin",
                 &[push_ref],
                 &["pre-push-run-tests-js".into()],
+                &[],
             );
         });
         // The note exists on the REMOTE — the whole point is that it travels.
@@ -1088,6 +1142,7 @@ mod tests {
                 "origin",
                 &[push_ref_for(&work)],
                 &["pre-push-run-tests-js".into()],
+                &[],
             );
         });
         let listed = git(&remote, &["notes", "--ref", INPUTS_REF, "list"]);
@@ -1127,6 +1182,7 @@ mod tests {
                 "origin",
                 &[push_ref],
                 &["pre-push-run-tests-js".into()],
+                &[],
             );
         });
         assert!(
@@ -1175,8 +1231,9 @@ mod tests {
                 "origin",
                 &[deletion],
                 &["pre-push-pytest".into()],
+                &[],
             );
-            attest_push(&test_settings(), "origin", &[real], &[]);
+            attest_push(&test_settings(), "origin", &[real], &[], &[]);
         });
         assert!(git(&remote, &["notes", "--ref", NOTES_REF, "list"]).is_empty());
         let _ = std::fs::remove_dir_all(&d);
@@ -1224,6 +1281,7 @@ mod tests {
                 "origin",
                 &[push_ref],
                 &["pre-push-pytest".into()],
+                &[],
             );
         });
         let clone = d.join("ci-checkout");
@@ -1239,24 +1297,24 @@ mod tests {
         );
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, Some("t@t.test"), Some(&platform())).as_deref(),
+                covered(&signers, Some("t@t.test"), Some(&platform()), &[]).as_deref(),
                 Some("pre-push-pytest"),
                 "a fresh clone verifies the attestation and reads the gates"
             );
             assert_eq!(
-                covered(&signers, Some("t@t.test"), None).as_deref(),
+                covered(&signers, Some("t@t.test"), None, &[]).as_deref(),
                 Some("pre-push-pytest"),
                 "`any` covers a platform-independent suite"
             );
             // The matrix case this exists for: another leg asking about a
             // suite that never ran there.
             assert_eq!(
-                covered(&signers, Some("t@t.test"), Some("s390x-aix")),
+                covered(&signers, Some("t@t.test"), Some("s390x-aix"), &[]),
                 None,
                 "a pass on one platform is not evidence about another"
             );
             assert_eq!(
-                covered(&signers, Some("someone@else.test"), None),
+                covered(&signers, Some("someone@else.test"), None, &[]),
                 None,
                 "an unlisted principal covers nothing"
             );
@@ -1269,7 +1327,7 @@ mod tests {
         git(&clone, &["commit", "-qm", "chore: b"]);
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, Some("t@t.test"), None),
+                covered(&signers, Some("t@t.test"), None, &[]),
                 None,
                 "drifted tree"
             );
@@ -1311,7 +1369,7 @@ mod tests {
         git(&clone, &["reset", "-q", "--hard", &head]);
         in_repo(&clone, || {
             assert_eq!(
-                covered(&signers, Some("t@t.test"), None),
+                covered(&signers, Some("t@t.test"), None, &[]),
                 None,
                 "a foreign note is not a stamp"
             );
