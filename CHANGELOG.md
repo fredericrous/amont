@@ -6,7 +6,7 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
-## v1.67.0
+## v1.68.0
 
 ### Added
 
@@ -22,6 +22,10 @@ missing here.
   version probe whose tool exits 0 but leaves a child holding its output now
   keeps that answer once the child's group is killed (it used to time out);
   a cancelled probe still answers nothing.
+
+## v1.67.0
+
+### Added
 
 - **A gate may run on the homelab cluster** (ADR-0016). A declared check
   marked `platform=any`, in a repository whose trusted `amont.conf` says
