@@ -2,7 +2,7 @@
 canonical: decisions:docs/plans/2026-11-02-amont-gates-on-the-cluster.md
 phases: [3]
 status: active
-branch: feat/cluster-attest
+branch: fix/cluster-harden
 ---
 # amont runs platform-independent gates on the homelab cluster (pointer)
 
@@ -71,7 +71,10 @@ the 3a review: `DYING` set in `on_signal` and a park at the top of
 park, deleting the Job by name when `create` prints no UID, the wording of
 the bundle-too-big and repeated "did not answer" lines, and tests of the
 Ctrl-C path (the Job cancel, the temp-file and temp-ref cleanup, a second
-signal leaving the Job).
+signal leaving the Job). From the 3b review: one helper builds `token()`
+and the twin's token, so a claim spawns `git config` once, and the
+different-command twin test asserts the commit twin's Job ran. Branch
+`fix/cluster-harden`.
 
 Added in 3a beyond the plan: the machine key `amont.cluster.startWait`
 (default 30 s), the bounded wait for `fetch` to be Running, which the tests
