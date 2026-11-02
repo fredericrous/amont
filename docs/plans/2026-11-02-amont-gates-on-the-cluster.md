@@ -104,3 +104,21 @@ shorten.
   - the wording of the bundle-too-big and repeated "did not answer" lines (tui);
   - the `Scratch` doc comment says "mode 0700" without "on unix" (all four profiles).
 - **CI fix `85a0460`** (unused `mut` on Windows, a cfg split): all five re-bound and approve on tree `cc7cfcce`, 39 candidates ruled.
+
+## Phase 3b record
+
+| Check | Expected | Actual |
+|---|---|---|
+| `cargo test --test it cluster` on `d8216ba` | the cluster suite passes | 20 passed (7 new) |
+| `cargo test -p amont-runtime --lib attest` / `--lib cluster` | the unit tests pass | 22 / 10 passed (on `327c818`) |
+| `make lint-cross` | clippy clean on darwin, linux, windows | exit 0 (on `327c818`) |
+| `make check` | exit 0 | exit 0 (on `327c818`: 684 passed, 1 ignored) |
+| a regression each new test catches | red when the change is reverted | per-tip filter, twin reuse and `anywhere` each turned their test red; the rehearsal test covers 3a behaviour; `stamps_reads_a_linux_only_attestation…` discriminates only off linux, so only the macOS leg proves it |
+| relais verification | the base verdict | **not used**: relais#383 is still open. Built by relais's implementation worker, verified in-session. |
+
+## Implementation review (phase 3b)
+
+- **implementation-review:** round 1 approve-with-changes (a wrong comment); Delta approve on `d8216ba`, 9 candidates ruled.
+- **Profiles:** backend approve-with-changes (twin reuse matched by name only, now by cluster identity; a doubled count); rust approve-with-changes (the claim reads as an action, `pub(crate)`); tui approve-with-changes (each list names its platform; the cluster twin line); unix approve. Every Delta approves.
+- **Deliberate, carried into 3c:** one helper for `token()` and the twin's token, not three `git config` spawns (rust, implementation-review); short gate names in the attested line (tui); a struct for the two gate lists (rust); assert the commit twin's Job in the different-command test (implementation-review); `MAX_BLOCKS` copied as a literal (no git-attest dev-dependency).
+
