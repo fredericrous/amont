@@ -98,7 +98,7 @@ pub fn proved_on_index(id: &str) -> bool {
 
 /// The ids of the manifest's `platform=any` gates. A `Runnable` exists only
 /// for a trusted manifest, so these are the trusted declarations.
-pub fn platform_any_ids(manifest: &crate::manifest::Manifest) -> Vec<String> {
+pub(crate) fn platform_any_ids(manifest: &crate::manifest::Manifest) -> Vec<String> {
     manifest
         .externals
         .iter()
@@ -486,16 +486,31 @@ fn vouched_trees(
 }
 
 /// pre-push, a `platform=any` gate `push` whose commit-time twin `twin` is
-/// also `platform=any`: does `twin`'s cluster token sit on every tip's tree?
-/// Then the cluster already judged those trees for the same suite, and the
-/// pass counts under `push`'s own id too, so it reaches the linux block.
-pub fn twin_vouched_on_every(
+/// also `platform=any` and declares the same suite (the same cluster identity
+/// under one name: program, arguments, file scope, prepare and image): when
+/// `twin`'s cluster token sits on every tip's tree, claim that pass for `push`
+/// too. An action, not a lookup: it marks `push`'s id proved on those trees,
+/// which is what puts it in the linux block. A twin that runs anything else
+/// claims nothing, so the push gate runs.
+pub(crate) fn claim_twin_cluster_pass(
     settings: &crate::config::Settings,
     push: &External,
     twin: &External,
     tips: &[String],
 ) -> bool {
     if !is_platform_any(push) || !is_platform_any(twin) {
+        return false;
+    }
+    let Some(twin_token) = token(settings, twin) else {
+        return false;
+    };
+    let keys = machine_keys();
+    let Some(digest) = key(&keys, "amont.cluster.image").and_then(digest_of) else {
+        return false;
+    };
+    let push_as_twin =
+        crate::gate_identity::cluster_token(push, &twin.id, prepare(settings).as_deref(), digest);
+    if push_as_twin.as_deref() != Some(twin_token.as_str()) {
         return false;
     }
     let Some(trees) = vouched_trees(settings, twin, tips) else {

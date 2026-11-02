@@ -1111,8 +1111,10 @@ fn a_linux_block_is_signed_only_for_the_tree_the_cluster_judged() {
     assert!(!other.is_empty(), "the other tip is attested: {text}");
 }
 
-/// The payload is deterministic, so a hundred pushes of one tree add no
-/// block, and what remains verifies.
+/// The payload is deterministic, so twenty pushes of one tree add no block,
+/// and what remains verifies. A push that does change the payload (another
+/// gate set, another amont version) now adds two blocks per key, one per
+/// platform, so the note reaches `MAX_BLOCKS` in half the pushes it did.
 #[test]
 fn repeated_pushes_of_one_tree_do_not_grow_its_note() {
     if common::missing("ssh-keygen") {
@@ -1243,7 +1245,7 @@ fn a_push_twin_reuses_its_commit_twins_cluster_pass() {
     let (code, text) = c.pre_push(&base, &tip);
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains("gated at commit instead — not repeating it here"),
+        text.contains("gated at commit on the cluster instead — not repeating it here"),
         "{text}"
     );
     assert!(!c.kubectl_calls().contains(" create "), "{text}");
@@ -1252,5 +1254,36 @@ fn a_push_twin_reuses_its_commit_twins_cluster_pass() {
         names(&c.remote_blocks(&tree), "pre-push-lint"),
         ["x86_64-linux"],
         "{text}"
+    );
+}
+
+/// A push twin that runs another command than its commit twin claims nothing
+/// from the commit twin's cluster pass: the push gate runs.
+#[test]
+fn a_push_twin_with_another_command_runs_itself() {
+    let c = Cluster::trusted(
+        "set executor cluster\n\
+         pre-commit  lint  *.txt  block  platform=any scripts/gate.sh\n\
+         pre-push  lint  *.txt  block  platform=any scripts/gate.sh --full\n",
+    );
+    let base = out(&c.r, &["rev-parse", "HEAD"]);
+    c.r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
+    c.r.stage("a.txt", "hello\n");
+    let (code, text) = c.pre_commit(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert!(c
+        .r
+        .git(&["commit", "-q", "--no-verify", "-m", "feat: a"])
+        .status
+        .success());
+    let tip = out(&c.r, &["rev-parse", "HEAD"]);
+
+    c.reset_records();
+    let (code, text) = c.pre_push(&base, &tip);
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("gated at commit on the cluster"), "{text}");
+    assert!(
+        c.kubectl_calls().contains(" create ") || c.local_runs() > 0,
+        "the push gate ran: {text}"
     );
 }

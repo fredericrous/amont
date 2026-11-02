@@ -171,6 +171,9 @@ pub fn attest_push(
                 proved_here,
             ),
         ];
+        // Both platforms' blocks carry the same input fingerprints for this
+        // ref; the summary counts them once.
+        let mut counted = false;
         for (on, line, linux_names) in platforms {
             if line.is_empty() {
                 continue;
@@ -183,8 +186,11 @@ pub fn attest_push(
                 continue;
             };
             let body = block(&att.payload, &sig);
-            n_inputs += att.inputs.len();
-            n_canon += usize::from(att.canon.is_some());
+            if !counted {
+                n_inputs += att.inputs.len();
+                n_canon += usize::from(att.canon.is_some());
+                counted = true;
+            }
             for k in &att.input_keys {
                 input_blocks.push((k.clone(), body.clone()));
             }
@@ -206,19 +212,24 @@ pub fn attest_push(
     let main_ok = publish(remote, NOTES_REF, &blocks);
     let inputs_ok = input_blocks.is_empty() || publish(remote, INPUTS_REF, &input_blocks);
     if main_ok {
-        let mut what = if gates_line.is_empty() {
-            String::new()
-        } else {
-            crate::ui::highlight(&gates_line)
-        };
-        if !linux_signed.is_empty() {
-            let linux = crate::ui::highlight(&linux_signed.join(" "));
-            if what.is_empty() {
-                what = format!("{linux} on {}", crate::cluster::PLATFORM);
-            } else {
-                what = format!("{what} and {linux} on {}", crate::cluster::PLATFORM);
-            }
+        // Each list names its own platform, so the laptop's gates never read
+        // as attested on linux.
+        let mut signed_on = Vec::new();
+        if !gates_line.is_empty() {
+            signed_on.push(format!(
+                "{} on {}",
+                crate::ui::highlight(&gates_line),
+                platform()
+            ));
         }
+        if !linux_signed.is_empty() {
+            signed_on.push(format!(
+                "{} on {}",
+                crate::ui::highlight(&linux_signed.join(" ")),
+                crate::cluster::PLATFORM
+            ));
+        }
+        let what = signed_on.join("; ");
         crate::say!(
             "{} attested {} for CI ({}{})",
             crate::ui::valid_sign(),

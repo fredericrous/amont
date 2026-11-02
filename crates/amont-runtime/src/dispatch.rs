@@ -1156,21 +1156,21 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .externals
             .iter()
             .find(|e| e.stage == Stage::PrePush && e.id == check.name());
-        // A `platform=any` push gate whose commit twin the cluster proved on
-        // every tip's tree is gated at commit too, and counts as a cluster
-        // pass under its own id (ADR-0016).
+        // A `platform=any` push gate whose commit twin declares the same suite
+        // and was proved on the cluster on every tip's tree is gated at commit
+        // too, and counts as a cluster pass under its own id (ADR-0016).
         if let Some(push_gate) = declared.filter(|_| reuse_stamps) {
-            let twin_vouched = ctx
+            let claimed_from_twin = ctx
                 .manifest
                 .externals
                 .iter()
                 .filter(|e| e.stage == Stage::PreCommit && e.short_name == push_gate.short_name)
                 .any(|twin| {
-                    crate::cluster::twin_vouched_on_every(settings, push_gate, twin, &tips)
+                    crate::cluster::claim_twin_cluster_pass(settings, push_gate, twin, &tips)
                 });
-            if twin_vouched {
+            if claimed_from_twin {
                 crate::say!(
-                    "{} {} gated at commit instead — not repeating it here",
+                    "{} {} gated at commit on the cluster instead — not repeating it here",
                     valid_sign(),
                     highlight(&push_gate.short_name),
                 );
