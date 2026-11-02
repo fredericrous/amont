@@ -355,8 +355,31 @@ fn run_inner(
                 {
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                // A cancelled probe answers nothing, whatever it printed: a
+                // caller that cancelled must not get a version to act on.
+                if need_output && cancel.load(Ordering::SeqCst) {
+                    if drains.iter().any(|d| !d.is_finished()) {
+                        kill_tree(&mut child);
+                    }
+                    return (TreeRun::Cancelled, String::new());
+                }
                 if need_output && drains.iter().any(|d| !d.is_finished()) {
-                    return (TreeRun::TimedOut, String::new());
+                    // The tool exited, but something it started still holds
+                    // the pipe past the deadline: kill the group, or that
+                    // process outlives the probe. The leader is already
+                    // reaped; `kill_tree` signals by its group id, which no
+                    // new process can take while a member is alive.
+                    kill_tree(&mut child);
+                    // With the holders dead the pipe closes, so the readers
+                    // reach EOF and the output is whole — what a successful
+                    // tool printed is still its answer.
+                    let until = Instant::now() + GRACE;
+                    while Instant::now() < until && drains.iter().any(|d| !d.is_finished()) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    if !status.success() || drains.iter().any(|d| !d.is_finished()) {
+                        return (TreeRun::TimedOut, String::new());
+                    }
                 }
                 let out = tail
                     .lock()
@@ -455,6 +478,55 @@ mod tests {
         let alive = unsafe { libc_kill(pid, 0) == 0 };
         assert!(!alive, "grandchild {pid} survived the deadline");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A probe whose tool EXITS but leaves a child holding the pipe: the
+    /// output wait reaches the deadline, the child's group dies with it (the
+    /// leader is already reaped, so this is a different branch from the one
+    /// above), and what the tool printed before exiting 0 is still returned.
+    #[test]
+    fn run_output_kills_a_child_left_holding_the_pipe_and_keeps_the_answer() {
+        let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pgidfile = dir.join("group.pid");
+        let script = format!(
+            "echo $$ > {}; sleep 30 & echo 1.2.3; exit 0",
+            pgidfile.display()
+        );
+        let r = run_output(&sh(&script), &dir, soon(1_500), &AtomicBool::new(false));
+        assert_eq!(r.as_deref().map(str::trim), Ok("1.2.3"));
+        let pgid: u32 = std::fs::read_to_string(&pgidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Polled, not checked once: a killed member answers `kill -0` until it
+        // is reaped.
+        let until = Instant::now() + Duration::from_secs(2);
+        while group_alive(pgid) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!group_alive(pgid), "the group {pgid} outlived the probe");
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir fails nothing
+    }
+
+    /// A probe cancelled while a child holds its pipe answers nothing, even
+    /// though the tool itself exited 0 with a version.
+    #[test]
+    fn run_output_cancelled_returns_no_answer() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let setter = Arc::clone(&flag);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            setter.store(true, Ordering::SeqCst);
+        });
+        let r = run_output(
+            &sh("sleep 30 & echo 1.2.3; exit 0"),
+            Path::new("."),
+            soon(10_000),
+            &flag,
+        );
+        assert_eq!(r, Err(TreeRun::Cancelled));
     }
 
     #[test]

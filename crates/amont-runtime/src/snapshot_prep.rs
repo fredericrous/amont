@@ -340,12 +340,31 @@ impl Manager {
             Manager::Bun => &["bun.lock", "bun.lockb"],
         }
     }
-    fn tool(self) -> &'static str {
+    pub(crate) fn tool(self) -> &'static str {
         match self {
             Manager::Npm => "npm",
             Manager::Pnpm => "pnpm",
             Manager::Yarn => "yarn",
             Manager::Bun => "bun",
+        }
+    }
+
+    /// The manager whose lockfile sits in `root`, when exactly one does.
+    pub(crate) fn from_root_lockfile(root: &Path) -> Option<Manager> {
+        let mut found = Manager::ALL
+            .into_iter()
+            .filter(|m| m.lockfiles().iter().any(|l| root.join(l).is_file()));
+        let one = found.next()?;
+        found.next().is_none().then_some(one)
+    }
+
+    /// The command that adds `spec` (`prettier@3.9.10`) as a dev dependency.
+    pub(crate) fn add_dev_command(self, spec: &str) -> String {
+        match self {
+            Manager::Npm => format!("npm install --save-dev --save-exact {spec}"),
+            Manager::Pnpm => format!("pnpm add -D --save-exact {spec}"),
+            Manager::Yarn => format!("yarn add -D --exact {spec}"),
+            Manager::Bun => format!("bun add -d --exact {spec}"),
         }
     }
 }

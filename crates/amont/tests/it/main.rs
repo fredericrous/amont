@@ -48,6 +48,7 @@ mod host_env_pinned;
 mod index_fidelity;
 mod init;
 mod install;
+mod js_tool_source;
 mod json_contract;
 mod k8s;
 mod land;

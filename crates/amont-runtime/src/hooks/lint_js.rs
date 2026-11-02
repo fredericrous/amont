@@ -1,7 +1,7 @@
 //! pre-commit-lint-js — ESLint over staged JS/TS, scoped to repos that lint.
 
 use super::common::{
-    fail, first_existing, hl, ok, repo_root, resolve_tool, run as run_tool, staged_files, warn,
+    fail, first_existing, ok, repo_root, resolve_js_tool, run as run_tool, staged_files, JsTool,
 };
 use crate::check::Outcome;
 
@@ -45,14 +45,21 @@ pub fn run(settings: &crate::config::Settings, args: &[std::ffi::OsString]) -> O
         return Outcome::Passed;
     }
 
-    let Some(argv) = resolve_tool(&root, "eslint") else {
+    let js = resolve_js_tool(&root, "eslint");
+    let argv = match &js.tool {
+        JsTool::Pinned(argv) => argv.clone(),
+        // Runs, and says it is not the repository's copy (ADR-0019).
+        JsTool::Ambient { argv, ambient } => {
+            js.warn_ambient(ambient);
+            argv.clone()
+        }
         // A non-zero exit from a MISSING eslint is not the same as lint errors,
-        // so warn and skip rather than block with a false "issues found".
-        warn(&format!(
-            "eslint config found but no eslint binary. Run {}",
-            hl("npm install")
-        ));
-        return Outcome::Unavailable;
+        // so warn and skip rather than block with a false "issues found". A
+        // declared eslint that is not installed is not replaced by PATH's.
+        JsTool::NotInstalled | JsTool::NpxHung | JsTool::Missing => {
+            js.warn_unavailable();
+            return Outcome::Unavailable;
+        }
     };
 
     // Forwarded flags first, THEN `--`, THEN the files: a staged file named

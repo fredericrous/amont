@@ -2,8 +2,8 @@
 //! actually opt into prettier.
 
 use super::common::{
-    fail, first_existing, fixing_enabled, hl, ok, repo_root, resolve_tool, restage,
-    run as run_tool, run_quiet, staged_files, warn, Restaged,
+    fail, first_existing, fixing_enabled, hl, ok, pinned_tool, repo_root, resolve_js_tool, restage,
+    run as run_tool, run_quiet, staged_files, JsTool, Restaged,
 };
 use crate::check::Outcome;
 use std::path::Path;
@@ -56,22 +56,27 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     }
     let root = repo_root();
 
-    let tool = resolve_tool(&root, "prettier");
     // A pinned local prettier is itself an opt-in signal; without config AND
-    // without a local binary the repo simply does not use prettier.
-    let local_pinned = tool
-        .as_ref()
-        .map(|t| t[0].contains("node_modules/.bin"))
-        .unwrap_or(false);
-    if !has_config(&root) && !local_pinned {
+    // without a local binary the repo simply does not use prettier. Decided
+    // before resolving, which may probe a PATH copy's `--version`: a repo
+    // that does not use prettier must not pay for that.
+    if !has_config(&root) && pinned_tool(&root, "prettier").is_none() {
         return Outcome::Passed;
     }
-    let Some(argv) = tool else {
-        warn(&format!(
-            "prettier config found but no prettier binary. Run {}",
-            hl("npm install")
-        ));
-        return Outcome::Unavailable;
+    let js = resolve_js_tool(&root, "prettier");
+    let argv = match &js.tool {
+        JsTool::Pinned(argv) => argv.clone(),
+        // Runs, and says it is not the repository's copy (ADR-0019).
+        JsTool::Ambient { argv, ambient } => {
+            js.warn_ambient(ambient);
+            argv.clone()
+        }
+        // NotInstalled: PATH's prettier is not the version package.json asked
+        // for. NpxHung, Missing: nothing to run.
+        JsTool::NotInstalled | JsTool::NpxHung | JsTool::Missing => {
+            js.warn_unavailable();
+            return Outcome::Unavailable;
+        }
     };
 
     // Ignore a GLOBAL ~/.editorconfig when this repo defines none of its own:

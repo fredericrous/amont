@@ -931,7 +931,8 @@ jobs:
       # gracefully when their binary is missing — which would leave CI green
       # while silently testing far less. Install them so those suites actually
       # assert something. Resolution order in the hooks ends at PATH, so a
-      # global install is enough.
+      # global install is enough for a fixture that does not declare the tool
+      # in package.json (one that does refuses PATH's copy; ADR-0019).
       #
       # pyright has been installed here since this step was written, and until
       # now NOTHING gated on it: `pre-commit-pyright` is a `Severity::Block`

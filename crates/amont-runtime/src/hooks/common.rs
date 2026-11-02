@@ -210,51 +210,374 @@ pub fn repo_root_checked() -> Result<String, String> {
         .ok_or_else(|| "not inside a git repository".to_string())
 }
 
-/// Resolve a tool, preferring the repo's PINNED copy so the hook matches CI.
-///
-///
-/// Order: `<root>/node_modules/.bin/<tool>`, then the MAIN worktree's (a linked
-/// worktree has no node_modules of its own — this is why the shell version
-/// consulted the git common dir), then PATH.
-pub fn resolve_tool(root: &str, tool: &str) -> Option<Vec<String>> {
+/// A copy the machine had, and what its `--version` probe said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ambient {
+    /// The first match on PATH, at this path.
+    Path { path: String, version: Version },
+    /// A copy `npx --no-install` already had; its probe printed this version
+    /// (npx with no copy, or a probe that failed, is no candidate at all).
+    Npx { version: String },
+}
+
+/// What a `--version` probe of an ambient tool answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Version {
+    Known(String),
+    /// It exited non-zero, or printed nothing shaped like a version.
+    Unknown,
+    /// It did not answer within [`PROBE_DEADLINE`].
+    TimedOut,
+}
+
+/// How long a `--version` probe may take. A probe runs before the check
+/// itself, so a tool that hangs on `--version` must not hold the commit for
+/// `amont.timeout` (an hour by default): five seconds, then its whole process
+/// group is killed (`tree_run::run_output`).
+pub(crate) const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The repo's own copy: `<root>/node_modules/.bin`, then the main worktree's —
+/// preferred so the hook runs what CI runs (a linked worktree has no
+/// node_modules of its own, hence the git common dir).
+pub(crate) fn pinned_tool(root: &str, tool: &str) -> Option<String> {
     // Same extension problem as `which`: an npm-installed binary is `eslint.cmd`
     // on Windows, so the bare name misses the repo's PINNED copy and the hook
     // silently falls through to an ambient one.
     if let Some(p) = in_bin_dir(&format!("{root}/node_modules/.bin"), tool) {
-        return Some(vec![p]);
+        return Some(p);
     }
-    if let Some(common) = git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    {
-        if let Some(main) = Path::new(&common).parent() {
-            if let Some(p) = in_bin_dir(&main.join("node_modules/.bin").to_string_lossy(), tool) {
-                return Some(vec![p]);
-            }
-        }
-    }
-    if let Some(full) = which(tool) {
-        return Some(vec![full]);
+    let common = git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let main = Path::new(&common).parent()?;
+    in_bin_dir(&main.join("node_modules/.bin").to_string_lossy(), tool)
+}
+
+/// What the machine offered for a tool.
+enum Found {
+    Tool(Vec<String>, Ambient),
+    /// npx is there, but its `--version` probe did not answer in time.
+    NpxHung,
+    Nothing,
+}
+
+/// A copy the machine has: PATH, then one `npx --no-install` already cached.
+/// Its version is probed here, so reporting it later starts nothing.
+fn ambient_tool(root: &str, tool: &str) -> Found {
+    if let Some(path) = which(tool) {
+        let argv = vec![path.clone()];
+        let version = probe_version(&argv, root);
+        return Found::Tool(argv, Ambient::Path { path, version });
     }
     // `npx --no-install`: never silently download a random latest version — a
     // hook that quietly pulls a different linter than CI uses is worse than one
-    // that skips.
-    if which("npx").is_some()
-        && Command::new(program("npx"))
-            .args(["--no-install", tool, "--version"])
-            .current_dir(root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    {
-        return Some(vec![
-            program("npx"),
-            "--no-install".to_string(),
-            tool.to_string(),
-        ]);
+    // that skips. The probe's own output is the version, so naming it later
+    // costs no second npx.
+    if which("npx").is_none() {
+        return Found::Nothing;
     }
-    None
+    let npx = vec![program("npx"), "--no-install".to_string(), tool.to_string()];
+    match probe_version(&npx, root) {
+        Version::Known(version) => Found::Tool(npx, Ambient::Npx { version }),
+        Version::TimedOut => Found::NpxHung,
+        // npx has no copy to offer.
+        Version::Unknown => Found::Nothing,
+    }
+}
+
+/// `<argv> --version`, bounded by [`PROBE_DEADLINE`] and run in its own
+/// process group, so a hung tool (or a child it left holding the pipe) is
+/// killed with everything it started.
+fn probe_version(argv: &[String], root: &str) -> Version {
+    static NEVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let mut probe = argv.to_vec();
+    probe.push("--version".to_string());
+    // Not `clock::scaled`: the bound is the behaviour under test, and a scaled
+    // one is shorter than a shell takes to start on a loaded machine.
+    let deadline = std::time::Instant::now() + PROBE_DEADLINE;
+    match crate::tree_run::run_output(&probe, Path::new(root), deadline, &NEVER) {
+        Ok(out) => version_in(&out).map_or(Version::Unknown, Version::Known),
+        Err(crate::tree_run::TreeRun::TimedOut) => Version::TimedOut,
+        Err(_) => Version::Unknown,
+    }
+}
+
+/// The first line of `out` that starts with a version (`v9.14.0`, `3.9.10`),
+/// without its leading `v` and cut at the first character a version does not
+/// use. Never simply the first line: the probe's stdout and stderr share one
+/// pipe, so an `npm warn …` or a node warning can come first.
+fn version_in(out: &str) -> Option<String> {
+    out.lines().find_map(|line| {
+        let word = line.trim_start();
+        let word = word.strip_prefix('v').unwrap_or(word);
+        let end = word
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')))
+            .unwrap_or(word.len());
+        let v = &word[..end];
+        let mut parts = v.splitn(3, '.');
+        let whole = |p: Option<&str>| {
+            p.is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+        };
+        let (major, minor) = (parts.next(), parts.next());
+        let patch_starts = parts
+            .next()
+            .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()));
+        (whole(major) && whole(minor) && patch_starts).then(|| v.to_string())
+    })
+}
+
+/// A JS tool as a check should treat it, from the package.json of the
+/// checkout being committed and where the binary was found (ADR-0019: a
+/// repository pins its tools, never the machine's PATH).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JsTool {
+    /// The repo's own `node_modules/.bin` copy.
+    Pinned(Vec<String>),
+    /// Not declared, and taken from PATH or npx's cache: it runs, and the
+    /// check says so with [`JsUse::warn_ambient`].
+    Ambient { argv: Vec<String>, ambient: Ambient },
+    /// Declared, but no `node_modules/.bin` has it: nothing runs, because
+    /// PATH's copy is not the version the repository asked for.
+    NotInstalled,
+    /// npx might have a copy, but its probe did not answer in time.
+    NpxHung,
+    /// Not declared and not found anywhere.
+    Missing,
+}
+
+/// A resolved JS tool and what the checkout says about installing it — the
+/// package.json read once, for both.
+pub(crate) struct JsUse {
+    pub(crate) tool: JsTool,
+    name: &'static str,
+    manager: crate::snapshot_prep::Manager,
+}
+
+/// Resolve `name` for a check. Only the root package.json of THIS checkout
+/// decides whether it is declared; the main worktree may lend a binary, never
+/// its manifest. A declared tool is looked up in `node_modules/.bin` only.
+pub(crate) fn resolve_js_tool(root: &str, name: &'static str) -> JsUse {
+    let manifest = std::fs::read_to_string(Path::new(root).join("package.json")).ok();
+    let manager = manifest
+        .as_deref()
+        .and_then(crate::snapshot_prep::declared_manager)
+        .or_else(|| crate::snapshot_prep::Manager::from_root_lockfile(Path::new(root)))
+        .unwrap_or(crate::snapshot_prep::Manager::Npm);
+    let tool = if let Some(p) = pinned_tool(root, name) {
+        JsTool::Pinned(vec![p])
+    } else if manifest
+        .as_deref()
+        .is_some_and(|text| package_json_declares(text, name))
+    {
+        JsTool::NotInstalled
+    } else {
+        match ambient_tool(root, name) {
+            Found::Tool(argv, ambient) => JsTool::Ambient { argv, ambient },
+            Found::NpxHung => JsTool::NpxHung,
+            Found::Nothing => JsTool::Missing,
+        }
+    };
+    JsUse {
+        tool,
+        name,
+        manager,
+    }
+}
+
+impl JsUse {
+    /// The two lines for an undeclared tool taken from the machine: what ran,
+    /// and the command that pins it. Kept under 80 columns for a typical
+    /// path; the root-only rule is in the docs and the CHANGELOG.
+    pub(crate) fn warn_ambient(&self, ambient: &Ambient) {
+        let name = self.name;
+        let (from, version) = match ambient {
+            Ambient::Npx { version } => {
+                ("npx's cache".to_string(), Version::Known(version.clone()))
+            }
+            Ambient::Path { path, version } => (path.clone(), version.clone()),
+        };
+        let secs = PROBE_DEADLINE.as_secs();
+        let (named, pin, note) = match &version {
+            Version::Known(v) => (format!("{name} {v}"), format!("{name}@{v}"), ""),
+            Version::Unknown => (
+                format!("{name} (unknown version)"),
+                name.to_string(),
+                " (latest, not necessarily this one)",
+            ),
+            Version::TimedOut => (
+                format!("{name} (no --version in {secs} s)"),
+                name.to_string(),
+                " (latest, not necessarily this one)",
+            ),
+        };
+        warn(&format!(
+            "{} from {} is not in the root package.json",
+            crate::ui::sanitize(&named),
+            crate::ui::sanitize(&from)
+        ));
+        warn(&format!(
+            "Pin it: {}{note}",
+            hl(&self.manager.add_dev_command(&pin))
+        ));
+    }
+
+    /// The line for a check that could not run, by why it could not; nothing
+    /// for a tool that runs.
+    pub(crate) fn warn_unavailable(&self) {
+        let name = self.name;
+        match &self.tool {
+            JsTool::NotInstalled => warn(&format!(
+                "{name} is in package.json but not installed: run {}",
+                hl(&format!("{} install", self.manager.tool()))
+            )),
+            JsTool::NpxHung => warn(&format!(
+                "npx --no-install {name} --version did not answer in {} s. Pin it: {}",
+                PROBE_DEADLINE.as_secs(),
+                hl(&self.manager.add_dev_command(name))
+            )),
+            // Installing never brings in a tool package.json does not list:
+            // the command that adds it is the one that helps.
+            JsTool::Missing => warn(&format!(
+                "{name} config found but no {name} binary. Run {}",
+                hl(&self.manager.add_dev_command(name))
+            )),
+            JsTool::Pinned(_) | JsTool::Ambient { .. } => {}
+        }
+    }
+}
+
+/// Whether a package.json declares `tool` under `dependencies` or
+/// `devDependencies`, both direct members of the root object. A top-level
+/// `"prettier": {…}` config, a nested `metadata.devDependencies`, a peer or
+/// optional dependency, an override or a script do not count, and a file
+/// that does not parse counts as not declared.
+///
+/// A targeted walk, not a JSON parser: the crate has none on purpose (see
+/// `snapshot_prep`'s module doc), and these two keys are all it needs.
+fn package_json_declares(text: &str, tool: &str) -> bool {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut p = JsonWalk {
+        b: text.as_bytes(),
+        i: 0,
+        depth: 0,
+    };
+    p.declares(tool).unwrap_or(false)
+}
+
+/// How deep a package.json may nest before the walk gives up (as "not
+/// declared"): the file is the repository's, and recursion must not be a way
+/// to overflow the hook's stack.
+const MAX_JSON_DEPTH: u16 = 128;
+
+struct JsonWalk<'a> {
+    b: &'a [u8],
+    i: usize,
+    depth: u16,
+}
+
+impl JsonWalk<'_> {
+    fn ws(&mut self) {
+        while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
+            self.i += 1;
+        }
+    }
+
+    fn eat(&mut self, c: u8) -> Option<()> {
+        self.ws();
+        (self.b.get(self.i) == Some(&c)).then(|| self.i += 1)
+    }
+
+    /// A string's raw content (escapes kept as written).
+    fn string(&mut self) -> Option<&[u8]> {
+        self.eat(b'"')?;
+        let start = self.i;
+        loop {
+            match *self.b.get(self.i)? {
+                b'\\' => self.i += 2,
+                b'"' => {
+                    self.i += 1;
+                    return self.b.get(start..self.i - 1);
+                }
+                _ => self.i += 1,
+            }
+        }
+    }
+
+    fn value(&mut self) -> Option<()> {
+        self.ws();
+        match *self.b.get(self.i)? {
+            b'"' => self.string().map(|_| ()),
+            b'{' => self.nested(|w| w.object(|_, w| w.value())),
+            b'[' => self.nested(|w| {
+                w.i += 1;
+                if w.eat(b']').is_some() {
+                    return Some(());
+                }
+                loop {
+                    w.value()?;
+                    if w.eat(b',').is_none() {
+                        return w.eat(b']');
+                    }
+                }
+            }),
+            _ => {
+                let start = self.i;
+                while self
+                    .b
+                    .get(self.i)
+                    .is_some_and(|c| !matches!(c, b',' | b'}' | b']') && !c.is_ascii_whitespace())
+                {
+                    self.i += 1;
+                }
+                (self.i > start).then_some(())
+            }
+        }
+    }
+
+    /// One level deeper, refused past [`MAX_JSON_DEPTH`].
+    fn nested(&mut self, f: impl FnOnce(&mut Self) -> Option<()>) -> Option<()> {
+        if self.depth >= MAX_JSON_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
+    /// Walk an object, handing each member's key to `member`, which must
+    /// consume the value. `None` when the object is malformed or cut off.
+    fn object(&mut self, mut member: impl FnMut(&[u8], &mut Self) -> Option<()>) -> Option<()> {
+        self.eat(b'{')?;
+        if self.eat(b'}').is_some() {
+            return Some(());
+        }
+        loop {
+            let key = self.string()?.to_vec();
+            self.eat(b':')?;
+            member(&key, self)?;
+            if self.eat(b',').is_none() {
+                return self.eat(b'}');
+            }
+        }
+    }
+
+    fn declares(&mut self, tool: &str) -> Option<bool> {
+        let mut found = false;
+        self.object(|key, w| {
+            if key == b"dependencies" || key == b"devDependencies" {
+                w.ws();
+                if w.b.get(w.i) == Some(&b'{') {
+                    return w.object(|dep, w2| {
+                        found |= dep == tool.as_bytes();
+                        w2.value()
+                    });
+                }
+            }
+            w.value()
+        })?;
+        self.ws();
+        // Anything after the root object means this is not one JSON document.
+        (self.i == self.b.len()).then_some(found)
+    }
 }
 
 /// First match for `tool` on PATH.
@@ -2486,5 +2809,92 @@ mod tests {
         );
         assert_eq!(first_existing(&root, &["nope"]), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod js_tool_tests {
+    use super::{package_json_declares, version_in};
+
+    #[test]
+    fn package_json_declares_a_dev_dependency() {
+        assert!(package_json_declares(
+            r#"{"devDependencies":{"prettier":"3.9.10"}}"#,
+            "prettier"
+        ));
+        assert!(package_json_declares(
+            "{\n  \"name\": \"x\",\n  \"dependencies\": { \"eslint\": \"9.1.0\" }\n}\n",
+            "eslint"
+        ));
+        // A byte-order mark does not hide a declaration.
+        assert!(package_json_declares(
+            "\u{feff}{\"devDependencies\":{\"prettier\":\"3.9.10\"}}",
+            "prettier"
+        ));
+    }
+
+    /// Nesting past the limit is "not declared", never a stack overflow.
+    #[test]
+    fn package_json_declares_gives_up_on_deep_nesting() {
+        let deep = format!(
+            "{{\"x\":{}{},\"devDependencies\":{{\"prettier\":\"3\"}}}}",
+            "[".repeat(100_000),
+            "]".repeat(100_000)
+        );
+        assert!(!package_json_declares(&deep, "prettier"));
+        let fine = format!(
+            "{{\"x\":{}{},\"devDependencies\":{{\"prettier\":\"3\"}}}}",
+            "[".repeat(50),
+            "]".repeat(50)
+        );
+        assert!(package_json_declares(&fine, "prettier"));
+    }
+
+    #[test]
+    fn package_json_declares_nothing_else() {
+        let not = |text: &str| assert!(!package_json_declares(text, "prettier"), "{text}");
+        // A top-level config key is not a dependency.
+        not(r#"{"prettier":{"semi":false}}"#);
+        // A plugin whose name starts with the tool's.
+        not(r#"{"devDependencies":{"prettier-plugin-x":"1.0.0"}}"#);
+        // Peer, optional, overrides, scripts.
+        not(r#"{"peerDependencies":{"prettier":"3"}}"#);
+        not(r#"{"optionalDependencies":{"prettier":"3"}}"#);
+        not(r#"{"pnpm":{"overrides":{"prettier":"3"}}}"#);
+        not(r#"{"scripts":{"prettier":"prettier --check ."}}"#);
+        // Dependency objects that are not root members.
+        not(r#"{"metadata":{"devDependencies":{"prettier":"3"}}}"#);
+        not(r#"{"list":[{"dependencies":{"prettier":"3"}}]}"#);
+        // A quote, a brace and the key's name inside string values.
+        not(r#"{"description":"say \"devDependencies\": {\"prettier\": 1}"}"#);
+        // Cut off, or not one JSON document.
+        not(r#"{"devDependencies":{"prettier":"3.9.10""#);
+        not(r#"{"devDependencies":{"prettier":"3.9.10"}} trailing"#);
+        not("");
+    }
+
+    #[test]
+    fn package_json_declares_past_escapes_and_nesting() {
+        assert!(package_json_declares(
+            r#"{"description":"a \"quoted\" {brace}","x":[1,{"y":null}],"devDependencies":{"a":"1","prettier":"^3"}}"#,
+            "prettier"
+        ));
+    }
+
+    #[test]
+    fn version_in_skips_warnings_and_strips_v() {
+        assert_eq!(version_in("3.9.10\n").as_deref(), Some("3.9.10"));
+        assert_eq!(version_in("v9.14.0").as_deref(), Some("9.14.0"));
+        assert_eq!(
+            version_in("npm warn exec The following package was not found\n3.9.10").as_deref(),
+            Some("3.9.10")
+        );
+        assert_eq!(
+            version_in("(node:1) Warning: x\n3.0.0-beta.1").as_deref(),
+            Some("3.0.0-beta.1")
+        );
+        assert_eq!(version_in("3.9.10\u{1b}[2J").as_deref(), Some("3.9.10"));
+        assert_eq!(version_in("no version here\n1.2"), None);
+        assert_eq!(version_in(""), None);
     }
 }
