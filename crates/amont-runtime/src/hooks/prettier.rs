@@ -73,7 +73,7 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
         // NotInstalled: PATH's prettier is not the version package.json asked
         // for. NpxHung, Missing: nothing to run.
         JsTool::NotInstalled | JsTool::NpxHung | JsTool::Missing => {
-            js.warn_unavailable(true);
+            js.warn_unavailable();
             return Outcome::Unavailable;
         }
     };

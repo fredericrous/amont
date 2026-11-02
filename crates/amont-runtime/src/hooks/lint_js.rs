@@ -57,7 +57,7 @@ pub fn run(settings: &crate::config::Settings, args: &[std::ffi::OsString]) -> O
         // so warn and skip rather than block with a false "issues found". A
         // declared eslint that is not installed is not replaced by PATH's.
         JsTool::NotInstalled | JsTool::NpxHung | JsTool::Missing => {
-            js.warn_unavailable(true);
+            js.warn_unavailable();
             return Outcome::Unavailable;
         }
     };

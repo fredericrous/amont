@@ -450,7 +450,7 @@ impl JsUse {
 
     /// The line for a check that could not run, by why it could not; nothing
     /// for a tool that runs.
-    pub(crate) fn warn_unavailable(&self, config_found: bool) {
+    pub(crate) fn warn_unavailable(&self) {
         let name = self.name;
         match &self.tool {
             JsTool::NotInstalled => warn(&format!(
@@ -464,12 +464,7 @@ impl JsUse {
             // Installing never brings in a tool package.json does not list:
             // the command that adds it is the one that helps.
             JsTool::Missing => warn(&format!(
-                "{}no {name} binary. Run {}",
-                if config_found {
-                    format!("{name} config found but ")
-                } else {
-                    String::new()
-                },
+                "{name} config found but no {name} binary. Run {}",
                 hl(&self.manager.add_dev_command(name))
             )),
             JsTool::Pinned(_) | JsTool::Ambient { .. } => {}
