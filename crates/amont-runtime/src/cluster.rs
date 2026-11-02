@@ -130,10 +130,21 @@ struct LiveRun {
     /// The `amont.run` label of every Job this run creates: how a Job whose
     /// `create` is still in flight, or whose answer was lost, is found.
     run_label: String,
-    /// Set just before the first `create`: before it, no Job can be ours.
-    create_started: bool,
-    job: Option<String>,
+    /// Where this run's Job stands, as a cancel must know it.
+    created: Created,
     gate_ref: Option<String>,
+}
+
+/// A run's Job, as far as an interrupt can tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Created {
+    /// No `create` sent, or the Job already deleted: nothing on the cluster
+    /// is this run's.
+    NotSent,
+    /// A `create` was sent; its Job, if any, is found by the run's label.
+    Sent,
+    /// The Job this run holds, by name.
+    Named(String),
 }
 
 fn live_update(run: u64, update: impl FnOnce(&mut LiveRun)) {
@@ -164,8 +175,9 @@ pub fn cancel_live() {
             namespace: run.namespace.clone(),
         };
         let left = secs_left(deadline, CANCEL_SECS);
-        match &run.job {
-            Some(job) => {
+        match &run.created {
+            Created::NotSent => {}
+            Created::Named(job) => {
                 eprintln!("cancelling cluster Job {job}; Ctrl-C again to leave it");
                 if let Err(why) = kube.bounded(&["delete", "job", job, "--wait=false"], left) {
                     eprintln!(
@@ -174,11 +186,9 @@ pub fn cancel_live() {
                     );
                 }
             }
-            // No `create` sent yet: nothing on the cluster is this run's.
-            None if !run.create_started => {}
             // Not named yet: `create` may be in flight or its answer lost. The
             // label finds the Job if it exists, and deletes nothing otherwise.
-            None => {
+            Created::Sent => {
                 let selector = run_selector(&run.run_label);
                 eprintln!("cancelling cluster Jobs of this run; Ctrl-C again to leave them");
                 if let Err(why) =
@@ -1126,7 +1136,7 @@ impl Job {
             crate::hooks::common::warn(&reason);
             log_line(gate, &reason);
         }
-        live_update(self.run, |l| l.job = None);
+        live_update(self.run, |l| l.created = Created::NotSent);
     }
 }
 
@@ -1158,7 +1168,7 @@ fn claim_slot(
         let path = path.to_string_lossy().into_owned();
         let name = format!("{JOB_PREFIX}{slot}");
         let args = ["create", "-f", &path, "-o", "jsonpath={.metadata.uid}"];
-        live_update(scratch.run, |l| l.create_started = true);
+        live_update(scratch.run, |l| l.created = Created::Sent);
         let created = kube.capture(&args, secs_left(deadline, CALL_SECS));
         if crate::tree_run::is_dying() {
             // The signal watcher may have cleaned up before this `create`
@@ -1168,7 +1178,7 @@ fn claim_slot(
         }
         match created {
             Call::Ok(uid) if !uid.trim().is_empty() => {
-                live_update(scratch.run, |l| l.job = Some(name.clone()));
+                live_update(scratch.run, |l| l.created = Created::Named(name.clone()));
                 return Ok(Job {
                     run: scratch.run,
                     slot,
@@ -1180,9 +1190,9 @@ fn claim_slot(
             Call::Ok(_) => {
                 // The Job exists, only unnamed by its UID: take it down by
                 // name rather than hold the slot until its deadline.
-                live_update(scratch.run, |l| l.job = Some(name.clone()));
+                live_update(scratch.run, |l| l.created = Created::Named(name.clone()));
                 delete_by_name(kube, &name, spec.gate);
-                live_update(scratch.run, |l| l.job = None);
+                live_update(scratch.run, |l| l.created = Created::NotSent);
                 return Err(Fallback::NotProved(
                     "kubectl create printed no Job UID".into(),
                 ));
@@ -1346,7 +1356,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
     let gate = container("gate", &config.image, spec.argv, &work_mounts);
     format!(
         "{{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\
-         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",\"amont.run\":{run_label}}},\
+         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_label_key}:{run_label}}},\
          \"annotations\":{{\"amont.dev/gate\":{gate_id},\"amont.dev/tree\":{tree}}}}},\
          \"spec\":{{\"backoffLimit\":0,\"activeDeadlineSeconds\":{deadline},\
          \"ttlSecondsAfterFinished\":300,\"template\":{{\"spec\":{{\
@@ -1360,6 +1370,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
          {{\"name\":\"work\",\"emptyDir\":{{}}}},{{\"name\":\"checkout\",\"emptyDir\":{{}}}}],\
          \"initContainers\":[{init}],\"containers\":[{gate}]}}}}}}}}",
         name = json_string(&format!("{JOB_PREFIX}{slot}")),
+        run_label_key = json_string(RUN_LABEL_KEY),
         run_label = json_string(spec.run_label),
         gate_id = json_string(spec.gate),
         tree = json_string(spec.tree),
@@ -1374,8 +1385,9 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
 
 /// Unique to this process and run, across every host sharing the namespace
 /// (pids repeat from host to host, and in containers): the pid, a random
-/// per-process nonce and the run. 37 characters at most, inside a label
-/// value's 63, alphanumeric at both ends.
+/// per-process nonce and the run. 45 characters at most (a 7-digit pid, 16
+/// hex digits, a 20-digit run), inside a label value's 63, alphanumeric at
+/// both ends.
 fn run_label(run: u64) -> String {
     format!("{}-{:016x}-{run}", std::process::id(), process_nonce())
 }
@@ -1433,8 +1445,7 @@ impl Scratch {
                 namespace: kube.namespace.clone(),
                 scratch: dir.clone(),
                 run_label: run_label(run),
-                create_started: false,
-                job: None,
+                created: Created::NotSent,
                 gate_ref: None,
             });
         Ok(Scratch { run, dir })
@@ -1863,6 +1874,7 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     /// A run label is the pid, a 16-hex-digit nonce and the run: valid as a
     /// label value, distinct per run, and the same nonce within one process.
     #[test]
@@ -1879,8 +1891,6 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(second.split('-').nth(1), Some(parts[1]));
     }
-
-    use super::*;
 
     fn cluster_config(prepare: Option<&str>) -> ClusterConfig {
         ClusterConfig {
