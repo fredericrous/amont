@@ -110,3 +110,22 @@ worktree; the cluster rows are the coordinator's server-side dry run.
   lists it); `amont.cluster.mirror` is the in-cluster mirror URL, as planned.
 - **The submission talks on stderr** and `--status` answers on stdout; exit
   codes are in `docs/configuration.md`.
+
+## Implementation review (phase 2)
+
+- **Round 1** (tree 79bc2f87): implementation-review, backend, lang:rust, unix and tui, all approve-with-changes.
+  - Implementation-review: 7 blocking under the code rules (stdout talk, bool flags, a widened global, banners, a reasonless `let _`, weak names, no record), with 17 of 38 candidates violations.
+  - High:
+    - a lost pass when a token write fails (rust, backend);
+    - the mirror `ls-remote` hang (unix);
+    - finished runs hidden from `--status` (tui).
+- **Delta 1** (f6ce5a24): rust approve; the others approve-with-changes.
+  - Implementation-review [high]: make check red. It is now green, with A/B evidence recorded.
+  - Implementation-review [blocking]: a `let _`.
+  - A `probe_run` drain timeout read as an empty answer (rust, backend).
+  - Lows from unix and tui.
+- **Delta 2** (5cbe8445): all five approve, and the 24 candidates are ruled fine.
+- **Carried:**
+  - an intent whose create never landed reads "gone (TTL passed or deleted)" in `--status`; a `NeverCreated` phase is a follow-up (implementation-review, low);
+  - the probe test adds a 2 s real wait;
+  - live checks for phase 3: a closed-lid run on relais, a held notes-ref lock collected by the next push, the hook-start collect within 300 ms on the LAN, and one pod admitted with `prepare` at the 4Gi ceiling.
