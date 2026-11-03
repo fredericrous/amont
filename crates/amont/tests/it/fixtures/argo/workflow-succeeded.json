@@ -1,0 +1,251 @@
+{
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+        "annotations": {
+            "workflows.argoproj.io/last-seen-version": "651409092",
+            "workflows.argoproj.io/pod-name-format": "v2"
+        },
+        "creationTimestamp": "2026-11-03T04:40:24Z",
+        "generateName": "amont-handrun-",
+        "generation": 4,
+        "labels": {
+            "amont.run": "handrun-2",
+            "workflows.argoproj.io/completed": "true",
+            "workflows.argoproj.io/phase": "Succeeded"
+        },
+        "name": "amont-handrun-pqtbl",
+        "namespace": "amont-gates",
+        "resourceVersion": "651409329",
+        "uid": "b8eb52b7-8ede-4c1f-bd94-9ada529eec97"
+    },
+    "spec": {
+        "activeDeadlineSeconds": 900,
+        "arguments": {},
+        "automountServiceAccountToken": false,
+        "entrypoint": "gate",
+        "executor": {
+            "serviceAccountName": "amont-gate-executor"
+        },
+        "imagePullSecrets": [
+            {
+                "name": "forgejo-registry-pull"
+            }
+        ],
+        "nodeSelector": {
+            "kubernetes.io/hostname": "talos-wk-3-gpu"
+        },
+        "podMetadata": {
+            "labels": {
+                "amont.run": "handrun-2",
+                "istio.io/dataplane-mode": "ambient"
+            }
+        },
+        "podPriorityClassName": "gate-detached",
+        "securityContext": {
+            "fsGroup": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": true,
+            "runAsUser": 1000,
+            "seccompProfile": {
+                "type": "RuntimeDefault"
+            }
+        },
+        "serviceAccountName": "default",
+        "templates": [
+            {
+                "container": {
+                    "command": [
+                        "python3",
+                        "scripts/check-module-cycles.py"
+                    ],
+                    "image": "git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                    "name": "",
+                    "resources": {
+                        "limits": {
+                            "cpu": "2",
+                            "ephemeral-storage": "4Gi",
+                            "memory": "3840Mi"
+                        },
+                        "requests": {
+                            "cpu": "500m",
+                            "ephemeral-storage": "1Gi",
+                            "memory": "3840Mi"
+                        }
+                    },
+                    "securityContext": {
+                        "allowPrivilegeEscalation": false,
+                        "capabilities": {
+                            "drop": [
+                                "ALL"
+                            ]
+                        }
+                    },
+                    "volumeMounts": [
+                        {
+                            "mountPath": "/checkout",
+                            "name": "checkout"
+                        },
+                        {
+                            "mountPath": "/cache",
+                            "name": "cache",
+                            "subPath": "relais"
+                        }
+                    ],
+                    "workingDir": "/checkout"
+                },
+                "initContainers": [
+                    {
+                        "args": [
+                            "/usr/local/bin/fetch"
+                        ],
+                        "env": [
+                            {
+                                "name": "GATE_SOURCE",
+                                "value": "git"
+                            },
+                            {
+                                "name": "GATE_URL",
+                                "value": "http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/relais-mirror.git"
+                            },
+                            {
+                                "name": "GATE_REF",
+                                "value": "7e04624939f8c93f774d570276af8643c61f0320"
+                            },
+                            {
+                                "name": "EXPECTED_TREE",
+                                "value": "13b5ee2d54389399fa2738f084a1b653b5844028"
+                            },
+                            {
+                                "name": "REPO_DIR",
+                                "value": "relais"
+                            }
+                        ],
+                        "image": "git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                        "name": "fetch",
+                        "resources": {
+                            "limits": {
+                                "cpu": "1",
+                                "ephemeral-storage": "2Gi",
+                                "memory": "512Mi"
+                            },
+                            "requests": {
+                                "cpu": "250m",
+                                "ephemeral-storage": "1Gi",
+                                "memory": "512Mi"
+                            }
+                        },
+                        "securityContext": {
+                            "allowPrivilegeEscalation": false,
+                            "capabilities": {
+                                "drop": [
+                                    "ALL"
+                                ]
+                            }
+                        },
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/cache",
+                                "name": "cache"
+                            },
+                            {
+                                "mountPath": "/work",
+                                "name": "work"
+                            },
+                            {
+                                "mountPath": "/checkout",
+                                "name": "checkout"
+                            },
+                            {
+                                "mountPath": "/run/secrets/forgejo",
+                                "name": "forgejo-token",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "inputs": {},
+                "metadata": {},
+                "name": "gate",
+                "outputs": {}
+            }
+        ],
+        "ttlStrategy": {
+            "secondsAfterCompletion": 172800
+        },
+        "volumes": [
+            {
+                "emptyDir": {},
+                "name": "work"
+            },
+            {
+                "emptyDir": {},
+                "name": "checkout"
+            },
+            {
+                "name": "cache",
+                "persistentVolumeClaim": {
+                    "claimName": "gate-cache-detached"
+                }
+            },
+            {
+                "name": "forgejo-token",
+                "secret": {
+                    "secretName": "amont-bot-read-token"
+                }
+            }
+        ]
+    },
+    "status": {
+        "artifactGCStatus": {
+            "notSpecified": true
+        },
+        "artifactRepositoryRef": {
+            "artifactRepository": {},
+            "default": true
+        },
+        "conditions": [
+            {
+                "status": "False",
+                "type": "PodRunning"
+            },
+            {
+                "status": "True",
+                "type": "Completed"
+            }
+        ],
+        "finishedAt": "2026-11-03T04:40:44Z",
+        "nodes": {
+            "amont-handrun-pqtbl": {
+                "displayName": "amont-handrun-pqtbl",
+                "finishedAt": "2026-11-03T04:40:35Z",
+                "hostNodeName": "talos-wk-3-gpu",
+                "id": "amont-handrun-pqtbl",
+                "name": "amont-handrun-pqtbl",
+                "outputs": {
+                    "exitCode": "0"
+                },
+                "phase": "Succeeded",
+                "progress": "1/1",
+                "resourcesDuration": {
+                    "cpu": 0,
+                    "ephemeral-storage": 0,
+                    "memory": 45
+                },
+                "startedAt": "2026-11-03T04:40:24Z",
+                "taskResultSynced": true,
+                "templateName": "gate",
+                "templateScope": "local/amont-handrun-pqtbl",
+                "type": "Pod"
+            }
+        },
+        "phase": "Succeeded",
+        "progress": "1/1",
+        "resourcesDuration": {
+            "cpu": 0,
+            "ephemeral-storage": 0,
+            "memory": 45
+        },
+        "startedAt": "2026-11-03T04:40:24Z"
+    }
+}

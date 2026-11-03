@@ -1,0 +1,887 @@
+{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+        "annotations": {
+            "kubectl.kubernetes.io/default-container": "main",
+            "workflows.argoproj.io/node-id": "amont-handrun-pqtbl",
+            "workflows.argoproj.io/node-name": "amont-handrun-pqtbl"
+        },
+        "creationTimestamp": "2026-11-03T04:40:24Z",
+        "generation": 1,
+        "labels": {
+            "amont.run": "handrun-2",
+            "istio.io/dataplane-mode": "ambient",
+            "workflows.argoproj.io/completed": "true",
+            "workflows.argoproj.io/workflow": "amont-handrun-pqtbl"
+        },
+        "name": "amont-handrun-pqtbl",
+        "namespace": "amont-gates",
+        "ownerReferences": [
+            {
+                "apiVersion": "argoproj.io/v1alpha1",
+                "blockOwnerDeletion": true,
+                "controller": true,
+                "kind": "Workflow",
+                "name": "amont-handrun-pqtbl",
+                "uid": "b8eb52b7-8ede-4c1f-bd94-9ada529eec97"
+            }
+        ],
+        "resourceVersion": "651409361",
+        "uid": "f5898044-ae96-40b6-aa1b-333d2e841522"
+    },
+    "spec": {
+        "activeDeadlineSeconds": 899,
+        "automountServiceAccountToken": false,
+        "containers": [
+            {
+                "command": [
+                    "argoexec",
+                    "wait",
+                    "--loglevel",
+                    "info",
+                    "--log-format",
+                    "text",
+                    "--gloglevel",
+                    "0"
+                ],
+                "env": [
+                    {
+                        "name": "TZ",
+                        "value": "Europe/Paris"
+                    },
+                    {
+                        "name": "ARGO_POD_NAME",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.name"
+                            }
+                        }
+                    },
+                    {
+                        "name": "ARGO_POD_UID",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.uid"
+                            }
+                        }
+                    },
+                    {
+                        "name": "ARGO_WORKFLOW_NAME",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_WORKFLOW_UID",
+                        "value": "b8eb52b7-8ede-4c1f-bd94-9ada529eec97"
+                    },
+                    {
+                        "name": "ARGO_ARTIFACT_PLUGIN_NAMES"
+                    },
+                    {
+                        "name": "ARGO_CONTAINER_NAME",
+                        "value": "wait"
+                    },
+                    {
+                        "name": "ARGO_NODE_ID",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_INCLUDE_SCRIPT_OUTPUT",
+                        "value": "false"
+                    },
+                    {
+                        "name": "ARGO_DEADLINE",
+                        "value": "2026-11-03T04:55:24Z"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE",
+                        "value": "/var/run/argo/progress"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_PATCH_TICK_DURATION",
+                        "value": "1m0s"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE_TICK_DURATION",
+                        "value": "3s"
+                    }
+                ],
+                "image": "quay.io/argoproj/argoexec:v4.0.5",
+                "imagePullPolicy": "Always",
+                "name": "wait",
+                "resources": {
+                    "limits": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    },
+                    "requests": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    }
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": {
+                        "drop": [
+                            "ALL"
+                        ]
+                    },
+                    "runAsNonRoot": true,
+                    "seccompProfile": {
+                        "type": "RuntimeDefault"
+                    }
+                },
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "exec-sa-token",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/mainctrfs/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/mainctrfs/cache",
+                        "name": "cache",
+                        "subPath": "relais"
+                    },
+                    {
+                        "mountPath": "/tmp",
+                        "name": "tmp-dir-argo",
+                        "subPath": "0"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            },
+            {
+                "command": [
+                    "/var/run/argo/argoexec",
+                    "emissary",
+                    "--loglevel",
+                    "info",
+                    "--log-format",
+                    "text",
+                    "--gloglevel",
+                    "0",
+                    "--",
+                    "python3",
+                    "scripts/check-module-cycles.py"
+                ],
+                "env": [
+                    {
+                        "name": "TZ",
+                        "value": "Europe/Paris"
+                    },
+                    {
+                        "name": "ARGO_CONTAINER_NAME",
+                        "value": "main"
+                    },
+                    {
+                        "name": "ARGO_NODE_ID",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_INCLUDE_SCRIPT_OUTPUT",
+                        "value": "false"
+                    },
+                    {
+                        "name": "ARGO_DEADLINE",
+                        "value": "2026-11-03T04:55:24Z"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE",
+                        "value": "/var/run/argo/progress"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_PATCH_TICK_DURATION",
+                        "value": "1m0s"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE_TICK_DURATION",
+                        "value": "3s"
+                    }
+                ],
+                "image": "git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                "imagePullPolicy": "IfNotPresent",
+                "name": "main",
+                "resources": {
+                    "limits": {
+                        "cpu": "2",
+                        "ephemeral-storage": "4Gi",
+                        "memory": "3840Mi"
+                    },
+                    "requests": {
+                        "cpu": "500m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "3840Mi"
+                    }
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": {
+                        "drop": [
+                            "ALL"
+                        ]
+                    }
+                },
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/cache",
+                        "name": "cache",
+                        "subPath": "relais"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ],
+                "workingDir": "/checkout"
+            }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": true,
+        "imagePullSecrets": [
+            {
+                "name": "forgejo-registry-pull"
+            }
+        ],
+        "initContainers": [
+            {
+                "command": [
+                    "argoexec",
+                    "init",
+                    "--loglevel",
+                    "info",
+                    "--log-format",
+                    "text",
+                    "--gloglevel",
+                    "0"
+                ],
+                "env": [
+                    {
+                        "name": "TZ",
+                        "value": "Europe/Paris"
+                    },
+                    {
+                        "name": "ARGO_POD_NAME",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.name"
+                            }
+                        }
+                    },
+                    {
+                        "name": "ARGO_POD_UID",
+                        "valueFrom": {
+                            "fieldRef": {
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.uid"
+                            }
+                        }
+                    },
+                    {
+                        "name": "ARGO_WORKFLOW_NAME",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_WORKFLOW_UID",
+                        "value": "b8eb52b7-8ede-4c1f-bd94-9ada529eec97"
+                    },
+                    {
+                        "name": "ARGO_CONTAINER_NAME",
+                        "value": "init"
+                    },
+                    {
+                        "name": "ARGO_TEMPLATE",
+                        "value": "{\"name\":\"gate\",\"inputs\":{},\"outputs\":{},\"metadata\":{\"labels\":{\"amont.run\":\"handrun-2\",\"istio.io/dataplane-mode\":\"ambient\"}},\"container\":{\"name\":\"\",\"image\":\"git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c\",\"command\":[\"python3\",\"scripts/check-module-cycles.py\"],\"workingDir\":\"/checkout\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"4Gi\",\"memory\":\"3840Mi\"},\"requests\":{\"cpu\":\"500m\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"3840Mi\"}},\"volumeMounts\":[{\"name\":\"checkout\",\"mountPath\":\"/checkout\"},{\"name\":\"cache\",\"mountPath\":\"/cache\",\"subPath\":\"relais\"}],\"securityContext\":{\"capabilities\":{\"drop\":[\"ALL\"]},\"allowPrivilegeEscalation\":false}},\"initContainers\":[{\"name\":\"fetch\",\"image\":\"git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c\",\"args\":[\"/usr/local/bin/fetch\"],\"env\":[{\"name\":\"GATE_SOURCE\",\"value\":\"git\"},{\"name\":\"GATE_URL\",\"value\":\"http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/relais-mirror.git\"},{\"name\":\"GATE_REF\",\"value\":\"7e04624939f8c93f774d570276af8643c61f0320\"},{\"name\":\"EXPECTED_TREE\",\"value\":\"13b5ee2d54389399fa2738f084a1b653b5844028\"},{\"name\":\"REPO_DIR\",\"value\":\"relais\"}],\"resources\":{\"limits\":{\"cpu\":\"1\",\"ephemeral-storage\":\"2Gi\",\"memory\":\"512Mi\"},\"requests\":{\"cpu\":\"250m\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"512Mi\"}},\"volumeMounts\":[{\"name\":\"cache\",\"mountPath\":\"/cache\"},{\"name\":\"work\",\"mountPath\":\"/work\"},{\"name\":\"checkout\",\"mountPath\":\"/checkout\"},{\"name\":\"forgejo-token\",\"readOnly\":true,\"mountPath\":\"/run/secrets/forgejo\"}],\"securityContext\":{\"capabilities\":{\"drop\":[\"ALL\"]},\"allowPrivilegeEscalation\":false}}]}"
+                    },
+                    {
+                        "name": "ARGO_NODE_ID",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_INCLUDE_SCRIPT_OUTPUT",
+                        "value": "false"
+                    },
+                    {
+                        "name": "ARGO_DEADLINE",
+                        "value": "2026-11-03T04:55:24Z"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE",
+                        "value": "/var/run/argo/progress"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_PATCH_TICK_DURATION",
+                        "value": "1m0s"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE_TICK_DURATION",
+                        "value": "3s"
+                    }
+                ],
+                "image": "quay.io/argoproj/argoexec:v4.0.5",
+                "imagePullPolicy": "Always",
+                "name": "init",
+                "resources": {
+                    "limits": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    },
+                    "requests": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    }
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": {
+                        "drop": [
+                            "ALL"
+                        ]
+                    },
+                    "runAsNonRoot": true,
+                    "seccompProfile": {
+                        "type": "RuntimeDefault"
+                    }
+                },
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "exec-sa-token",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            },
+            {
+                "args": [
+                    "/usr/local/bin/fetch"
+                ],
+                "env": [
+                    {
+                        "name": "TZ",
+                        "value": "Europe/Paris"
+                    },
+                    {
+                        "name": "GATE_SOURCE",
+                        "value": "git"
+                    },
+                    {
+                        "name": "GATE_URL",
+                        "value": "http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/relais-mirror.git"
+                    },
+                    {
+                        "name": "GATE_REF",
+                        "value": "7e04624939f8c93f774d570276af8643c61f0320"
+                    },
+                    {
+                        "name": "EXPECTED_TREE",
+                        "value": "13b5ee2d54389399fa2738f084a1b653b5844028"
+                    },
+                    {
+                        "name": "REPO_DIR",
+                        "value": "relais"
+                    },
+                    {
+                        "name": "ARGO_CONTAINER_NAME",
+                        "value": "fetch"
+                    },
+                    {
+                        "name": "ARGO_TEMPLATE",
+                        "value": "{\"name\":\"gate\",\"inputs\":{},\"outputs\":{},\"metadata\":{\"labels\":{\"amont.run\":\"handrun-2\",\"istio.io/dataplane-mode\":\"ambient\"}},\"container\":{\"name\":\"\",\"image\":\"git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c\",\"command\":[\"python3\",\"scripts/check-module-cycles.py\"],\"workingDir\":\"/checkout\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"4Gi\",\"memory\":\"3840Mi\"},\"requests\":{\"cpu\":\"500m\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"3840Mi\"}},\"volumeMounts\":[{\"name\":\"checkout\",\"mountPath\":\"/checkout\"},{\"name\":\"cache\",\"mountPath\":\"/cache\",\"subPath\":\"relais\"}],\"securityContext\":{\"capabilities\":{\"drop\":[\"ALL\"]},\"allowPrivilegeEscalation\":false}},\"initContainers\":[{\"name\":\"fetch\",\"image\":\"git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c\",\"args\":[\"/usr/local/bin/fetch\"],\"env\":[{\"name\":\"GATE_SOURCE\",\"value\":\"git\"},{\"name\":\"GATE_URL\",\"value\":\"http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/relais-mirror.git\"},{\"name\":\"GATE_REF\",\"value\":\"7e04624939f8c93f774d570276af8643c61f0320\"},{\"name\":\"EXPECTED_TREE\",\"value\":\"13b5ee2d54389399fa2738f084a1b653b5844028\"},{\"name\":\"REPO_DIR\",\"value\":\"relais\"}],\"resources\":{\"limits\":{\"cpu\":\"1\",\"ephemeral-storage\":\"2Gi\",\"memory\":\"512Mi\"},\"requests\":{\"cpu\":\"250m\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"512Mi\"}},\"volumeMounts\":[{\"name\":\"cache\",\"mountPath\":\"/cache\"},{\"name\":\"work\",\"mountPath\":\"/work\"},{\"name\":\"checkout\",\"mountPath\":\"/checkout\"},{\"name\":\"forgejo-token\",\"readOnly\":true,\"mountPath\":\"/run/secrets/forgejo\"}],\"securityContext\":{\"capabilities\":{\"drop\":[\"ALL\"]},\"allowPrivilegeEscalation\":false}}]}"
+                    },
+                    {
+                        "name": "ARGO_NODE_ID",
+                        "value": "amont-handrun-pqtbl"
+                    },
+                    {
+                        "name": "ARGO_INCLUDE_SCRIPT_OUTPUT",
+                        "value": "false"
+                    },
+                    {
+                        "name": "ARGO_DEADLINE",
+                        "value": "2026-11-03T04:55:24Z"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE",
+                        "value": "/var/run/argo/progress"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_PATCH_TICK_DURATION",
+                        "value": "1m0s"
+                    },
+                    {
+                        "name": "ARGO_PROGRESS_FILE_TICK_DURATION",
+                        "value": "3s"
+                    }
+                ],
+                "image": "git.daddyshome.fr/fredericrous/gate-runner:main-a5d5db2@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                "imagePullPolicy": "IfNotPresent",
+                "name": "fetch",
+                "resources": {
+                    "limits": {
+                        "cpu": "1",
+                        "ephemeral-storage": "2Gi",
+                        "memory": "512Mi"
+                    },
+                    "requests": {
+                        "cpu": "250m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "512Mi"
+                    }
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "capabilities": {
+                        "drop": [
+                            "ALL"
+                        ]
+                    }
+                },
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/cache",
+                        "name": "cache"
+                    },
+                    {
+                        "mountPath": "/work",
+                        "name": "work"
+                    },
+                    {
+                        "mountPath": "/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/run/secrets/forgejo",
+                        "name": "forgejo-token",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            }
+        ],
+        "nodeName": "talos-wk-3-gpu",
+        "nodeSelector": {
+            "kubernetes.io/hostname": "talos-wk-3-gpu"
+        },
+        "preemptionPolicy": "Never",
+        "priority": -600,
+        "priorityClassName": "gate-detached",
+        "restartPolicy": "Never",
+        "schedulerName": "default-scheduler",
+        "securityContext": {
+            "fsGroup": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": true,
+            "runAsUser": 1000,
+            "seccompProfile": {
+                "type": "RuntimeDefault"
+            }
+        },
+        "serviceAccount": "default",
+        "serviceAccountName": "default",
+        "terminationGracePeriodSeconds": 30,
+        "tolerations": [
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/not-ready",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            },
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/unreachable",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            }
+        ],
+        "volumes": [
+            {
+                "emptyDir": {},
+                "name": "var-run-argo"
+            },
+            {
+                "emptyDir": {},
+                "name": "tmp-dir-argo"
+            },
+            {
+                "name": "exec-sa-token",
+                "secret": {
+                    "defaultMode": 420,
+                    "secretName": "amont-gate-executor.service-account-token"
+                }
+            },
+            {
+                "emptyDir": {},
+                "name": "checkout"
+            },
+            {
+                "name": "cache",
+                "persistentVolumeClaim": {
+                    "claimName": "gate-cache-detached"
+                }
+            },
+            {
+                "emptyDir": {},
+                "name": "work"
+            },
+            {
+                "name": "forgejo-token",
+                "secret": {
+                    "defaultMode": 420,
+                    "secretName": "amont-bot-read-token"
+                }
+            }
+        ]
+    },
+    "status": {
+        "conditions": [
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-11-03T04:40:37Z",
+                "observedGeneration": 1,
+                "status": "False",
+                "type": "PodReadyToStartContainers"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-11-03T04:40:33Z",
+                "observedGeneration": 1,
+                "reason": "PodCompleted",
+                "status": "True",
+                "type": "Initialized"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-11-03T04:40:35Z",
+                "observedGeneration": 1,
+                "reason": "PodCompleted",
+                "status": "False",
+                "type": "Ready"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-11-03T04:40:35Z",
+                "observedGeneration": 1,
+                "reason": "PodCompleted",
+                "status": "False",
+                "type": "ContainersReady"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-11-03T04:40:24Z",
+                "observedGeneration": 1,
+                "status": "True",
+                "type": "PodScheduled"
+            }
+        ],
+        "containerStatuses": [
+            {
+                "allocatedResources": {
+                    "cpu": "500m",
+                    "ephemeral-storage": "1Gi",
+                    "memory": "3840Mi"
+                },
+                "containerID": "containerd://72683744e4b32662fcdee44e7d5fd846899a8b994145dfc21a07ee4d385f3989",
+                "image": "sha256:d999d233a2623cd5506133fee952ff17b319515871b3252d45487522a98267ad",
+                "imageID": "git.daddyshome.fr/fredericrous/gate-runner@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                "lastState": {},
+                "name": "main",
+                "ready": false,
+                "resources": {
+                    "limits": {
+                        "cpu": "2",
+                        "ephemeral-storage": "4Gi",
+                        "memory": "3840Mi"
+                    },
+                    "requests": {
+                        "cpu": "500m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "3840Mi"
+                    }
+                },
+                "restartCount": 0,
+                "started": false,
+                "state": {
+                    "terminated": {
+                        "containerID": "containerd://72683744e4b32662fcdee44e7d5fd846899a8b994145dfc21a07ee4d385f3989",
+                        "exitCode": 0,
+                        "finishedAt": "2026-11-03T04:40:34Z",
+                        "reason": "Completed",
+                        "startedAt": "2026-11-03T04:40:33Z"
+                    }
+                },
+                "user": {
+                    "linux": {
+                        "gid": 1000,
+                        "supplementalGroups": [
+                            1000
+                        ],
+                        "uid": 1000
+                    }
+                },
+                "volumeMounts": [
+                    {
+                        "mountPath": "/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/cache",
+                        "name": "cache"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            },
+            {
+                "allocatedResources": {
+                    "cpu": "100m",
+                    "ephemeral-storage": "1Gi",
+                    "memory": "256Mi"
+                },
+                "containerID": "containerd://071856a3bb298395079a156bbc1e21f3af93b41aa2ac67667c88ab0c4817aa14",
+                "image": "quay.io/argoproj/argoexec:v4.0.5",
+                "imageID": "quay.io/argoproj/argoexec@sha256:0cb732e24c7d13385066c920e2943fdddfa1d15e6bf5ad99f02e48c50625d022",
+                "lastState": {},
+                "name": "wait",
+                "ready": false,
+                "resources": {
+                    "limits": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    },
+                    "requests": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    }
+                },
+                "restartCount": 0,
+                "started": false,
+                "state": {
+                    "terminated": {
+                        "containerID": "containerd://071856a3bb298395079a156bbc1e21f3af93b41aa2ac67667c88ab0c4817aa14",
+                        "exitCode": 0,
+                        "finishedAt": "2026-11-03T04:40:35Z",
+                        "reason": "Completed",
+                        "startedAt": "2026-11-03T04:40:33Z"
+                    }
+                },
+                "user": {
+                    "linux": {
+                        "gid": 1000,
+                        "supplementalGroups": [
+                            1000
+                        ],
+                        "uid": 1000
+                    }
+                },
+                "volumeMounts": [
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "exec-sa-token",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/mainctrfs/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/mainctrfs/cache",
+                        "name": "cache"
+                    },
+                    {
+                        "mountPath": "/tmp",
+                        "name": "tmp-dir-argo"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            }
+        ],
+        "hostIP": "192.168.1.80",
+        "hostIPs": [
+            {
+                "ip": "192.168.1.80"
+            }
+        ],
+        "initContainerStatuses": [
+            {
+                "allocatedResources": {
+                    "cpu": "100m",
+                    "ephemeral-storage": "1Gi",
+                    "memory": "256Mi"
+                },
+                "containerID": "containerd://d678229e209d1433025e01a50c6650d777dcb4ca0b7d8841a2f94fdf716fc97b",
+                "image": "quay.io/argoproj/argoexec:v4.0.5",
+                "imageID": "quay.io/argoproj/argoexec@sha256:0cb732e24c7d13385066c920e2943fdddfa1d15e6bf5ad99f02e48c50625d022",
+                "lastState": {},
+                "name": "init",
+                "ready": true,
+                "resources": {
+                    "limits": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    },
+                    "requests": {
+                        "cpu": "100m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "256Mi"
+                    }
+                },
+                "restartCount": 0,
+                "started": false,
+                "state": {
+                    "terminated": {
+                        "containerID": "containerd://d678229e209d1433025e01a50c6650d777dcb4ca0b7d8841a2f94fdf716fc97b",
+                        "exitCode": 0,
+                        "finishedAt": "2026-11-03T04:40:27Z",
+                        "reason": "Completed",
+                        "startedAt": "2026-11-03T04:40:26Z"
+                    }
+                },
+                "user": {
+                    "linux": {
+                        "gid": 1000,
+                        "supplementalGroups": [
+                            1000
+                        ],
+                        "uid": 1000
+                    }
+                },
+                "volumeMounts": [
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "exec-sa-token",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            },
+            {
+                "allocatedResources": {
+                    "cpu": "250m",
+                    "ephemeral-storage": "1Gi",
+                    "memory": "512Mi"
+                },
+                "containerID": "containerd://4481c050dcdfcfc1ed7dfae7314ca07b735348a098371c0c7c6c7dec1bf56253",
+                "image": "sha256:d999d233a2623cd5506133fee952ff17b319515871b3252d45487522a98267ad",
+                "imageID": "git.daddyshome.fr/fredericrous/gate-runner@sha256:fa7a661059493955d9590559a3ff62bc956fedd83f41eea739e73d1996797f7c",
+                "lastState": {},
+                "name": "fetch",
+                "ready": true,
+                "resources": {
+                    "limits": {
+                        "cpu": "1",
+                        "ephemeral-storage": "2Gi",
+                        "memory": "512Mi"
+                    },
+                    "requests": {
+                        "cpu": "250m",
+                        "ephemeral-storage": "1Gi",
+                        "memory": "512Mi"
+                    }
+                },
+                "restartCount": 0,
+                "started": false,
+                "state": {
+                    "terminated": {
+                        "containerID": "containerd://4481c050dcdfcfc1ed7dfae7314ca07b735348a098371c0c7c6c7dec1bf56253",
+                        "exitCode": 0,
+                        "finishedAt": "2026-11-03T04:40:32Z",
+                        "message": "tree 13b5ee2d54389399fa2738f084a1b653b5844028\n",
+                        "reason": "Completed",
+                        "startedAt": "2026-11-03T04:40:32Z"
+                    }
+                },
+                "user": {
+                    "linux": {
+                        "gid": 1000,
+                        "supplementalGroups": [
+                            1000
+                        ],
+                        "uid": 1000
+                    }
+                },
+                "volumeMounts": [
+                    {
+                        "mountPath": "/cache",
+                        "name": "cache"
+                    },
+                    {
+                        "mountPath": "/work",
+                        "name": "work"
+                    },
+                    {
+                        "mountPath": "/checkout",
+                        "name": "checkout"
+                    },
+                    {
+                        "mountPath": "/run/secrets/forgejo",
+                        "name": "forgejo-token",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/var/run/argo",
+                        "name": "var-run-argo"
+                    }
+                ]
+            }
+        ],
+        "observedGeneration": 1,
+        "phase": "Succeeded",
+        "podIP": "10.244.3.97",
+        "podIPs": [
+            {
+                "ip": "10.244.3.97"
+            },
+            {
+                "ip": "fd00:10:244:3::e10"
+            }
+        ],
+        "qosClass": "Burstable",
+        "startTime": "2026-11-03T04:40:25Z"
+    }
+}
