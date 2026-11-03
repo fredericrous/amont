@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit b66546ddd81a07685ed2404994a07a3d1ac8f7a6
+tree 749cd7d69fa1c4b571d33b47c7b61e79af54f8f4
+canon 5c4c58f21292cd2bf1c97287298ae3115362f874
+patch 964366e5f269cf37e559b372e55d877dc6bd1ba3
+plan docs/plans/2026-11-03-detached-cluster-runs.md 4fc1dffc45643c629dca9ab83c852b4b379705ab58a205a5970fdd30174db858
+review reviewed 5cbe84459ca65c0b0127a3e70ab2e37f1bce710fb06ce9df8a4427be64032072
+code-review backend reviewed 5cbe84459ca65c0b0127a3e70ab2e37f1bce710fb06ce9df8a4427be64032072
+code-review lang:rust reviewed 5cbe84459ca65c0b0127a3e70ab2e37f1bce710fb06ce9df8a4427be64032072
+code-review unix reviewed 5cbe84459ca65c0b0127a3e70ab2e37f1bce710fb06ce9df8a4427be64032072
+code-review tui reviewed 5cbe84459ca65c0b0127a3e70ab2e37f1bce710fb06ce9df8a4427be64032072
+preview not-required
+producer amont-agent 3.16.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEAjEEmbWVL1FFH3DT4ePyVFmT+VT8VIyNN+uYLr3LNNKtUdAV
+z/U+SqRFOHT0ef8RSRk3PMdLt2cgAs7o4HokkK
+-----END SSH SIGNATURE-----
