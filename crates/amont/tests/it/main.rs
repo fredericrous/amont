@@ -31,8 +31,11 @@ mod cli_dispatch;
 // The fake `kubectl` is a POSIX shell script.
 #[cfg(unix)]
 mod cluster_gates;
+// The detached lane shares the fake `kubectl` of the cluster gates.
 mod commit_msg;
 mod commit_style;
+#[cfg(unix)]
+mod detached_cluster;
 mod dispatchers;
 mod docs_counts;
 mod downgrades;

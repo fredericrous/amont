@@ -585,6 +585,9 @@ pub fn stamps_command(
     tree: Option<&str>,
     names: &[String],
 ) -> i32 {
+    // A detached rehearsal's passes are tokens before the question is asked
+    // (ADR-0017).
+    crate::cluster::collect_if_declared(manifest);
     let rev = tree.unwrap_or("HEAD");
     let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{rev}^{{tree}}")]) else {
         eprintln!("amont: {rev:?} names no tree here");

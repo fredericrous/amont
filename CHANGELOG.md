@@ -6,6 +6,25 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- **A rehearsal that outlives the laptop** (ADR-0017). `amont rehearse
+  --cluster`, or `git config amont.rehearse.cluster true` for the post-commit
+  rehearsal, sends the `platform=any` gates a rehearsal would run, and the
+  cluster may take, to one Argo Workflow (a pod per gate), and returns. The code
+  goes in as a Forgejo snapshot commit (`amont.cluster.snapshotRemote`, read
+  back before anything is submitted) or is fetched from a pull mirror that
+  already advertises HEAD (`amont.cluster.mirrorRemote`, `amont.cluster.mirror`).
+  The next commit or push, `amont stamps`, `amont cluster collect` and `amont
+  rehearse --status` collect what finished into cluster tokens, from the pod's
+  recorded facts only and under the identity frozen at submission; the push then
+  skips those gates and signs the `x86_64-linux` attestation as for a Job-lane
+  pass. The submission is written to `cluster-pending` before anything is
+  created and a lost answer is reconciled, never repeated. `rehearse --stop`
+  terminates the Workflows. With none of the new keys set nothing changes.
+
 ## v1.68.1
 
 ### Fixed

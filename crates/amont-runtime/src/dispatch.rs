@@ -363,6 +363,10 @@ fn hold_unstaged() -> Result<crate::staged_only::StagedOnly, Verdict> {
 
 pub fn pre_commit(ctx: &Ctx) -> Verdict {
     let settings = ctx.settings;
+    // A detached rehearsal's passes become cluster tokens before any gate
+    // asks for one (ADR-0017). Costs one `stat` when nothing is pending, and
+    // nothing in a repository that declares no `platform=any` gate.
+    crate::cluster::collect_if_declared(ctx.manifest);
     // Before anything runs: a pinned tool at the wrong version makes every
     // verdict below it suspect, and the warning costs one --version per pin.
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
@@ -984,6 +988,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     if crate::attest::push_guard_active() {
         return Verdict::Proceed;
     }
+    // Before the stamps are read: what a detached rehearsal finished while the
+    // laptop was away counts at this push (ADR-0017). Not inside a rehearsal's
+    // own snapshot, which stands in for a push that is not happening.
+    if !crate::rehearsal::in_snapshot() {
+        crate::cluster::collect_if_declared(ctx.manifest);
+    }
     crate::manifest::verify_tool_pins(&ctx.manifest.pins);
     announce_policy_state(ctx.settings, ctx.manifest);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
@@ -1138,6 +1148,16 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // declared path behaves exactly as before — that is what the
         // untouched declared-pair tests prove.
         if rehearsing && check.scope().is_unscoped() {
+            continue;
+        }
+        // Handed to the cluster by the rehearsal that made this snapshot: not
+        // repeated here, its pass comes back as a cluster token.
+        if rehearsing && crate::rehearsal::on_the_cluster(check.name()) {
+            crate::say!(
+                "{} {} runs on the cluster — the next commit or push collects it",
+                valid_sign(),
+                highlight(check.name()),
+            );
             continue;
         }
         if !check.scope().is_unscoped()

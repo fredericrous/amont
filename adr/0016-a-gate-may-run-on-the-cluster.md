@@ -120,6 +120,11 @@ attestation.
 - An amont that does not know the marker reads `platform=any` as the program
   name, so the gate fails rather than being skipped. A repository adds the
   marker only once everyone reading its manifest has upgraded.
+- **Amended by ADR-0017 (the lanes).** The Job lane above is for a gate a commit
+  waits on. A rehearsal's gates may instead go to a detached Argo Workflow that
+  outlives the laptop and is collected at the next commit or push; the token
+  identity, the note ref and the verdict rules of this record are shared, so a
+  pass from either lane is the same pass.
 - Off switches: unset `amont.cluster.kubeconfig`, or `set executor local`.
   `refs/notes/amont-gate-cluster` is local and is removed with the other
   stamp refs on uninstall.

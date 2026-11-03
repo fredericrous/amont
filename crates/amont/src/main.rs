@@ -75,7 +75,11 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  and stamp the tree, so `git push` skips the suite
                  (`git config amont.rehearseOnCommit true` does this after
                  every commit) [--wait: follow it, or run it here if none]
-                 [--status] [--stop]
+                 [--status] [--stop] [--cluster: send the gates the cluster
+                 may run to an Argo Workflow that outlives this machine;
+                 the next commit or push collects them]
+  cluster collect  turn the finished detached Workflows of this repository
+                 into cluster tokens now (every commit and push does it)
   restore        bring back unstaged changes a killed pre-commit left parked
   agents-md      write the agent-guidance block into AGENTS.md, plus the
                  CLAUDE.md signpost pointing at it (both generated, both
@@ -163,6 +167,7 @@ enum Sub {
     Slot,
     Slots,
     Stamps,
+    Cluster,
 }
 
 impl Sub {
@@ -200,6 +205,7 @@ impl Sub {
             Sub::Slot => 17,
             Sub::Slots => 18,
             Sub::Stamps => 19,
+            Sub::Cluster => 20,
         }
     }
 }
@@ -209,7 +215,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 20] = [
+const SUBCOMMANDS: [(&str, Sub); 21] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -230,6 +236,7 @@ const SUBCOMMANDS: [(&str, Sub); 20] = [
     ("slot", Sub::Slot),
     ("slots", Sub::Slots),
     ("stamps", Sub::Stamps),
+    ("cluster", Sub::Cluster),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -422,13 +429,17 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         ),
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
         Sub::Add => (&["--dry-run"], &[]),
-        Sub::Rehearse => (&["--wait", "--status", "--stop", "--worker"], &[]),
+        Sub::Rehearse => (
+            &["--wait", "--status", "--stop", "--worker", "--cluster"],
+            &[],
+        ),
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
         Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
         Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),
+        Sub::Cluster => (&[], &[]),
     }
 }
 
@@ -602,6 +613,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Slot => amont_runtime::slot_cmd::slot_command(args),
         Sub::Slots => amont_runtime::slot_cmd::slots_command(args),
         Sub::Stamps => stamps_mode(args),
+        // `amont cluster collect` — turn finished detached Workflows into
+        // cluster tokens now (ADR-0017).
+        Sub::Cluster => amont_runtime::cluster::collect_command(args),
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one

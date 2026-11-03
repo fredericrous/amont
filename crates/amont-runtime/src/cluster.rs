@@ -35,6 +35,20 @@ use std::time::{Duration, Instant};
 use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
+mod detached;
+pub use detached::{
+    collect, collect_command, detach, status_lines, stop_pending, wanted, Detached,
+};
+
+/// [`collect`] for the hooks and `amont stamps`, which run in every repository:
+/// only where the manifest declares a `platform=any` gate, the only kind a
+/// Workflow can hold a pass for, so a repository without one pays nothing.
+pub fn collect_if_declared(manifest: &crate::manifest::Manifest) {
+    if manifest.externals.iter().any(is_platform_any) {
+        collect();
+    }
+}
+
 /// The node the gate pods run on, and the names the homelab contract fixes.
 const NODE: &str = "talos-wk-3-gpu";
 const PRIORITY_CLASS: &str = "gate-batch";
@@ -800,8 +814,15 @@ fn record(
         "platform={PLATFORM} image={} job={} name={} bundle={}",
         proof.image_id, proof.uid, proof.job, proof.bundle_bytes
     );
+    record_token(tree, &token, &provenance)
+}
+
+/// Write `token`, as given, on `tree`'s cluster note with its provenance. The
+/// detached lane passes the token it froze at submission, never one worked out
+/// from today's configuration.
+fn record_token(tree: &str, token: &str, provenance: &str) -> Result<(), Fallback> {
     let _held = STAMP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    if crate::gate_stamp::stamp_cluster(tree, &token, &provenance) {
+    if crate::gate_stamp::stamp_cluster(tree, token, provenance) {
         Ok(())
     } else {
         Err(Fallback::NotProved(
@@ -1630,14 +1651,21 @@ fn str_at<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a str> {
     v?.get(key).and_then(Value::as_str)
 }
 
-/// The first pod of `kubectl get pods -o json`, as facts. Pure.
+/// The first pod of `kubectl get pods -o json`, as facts. Pure. The gate's
+/// container is `gate`: a Job's.
 fn parse_pod(json: &str) -> Option<PodFacts> {
     let doc = crate::json_read::parse(json)?;
-    let pod = doc.get("items")?.items().first()?;
+    parse_pod_object(doc.get("items")?.items().first()?, "gate")
+}
+
+/// One Pod object, as facts, the gate being the container `gate_container`:
+/// `gate` in a Job's pod, `main` in an Argo Workflow's (Argo names the main
+/// container itself). Pure.
+fn parse_pod_object(pod: &Value, gate_container: &str) -> Option<PodFacts> {
     let status = pod.get("status");
     let inits = status.and_then(|s| s.get("initContainerStatuses"));
     let mains = status.and_then(|s| s.get("containerStatuses"));
-    let gate = named(mains, "gate");
+    let gate = named(mains, gate_container);
     let disrupted = status.and_then(|s| s.get("conditions")).is_some_and(|c| {
         c.items().iter().any(|c| {
             str_at(Some(c), "type") == Some("DisruptionTarget")
