@@ -179,6 +179,8 @@ fn a_replaced_tool_runs_the_gate_again_and_an_unchanged_one_does_not() {
         return;
     }
     let (r, base, bin) = tooled_repo();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (code, out) = push_with_path(&r, &base, &head(&r), &bin);
     assert_eq!(code, 0, "{out}");
     assert_eq!(runs(&r), 1);
@@ -239,6 +241,8 @@ fn a_legacy_bare_token_costs_one_run_and_then_the_namespaced_one_is_honoured() {
     }
     let (r, base) = gated_repo();
     let tip = head(&r);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
         .trim()
         .to_string();

@@ -440,6 +440,31 @@ runs in the push and the rehearsal is left running — it may still finish and
 stamp the tree for next time. `amont rehearse --wait` has no budget: nothing
 is connected there.
 
+## `amont.pushGates` — never run a heavy gate on an open connection
+
+```sh
+git config amont.pushGates inline   # default refuse
+```
+
+git opens its connection to the remote before it runs `pre-push`, so a test
+suite or an audit run there holds the connection for as long as it takes, and
+a forge may drop the idle session after every check passed
+([ADR-0018](../adr/0018-gates-run-before-the-push-connection.md)). With
+`refuse`, the default since 2.0, a push whose heavy gates (the scoped push
+gates its range touches) carry no stamp for the pushed tree is turned away at
+once, before any gate starts, naming the gates and how to run them first:
+
+- `amont land` runs every gate the push owes on a snapshot of the exact
+  commit, with no connection open, then pushes;
+- `amont rehearse --wait` (or `amont run --stamp`) stamps the tree, and the
+  push that follows skips the gates.
+
+`inline` runs them in the push, as before 2.0. A deletion owes nothing, and a
+gate that completed earlier without passing (a warning, a missing tool) is not
+asked for again. With `amont.pushStamps false` nothing can be stamped, so the
+refusal names that setting instead of offering a rehearsal, and `amont land`
+refuses before running anything.
+
 ## `amont.unstampedPush` — refuse a push nothing has tested yet
 
 ```sh

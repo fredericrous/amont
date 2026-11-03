@@ -64,6 +64,7 @@ mod package_lock;
 mod policy;
 mod prepare_commit_msg;
 mod pull_rebase;
+mod push_gates;
 mod push_stamps;
 mod pushed_tree;
 mod pytest_gate;

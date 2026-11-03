@@ -178,6 +178,69 @@ pub fn handed_to_cluster() -> &'static [String] {
         .map_or(&[], |env| env.detached.as_slice())
 }
 
+/// The variable `amont land` sets on its own `git push` (ADR-0018):
+/// `<sha> <remote tip>`, what its pre-stage ran the push gates against. Read
+/// once and removed, for the reason [`in_snapshot`] gives: a gate's own
+/// fixture pushes must not inherit it. `main` primes it on the main thread.
+pub const LAND_ENV: &str = "AMONT_LAND";
+
+/// The land pre-stage's `<sha> <remote tip>`, when this process is the hook of
+/// the push `amont land` makes.
+pub fn land_env() -> Option<&'static str> {
+    static IN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IN.get_or_init(|| {
+        let raw = std::env::var_os(LAND_ENV)?.to_string_lossy().into_owned();
+        std::env::remove_var(LAND_ENV);
+        Some(raw)
+    })
+    .as_deref()
+}
+
+/// Set by `amont land` on the `amont rehearse --wait` it runs as its
+/// pre-stage (ADR-0018): the real ref line of the push it is about to make,
+/// `<local ref> <sha> <remote ref> <remote tip>`, so the rehearsal selects
+/// exactly the gates that push will owe — not the ones a possibly stale
+/// tracking ref suggests. Also means "never cancel another tree's rehearsal:
+/// wait for it". Read once and removed, like [`ENV`].
+pub const PRESTAGE_ENV: &str = "AMONT_LAND_PRESTAGE";
+
+/// The pre-stage's push line, when this process is land's pre-stage.
+fn prestage_line() -> Option<&'static crate::pushrefs::PushRef> {
+    static IN: std::sync::OnceLock<Option<crate::pushrefs::PushRef>> = std::sync::OnceLock::new();
+    IN.get_or_init(|| {
+        let raw = std::env::var_os(PRESTAGE_ENV)?
+            .to_string_lossy()
+            .into_owned();
+        std::env::remove_var(PRESTAGE_ENV);
+        let mut it = raw.split_whitespace().map(str::to_string);
+        Some(crate::pushrefs::PushRef {
+            local_ref: it.next()?,
+            local_oid: it.next()?,
+            remote_ref: it.next()?,
+            remote_oid: it.next()?,
+        })
+    })
+    .as_ref()
+}
+
+/// Is this process land's pre-stage? Primed by `main`.
+pub fn in_prestage() -> bool {
+    prestage_line().is_some()
+}
+
+/// What a push does about a heavy gate (a scoped one its range touches) with
+/// no stamp or vouch for the pushed tree (ADR-0018):
+///
+/// - `refuse` (the default): refuse at once, before anything runs on the
+///   connection git already opened, naming `amont land`;
+/// - `inline`: run it in the push, as amont did before 2.0.
+const PUSH_GATES: &str = "amont.pushGates";
+
+/// Does a push refuse an unstamped heavy gate instead of running it?
+pub fn refuse_push_gates(settings: &crate::config::Settings) -> bool {
+    crate::config::enumerated_or(settings, PUSH_GATES, &["refuse", "inline"], "refuse") == "refuse"
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Running,
@@ -540,7 +603,10 @@ fn plan() -> Result<Plan, String> {
         .ok_or("could not resolve the tree of HEAD")?;
     // The branch and its upstream, read HERE in the primary worktree: the
     // snapshot is a detached HEAD and could not answer.
-    let push_ref = crate::pushrefs::synthetic_from_upstream()?;
+    let push_ref = match prestage_line() {
+        Some(line) => line.clone(),
+        None => crate::pushrefs::synthetic_from_upstream()?,
+    };
     let manifest = crate::manifest::load(repo);
     let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&push_ref));
@@ -649,13 +715,24 @@ pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
                 );
                 return Ok(Outcome::AlreadyRunning(prev.pid));
             }
-            println!(
-                "cancelling the rehearsal of {} (pid {}) — {} is the tree that matters now",
-                prev.short(),
-                prev.pid,
-                short
-            );
-            cancel(&prev, repo);
+            if in_prestage() {
+                // `amont land` never cancels somebody else's rehearsal: it
+                // waits for it, then runs its own (ADR-0018).
+                println!(
+                    "waiting for the rehearsal of {} (pid {}) before rehearsing {short}",
+                    prev.short(),
+                    prev.pid,
+                );
+                let _ = follow(&prev, None);
+            } else {
+                println!(
+                    "cancelling the rehearsal of {} (pid {}) — {} is the tree that matters now",
+                    prev.short(),
+                    prev.pid,
+                    short
+                );
+                cancel(&prev, repo);
+            }
         } else if prev.phase == Phase::Running {
             // Died without a verdict. Its snapshot is nobody's now.
             remove_snapshot(repo, &prev.snapshot);
@@ -995,7 +1072,7 @@ pub fn command(args: &[OsString]) -> i32 {
         //
         // No budget here: nothing is connected, and somebody typed this
         // command to be told when the suite ends. See `WAIT_BUDGET`.
-        for _ in 0..2 {
+        for _ in 0..3 {
             let running = read().filter(|s| {
                 s.alive()
                     && Some(s.tree.as_str())
@@ -1019,17 +1096,20 @@ pub fn command(args: &[OsString]) -> i32 {
                 state.pid,
                 human_secs(state.age_secs())
             );
-            return match follow(&state, None) {
-                Some((Phase::Passed, _)) => 0,
+            match follow(&state, None) {
+                // Its stamps say what IT selected. Plan again: another base
+                // can owe another set, and the worker answers at once when
+                // the followed run covered everything (ADR-0018).
+                Some((Phase::Passed, _)) => continue,
                 Some(_) => {
                     show_log_tail();
-                    1
+                    return 1;
                 }
                 None => {
                     eprintln!("amont: the rehearsal ended without a verdict");
-                    2
+                    return 2;
                 }
-            };
+            }
         }
         eprintln!("amont: another rehearsal keeps claiming this tree — run the gate yourself");
         return 2;

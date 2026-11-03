@@ -112,6 +112,8 @@ fn an_opt_in_marker_does_not_hide_an_unstamped_commit() {
         return;
     }
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     r.stage("marker", "opted in\n");
     r.commit("chore: base");
@@ -164,6 +166,8 @@ fn a_warn_severity_pair_cannot_vouch() {
     let (r, base) = paired_repo("warn");
     r.stage("a.txt", "hello\n");
     let out = r.git(&["commit", "-q", "-m", "feat: warn cannot vouch"]);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     assert!(out.status.success());
     assert_eq!(runs(&r), 1, "the warn check still ran at commit");
 
@@ -183,6 +187,8 @@ fn an_unpaired_push_declaration_just_runs() {
         return;
     }
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     r.commit("chore: base");
     let base = head(&r);
@@ -209,6 +215,8 @@ fn a_policy_downgraded_pair_cannot_vouch() {
         return;
     }
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     r.commit("chore: base");
     let base = head(&r);
@@ -309,6 +317,8 @@ fn an_unstamped_commit_brings_the_builtin_back() {
         return;
     }
     let (r, base) = builtin_paired_repo();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("src/added.rs", "pub fn g() {}\n");
     r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
     assert_eq!(runs(&r), 0, "nothing ran at commit");

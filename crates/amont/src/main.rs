@@ -381,6 +381,9 @@ fn main() {
     // only because `dispatch::pre_push` happened to ask on the main thread
     // first — an ordering nothing stated and nothing tested.
     let _ = amont_runtime::rehearsal::in_snapshot();
+    // The same, for the variable `amont land` sets on its own push.
+    let _ = amont_runtime::rehearsal::land_env();
+    let _ = amont_runtime::rehearsal::in_prestage();
     match parse(std::env::args_os().skip(1).collect()) {
         Invocation::Help => {
             print!("{USAGE}");

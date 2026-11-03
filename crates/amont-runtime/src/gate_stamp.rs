@@ -113,6 +113,16 @@ pub const INPUTS_REF: &str = "amont-gate-inputs";
 pub const CLUSTER_REF: &str = "amont-gate-cluster";
 pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
 
+/// Where a gate that COMPLETED without passing is recorded (ADR-0018): a
+/// warn-severity failure, or a gate that could not run. The same note format,
+/// keyed by the tree, holding `gate_identity` tokens. Never `amont-gate`: a
+/// completion is not a pass, and nothing reads this ref to attest or to skip a
+/// gate in an inline push. Only the refusing push (`amont.pushGates refuse`)
+/// and land's own push read it, so that what a rehearsal or land's pre-stage
+/// already ran is not refused as "not run".
+pub const DONE_REF: &str = "amont-gate-done";
+pub const DONE_FULL_REF: &str = "refs/notes/amont-gate-done";
+
 /// The reserved first word of a provenance line: where a token came from
 /// (platform, observed imageID, Job UID). Never a token, never a run, and
 /// every reader of tokens drops it.
@@ -859,6 +869,30 @@ pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
         );
     }
     written
+}
+
+/// Record on `tree` that the gates behind `tokens` completed there without
+/// passing (ADR-0018). Merged into the note, best-effort like every writer
+/// here: a record that could not be written costs a refused push, which names
+/// the gate and how to run it.
+pub fn record_done(tree: &str, tokens: &[String]) -> bool {
+    if tokens.is_empty() {
+        return false;
+    }
+    let mut note = note_in(DONE_REF, tree);
+    note.add_tokens(tokens);
+    write_note_in(DONE_REF, tree, &note)
+}
+
+/// Did the gate behind `token` complete without passing on the tree of every
+/// one of `commits`? An unreadable tree or note is "no", the direction that
+/// refuses rather than skips.
+pub fn done_on_every(commits: &[String], token: &str) -> bool {
+    !commits.is_empty()
+        && commits.iter().all(|c| {
+            crate::git::stdout(&["rev-parse", &format!("{c}^{{tree}}")])
+                .is_some_and(|tree| note_in(DONE_REF, &tree).tokens.iter().any(|t| t == token))
+        })
 }
 
 /// pre-push: which of `commits` carry a stamp, and for which scripts.

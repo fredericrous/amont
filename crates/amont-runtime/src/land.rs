@@ -7,16 +7,19 @@
 //! branch. The proof is one question asked of the remote afterwards, and this
 //! verb asks it every time, so nobody has to remember to.
 //!
-//! It wraps the push and the proof and nothing else. The gates, the stamps,
-//! the rehearsal wait and the attestation all stay in the pre-push hook the
-//! push runs; `land` neither re-implements nor skips them.
+//! Before every push attempt it runs a pre-stage (ADR-0018): the heavy gates
+//! the push owes run in a child `amont rehearse --wait`, told the push's real
+//! ref line, with no connection open; the push's own hook then finds them
+//! stamped and runs only the unscoped checks. The stamps, the attestation and
+//! those checks stay in the pre-push hook; `land` neither re-implements nor
+//! skips them.
 //!
 //! Exit codes (`2` stays the binary-wide usage error):
 //!
 //! | code | status         | meaning                                              |
 //! |------|----------------|------------------------------------------------------|
 //! | 0    | `landed`       | the remote ref equals the pushed sha                 |
-//! | 1    | `refused`      | a hook, the server, or a precondition said no        |
+//! | 1    | `refused`      | a gate, a hook, the server, or a precondition said no |
 //! | 2    | `usage`        | wrong invocation                                     |
 //! | 3    | `unreachable`  | the remote could not be reached, or the push was    |
 //! |      | / `unverified` | accepted but could not be checked                    |
@@ -38,6 +41,15 @@ use crate::attest::{classify_push_stderr, PushFailure};
 use crate::git::{self, Probe};
 use crate::hooks::pull_rebase::PUSH_AGAIN;
 use crate::json;
+
+/// The line the hook of land's own push prints, first, when the pushed
+/// range's remote side is not the one land's pre-stage ran against: the
+/// remote moved under land (ADR-0018). Matched in the push's output, never
+/// the prose after it.
+pub const LAND_REMOTE_MOVED: &str = "amont-land: remote-moved";
+/// The line that hook prints, first, when the range is the pre-stage's but a
+/// gate it owes carries no evidence: a defect, named with the gates.
+pub const LAND_EVIDENCE_MISSING: &str = "amont-land: evidence-missing";
 
 /// Re-reads of the remote after a mismatch, and the pause between them.
 /// Spent only when the first read disagrees: at most 6 s.
@@ -111,6 +123,11 @@ pub struct Report {
     pub status: Status,
     /// Commands the person can run next, printed whole, one per line.
     pub next: Vec<String>,
+    /// The scoped push gates the pushed range owes (ADR-0018), and what the
+    /// pre-stage did about them: `ran`, `stamped` (nothing left to run),
+    /// `failed`, `refused`, or empty before it ran.
+    pub gates_owed: Vec<String>,
+    pub prestage: String,
 }
 
 impl Report {
@@ -126,6 +143,8 @@ impl Report {
             retried: false,
             status,
             next: Vec::new(),
+            gates_owed: Vec::new(),
+            prestage: String::new(),
         }
     }
 
@@ -139,6 +158,13 @@ impl Report {
             json::string_field("remote_after", &self.remote_after),
             json::bool_field("retried", self.retried),
             json::string_field("status", self.status.as_str()),
+            format!(
+                "\"gates\":{}",
+                json::object(&[
+                    json::string_array_field("owed", &self.gates_owed),
+                    json::string_field("prestage", &self.prestage),
+                ])
+            ),
         ])
     }
 }
@@ -410,7 +436,23 @@ fn land(mode: Mode) -> Report {
             Mode::Force => Some(expected_old.as_str()),
             Mode::Plain => None,
         };
-        let run = push(&url, &sha, &rb, lease);
+        // ADR-0018: every heavy gate this push owes runs HERE, before git
+        // connects — on every attempt, so a hook that moved HEAD gets its new
+        // sha pre-staged too.
+        match prestage(&mut report, &sha, &rb, &expected_old, &url) {
+            Prestage::Ready => {}
+            Prestage::Refused(why) => {
+                eprintln!("amont: land: {why}");
+                report.status = Status::Refused;
+                return report;
+            }
+            Prestage::Interrupted(sig) => {
+                report.status = Status::Interrupted(sig);
+                return report;
+            }
+        }
+        let land_env = format!("{sha} {}", or_zeros(&expected_old));
+        let run = push(&url, &sha, &rb, lease, &land_env);
         match run.outcome {
             PushOutcome::Done => break sha,
             PushOutcome::Signal(sig) => {
@@ -444,6 +486,17 @@ fn land(mode: Mode) -> Report {
                 }
             }
             continue;
+        }
+        // The hook of land's own push refused (ADR-0018): matched on its
+        // sentinel lines, never on the prose.
+        if run.seen.contains(crate::land::LAND_REMOTE_MOVED) {
+            report.status = Status::Refused;
+            report.next = vec!["amont land".to_string()];
+            return report;
+        }
+        if run.seen.contains(crate::land::LAND_EVIDENCE_MISSING) {
+            report.status = Status::Refused;
+            return report;
         }
         report.status = match classify_push_stderr(&run.stderr) {
             PushFailure::Unreachable => Status::Unreachable,
@@ -489,6 +542,138 @@ fn land(mode: Mode) -> Report {
         }
     }
     report
+}
+
+/// An absent remote tip, as git's ref lines spell it.
+const ZEROS: &str = "0000000000000000000000000000000000000000";
+
+fn or_zeros(tip: &str) -> &str {
+    if tip.is_empty() {
+        ZEROS
+    } else {
+        tip
+    }
+}
+
+/// What land's pre-stage ended in.
+enum Prestage {
+    /// Every gate the push owes is stamped or recorded: push.
+    Ready,
+    /// Do not push; why, for the person.
+    Refused(String),
+    /// The pre-stage was killed by this signal; nothing was pushed.
+    Interrupted(i32),
+}
+
+/// Run every heavy gate the push of `sha` onto `refs/heads/<rb>` (whose
+/// remote tip is `remote_tip`, empty when the branch is new) will owe, before
+/// git opens a connection (ADR-0018). In a child `amont rehearse --wait`, told
+/// the real ref line, whose stdout goes to this process's stderr so a `--json`
+/// report stays the only thing on stdout.
+fn prestage(report: &mut Report, sha: &str, rb: &str, remote_tip: &str, url: &str) -> Prestage {
+    // The range starts at the remote's tip: a tip this clone never fetched
+    // (a force push elsewhere) would make it unwalkable. Fetch it, or refuse.
+    if !remote_tip.is_empty() && !has_commit(remote_tip) {
+        let mut fetch = Command::new("git");
+        if !std::io::stdin().is_terminal() {
+            let (pre, env) = git::remote_env(git::configured_ssh());
+            fetch.args(pre).envs(env);
+        }
+        let _ = fetch
+            .args(["fetch", "-q", "--no-tags", url, &format!("refs/heads/{rb}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status();
+        if !has_commit(remote_tip) {
+            report.prestage = "refused".to_string();
+            return Prestage::Refused(format!(
+                "the remote's {rb} is at {}, a commit this clone does not have and could not fetch",
+                short(remote_tip)
+            ));
+        }
+    }
+    let line = crate::pushrefs::PushRef {
+        local_ref: format!("refs/heads/{}", report.branch),
+        local_oid: sha.to_string(),
+        remote_ref: format!("refs/heads/{rb}"),
+        remote_oid: or_zeros(remote_tip).to_string(),
+    };
+    let Ok(root) = crate::hooks::common::repo_root_checked() else {
+        report.prestage = "refused".to_string();
+        return Prestage::Refused("could not find the repository root".to_string());
+    };
+    let manifest = crate::manifest::load(std::path::Path::new(&root));
+    let settings = crate::config::Settings::new(manifest.policy.clone());
+    let changed = crate::pushrefs::changed_files(std::slice::from_ref(&line));
+    report.gates_owed = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
+    if report.gates_owed.is_empty() {
+        report.prestage = "stamped".to_string();
+        return Prestage::Ready;
+    }
+    if !crate::gate_stamp::push_stamps_enabled(&settings) {
+        report.prestage = "refused".to_string();
+        return Prestage::Refused(
+            "stamp reuse is off (amont.pushStamps false), so the gates land runs cannot \
+             count at the push; turn it on with: git config amont.pushStamps true"
+                .to_string(),
+        );
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        report.prestage = "refused".to_string();
+        return Prestage::Refused("cannot locate the amont binary for the pre-stage".to_string());
+    };
+    eprintln!(
+        "amont: land: running {} before git connects",
+        report.gates_owed.join(" ")
+    );
+    let status = Command::new(exe)
+        .args(["rehearse", "--wait"])
+        .env(
+            crate::rehearsal::PRESTAGE_ENV,
+            format!(
+                "{} {} {} {}",
+                line.local_ref, line.local_oid, line.remote_ref, line.remote_oid
+            ),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(std::io::stderr()))
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            report.prestage = "ran".to_string();
+            Prestage::Ready
+        }
+        Ok(s) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(sig) = s.signal() {
+                    report.prestage = "refused".to_string();
+                    return Prestage::Interrupted(sig);
+                }
+            }
+            if s.code() == Some(1) {
+                report.prestage = "failed".to_string();
+                Prestage::Refused(
+                    "a push gate failed before the push; nothing was pushed".to_string(),
+                )
+            } else {
+                report.prestage = "refused".to_string();
+                Prestage::Refused(format!(
+                    "the pre-stage could not run (exit {}); nothing was pushed",
+                    s.code().unwrap_or(-1)
+                ))
+            }
+        }
+        Err(e) => {
+            report.prestage = "refused".to_string();
+            Prestage::Refused(format!("could not start the pre-stage: {e}"))
+        }
+    }
+}
+
+fn has_commit(oid: &str) -> bool {
+    git::succeeds(&["cat-file", "-e", &format!("{oid}^{{commit}}")])
 }
 
 /// `--dry-run`: steps 1 and 2 of a land and nothing else. No network, no push,
@@ -663,8 +848,10 @@ struct PushRun {
 /// terminal the push gets the no-prompt environment, which bounds the
 /// network legs only: a custom ssh command, a credential helper or an
 /// established session can still stall, and Ctrl-C is the answer.
-fn push(url: &str, sha: &str, rb: &str, lease: Option<&str>) -> PushRun {
+fn push(url: &str, sha: &str, rb: &str, lease: Option<&str>, land_env: &str) -> PushRun {
     let mut cmd = Command::new("git");
+    // What the pre-stage ran against, for the hook of THIS push (ADR-0018).
+    cmd.env(crate::rehearsal::LAND_ENV, land_env);
     if !std::io::stdin().is_terminal() {
         let (pre, env) = git::remote_env(git::configured_ssh());
         cmd.args(pre).envs(env);

@@ -246,7 +246,15 @@ pub fn commits_and_files_for(r: &PushRef, zero: &str) -> Vec<(String, Vec<String
 fn range_changed_files(remote_oid: &str, local_oid: &str) -> Vec<String> {
     let range = format!("{remote_oid}..{local_oid}");
     let Some(commits) = crate::git::stdout(&["rev-list", &range]) else {
-        return Vec::new();
+        // The range could not be walked — most often the remote's tip is a
+        // commit this clone has never fetched (a force push elsewhere). An
+        // unknown range is NOT an empty one (ADR-0018): read as "nothing
+        // changed", every scoped gate would be skipped. Fail closed: every
+        // tracked path counts as changed, so the push owes every gate.
+        crate::hooks::common::warn(&format!(
+            "could not walk {range} (is {remote_oid} fetched?) — treating every tracked file as changed"
+        ));
+        return crate::tracked_paths();
     };
     if commits.is_empty() {
         return Vec::new();
