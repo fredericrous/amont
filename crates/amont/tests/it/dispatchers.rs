@@ -248,7 +248,25 @@ fn no_color_suppresses_every_escape_sequence() {
     // by default" premise below false through no fault of the code under
     // test. Pin both explicitly rather than trusting whatever the shell that
     // happens to run `cargo test` left behind.
+    // stdout is a pipe here, so colour comes only when the caller forces it
+    // (ADR-0021: a captured string carries no escape codes by default).
     let with_colour = crate::common::amont_cmd()
+        .arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-commit")
+        .current_dir(&r.dir)
+        .env_remove("NO_COLOR")
+        .env("TERM", "xterm-256color")
+        .env("FORCE_COLOR", "1")
+        .output()
+        .expect("run");
+    let with_colour_stdout = String::from_utf8_lossy(&with_colour.stdout).into_owned();
+    assert!(
+        with_colour_stdout.contains('\u{1b}'),
+        "FORCE_COLOR paints through a pipe: {with_colour_stdout:?}"
+    );
+
+    let piped = crate::common::amont_cmd()
         .arg("--hooks-dir")
         .arg(r.path(".git/hooks"))
         .arg("pre-commit")
@@ -257,10 +275,14 @@ fn no_color_suppresses_every_escape_sequence() {
         .env("TERM", "xterm-256color")
         .output()
         .expect("run");
-    let with_colour_stdout = String::from_utf8_lossy(&with_colour.stdout).into_owned();
+    let piped_stdout = String::from_utf8_lossy(&piped.stdout).into_owned();
     assert!(
-        with_colour_stdout.contains('\u{1b}'),
-        "colour is on by default: {with_colour_stdout:?}"
+        !piped_stdout.contains('\u{1b}'),
+        "a pipe gets no escape codes: {piped_stdout:?}"
+    );
+    assert!(
+        piped_stdout.contains('✓'),
+        "the glyph carries the meaning: {piped_stdout}"
     );
 
     let out = crate::common::amont_cmd()
@@ -269,6 +291,7 @@ fn no_color_suppresses_every_escape_sequence() {
         .arg("pre-commit")
         .current_dir(&r.dir)
         .env("NO_COLOR", "1")
+        .env("FORCE_COLOR", "1")
         .output()
         .expect("run");
     let plain = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -294,6 +317,8 @@ fn term_dumb_suppresses_colour() {
         .arg("pre-commit")
         .current_dir(&r.dir)
         .env("TERM", "dumb")
+        // A terminal that cannot render SGR wins over a forced colour.
+        .env("FORCE_COLOR", "1")
         .output()
         .expect("run");
     assert!(!String::from_utf8_lossy(&out.stdout).contains('\u{1b}'));

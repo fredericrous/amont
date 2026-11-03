@@ -140,6 +140,11 @@ impl Repo {
     pub fn pin_host_env(cmd: &mut Command) {
         cmd.env("AMONT_IDLE_LOAD_SCALE", "1");
         cmd.env("AMONT_HOST_SLOT", "held");
+        // amont's own gate sets FORCE_COLOR for the tools it runs on a
+        // terminal, `cargo test` among them; a fixture must not inherit it,
+        // or every captured output would be painted. A test about colour sets
+        // it itself.
+        cmd.env_remove("FORCE_COLOR");
     }
 
     /// Run a SUBCOMMAND — `amont list`, `amont setup` — from this repo.

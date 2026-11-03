@@ -30,20 +30,52 @@ const YELLOW: &str = "33";
 
 /// Does the caller want colour at all?
 ///
+/// Only when stdout — where every sign and highlighted fragment goes — is a
+/// terminal (decisions ADR-0021, `cli.output.no-color-off-terminal`): escape
+/// codes in a CI log, a file, or a string an agent captured are noise the
+/// reader has to strip. Under a git hook stdout is git's stderr, which is the
+/// terminal when a person commits. The cursor-moving region on stderr has its
+/// own gate, `live::watching`.
+///
 /// `NO_COLOR` per no-color.org: present and NON-EMPTY disables it, whatever the
-/// value. `TERM=dumb` is a terminal that cannot render SGR.
+/// value. `TERM=dumb` is a terminal that cannot render SGR. `FORCE_COLOR`
+/// (non-empty, not `0` or `false`) turns colour on through a pipe, for a
+/// caller that will render it; `NO_COLOR` and `TERM=dumb` still win.
 ///
 /// Read once — a hook is a short-lived process and its environment does not
 /// change underneath it.
 pub fn colors_enabled() -> bool {
+    use std::io::IsTerminal;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let no_color = std::env::var_os("NO_COLOR")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        let dumb = std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false);
-        !no_color && !dumb
+        wants_colour(&ColourEnv {
+            no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+            dumb: std::env::var("TERM").is_ok_and(|t| t == "dumb"),
+            force: std::env::var("FORCE_COLOR").is_ok_and(|v| forces(&v)),
+            terminal: std::io::stdout().is_terminal(),
+        })
     })
+}
+
+/// What [`colors_enabled`] decides from: read once from the environment, and
+/// passed in so the decision is testable without touching the process's.
+struct ColourEnv {
+    no_color: bool,
+    dumb: bool,
+    force: bool,
+    terminal: bool,
+}
+
+fn wants_colour(env: &ColourEnv) -> bool {
+    if env.no_color || env.dumb {
+        return false;
+    }
+    env.force || env.terminal
+}
+
+/// `FORCE_COLOR` as the ecosystem reads it: set and not empty, `0` or `false`.
+fn forces(value: &str) -> bool {
+    !matches!(value.trim(), "" | "0" | "false")
 }
 
 fn paint(text: &str, sgr: &str) -> String {
@@ -141,6 +173,47 @@ pub fn sanitize_path(p: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{forces, wants_colour, ColourEnv};
+
+    fn env(no_color: bool, dumb: bool, force: bool, terminal: bool) -> ColourEnv {
+        ColourEnv {
+            no_color,
+            dumb,
+            force,
+            terminal,
+        }
+    }
+
+    /// Colour only on a terminal, or when the caller forces it; the off
+    /// switches win over the force.
+    #[test]
+    fn colour_follows_the_terminal_and_the_switches() {
+        assert!(wants_colour(&env(false, false, false, true)), "a terminal");
+        assert!(!wants_colour(&env(false, false, false, false)), "a pipe");
+        assert!(
+            wants_colour(&env(false, false, true, false)),
+            "forced through a pipe"
+        );
+        assert!(
+            !wants_colour(&env(true, false, true, true)),
+            "NO_COLOR beats force"
+        );
+        assert!(
+            !wants_colour(&env(false, true, true, true)),
+            "TERM=dumb beats force"
+        );
+    }
+
+    #[test]
+    fn force_color_values() {
+        for on in ["1", "2", "3", "true", "always"] {
+            assert!(forces(on), "{on}");
+        }
+        for off in ["", "0", "false", " 0 "] {
+            assert!(!forces(off), "{off:?}");
+        }
+    }
+
     use super::*;
 
     /// Every byte a terminal would act on, and nothing else.

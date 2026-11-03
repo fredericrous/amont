@@ -6,6 +6,17 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- **No colour codes off a terminal** (decisions ADR-0021,
+  `cli.output.no-color-off-terminal`). The ✓ ✗ ! signs and highlighted
+  fragments are painted only when stdout is a terminal, so a CI log, a
+  redirected file or an agent's captured output reads as plain text. A git
+  hook run by a person in a terminal is unchanged. `FORCE_COLOR` turns colour
+  back on through a pipe; `NO_COLOR` and `TERM=dumb` still turn it off.
+
 ## v1.68.0
 
 ### Added
