@@ -630,6 +630,7 @@ fn run_stage_traced(
                 push: ctx.push,
                 manifest: ctx.manifest,
                 settings: ctx.settings,
+                handed_to_cluster: ctx.handed_to_cluster,
             };
             let slot = enter(**check, || severities.of(**check));
             let outcome = deferred_or(&slot, check.run(&sub));
@@ -898,6 +899,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         push: ctx.push,
         manifest: ctx.manifest,
         settings: ctx.settings,
+        handed_to_cluster: ctx.handed_to_cluster,
     };
     // Under quiet, a check run by name is captured like one inside its stage
     // — one slot, its tool's output to a log, one line on a pass — whatever
@@ -1081,7 +1083,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // unscoped checks ask about a PUSH — its branch name, its target, its
     // secrets — and no push is happening. Said once, not per check.
     let rehearsing = crate::rehearsal::in_snapshot();
-    let handed_to_cluster = crate::rehearsal::handed_to_cluster();
+    let handed_to_cluster = ctx.handed_to_cluster;
     if rehearsing {
         crate::say!(
             "rehearsal: running the test gates only — the push-shaped checks run at push time"
@@ -1288,6 +1290,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             push: ctx.push,
             manifest: ctx.manifest,
             settings: ctx.settings,
+            handed_to_cluster: ctx.handed_to_cluster,
         };
         // Wall clock around the check itself, not around the hook: the number
         // that catches a suite which stopped finding tests is how long THAT
@@ -1920,6 +1923,7 @@ mod tests {
             push: &push,
             manifest: &manifest,
             settings: &settings,
+            handed_to_cluster: &[],
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

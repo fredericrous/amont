@@ -283,6 +283,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                         push: &empty,
                         manifest,
                         settings,
+                        handed_to_cluster: &[],
                     };
                     finish(
                         settings,
@@ -314,6 +315,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                                 push: refs,
                                 manifest,
                                 settings,
+                                handed_to_cluster: &[],
                             };
                             finish(
                                 settings,

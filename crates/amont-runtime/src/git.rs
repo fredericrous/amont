@@ -354,11 +354,14 @@ fn probe_run(
         });
         rx
     });
-    let read_out = |drained: &Option<std::sync::mpsc::Receiver<String>>| -> String {
-        drained
-            .as_ref()
-            .and_then(|rx| rx.recv_timeout(std::time::Duration::from_secs(2)).ok())
-            .unwrap_or_default()
+    // `None` when the stream did not end: a grandchild still holds the pipe
+    // open after the child exited. That is "git did not answer", never an
+    // empty answer, which `land` would read as "no such ref".
+    let read_out = |drained: &Option<std::sync::mpsc::Receiver<String>>| -> Option<String> {
+        match drained {
+            None => Some(String::new()),
+            Some(rx) => rx.recv_timeout(std::time::Duration::from_secs(2)).ok(),
+        }
     };
     // No deadline (`budget_secs == 0`) is an hour here, not forever: the
     // capture path polls like the bounded one and a poll with no end is the
@@ -368,8 +371,10 @@ fn probe_run(
     loop {
         match child.try_wait() {
             Ok(Some(s)) => {
-                let text = read_out(&drained);
-                return (s.code().map(Probe::Exit).unwrap_or(Probe::Failed), text);
+                return match read_out(&drained) {
+                    Some(text) => (s.code().map(Probe::Exit).unwrap_or(Probe::Failed), text),
+                    None => (Probe::Failed, String::new()),
+                };
             }
             Ok(None) => {}
             Err(_) => return (Probe::Failed, String::new()),
@@ -609,7 +614,7 @@ mod probe_tests {
     #[test]
     fn a_long_ls_remote_is_drained_while_the_child_runs() {
         let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // a leftover of an earlier run, if any
         let path = dir.display().to_string();
         let git = |args: &[&str]| {
             let mut all = vec!["-C", path.as_str()];
@@ -626,10 +631,6 @@ mod probe_tests {
         };
         std::fs::create_dir_all(&dir).expect("mkdir");
         assert!(git(&["init", "-q", "--bare"]).status.success());
-        let tree =
-            String::from_utf8_lossy(&git(&["hash-object", "-t", "tree", "-w", "--stdin"]).stdout)
-                .trim()
-                .to_string();
         let commit = {
             let out = Command::new("git")
                 .args([
@@ -649,7 +650,6 @@ mod probe_tests {
                 .expect("commit-tree");
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        drop(tree);
         assert_eq!(commit.len(), 40, "a commit");
         let refs: String = (0..3000)
             .map(|i| format!("{commit} refs/pull/{i}/head-with-a-long-name-to-fill-the-pipe\n"))
@@ -661,5 +661,18 @@ mod probe_tests {
         assert_eq!(out.lines().count(), 3000);
         assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
         std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    /// A child that exits while a grandchild still holds its stdout is "git did
+    /// not answer", not an empty answer that `land` would read as "no such ref".
+    #[test]
+    fn a_stdout_held_open_after_the_child_exits_is_a_failure_not_an_empty_answer() {
+        let started = std::time::Instant::now();
+        // the alias shell leaves a `sleep` behind holding git's stdout
+        let (probe, out) =
+            probe_remote_stdout(&["-c", "alias.holdit=!(sleep 4 &); true", "holdit"], 20);
+        assert!(matches!(probe, Probe::Failed), "{probe:?}");
+        assert_eq!(out, "");
+        assert!(started.elapsed().as_secs() < 4, "{:?}", started.elapsed());
     }
 }

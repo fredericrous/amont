@@ -24,7 +24,7 @@ use super::super::{
     capture, judge, last_line, log_line, parse_pod_object, record_token, Call, Fallback, JobEnd,
     Kube, PodFacts, State, PLATFORM, RUN_LABEL_KEY,
 };
-use super::pending::{GateState, Pending, RecordPhase, Store};
+use super::pending::{GateState, Pending, PendingError, RecordPhase, Store};
 use super::workflow::{check_pod, check_workflow, node_name, template_name, TTL_SECS};
 
 /// The wall deadline for the one batched call. `kubectl`'s own request timeout
@@ -50,13 +50,13 @@ static COLLECTED: AtomicBool = AtomicBool::new(false);
 
 /// Why a collect learned nothing, or could not keep what it learned.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Trouble {
+pub(crate) enum Trouble {
     /// Another collect, or a submission, holds the pending file.
     Busy,
     /// The cluster did not answer.
     NotReached(String),
     /// The pending file could not be read or written.
-    StoreFailed(String),
+    StoreFailed(PendingError),
 }
 
 impl std::fmt::Display for Trouble {
@@ -64,24 +64,24 @@ impl std::fmt::Display for Trouble {
         match self {
             Trouble::Busy => write!(f, "another collect is running"),
             Trouble::NotReached(why) => write!(f, "cluster not reached: {why}"),
-            Trouble::StoreFailed(why) => write!(f, "pending store write failed: {why}"),
+            Trouble::StoreFailed(why) => write!(f, "pending store failed: {why}"),
         }
     }
 }
 
 /// A Workflow that left the pending file in this collect, for `--status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settled {
+pub(crate) struct Settled {
     pub name: String,
     /// The Workflow's last phase in plain words.
-    pub phase: &'static str,
+    pub phase: RecordPhase,
     pub passed: Vec<String>,
     pub failed: Vec<String>,
 }
 
 /// What a collect did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Collected {
+pub(crate) struct Collected {
     /// Passes written as cluster tokens.
     pub passes: usize,
     /// Workflows still pending afterwards.
@@ -125,7 +125,7 @@ struct Resolution {
 /// Collect, once per hook process. Called at the start of pre-commit and
 /// pre-push, by `amont stamps`, `amont cluster collect` and `rehearse
 /// --status`.
-pub fn collect() -> Collected {
+pub(crate) fn collect() -> Collected {
     if COLLECTED.swap(true, Ordering::SeqCst) {
         return Collected::default();
     }
@@ -144,7 +144,7 @@ fn collect_from(store: &Store) -> Collected {
         Ok(records) => records,
         Err(why) => {
             log_line("collect", &why.to_string());
-            return Collected::troubled(Trouble::StoreFailed(why.to_string()));
+            return Collected::troubled(Trouble::StoreFailed(why));
         }
     };
     if records.is_empty() {
@@ -154,8 +154,7 @@ fn collect_from(store: &Store) -> Collected {
     let mut kept: Vec<Pending> = Vec::new();
     let mut settled: Vec<Settled> = Vec::new();
     let mut passes = 0;
-    let mut unreached: Option<String> = None;
-    let mut learned = false;
+    let mut unreached: Vec<String> = Vec::new();
     for group in by_cluster(records) {
         let kube = Kube {
             kubeconfig: group[0].kubeconfig.clone(),
@@ -163,7 +162,6 @@ fn collect_from(store: &Store) -> Collected {
         };
         match fetch(&kube, &group) {
             Ok(list) => {
-                learned = true;
                 for record in group {
                     let done = settle(resolve(record, &list, now));
                     passes += done.written;
@@ -187,7 +185,11 @@ fn collect_from(store: &Store) -> Collected {
                     );
                 }
                 kept.extend(young);
-                unreached = Some(why);
+                unreached.push(format!(
+                    "{why} (namespace {}, kubeconfig {})",
+                    kube.namespace,
+                    kube.kubeconfig.display()
+                ));
             }
         }
     }
@@ -197,9 +199,10 @@ fn collect_from(store: &Store) -> Collected {
                 "collect",
                 &format!("cluster-pending was not updated: {why}"),
             );
-            Some(Trouble::StoreFailed(why.to_string()))
+            Some(Trouble::StoreFailed(why))
         }
-        (Ok(()), Some(why)) if !learned => Some(Trouble::NotReached(why)),
+        // Any group left unasked is named, even when another answered.
+        (Ok(()), why) if !why.is_empty() => Some(Trouble::NotReached(why.join("; "))),
         (Ok(()), _) => None,
     };
     Collected {
@@ -322,7 +325,7 @@ fn settle_with(
     };
     let settled = Settled {
         name: record.name.clone(),
-        phase: record.phase.plain(),
+        phase: record.phase,
         passed: ids(GateState::Passed),
         failed: ids(GateState::Failed),
     };
@@ -440,7 +443,7 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
         {
             gate.state = GateState::Failed;
         }
-        record.phase = RecordPhase::Unknown;
+        record.phase = RecordPhase::Gone;
         Resolution {
             record,
             leaves: true,
@@ -614,18 +617,21 @@ pub fn collect_command(args: &[std::ffi::OsString]) -> i32 {
 
 /// `rehearse --status`: one line per pending Workflow, its phase as the last
 /// collect saw it and the gates collected so far.
-pub fn status_lines() -> Vec<String> {
+pub(crate) fn status_lines() -> Vec<String> {
     let Some(store) = Store::here() else {
         return Vec::new();
     };
     match store.read() {
         Ok(records) => records.iter().map(describe).collect(),
-        Err(why) => vec![format!("cluster run records cannot be read: {why}")],
+        Err(why) => {
+            eprintln!("cluster run records cannot be read: {why}");
+            Vec::new()
+        }
     }
 }
 
 /// The Workflows a collect finished with, for the person who asked.
-pub fn settled_lines(settled: &[Settled]) -> Vec<String> {
+pub(crate) fn settled_lines(settled: &[Settled]) -> Vec<String> {
     settled
         .iter()
         .map(|run| {
@@ -642,7 +648,7 @@ pub fn settled_lines(settled: &[Settled]) -> Vec<String> {
             format!(
                 "cluster run {} {}: {}",
                 run.name,
-                run.phase,
+                run.phase.plain(),
                 parts.join("; ")
             )
         })
@@ -690,14 +696,21 @@ fn describe(record: &Pending) -> String {
 /// The command that does by hand what `--stop` does for one Workflow.
 fn terminate_command(record: &Pending) -> String {
     format!(
-        "kubectl -n {} patch workflow {} --type merge -p '{{\"spec\":{{\"shutdown\":\"Terminate\"}}}}'",
-        record.namespace, record.name
+        "kubectl --kubeconfig {} -n {} patch workflow {} --type merge -p '{{\"spec\":{{\"shutdown\":\"Terminate\"}}}}'",
+        shell_quote(&record.kubeconfig.to_string_lossy()),
+        record.namespace,
+        record.name
     )
+}
+
+/// `text` as one word for a POSIX shell.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// What `rehearse --stop` did to the pending Workflows.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Stopped {
+pub(crate) struct Stopped {
     /// One line per Workflow asked to terminate.
     pub done: Vec<String>,
     /// One line per Workflow that was not, with the command to do it by hand.
@@ -707,7 +720,7 @@ pub struct Stopped {
 /// `rehearse --stop`: ask the cluster to terminate every pending Workflow,
 /// each call and all of them bounded. Once the overall deadline is gone the
 /// rest are reported as not attempted.
-pub fn stop_pending() -> Stopped {
+pub(crate) fn stop_pending() -> Stopped {
     let mut report = Stopped::default();
     let Some(store) = Store::here() else {
         return report;
@@ -976,6 +989,8 @@ mod tests {
         let empty = crate::json_read::parse("{\"kind\":\"List\",\"items\":[]}").expect("json");
         let done = collected(record, &empty);
         assert!(done.leaves);
+        assert_eq!(done.record.phase, RecordPhase::Gone);
+        assert_eq!(done.record.phase.plain(), "gone (TTL passed or deleted)");
         assert_eq!(done.notes.len(), 1, "{done:?}");
     }
 

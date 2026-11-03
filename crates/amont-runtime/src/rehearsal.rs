@@ -170,8 +170,8 @@ fn snapshot_env() -> &'static Option<SnapshotEnv> {
 
 /// The gates the rehearsal that started this snapshot handed to the cluster:
 /// this run does not repeat them, their passes come back as cluster tokens at
-/// the next commit or push. Empty outside a snapshot. Read once, at the top of
-/// the pre-push hook, and passed on.
+/// the next commit or push. Empty outside a snapshot. Read by `main`, which
+/// carries it on `Ctx` to the pre-push loop.
 pub fn handed_to_cluster() -> &'static [String] {
     snapshot_env()
         .as_ref()

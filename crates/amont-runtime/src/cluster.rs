@@ -36,10 +36,8 @@ use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
 mod detached;
-pub use detached::{
-    collect, collect_command, detach, settled_lines, status_lines, stop_pending, wanted, Ask,
-    Collected, Detached, Settled, Stopped, Trouble,
-};
+pub(crate) use detached::{collect, settled_lines, status_lines, stop_pending};
+pub use detached::{collect_command, detach, wanted, Ask, Detached};
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:
 /// only where the manifest declares a `platform=any` gate, the only kind a
@@ -396,7 +394,7 @@ fn misconfigured(why: String, key_fix: &str) -> Fallback {
 fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, Fallback> {
     let keys = machine_keys();
     let kubeconfig = key(&keys, "amont.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
-        "amont.cluster.kubeconfig is not set",
+        "amont.cluster.kubeconfig is not set: `git config --global amont.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
     ))?;
     let kubeconfig = PathBuf::from(kubeconfig);
     if !kubeconfig.is_file() {
@@ -406,7 +404,9 @@ fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, F
         ));
     }
     let image = key(&keys, "amont.cluster.image")
-        .ok_or(Fallback::Unconfigured("amont.cluster.image is not set"))?;
+        .ok_or(Fallback::Unconfigured(
+        "amont.cluster.image is not set: `git config --global amont.cluster.image 'name:tag@sha256:<digest>'`",
+    ))?;
     let digest = digest_of(image)
         .ok_or_else(|| {
             misconfigured(

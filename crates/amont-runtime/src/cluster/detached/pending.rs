@@ -58,7 +58,7 @@ impl GateState {
 /// Where a Workflow stands, as the last collect saw it. The cases are the
 /// phases Argo reports, plus the one before the cluster has been asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RecordPhase {
+pub(crate) enum RecordPhase {
     /// Written before `create`; no Workflow has been seen yet.
     Submitting,
     Pending,
@@ -68,11 +68,14 @@ pub(super) enum RecordPhase {
     Error,
     /// A phase this amont does not know, or none yet.
     Unknown,
+    /// The cluster no longer shows the Workflow: its TTL passed, or it was
+    /// deleted.
+    Gone,
 }
 
 impl RecordPhase {
     /// The spelling in the file: Argo's own for its phases.
-    pub(super) fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             RecordPhase::Submitting => "Submitting",
             RecordPhase::Pending => "Pending",
@@ -81,10 +84,11 @@ impl RecordPhase {
             RecordPhase::Failed => "Failed",
             RecordPhase::Error => "Error",
             RecordPhase::Unknown => "Unknown",
+            RecordPhase::Gone => "Gone",
         }
     }
 
-    pub(super) fn parse(s: &str) -> RecordPhase {
+    pub(crate) fn parse(s: &str) -> RecordPhase {
         match s {
             "Submitting" => RecordPhase::Submitting,
             "Pending" => RecordPhase::Pending,
@@ -92,14 +96,18 @@ impl RecordPhase {
             "Succeeded" => RecordPhase::Succeeded,
             "Failed" => RecordPhase::Failed,
             "Error" => RecordPhase::Error,
+            "Gone" => RecordPhase::Gone,
             _ => RecordPhase::Unknown,
         }
     }
 
     /// Argo will run nothing more in it.
-    pub(super) fn finished(self) -> bool {
+    pub(crate) fn finished(self) -> bool {
         match self {
-            RecordPhase::Succeeded | RecordPhase::Failed | RecordPhase::Error => true,
+            RecordPhase::Succeeded
+            | RecordPhase::Failed
+            | RecordPhase::Error
+            | RecordPhase::Gone => true,
             RecordPhase::Submitting
             | RecordPhase::Pending
             | RecordPhase::Running
@@ -108,7 +116,7 @@ impl RecordPhase {
     }
 
     /// For a person reading `rehearse --status`.
-    pub(super) fn plain(self) -> &'static str {
+    pub(crate) fn plain(self) -> &'static str {
         match self {
             RecordPhase::Submitting => "being submitted",
             RecordPhase::Pending => "queued",
@@ -117,6 +125,7 @@ impl RecordPhase {
             RecordPhase::Failed => "failed",
             RecordPhase::Error => "ended in error",
             RecordPhase::Unknown => "not reported yet",
+            RecordPhase::Gone => "gone (TTL passed or deleted)",
         }
     }
 }
@@ -124,10 +133,10 @@ impl RecordPhase {
 /// A failed read or write of the pending file, rendered only where it is
 /// logged or said.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PendingError {
-    pub(super) op: &'static str,
-    pub(super) path: PathBuf,
-    pub(super) cause: String,
+pub(crate) struct PendingError {
+    pub(crate) op: &'static str,
+    pub(crate) path: PathBuf,
+    pub(crate) cause: String,
 }
 
 impl PendingError {

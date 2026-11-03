@@ -1044,6 +1044,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         push: &push,
         manifest: &manifest,
         settings: &settings,
+        handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -1284,6 +1285,7 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
         push: &push,
         manifest: &manifest,
         settings: &settings,
+        handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`. An unknown name is NOT the usage

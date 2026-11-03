@@ -1413,7 +1413,8 @@ fn stop_fails_loudly_when_a_workflow_cannot_be_terminated() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(&format!("could not terminate cluster run {}", wf.name))
-            && stderr.contains("kubectl -n amont-gates patch workflow"),
+            && stderr.contains("kubectl --kubeconfig '")
+            && stderr.contains(" -n amont-gates patch workflow"),
         "{stderr}"
     );
 }

@@ -43,6 +43,10 @@ pub struct Ctx<'a> {
     /// the read-once-borrow-everywhere shape, and replaces the process-global
     /// policy store — see [`crate::config::Settings`].
     pub settings: &'a crate::config::Settings,
+    /// The gates the rehearsal that made this pre-push snapshot handed to the
+    /// cluster (ADR-0017), parsed once in `main` with the rest of the
+    /// environment it removes; empty everywhere else.
+    pub handed_to_cluster: &'a [String],
 }
 
 pub type HookFn = fn(&Ctx) -> Verdict;

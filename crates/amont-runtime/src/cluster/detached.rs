@@ -29,10 +29,8 @@ mod collect;
 mod pending;
 mod workflow;
 
-pub use collect::{
-    collect, collect_command, settled_lines, status_lines, stop_pending, Collected, Settled,
-    Stopped, Trouble,
-};
+pub use collect::collect_command;
+pub(crate) use collect::{collect, settled_lines, status_lines, stop_pending};
 
 use pending::{Gate, GateState, Pending, PendingError, RecordPhase, Source, Store};
 
