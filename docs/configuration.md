@@ -919,6 +919,78 @@ The Job's deadline is [`amont.timeout`](#amonttimeout--the-ceiling-one-checks-co
 `amont.cluster.kubeconfig`, or `git config amont.executor local` in one
 clone, or `set executor local` in the file.
 
+### `amont.rehearse.cluster` — a rehearsal that outlives the laptop
+
+```sh
+git config --global amont.cluster.snapshotRemote 'git@git.example:amont-snapshots/{repo}.git'
+git config --global amont.cluster.snapshotFetch  'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}.git'
+git config --global amont.cluster.mirrorRemote   'git@git.example:amont-snapshots/{repo}-mirror.git'   # optional
+git config --global amont.cluster.mirror         'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}-mirror.git'   # optional
+git config --global amont.rehearse.cluster true   # default false
+```
+
+`amont rehearse --cluster`, or `amont.rehearse.cluster true` for the
+post-commit rehearsal ([`amont.rehearseOnCommit`](#amontrehearseoncommit--run-the-push-gate-in-the-background-after-every-commit)),
+sends the gates the rehearsal would run and the cluster may take to one Argo
+Workflow, and returns (ADR-0017). A gate goes only if it is `platform=any`, in
+a trusted manifest that says `set executor cluster`, and nothing vouches for it
+on this tree yet; the rest of the rehearsal runs here as before. The command
+prints one line per Workflow submitted, with its name and gates, on stderr (stdout stays for asked-for data: `--status`). Close the lid:
+the next commit or push, in any worktree of the repository, collects what
+finished into cluster tokens, and the push skips those gates and signs the
+`x86_64-linux` attestation as it does for a Job-lane pass
+(`amont cluster collect` does it on demand, so does `amont stamps`).
+
+The code goes in one of two ways:
+
+- **A snapshot.** A commit of HEAD's tree with HEAD as its parent, dated now,
+  pushed with your own git credentials to `refs/snapshots/<run label>` on
+  `amont.cluster.snapshotRemote`, then read back with `git ls-remote`. A push
+  that is not read back submits nothing: the gates run here and
+  `amont/cluster.log` says why.
+- **The mirror.** When `git ls-remote <mirrorRemote>` advertises an object equal
+  to HEAD, nothing is pushed and the cluster fetches that commit from
+  `amont.cluster.mirror`. Mirror detection is the only thing the laptop does
+  with `mirrorRemote`, which is why it is its own key rather than a naming
+  convention on the snapshot remote; set both or neither.
+
+In both URL templates `{repo}` stands for the repository's name: the last
+segment of `origin`'s URL, without `.git`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `amont.cluster.snapshotRemote` | none: required | The URL the laptop pushes the snapshot to. Pushed over ssh with your own credentials; no prompt is ever shown. |
+| `amont.cluster.snapshotFetch` | none: required | The URL the cluster fetches the same repository from (an in-cluster address, `http://` only for `*.svc.cluster.local`). |
+| `amont.cluster.mirrorRemote` | none | The pull mirror's URL as this machine lists it. |
+| `amont.cluster.mirror` | none | The pull mirror's URL as the cluster fetches it. |
+| `amont.rehearse.cluster` | `false` | The post-commit rehearsal goes detached on its own. |
+
+With none of them set there is no detached lane: a rehearsal is what it was.
+The kubeconfig, image, namespace and `amont.timeout` are the Job lane's, above;
+the Workflow is created as the kubeconfig's user. `amont rehearse --status`
+shows each pending Workflow's phase and the gates collected, `--stop` asks the
+cluster to terminate them, and `kubectl get wf -n amont-gates` follows a run.
+
+**What a pass needs.** Collect reads the pod, not the Workflow: `fetch`
+terminated 0 reporting the expected tree, `prepare` 0 when set, `main`
+terminated 0, an `imageID`, no disruption, from a pod owned by the Workflow
+amont created and running the image and command it submitted. A Workflow or
+node that says `Succeeded` while `main` exited 1 is no pass. The token written
+is the one worked out at submission: change the command, `clusterPrepare` or the
+image after submitting and the push does not accept the pass, it runs the gate.
+Anything else writes one line in `amont/cluster.log` and nothing more.
+
+`amont cluster collect` exits 0 when it asked the cluster (or another collect is
+already running, which it says), and 1 when the cluster was not reached or the
+pending file could not be written; `rehearse --stop` exits 1 when a Workflow
+could not be terminated and prints the `kubectl patch` that does it by hand.
+`rehearse --status` also lists the runs that ended since the last look, with the
+gates that did not pass.
+
+The record of what is pending is `$GIT_COMMON_DIR/amont/cluster-pending`;
+deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are
+pruned by the cluster. Unix only.
+
 ## `amont.minVersion` — the amont this repository means
 
 ```sh

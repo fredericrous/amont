@@ -15,7 +15,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-const IMAGE_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+pub(crate) const IMAGE_HEX: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
 
 /// The fake `kubectl`. It refuses a call without `--kubeconfig` (exit 99).
 const FAKE_KUBECTL: &str = r#"#!/bin/sh
@@ -34,6 +35,21 @@ esac
 cat > "$D/stdin-$n"
 case "$1" in
   create)
+    if grep -q '"kind":"Workflow"' "$3"; then
+      wf=$(grep -o '"name":"amont-rh-[^"]*"' "$3" | head -1 | sed 's/.*:"//; s/"$//')
+      a=$(cat "$D/create_wf_n" 2>/dev/null || echo 0); a=$((a+1)); echo "$a" > "$D/create_wf_n"
+      mode=$(sed -n "${a}p" "$D/create_wf" 2>/dev/null)
+      case "$mode" in
+        reject) echo 'Error from server (Forbidden): workflows.argoproj.io is forbidden: cannot create' >&2; exit 1 ;;
+        never) echo 'error: unexpected EOF' >&2; exit 1 ;;
+      esac
+      cp "$3" "$D/wf-$wf.json"; mkdir -p "$D/created-wf"; cp "$3" "$D/created-wf/$wf.json"
+      case "$mode" in
+        lost) echo 'error: unexpected EOF' >&2; exit 1 ;;
+        hang) touch "$D/create-started"; sleep 30; [ -d "$D" ] || exit 1 ;;
+      esac
+      printf 'uid-%s' "$wf"; exit 0
+    fi
     a=$(cat "$D/create_n" 2>/dev/null || echo 0); a=$((a+1)); echo "$a" > "$D/create_n"
     mode=$(sed -n "${a}p" "$D/create" 2>/dev/null)
     case "$mode" in
@@ -50,6 +66,17 @@ case "$1" in
   get)
     touch "$D/get-started"
     if [ -f "$D/get_sleep" ]; then sleep "$(cat "$D/get_sleep")"; [ -d "$D" ] || exit 1; fi
+    if [ "$2" = "workflows,pods" ]; then
+      if [ -f "$D/wf_down" ]; then echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1; fi
+      if [ -f "$D/wf_list.json" ]; then cat "$D/wf_list.json"; else printf '{"kind":"List","items":[]}'; fi
+      exit 0
+    fi
+    if [ "$2" = "workflow" ]; then
+      if [ -f "$D/wf-$3.json" ]; then
+        sed 's/"metadata":{"name"/"metadata":{"uid":"uid-'"$3"'","name"/' "$D/wf-$3.json"; exit 0
+      fi
+      echo "Error from server (NotFound): workflows.argoproj.io \"$3\" not found" >&2; exit 1
+    fi
     if [ "$2" = "job" ]; then
       k=${3##*-}
       gate=$(grep -o '"amont.dev/gate":"[^"]*"' "$D/job-$k.json" | sed 's/.*:"//; s/"$//')
@@ -82,6 +109,11 @@ case "$1" in
       g=$(printf '{"terminated":{"exitCode":%s,"reason":"%s"}}' "$(val gate_exit 0)" "$(val gate_reason Completed)")
     fi
     printf '{"items":[{"metadata":{"name":"pod-%s"},"status":{"phase":"Succeeded","conditions":[%s],"initContainerStatuses":[{"name":"fetch","state":{"terminated":{"exitCode":0,"message":"%s"}}}%s],"containerStatuses":[{"name":"gate","imageID":"reg/gate@sha256:observed","state":%s}]}}]}' "$k" "$cond" "$msg" "$prep" "$g"
+    exit 0 ;;
+  patch)
+    printf '%s\n' "$*" >> "$D/patches"
+    [ -f "$D/patch_fail" ] && { echo 'Error from server (Forbidden): workflows.argoproj.io is forbidden: cannot patch' >&2; exit 1; }
+    [ -f "$D/wf-$3.json" ] || { echo "Error from server (NotFound): workflows.argoproj.io \"$3\" not found" >&2; exit 1; }
     exit 0 ;;
   logs) echo "output of the gate in the pod"; exit 0 ;;
   delete)
@@ -120,18 +152,22 @@ const ANSWERS: &[&str] = &[
     "prepare_exit",
     "delete_sleep",
     "get_sleep",
+    "create_wf",
+    "wf_list.json",
+    "wf_down",
+    "patch_fail",
 ];
 
-struct Cluster {
-    r: Repo,
+pub(crate) struct Cluster {
+    pub(crate) r: Repo,
     /// The fake's directory: its bin, its scripted answers, its records.
-    kube: PathBuf,
+    pub(crate) kube: PathBuf,
 }
 
 impl Cluster {
     /// A repository whose committed `amont.conf` is `conf`, trusted and
     /// installed, with the machine keys pointing at the fake.
-    fn trusted(conf: &str) -> Cluster {
+    pub(crate) fn trusted(conf: &str) -> Cluster {
         let c = Cluster::untrusted(conf);
         for verb in ["trust", "init"] {
             let (code, out) = c.amont(&[verb], &[], None);
@@ -141,7 +177,7 @@ impl Cluster {
     }
 
     /// The same repository, its manifest never trusted.
-    fn untrusted(conf: &str) -> Cluster {
+    pub(crate) fn untrusted(conf: &str) -> Cluster {
         let r = Repo::new();
         let kube = r.dir.join(".fake-kube");
         std::fs::create_dir_all(kube.join("bin")).unwrap();
@@ -169,21 +205,21 @@ impl Cluster {
         c
     }
 
-    fn config(&self, key: &str, value: &str) {
+    pub(crate) fn config(&self, key: &str, value: &str) {
         assert!(self.r.git(&["config", key, value]).status.success());
     }
 
     /// Script one answer of the fake.
-    fn answer(&self, file: &str, content: &str) {
+    pub(crate) fn answer(&self, file: &str, content: &str) {
         std::fs::write(self.kube.join(file), content).unwrap();
     }
 
-    fn read(&self, file: &str) -> String {
+    pub(crate) fn read(&self, file: &str) -> String {
         std::fs::read_to_string(self.kube.join(file)).unwrap_or_default()
     }
 
     /// Forget what the fake recorded, keeping its scripted answers.
-    fn reset_records(&self) {
+    pub(crate) fn reset_records(&self) {
         for entry in std::fs::read_dir(&self.kube).unwrap() {
             let entry = entry.unwrap();
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -201,7 +237,7 @@ impl Cluster {
     }
 
     /// The Job manifests the fake was handed, in no particular order.
-    fn created_jobs(&self) -> Vec<String> {
+    pub(crate) fn created_jobs(&self) -> Vec<String> {
         std::fs::read_dir(self.kube.join("created"))
             .map(|d| {
                 d.map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
@@ -210,21 +246,21 @@ impl Cluster {
             .unwrap_or_default()
     }
 
-    fn local_runs(&self) -> usize {
+    pub(crate) fn local_runs(&self) -> usize {
         self.read("gate.log").lines().count()
     }
 
-    fn cluster_log(&self) -> String {
+    pub(crate) fn cluster_log(&self) -> String {
         std::fs::read_to_string(self.r.dir.join(".git/amont/cluster.log")).unwrap_or_default()
     }
 
-    fn kubectl_calls(&self) -> String {
+    pub(crate) fn kubectl_calls(&self) -> String {
         self.read("calls")
     }
 
     /// `amont <args>` as a command: the fake first on PATH, the machine's
     /// global git config and `KUBECONFIG` out of reach.
-    fn command(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Command {
+    pub(crate) fn command(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Command {
         let mut cmd = common::amont_cmd();
         let path = format!(
             "{}:{}",
@@ -245,7 +281,12 @@ impl Cluster {
     }
 
     /// `amont <args>`, and `stdin` piped in if given.
-    fn amont(&self, args: &[&str], env: &[(&str, &str)], stdin: Option<&str>) -> (i32, String) {
+    pub(crate) fn amont(
+        &self,
+        args: &[&str],
+        env: &[(&str, &str)],
+        stdin: Option<&str>,
+    ) -> (i32, String) {
         let mut cmd = self.command(args, env);
         cmd.stdin(if stdin.is_some() {
             Stdio::piped()
@@ -274,34 +315,39 @@ impl Cluster {
         )
     }
 
-    fn hook(&self, name: &str, env: &[(&str, &str)], stdin: Option<&str>) -> (i32, String) {
+    pub(crate) fn hook(
+        &self,
+        name: &str,
+        env: &[(&str, &str)],
+        stdin: Option<&str>,
+    ) -> (i32, String) {
         let hooks = self.r.dir.join(".git/hooks");
         let hooks = hooks.to_string_lossy().into_owned();
         self.amont(&["--hooks-dir", &hooks, name], env, stdin)
     }
 
-    fn pre_commit(&self, env: &[(&str, &str)]) -> (i32, String) {
+    pub(crate) fn pre_commit(&self, env: &[(&str, &str)]) -> (i32, String) {
         self.hook("pre-commit", env, None)
     }
 
-    fn staged_tree(&self) -> String {
+    pub(crate) fn staged_tree(&self) -> String {
         out(&self.r, &["write-tree"])
     }
 
-    fn cluster_note(&self, key: &str) -> String {
+    pub(crate) fn cluster_note(&self, key: &str) -> String {
         out(
             &self.r,
             &["notes", "--ref", "amont-gate-cluster", "show", key],
         )
     }
 
-    fn local_note(&self, key: &str) -> String {
+    pub(crate) fn local_note(&self, key: &str) -> String {
         out(&self.r, &["notes", "--ref", "amont-gate", "show", key])
     }
 
     /// The skip tokens of the local note at `key`: its first line, past the
     /// format word. Evidence `run` lines are not tokens.
-    fn local_tokens(&self, key: &str) -> String {
+    pub(crate) fn local_tokens(&self, key: &str) -> String {
         let note = self.local_note(key);
         let first = note.lines().next().unwrap_or("");
         first
@@ -314,7 +360,7 @@ impl Cluster {
 
 /// Captured output without colour codes, so a word that `highlight` wraps in
 /// them still reads as the word.
-fn plain(s: &str) -> String {
+pub(crate) fn plain(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
@@ -331,7 +377,7 @@ fn plain(s: &str) -> String {
     out
 }
 
-fn out(r: &Repo, args: &[&str]) -> String {
+pub(crate) fn out(r: &Repo, args: &[&str]) -> String {
     String::from_utf8_lossy(&r.git(args).stdout)
         .trim()
         .to_string()
@@ -977,7 +1023,7 @@ const ATTEST_CONF: &str = "set executor cluster\n\
 impl Cluster {
     /// A trusted repository that attests: a bare `origin`, a signing key and
     /// its allowed signers.
-    fn attesting(conf: &str) -> Cluster {
+    pub(crate) fn attesting(conf: &str) -> Cluster {
         let c = Cluster::trusted(conf);
         let remote = c.remote();
         assert!(c
@@ -1007,13 +1053,13 @@ impl Cluster {
         c
     }
 
-    fn remote(&self) -> PathBuf {
+    pub(crate) fn remote(&self) -> PathBuf {
         self.r.dir.join("remote.git")
     }
 
     /// The pre-push hook for the ref lines `pushes` (`(ref, tip, base)`), to
     /// `origin`.
-    fn pre_push_refs(&self, pushes: &[(&str, &str, &str)]) -> (i32, String) {
+    pub(crate) fn pre_push_refs(&self, pushes: &[(&str, &str, &str)]) -> (i32, String) {
         let lines: String = pushes
             .iter()
             .map(|(name, tip, base)| format!("refs/heads/{name} {tip} refs/heads/{name} {base}\n"))
@@ -1027,12 +1073,12 @@ impl Cluster {
         )
     }
 
-    fn pre_push(&self, base: &str, tip: &str) -> (i32, String) {
+    pub(crate) fn pre_push(&self, base: &str, tip: &str) -> (i32, String) {
         self.pre_push_refs(&[("feat/x", tip, base)])
     }
 
     /// The signed note on `key` in the remote, empty when there is none.
-    fn remote_note(&self, key: &str) -> String {
+    pub(crate) fn remote_note(&self, key: &str) -> String {
         let shown = std::process::Command::new("git")
             .arg("--git-dir")
             .arg(self.remote())
@@ -1043,7 +1089,7 @@ impl Cluster {
     }
 
     /// `(platform, gates)` of each block of the remote's note on `key`.
-    fn remote_blocks(&self, key: &str) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn remote_blocks(&self, key: &str) -> Vec<(String, Vec<String>)> {
         let note = self.remote_note(key);
         note.split("amont-attest-v2\n")
             .skip(1)
@@ -1068,7 +1114,7 @@ impl Cluster {
 
     /// Commit `file` on top of `base` on a branch of its own, and return the
     /// commit and its tree.
-    fn commit_on(&self, base: &str, branch: &str, file: &str) -> (String, String) {
+    pub(crate) fn commit_on(&self, base: &str, branch: &str, file: &str) -> (String, String) {
         self.r
             .git(&["checkout", "-q", "--no-track", "-b", branch, base]);
         self.r.stage(file, "hello\n");
@@ -1080,7 +1126,7 @@ impl Cluster {
     }
 }
 
-fn names(blocks: &[(String, Vec<String>)], gate: &str) -> Vec<String> {
+pub(crate) fn names(blocks: &[(String, Vec<String>)], gate: &str) -> Vec<String> {
     blocks
         .iter()
         .filter(|(_, gates)| gates.iter().any(|g| g == gate))

@@ -174,6 +174,22 @@ over nothing.
   pre-commit  typecheck  *.ts  block  heavy platform=any pnpm -r typecheck
   ```
 
+### A `platform=any` gate can outlive the laptop
+
+A `platform=any` pre-push gate of a repository that says `set executor cluster`
+may also be handed to a **detached Argo Workflow** by `amont rehearse
+--cluster` (or `git config amont.rehearse.cluster true` for the post-commit
+rehearsal): the rehearsal submits it and returns, and the next commit or push
+collects the pass, whether or not the laptop was awake meanwhile (ADR-0017). The
+rules above hold unchanged: no `fix`, no `files`, the verdict independent of the
+platform. Two things are specific to this lane. The pod gets a shallow checkout
+of the tree (depth 1), so the gate must read only the working tree and need no
+git history. And it gets the gate's command as written, in the pinned image, with
+`clusterPrepare` first when set: a gate whose tool exists only on your machine
+fails there, and runs here at the push. The machine keys, what a pass needs and
+the off switches are in
+[configuration](configuration.md#amontrehearsecluster--a-rehearsal-that-outlives-the-laptop).
+
 ## There is no shell
 
 No pipes, no redirection, no globbing, no quoting. `make smoke` works; `find . |

@@ -35,6 +35,19 @@ use std::time::{Duration, Instant};
 use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
+mod detached;
+pub(crate) use detached::{collect, settled_lines, status_lines, stop_pending};
+pub use detached::{collect_command, detach, wanted, Ask, Detached};
+
+/// [`collect`] for the hooks and `amont stamps`, which run in every repository:
+/// only where the manifest declares a `platform=any` gate, the only kind a
+/// Workflow can hold a pass for, so a repository without one pays nothing.
+pub fn collect_if_declared(manifest: &crate::manifest::Manifest) {
+    if manifest.externals.iter().any(is_platform_any) {
+        collect();
+    }
+}
+
 /// The node the gate pods run on, and the names the homelab contract fixes.
 const NODE: &str = "talos-wk-3-gpu";
 const PRIORITY_CLASS: &str = "gate-batch";
@@ -76,6 +89,23 @@ static LIVE: Mutex<Vec<LiveRun>> = Mutex::new(Vec::new());
 /// read, merge and rewrite it.
 static STAMP_LOCK: Mutex<()> = Mutex::new(());
 static SEQ: AtomicU64 = AtomicU64::new(0);
+/// Temporary manifest files of detached submissions, for an interrupt to
+/// delete. Files only: a detached Workflow outlives amont on purpose.
+static TEMP_FILES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn track_temp_file(path: &Path) {
+    TEMP_FILES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(path.to_path_buf());
+}
+
+fn untrack_temp_file(path: &Path) {
+    TEMP_FILES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|p| p != path);
+}
 
 /// Did the cluster prove the check `id` on `tree` in this process?
 pub fn proved(id: &str, tree: &str) -> bool {
@@ -159,6 +189,10 @@ fn live_update(run: u64, update: impl FnOnce(&mut LiveRun)) {
 /// shared budget, and remove the temporary files and refs. A second signal
 /// meanwhile ends amont at once and leaves the Job to its own deadline.
 pub fn cancel_live() {
+    for file in std::mem::take(&mut *TEMP_FILES.lock().unwrap_or_else(|p| p.into_inner())) {
+        let removed = std::fs::remove_file(&file); // amont is dying: nothing to tell
+        drop(removed);
+    }
     let live: Vec<LiveRun> = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|p| p.into_inner()));
     if live.is_empty() {
         return;
@@ -360,7 +394,7 @@ fn misconfigured(why: String, key_fix: &str) -> Fallback {
 fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, Fallback> {
     let keys = machine_keys();
     let kubeconfig = key(&keys, "amont.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
-        "amont.cluster.kubeconfig is not set",
+        "amont.cluster.kubeconfig is not set: `git config --global amont.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
     ))?;
     let kubeconfig = PathBuf::from(kubeconfig);
     if !kubeconfig.is_file() {
@@ -370,7 +404,9 @@ fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, F
         ));
     }
     let image = key(&keys, "amont.cluster.image")
-        .ok_or(Fallback::Unconfigured("amont.cluster.image is not set"))?;
+        .ok_or(Fallback::Unconfigured(
+        "amont.cluster.image is not set: `git config --global amont.cluster.image 'name:tag@sha256:<digest>'`",
+    ))?;
     let digest = digest_of(image)
         .ok_or_else(|| {
             misconfigured(
@@ -800,8 +836,15 @@ fn record(
         "platform={PLATFORM} image={} job={} name={} bundle={}",
         proof.image_id, proof.uid, proof.job, proof.bundle_bytes
     );
+    record_token(tree, &token, &provenance)
+}
+
+/// Write `token`, as given, on `tree`'s cluster note with its provenance. The
+/// detached lane passes the token it froze at submission, never one worked out
+/// from today's configuration.
+fn record_token(tree: &str, token: &str, provenance: &str) -> Result<(), Fallback> {
     let _held = STAMP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    if crate::gate_stamp::stamp_cluster(tree, &token, &provenance) {
+    if crate::gate_stamp::stamp_cluster(tree, token, provenance) {
         Ok(())
     } else {
         Err(Fallback::NotProved(
@@ -1630,14 +1673,21 @@ fn str_at<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a str> {
     v?.get(key).and_then(Value::as_str)
 }
 
-/// The first pod of `kubectl get pods -o json`, as facts. Pure.
+/// The first pod of `kubectl get pods -o json`, as facts. Pure. The gate's
+/// container is `gate`: a Job's.
 fn parse_pod(json: &str) -> Option<PodFacts> {
     let doc = crate::json_read::parse(json)?;
-    let pod = doc.get("items")?.items().first()?;
+    parse_pod_object(doc.get("items")?.items().first()?, "gate")
+}
+
+/// One Pod object, as facts, the gate being the container `gate_container`:
+/// `gate` in a Job's pod, `main` in an Argo Workflow's (Argo names the main
+/// container itself). Pure.
+fn parse_pod_object(pod: &Value, gate_container: &str) -> Option<PodFacts> {
     let status = pod.get("status");
     let inits = status.and_then(|s| s.get("initContainerStatuses"));
     let mains = status.and_then(|s| s.get("containerStatuses"));
-    let gate = named(mains, "gate");
+    let gate = named(mains, gate_container);
     let disrupted = status.and_then(|s| s.get("conditions")).is_some_and(|c| {
         c.items().iter().any(|c| {
             str_at(Some(c), "type") == Some("DisruptionTarget")

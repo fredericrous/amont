@@ -299,9 +299,9 @@ pub fn probe_env(args: &[&str], budget_secs: u64, env: &[(&str, &str)]) -> Probe
 /// For the callers that need the ANSWER and not only the exit code: `land`
 /// reads a remote tip with `ls-remote`, and a probe that discards stdout
 /// could say "connected" but never which commit. Same environment, same
-/// deadline, same separation of exit codes. The output is small by
-/// construction (one ref), so it is read after the child ends rather than
-/// beside it; a caller asking for a large stream wants a different tool.
+/// deadline, same separation of exit codes. The output is drained while the
+/// child runs, so a remote that advertises more than a pipe holds (64 KiB)
+/// does not block until the deadline.
 pub fn probe_remote_stdout(args: &[&str], budget_secs: u64) -> (Probe, String) {
     let (pre, env) = remote_env(configured_ssh());
     let mut all: Vec<&str> = pre;
@@ -325,14 +325,6 @@ fn probe_run(
             Stdio::null()
         })
         .stderr(Stdio::null());
-    let read_out = |child: &mut std::process::Child| -> String {
-        use std::io::Read;
-        let mut text = String::new();
-        if let Some(mut out) = child.stdout.take() {
-            let _ = out.read_to_string(&mut text);
-        }
-        text
-    };
     if budget_secs == 0 && !capture {
         return match retrying(|| cmd.status()) {
             Ok(s) => (
@@ -345,6 +337,32 @@ fn probe_run(
     let Ok(mut child) = retrying(|| cmd.spawn()) else {
         return (Probe::Failed, String::new());
     };
+    // Drained while the child runs: a pipe holds 64 KiB, and a child with more
+    // to say (an `ls-remote` of a mirror with thousands of refs) would block
+    // on the full pipe until the deadline kills it.
+    let drained = child.stdout.take().map(|mut out| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            // A read error ends the stream early; what was read still counts.
+            let read = out.read_to_string(&mut text);
+            drop(read);
+            // The receiver gave up at the deadline: nobody to tell.
+            let sent = tx.send(text);
+            drop(sent);
+        });
+        rx
+    });
+    // `None` when the stream did not end: a grandchild still holds the pipe
+    // open after the child exited. That is "git did not answer", never an
+    // empty answer, which `land` would read as "no such ref".
+    let read_out = |drained: &Option<std::sync::mpsc::Receiver<String>>| -> Option<String> {
+        match drained {
+            None => Some(String::new()),
+            Some(rx) => rx.recv_timeout(std::time::Duration::from_secs(2)).ok(),
+        }
+    };
     // No deadline (`budget_secs == 0`) is an hour here, not forever: the
     // capture path polls like the bounded one and a poll with no end is the
     // unbounded wait this module exists to avoid.
@@ -353,8 +371,10 @@ fn probe_run(
     loop {
         match child.try_wait() {
             Ok(Some(s)) => {
-                let text = read_out(&mut child);
-                return (s.code().map(Probe::Exit).unwrap_or(Probe::Failed), text);
+                return match read_out(&drained) {
+                    Some(text) => (s.code().map(Probe::Exit).unwrap_or(Probe::Failed), text),
+                    None => (Probe::Failed, String::new()),
+                };
             }
             Ok(None) => {}
             Err(_) => return (Probe::Failed, String::new()),
@@ -583,4 +603,76 @@ pub fn current_branch() -> Option<&'static str> {
 pub fn has_remote() -> bool {
     static REMOTE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *REMOTE.get_or_init(|| stdout(&["remote"]).is_some_and(|r| !r.is_empty()))
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    /// A remote advertising far more than a pipe holds is read whole, quickly,
+    /// instead of blocking until the deadline.
+    #[test]
+    fn a_long_ls_remote_is_drained_while_the_child_runs() {
+        let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // a leftover of an earlier run, if any
+        let path = dir.display().to_string();
+        let git = |args: &[&str]| {
+            let mut all = vec!["-C", path.as_str()];
+            all.extend_from_slice(args);
+            let mut cmd = Command::new("git");
+            cmd.args(&all).env("GIT_CONFIG_GLOBAL", "/dev/null");
+            for (k, _) in std::env::vars_os() {
+                if k.to_string_lossy().starts_with("GIT_") {
+                    cmd.env_remove(&k);
+                }
+            }
+            cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+            cmd.output().expect("git")
+        };
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        assert!(git(&["init", "-q", "--bare"]).status.success());
+        let commit = {
+            let out = Command::new("git")
+                .args([
+                    "-C",
+                    path.as_str(),
+                    "commit-tree",
+                    "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                    "-m",
+                    "x",
+                ])
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("commit-tree");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert_eq!(commit.len(), 40, "a commit");
+        let refs: String = (0..3000)
+            .map(|i| format!("{commit} refs/pull/{i}/head-with-a-long-name-to-fill-the-pipe\n"))
+            .collect();
+        std::fs::write(dir.join("packed-refs"), refs).expect("packed-refs");
+        let started = std::time::Instant::now();
+        let (probe, out) = probe_remote_stdout(&["ls-remote", path.as_str()], 20);
+        assert!(matches!(probe, Probe::Exit(0)), "{probe:?}");
+        assert_eq!(out.lines().count(), 3000);
+        assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+        std::fs::remove_dir_all(&dir).expect("clean");
+    }
+
+    /// A child that exits while a grandchild still holds its stdout is "git did
+    /// not answer", not an empty answer that `land` would read as "no such ref".
+    #[test]
+    fn a_stdout_held_open_after_the_child_exits_is_a_failure_not_an_empty_answer() {
+        let started = std::time::Instant::now();
+        // the alias shell leaves a `sleep` behind holding git's stdout
+        let (probe, out) =
+            probe_remote_stdout(&["-c", "alias.holdit=!(sleep 4 &); true", "holdit"], 20);
+        assert!(matches!(probe, Probe::Failed), "{probe:?}");
+        assert_eq!(out, "");
+        assert!(started.elapsed().as_secs() < 4, "{:?}", started.elapsed());
+    }
 }
