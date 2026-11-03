@@ -1038,7 +1038,8 @@ git config --global commit.template ~/.config/git/git-templates/message
 | `AMONT_BIN_DIR` | Where `amont install` and the installer script put binaries. Default `~/.local/bin`. |
 | `AMONT_VERSION` | Pins the version the installer script fetches. |
 | `AMONT_ATTEST_PUSH` | Set by amont itself on the notes push [`amont.attest`](#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci) makes, so the recursive pre-push stands down. Not for humans. |
-| `NO_COLOR` | Honoured, as is a non-tty stdout. |
+| `NO_COLOR` | Honoured, as is a non-tty stdout: output to a pipe, a file or a CI log carries no colour. `TERM=dumb` too. |
+| `FORCE_COLOR` | Colour through a pipe anyway, for a caller that renders it (non-empty, not `0` or `false`). `NO_COLOR` and `TERM=dumb` still win. |
 
 ## Repository-declared checks
 
