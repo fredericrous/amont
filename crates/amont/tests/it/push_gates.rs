@@ -342,3 +342,31 @@ fn land_with_stamp_reuse_off_refuses_before_any_gate_runs() {
     assert_eq!(runs(&log), 0);
     assert!(ran.stderr.contains("amont.pushStamps"), "{}", ran.stderr);
 }
+
+#[test]
+fn a_tag_push_of_an_unstamped_commit_refuses_until_run_stamp_stamps_it() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base, log) = gated("block", 0);
+    let tip = head(&r);
+    let zeros = "0000000000000000000000000000000000000000";
+    let line = format!("refs/tags/v1.0.0 {tip} refs/tags/v1.0.0 {zeros}\n");
+    let (code, out, err) = hook(&r, &line, &[]);
+    assert_ne!(code, 0, "{out}{err}");
+    assert_eq!(runs(&log), 0);
+    assert!(err.contains("pre-push-suite"), "{err}");
+    let stamped = common::amont_cmd()
+        .args(["run", "--stamp"])
+        .current_dir(&r.dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("amont run --stamp");
+    assert!(
+        stamped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stamped.stderr)
+    );
+    let (code, out, err) = hook(&r, &line, &[]);
+    assert_eq!(code, 0, "the stamped tag push passes: {out}{err}");
+}
