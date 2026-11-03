@@ -1,0 +1,223 @@
+---
+status: active
+branch: feat/gates-before-the-connection
+repos: [amont, greenharness-skills]
+adrs: [ADR-0010, ADR-0013, ADR-0014, ADR-0015, ADR-0016]
+---
+# Gates run before the push connection
+
+## Review panel
+👉 **Decide:** none — your two calls are in: a bare push refuses by default, and every Green Harness part stays optional. Approve if land running every heavy gate before git connects is the shape you want.
+📍 amont + greenharness-skills · plan reviewed, nothing built; lands after `feat/detached-rehearse` is released · next: worktree, Phase 1. Panel: backend, lang:rust, tui, unix (opus-5-5; full panel, not the delta the tool reported for a reused plan file), codex.
+**Changed by review:** the pre-stage runs on every push attempt; stderr only, so `--json` stays clean; one shared skip decision; non-pass outcomes keep their own evidence; a remote tip absent locally is fetched or refused, never read as an empty range.
+**Verdicts:** round 1: 4 approve-with-changes (one blocker, the retry). Round 2: backend approve. Codex: 4 highs applied, then backend approve on the final body. 4 lows/mediums carried into implementation.
+📄 Full reviews: [2026-11-03-gates-before-the-push-connection.reviews.md](2026-11-03-gates-before-the-push-connection.reviews.md)
+
+## Context
+`git push` opens its connection to the remote **before** it runs `pre-push`.
+It has to: the hook reads the remote's refs on stdin. So every gate the hook
+runs holds that connection open.
+- On 2026-11-03 every homelab `amont land` printed amont's own warning: "git
+  opened its connection to the remote before calling this gate … the push then
+  fails with Connection reset by peer". audit-go alone ran over a minute.
+- Under load, the litellm test timed out again and again, inside that window.
+
+**What exists (amont 1.68.1):**
+- `amont rehearse` runs the scoped push gates with no connection open and
+  stamps the tree (`rehearsal.rs:493`). But it feeds a *synthetic* ref line, so
+  its gate set is only "what this change touched", not exactly what the real
+  push will compute.
+- `amont land` (`land.rs:374`) runs no gate. It reads the tip, pushes, and
+  reads back. Its module doc says gates "stay in the pre-push hook".
+- `amont.unstampedPush refuse` (`rehearsal.rs:122`) refuses only pre-commit/
+  pre-push *pairs*, not heavy gates in general.
+
+**The person's decisions (2026-11-03):**
+- A bare `git push` with an unstamped heavy gate refuses **by default**, for
+  every amont user. Agents get a skill path that never hits the refusal.
+- **Every part of the Green Harness is optional.** amont, relais, the skills and
+  amont-agent each run without the others. So:
+  - amont's behaviour and messages name only amont commands, never relais, a
+    skill or amont-agent;
+  - the cluster collect is a no-op where nothing declares it (it already is:
+    `collect_if_declared`);
+  - each skill keeps working where amont is absent or older, falling back to a
+    bare `git push` as `relais-verified-push` does today.
+
+**Sequencing:** this lands after `feat/detached-rehearse` (amont ADR-0017, phase
+2 of the detached-cluster plan) is merged and released. That session confirmed
+the constraints:
+- the pre-push hook starts with `cluster::collect_if_declared()`;
+- cluster tokens stamp scoped (test) gates only;
+- `git.rs::probe_run` now fails closed on a drain timeout, so an empty
+  `ls-remote` is never "no such ref";
+- the rehearsal's detached-gate marker moves from a global to a parameter.
+
+## Goal
+A push holds the remote connection only for the cheap checks that need the
+push's own refs. `amont land` runs every heavy gate on the exact pushed sha
+first, in the foreground, with no connection open, then pushes. A bare
+`git push` whose heavy gates are not stamped for its tree refuses in about a
+second, naming `amont land`, instead of running them on the open connection.
+
+## Non-goals
+- Not moving the unscoped checks out of the hook: branch-protect,
+  branch-pattern, secrets and pull-rebase. They need the push's own ref lines
+  and the remote state at push time, and they are fast. Phase 1 measures them.
+- Not a background "push later" (the hook exiting 1 and a push happening
+  behind the person's back): the exit code would lie, the pushed sha would be
+  ambiguous after further commits, and agents' "remote ref moved" checks
+  would fail.
+- Not changing what a stamp is keyed by (ADR-0010/0011/0012) or the cluster
+  lane (ADR-0016/0017). Completion evidence for non-pass outcomes is a new record beside the stamps, not a change to them.
+- Not CI: amont does not run there (ADR-0005), so nothing changes for CI pushes.
+- Not making any Green Harness part depend on another.
+
+## Code review
+- amont: backend, lang:rust, unix, tui
+- greenharness-skills: none — markdown skills only; their behaviour is checked by the Phase 2 runs
+
+## Behaviour
+- **`amont land` gains a pre-stage**, inside the push loop before every `push()`. A `PUSH_AGAIN` retry (`land.rs:423-446`) re-runs it on the new HEAD and sets `AMONT_LAND` to that sha:
+  1. It builds the real ref line: `refs/heads/<b> <sha> refs/heads/<rb> <remote tip or zeros>`.
+  2. It runs the rehearsal worker **in the foreground** on a snapshot of the
+     sha, through the real `amont pre-push`, with that line on stdin and
+     `ON_BUSY_ENV=wait`. Before it waits for a host slot, it prints one stderr
+     line naming the wait. The snapshot's pre-push collects cluster passes
+     first where a cluster gate is declared, so a gate already passed there is
+     not run again. It runs every scoped pre-push gate the real push will
+     select, and stamps the tree.
+  2b. **Concurrency:** if any rehearsal is running, land waits for it and never cancels it. After waiting, land re-reads evidence and recomputes the required gates for its pinned sha and push ref line. A same-tree verdict alone is insufficient: another remote base can select a different gate set. Land runs every remaining required gate before pushing. Test a same-tree rehearsal using a different base and proving only a subset of land's gates. If land's pre-stage is cancelled, land ends `refused` and pushes nothing.
+  3. When every heavy gate is already stamped for the sha, the pre-stage
+     costs one `stamps` read and runs nothing.
+  4. A failing gate ends `land` with exit 1 (`refused`), naming the gate and
+     its log. Nothing is pushed.
+     - A pre-stage that cannot run (the snapshot was not prepared) also exits
+       1, naming why.
+     - SIGINT or SIGTERM during the pre-stage ends `land` `interrupted`
+       (128+n), with nothing pushed. The next rehearse or land reclaims the
+       leftover snapshot (dead-worker path, `rehearsal.rs:555-557`).
+  5. Output: one line per gate, on stderr. Today the rehearsal prints on
+     stdout (`println!` at `rehearsal.rs:522-653`, and its child pre-push
+     inherits stdout), so the worker takes an output sink. In the pre-stage,
+     land points the sink and the child's stdout at stderr. `--json` keeps
+     stdout for the report alone and adds a `gates` object (ran / stamped /
+     failed); a test parses stdout as one JSON document after a failing gate.
+- **The push that follows** is `git push` with `AMONT_LAND=<sha>` in its env.
+  The hook reads it once in `main` and removes it, as `rehearsal::in_snapshot`
+  does (`rehearsal.rs:126-151`), so no gate child inherits it.
+  In that mode the hook requires evidence covering every selected heavy gate. Define a typed pre-stage result for every Outcome and effective severity. Only actual passes earn pass stamps or attestations; preserve existing nonblocking warning, unavailable, inert and deferred outcomes through separate completion evidence bound to the staged sha, gate identity and applicable policy. It lives in its own notes ref, beside the stamps and the cluster tokens (ADR-0016). It is written only under `stamp_tips`' clean-tree-at-start condition and is off when `amont.pushStamps` is false. ADR-0018 records it. The shared skip logic consumes that evidence without treating it as a pass. Test warning failures, unavailable tools and inert outcomes end to end, including their exclusion from pass attestations. A missing gate is not by itself evidence that the remote moved: compare the real ref range and required gate set with the pre-stage inputs. Report LAND_REMOTE_MOVED only for a range change that invalidates coverage; otherwise report the actual missing-evidence cause;
+  - the hook also prints a `LAND_REMOTE_MOVED` sentinel line. `land` matches
+    it in `run.seen`, as it does `PUSH_AGAIN`, never the prose, and reports
+    `refused` with that `next` step.
+- **Bare `git push`:** a new key `amont.pushGates`.
+  - `refuse` (the default) makes the hook, after the cluster collect and
+    stamp read, exit 1 before running any heavy gate, if any selected scoped
+    gate is unstamped and unvouched on a pushed tip. "Unvouched" comes from
+    one `skip_reason` fn that the inline loop also calls (tree stamp, cluster
+    vouch, twin claim, pair `Gated` or `Deferred`), so the decision is never
+    written twice:
+
+    ```
+    amont: <n> push gate(s) have not run on <short>: <names>
+        run them before git connects, then push:  amont land
+        or stamp this tree first:                 amont rehearse --wait
+        or run them in this push:  git config amont.pushGates inline
+    ```
+    Each line is at most 80 columns (the names wrap onto indented lines), and
+    each command stands alone on its line, so it copies cleanly.
+  - Under `refuse` the hook does not wait for a background rehearsal
+    (`await_for`, `dispatch.rs:1059`); it refuses at once.
+  - `inline` is today's behaviour.
+  - Precedence: the land/rehearsal environment, then `git -c`, then local,
+    then global `amont.pushGates`, then the default `refuse`. The refusal goes
+    to stderr and never prompts.
+  - Deletions (zero local oid) select no gate, and pushes inside a
+    rehearsal or land pre-stage are never refused.
+  - `amont.unstampedPush` keeps working; `refuse` covers it.
+  - Handle `amont.pushStamps=false` explicitly. When required scoped gates need stamp handoff, land refuses before starting expensive work and explains that stamp reuse must be enabled for land's pre-stage. Bare refusal diagnostics name this configuration and offer enabling stamp reuse or using bare `git push` with `amont.pushGates inline`. Do not suggest rehearsal alone as a remedy while stamp reuse is disabled. Test both pushGates modes with pushStamps enabled and disabled.
+- **Tags:** a tag push selects gates like any other ref. A release tag usually
+  points at a merge commit whose tree nobody stamped. `amont run --stamp` on
+  that commit (ADR-0015) stamps it, and the tag push then passes.
+  `tag-release` gains that step.
+- **Guidance:** the `amont agents-md` block ("Run `amont rehearse --wait`
+  BEFORE `git push`…") is rewritten:
+  - push with `amont land`;
+  - a bare `git push` refuses unstamped heavy gates;
+  - `amont rehearse --wait` and `amont run --stamp` are the ways to pre-stamp.
+- **ADR-0018, "gates run before the push connection"**, key
+  `hooks.gates-before-connection`. It records:
+  - the refusing default, why heavy gates leave the hook, and which checks stay;
+  - why there is no deferred push;
+  - that it amends ADR-0010's "gates stay in the pre-push hook".
+- **greenharness-skills:** each skill detects what is installed and degrades:
+  - **`relais-verified-push`** pushes with `amont land` when amont ≥ the
+    release that adds the pre-stage. Older amont: rehearse, then land. No
+    amont: a bare `git push`, verified with `git ls-remote`. It also tells an
+    agent that met the refusal what to do.
+  - **`worktree-task` F6** drops the separate `amont rehearse --wait` before
+    `amont land` on the new amont, and keeps today's paths otherwise.
+  - **`tag-release`**, where amont is installed, checks out the tagged commit
+    in a worktree and runs `amont run --stamp` there before pushing the tag
+    (`run --stamp` stamps HEAD of a clean worktree and runs every opted-in
+    scoped gate, `run_stamp.rs:122-219`). Without amont it is unchanged.
+
+  Their descriptions name the refusal text, so an agent that meets it
+  loads the right skill.
+
+## Phases
+- [ ] Phase 1 — amont: land pre-stage, `AMONT_LAND` mode, `amont.pushGates` (default refuse), ADR-0018, agents-md text, docs; measure the unscoped checks' wall time (bar: p95 < 3 s on homelab; over it, the plan is revised) and the pre-stage time, with every gate stamped and with none
+- [ ] Phase 2 — greenharness-skills: relais-verified-push, worktree-task F6, tag-release, each with the absent and older amont fallbacks; grh release
+- [ ] Phase 3 — release amont (major: the default changes), install, the live checks, then reinstall the skills and check an agent push end to end
+
+## Rollback
+- `git config --global amont.pushGates inline` restores today's push for
+  everyone on a machine, with no release.
+- A defective pre-stage is reverted together with a patch release that sets
+  `amont.pushGates` back to `inline` by default. Without the pre-stage, land is
+  a bare push, which the `refuse` hook would refuse.
+- The skills keep their older-amont paths, so a skills rollback is not needed
+  for an amont rollback.
+
+## Decision log
+- 2026-11-03 — A bare push refuses by default (the person). The opt-out is a key, not a flag on every push.
+- 2026-11-03 — Every Green Harness part is optional (the person): amont names only amont commands; the skills detect amont and its version and fall back.
+- 2026-11-03 — The pre-stage feeds the real ref line, not the rehearsal's synthetic one, so its gate set is exactly the push's (`scoped_push_gates` filters on what the range touches).
+- 2026-11-03 — The release is a major version: a default that refuses pushes is a breaking change for amont's users.
+- 2026-11-03 — `rehearsal::worker` takes the ref line as a parameter. `rehearse` builds it from `ls-remote`, as land does. Before calculating the range, verify that the advertised nonzero remote OID is available locally; fetch the needed object before staging, or refuse with an explicit diagnostic if it cannot be obtained. Range calculation must distinguish failure from an empty range, including in the real hook if the remote moves again. Never interpret an unreadable range as no gates selected. Add integration coverage for an advertised remote commit absent locally, including a force-push case and object-fetch failure. The tracking ref (`pushrefs.rs:88`) can be stale.
+- 2026-11-03 — Sequenced after `feat/detached-rehearse`, building on its collect hook point and `probe_run`.
+
+## Verification
+- Phase 1, integration tests in `crates/amont/tests/it/`, with the bare-origin fixture of `it/land.rs`:
+  - `land` with a slow fake gate:
+    - the gate runs before the push child starts (ordering is recorded by a `git` shim);
+    - the push's hook prints the stamp-skip line;
+    - the shim log shows no heavy gate started inside the push (the hook's duration is printed, not asserted) → <result>
+  - The hook fast-forwards HEAD (`PUSH_AGAIN`): the pre-stage re-runs on the new sha, and `land` reports `landed`, not "remote moved" → <result>
+  - SIGINT during the pre-stage: `land` exits 130 with nothing pushed, and the next `land` reclaims the snapshot → <result>
+  - `land --json` with a failing gate: stdout parses as one JSON document (`jq -e .gates`) → <result>
+  - `AMONT_LAND` is not visible to a gate child; a commit-gated pair and a `Deferred` pair do not refuse → <result>
+  - A failing gate: `land` exits 1 and nothing reaches the bare origin (ref unchanged) → <result>
+  - Bare `git push`, unstamped heavy gate, default: exit non-zero with no heavy gate started (shim log), with the message, and the origin unchanged. With `amont.pushGates inline`: today's behaviour → <result>
+  - Stamped tree (after `rehearse --wait` or `run --stamp`): a bare push passes, running only unscoped checks → <result>
+  - The remote moves between the pre-stage and the push: the hook refuses in `AMONT_LAND` mode, and `land` reports `refused` with "run amont land again". A push whose range is unchanged but whose evidence is missing prints no `LAND_REMOTE_MOVED` (`run.seen`) → <result>
+  - A same-tree rehearsal against an older base proves a subset of land's gates: land waits, then runs only the remaining gates (shim log), then pushes → <result>
+  - A warning-severity failure, an unavailable tool and an inert gate: each writes completion evidence and no pass attestation (`git notes` read), and the AMONT_LAND push neither refuses nor re-runs it → <result>
+  - `amont.pushStamps false` × {refuse, inline}: land exits 1 before any gate starts, naming the setting. A bare push under refuse names the setting and does not offer `rehearse`. Inline runs the gates as today → <result>
+  - The origin was force-pushed to a commit absent locally: land fetches it and selects the same gates as a fresh clone would. If the fetch fails, land exits 1 naming the oid and pushes nothing. An unreadable range in the hook refuses, and is never read as "no gates" → <result>
+  - A tag push of an unstamped merge commit refuses; after `run --stamp` it passes. A deletion is never refused → <result>
+  - A cluster pass collected before the pre-stage is not re-run. A repository with no cluster gate makes no cluster call → <result>
+  - No amont message names relais, a skill or amont-agent (a grep test) → <result>
+  - The unscoped checks' wall time is measured on the homelab tree (they stay in the hook) → <result>
+  - `make check`, clippy across targets, and fmt are clean; each new test fails when its behaviour is reverted (revert-red) → <result>
+- Phase 2: for each skill and each of {new amont, 1.68 amont, no amont}, the command it issues and the remote tip observed. Each changed skill takes the right path with the new amont, an older amont, and no amont (each shown by its own run or check) → <result>
+- Phase 3, after install:
+  - In a scratch clone, a bare push → refused in < 2 s, origin ref unchanged → <result>
+  - On a real homelab branch, `amont land` → gates run first, then the push, with the push's hook time < 5 s → <result>
+  - A relais run's push lands → <result>
+
+## Outcome
+
+
+
+<!-- panel: repos=amont,greenharness-skills reviewers=backend,lang:rust,tui,unix,codex body-sha=afdad7a58240 -->
