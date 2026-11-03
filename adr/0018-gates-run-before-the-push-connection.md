@@ -67,6 +67,11 @@ check that the remote ref moved. The work happens in the foreground, in
 
 - A person who pushes with plain `git push` meets the refusal once per unstamped
   tree, with the commands that fix it on their own lines.
+- [ADR-0013](0013-a-busy-host-defers-to-ci.md)'s deferral to CI on a busy host
+  applies where a gate runs in the push, so under `inline` only. Under
+  `refuse` a bare push refuses instead, and land's pre-stage waits for a slot,
+  as every rehearsal does. A gate the commit deferred is still deferred at the
+  push.
 - Tag pushes of a merge commit whose tree nobody stamped are refused too:
   `amont run --stamp` in a checkout of that commit stamps it.
 - Known limit: the rehearsal and land environment variables outrank the

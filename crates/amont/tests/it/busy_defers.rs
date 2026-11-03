@@ -187,6 +187,8 @@ fn commit_deferred(repo: &Repo, slots: &Path, file: &str, msg: &str) {
 fn a_busy_commit_defers_and_its_push_twin_defers_too() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("pair");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
 
     repo.stage("a.txt", "one\n");
@@ -265,6 +267,8 @@ fn quiet_mode_still_says_a_check_was_deferred() {
 fn a_documentation_commit_after_a_deferred_one_keeps_the_deferral() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("docs");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
     let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
@@ -304,6 +308,8 @@ fn a_plan_commit_after_a_deferred_one_is_never_gated() {
     repo.stage("docs/plans/p.md", "plan\n");
     repo.commit("docs(plan): p");
     let base = head(&repo);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     let slots = slot_dir("plan");
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
@@ -355,6 +361,8 @@ fn a_plan_commit_after_a_deferred_one_is_never_gated() {
 fn a_deferred_branch_does_not_excuse_an_unchecked_one() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("refs");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
     repo.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
@@ -435,6 +443,8 @@ fn attested(repo: &Repo, slots: &Path, line: &str) -> Option<String> {
 fn a_push_mixing_a_stamped_and_a_deferred_commit_defers_and_is_not_attested() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("mixed");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     repo.stage("a.txt", "one\n");
     let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
     assert_eq!(code, 0, "{out}");
@@ -480,6 +490,8 @@ fn a_push_mixing_a_stamped_and_a_deferred_commit_defers_and_is_not_attested() {
 fn a_forged_deferral_only_moves_the_gate_to_ci() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("forged");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     repo.stage("a.txt", "one\n");
     repo.commit("feat: a");
     let tree = rev(&repo, "HEAD^{tree}");
@@ -514,6 +526,8 @@ fn a_forged_deferral_only_moves_the_gate_to_ci() {
 #[test]
 fn a_busy_push_waits_one_slot_wait_not_one_per_gate() {
     let repo = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     repo.stage(
         "amont.conf",
         "set onBusy defer\nset slotWait 3\n\
@@ -655,6 +669,8 @@ fn a_heavy_hook_check_is_bounded_held_or_unqueued() {
 #[test]
 fn a_warn_gate_never_waits_for_a_slot() {
     let repo = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
     repo.stage(
         "amont.conf",
         "set onBusy wait\nset timeout 600\n\

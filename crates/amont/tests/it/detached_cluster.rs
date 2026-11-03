@@ -681,6 +681,8 @@ fn every_non_pass_collects_nothing_and_logs_one_line() {
     ];
     for (what, phase, node, edit) in cases {
         let Some(l) = Lane::new(ONE) else { return };
+        // ADR-0018: this test covers the inline path, where the gate runs in the push.
+        l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
         let wf = l.submitted();
         let mut items = vec![wf.object(phase, &[("g0", node)])];
         if let Some(edit) = edit {
@@ -1085,6 +1087,8 @@ fn an_unconfirmed_create_keeps_the_intent_and_the_gates_run() {
 #[test]
 fn a_changed_image_between_submission_and_collect_is_not_accepted_at_push() {
     let Some(l) = Lane::new(ONE) else { return };
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
     let wf = l.submitted();
     let other = format!("reg/gate:2@sha256:{}", "2".repeat(64));
     l.cluster.config("amont.cluster.image", &other);
@@ -1114,6 +1118,8 @@ fn a_changed_image_between_submission_and_collect_is_not_accepted_at_push() {
 fn a_changed_prepare_between_submission_and_collect_is_not_accepted_at_push() {
     let conf = format!("{ONE}set clusterPrepare make deps\n");
     let Some(l) = Lane::new(&conf) else { return };
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
     let wf = l.submitted();
     // the repository now says another prepare, trusted
     l.cluster.r.write(
@@ -1334,6 +1340,8 @@ fn a_changed_command_or_args_between_submission_and_collect_is_not_accepted_at_p
         "pre-push  lint   *.txt  block  platform=any scripts/a.sh\n",
     ] {
         let Some(l) = Lane::new(ONE) else { return };
+        // ADR-0018: this test covers the inline path, where the gate runs in the push.
+        l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
         let wf = l.submitted();
         l.cluster
             .r

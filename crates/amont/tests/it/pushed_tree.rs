@@ -71,6 +71,8 @@ fn diverging(r: &Repo) -> (String, String) {
 #[test]
 fn by_default_it_tests_the_working_tree_and_says_so() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (tip, base) = diverging(&r);
 
     let (code, out) = pre_push(&r, &tip, &base);
@@ -157,6 +159,8 @@ fn the_working_tree_is_untouched_and_nothing_is_left_behind() {
 #[test]
 fn a_snapshot_that_could_not_be_made_stamps_nothing() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (tip, base) = diverging(&r);
     r.git(&["config", "amont.testPushedTree", "true"]);
     // The one hook into snapshot creation a test can pull: `prepare` runs
@@ -188,6 +192,8 @@ fn a_snapshot_that_could_not_be_made_stamps_nothing() {
 #[test]
 fn a_snapshot_that_ran_does_stamp_its_tip() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     // A tip whose committed suite PASSES — there is nothing to stamp about a
     // push that was blocked.
     r.stage(
@@ -281,6 +287,8 @@ fn a_declared_gate_on_a_dirty_tree_stamps_nothing() {
         return;
     }
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (tip, base) = diverging_declared(&r);
 
     let (code, out) = pre_push(&r, &tip, &base);
