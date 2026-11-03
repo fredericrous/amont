@@ -220,7 +220,6 @@ pub(super) fn workflow_json(plan: &Plan) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Is this the Workflow, or the pod, that was submitted?
 
 fn named<'a>(list: Option<&'a Value>, name: &str) -> Option<&'a Value> {

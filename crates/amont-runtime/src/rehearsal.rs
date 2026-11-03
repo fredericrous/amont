@@ -147,26 +147,35 @@ pub fn in_snapshot() -> bool {
 /// to the cluster (ADR-0017): `detached=<id>,<id>`. A bare `1` names none.
 const DETACHED_PREFIX: &str = "detached=";
 
-/// The variable's value, settled once for the same reason [`in_snapshot`] is.
-fn snapshot_env() -> &'static Option<String> {
-    static IN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// What the variable said, parsed where it is settled: the gates the
+/// rehearsal that made this snapshot handed to the cluster.
+struct SnapshotEnv {
+    detached: Vec<String>,
+}
+
+/// The variable, settled and parsed once for the same reason [`in_snapshot`]
+/// is.
+fn snapshot_env() -> &'static Option<SnapshotEnv> {
+    static IN: std::sync::OnceLock<Option<SnapshotEnv>> = std::sync::OnceLock::new();
     IN.get_or_init(|| {
-        let value = std::env::var_os(ENV).map(|v| v.to_string_lossy().into_owned());
-        if value.is_some() {
-            std::env::remove_var(ENV);
-        }
-        value
+        let raw = std::env::var_os(ENV).map(|v| v.to_string_lossy().into_owned())?;
+        std::env::remove_var(ENV);
+        let detached = raw
+            .strip_prefix(DETACHED_PREFIX)
+            .map(|ids| ids.split(',').map(str::to_string).collect())
+            .unwrap_or_default();
+        Some(SnapshotEnv { detached })
     })
 }
 
-/// Did the rehearsal that started this snapshot run hand the gate `id` to the
-/// cluster? Then this run does not repeat it here: its pass comes back as a
-/// cluster token at the next commit or push.
-pub fn on_the_cluster(id: &str) -> bool {
+/// The gates the rehearsal that started this snapshot handed to the cluster:
+/// this run does not repeat them, their passes come back as cluster tokens at
+/// the next commit or push. Empty outside a snapshot. Read once, at the top of
+/// the pre-push hook, and passed on.
+pub fn handed_to_cluster() -> &'static [String] {
     snapshot_env()
-        .as_deref()
-        .and_then(|v| v.strip_prefix(DETACHED_PREFIX))
-        .is_some_and(|ids| ids.split(',').any(|g| g == id))
+        .as_ref()
+        .map_or(&[], |env| env.detached.as_slice())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -563,22 +572,22 @@ fn plan() -> Result<Plan, String> {
 }
 
 impl Plan {
-    /// Is the gate `g` already vouched for on HEAD: by a local token, or by a
+    /// Is `gate` already vouched for on HEAD: by a local token, or by a
     /// cluster token (ADR-0016, ADR-0017)?
-    fn vouched(&self, g: &str) -> bool {
-        vouched_by(&self.settings, &self.manifest, &self.head, g)
+    fn vouched(&self, gate: &str) -> bool {
+        vouched_by(&self.settings, &self.manifest, &self.head, gate)
     }
 
     /// Hand the gates that are not vouched yet to the cluster, as far as it
-    /// may take them (`asked`: `--cluster`). The gates now on the cluster.
-    fn detach(&self, asked: bool) -> Vec<String> {
+    /// may take them. The gates now on the cluster.
+    fn detach(&self, ask: crate::cluster::Ask) -> Vec<String> {
         let unstamped: Vec<String> = self
             .gates
             .iter()
-            .filter(|g| !self.vouched(g))
+            .filter(|gate| !self.vouched(gate))
             .cloned()
             .collect();
-        crate::cluster::detach(&self.settings, &self.manifest, &unstamped, asked).gates
+        crate::cluster::detach(&self.settings, &self.manifest, &unstamped, ask).gates
     }
 }
 
@@ -596,24 +605,24 @@ fn vouched_by(
     settings: &crate::config::Settings,
     manifest: &crate::manifest::Manifest,
     head: &str,
-    g: &str,
+    gate: &str,
 ) -> bool {
     let tips = [head.to_string()];
     let stamped = crate::gate_stamp::stamps_for(&tips);
-    let local = crate::gate_identity::token(&manifest.externals, g)
+    let local = crate::gate_identity::token(&manifest.externals, gate)
         .is_some_and(|t| stamped.get(head).is_some_and(|s| s.contains(&t)));
     local
         || manifest
             .externals
             .iter()
-            .find(|e| e.id == g)
+            .find(|e| e.id == gate)
             .is_some_and(|e| crate::cluster::vouched_on_every(settings, e, &tips))
 }
 
 /// THE worker. Runs in the foreground of whoever called it — the detached
 /// process `spawn_detached` started, or `amont rehearse --wait` when nothing
 /// was running — and returns only when the verdict is in.
-pub fn worker(asked_cluster: bool) -> Result<Outcome, String> {
+pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
     let planned = plan()?;
     let repo = Path::new(&planned.root);
     let (head, tree) = (planned.head.clone(), planned.tree.clone());
@@ -622,7 +631,7 @@ pub fn worker(asked_cluster: bool) -> Result<Outcome, String> {
         println!("nothing to rehearse: no test gate has work to do for what {short} would push");
         return Ok(Outcome::NothingToDo);
     }
-    if planned.gates.iter().all(|g| planned.vouched(g)) && planned.tree_todo.is_empty() {
+    if planned.gates.iter().all(|gate| planned.vouched(gate)) && planned.tree_todo.is_empty() {
         println!(
             "{} {} already stamped on this tree — nothing to rehearse",
             valid_sign(),
@@ -654,7 +663,7 @@ pub fn worker(asked_cluster: bool) -> Result<Outcome, String> {
     }
     // Gates the cluster may take go there (ADR-0017); the snapshot below runs
     // the rest, and its pre-push is told which gates not to repeat.
-    let on_cluster = planned.detach(asked_cluster);
+    let on_cluster = planned.detach(ask);
     let Plan {
         push_ref,
         manifest,
@@ -665,9 +674,9 @@ pub fn worker(asked_cluster: bool) -> Result<Outcome, String> {
     } = planned;
     let local_work = gates
         .iter()
-        .any(|g| !on_cluster.contains(g) && !vouched_by(&settings, &manifest, &head, g));
+        .any(|gate| !on_cluster.contains(gate) && !vouched_by(&settings, &manifest, &head, gate));
     if !local_work && tree_todo.is_empty() {
-        println!(
+        eprintln!(
             "{} every gate left to rehearse went to the cluster ({}) — the next commit or push collects the result",
             valid_sign(),
             highlight(&on_cluster.join(" "))
@@ -906,8 +915,13 @@ fn follow(state: &State, budget: Option<Duration>) -> Option<(Phase, State)> {
 /// `amont rehearse [--wait|--status|--stop|--worker] [--cluster]`.
 pub fn command(args: &[OsString]) -> i32 {
     let flag = |f: &str| args.iter().any(|a| a == f);
+    let ask = if flag("--cluster") {
+        crate::cluster::Ask::Flag
+    } else {
+        crate::cluster::Ask::Setting
+    };
     if flag("--worker") {
-        return match worker(flag("--cluster")) {
+        return match worker(ask) {
             Ok(Outcome::Failed) => 1,
             Ok(_) => 0,
             Err(e) => {
@@ -929,8 +943,8 @@ pub fn command(args: &[OsString]) -> i32 {
     if flag("--stop") {
         // The Workflows go first: they are what outlives this process.
         let terminated = crate::cluster::stop_pending();
-        for line in &terminated {
-            println!("{line}");
+        for line in terminated.done.iter().chain(&terminated.failed) {
+            eprintln!("{line}");
         }
         match read() {
             Some(s) if s.alive() => {
@@ -938,30 +952,32 @@ pub fn command(args: &[OsString]) -> i32 {
                 clear();
                 println!("stopped the rehearsal of {} (pid {})", s.short(), s.pid);
             }
-            _ if terminated.is_empty() => {
+            _ if terminated.done.is_empty() && terminated.failed.is_empty() => {
                 println!("no rehearsal is running in this worktree");
             }
             _ => {}
         }
-        return 0;
+        // A Workflow that is still running after `--stop` is a failure of it.
+        return i32::from(!terminated.failed.is_empty());
     }
     if flag("--cluster") && !flag("--wait") {
         // Submit in the foreground — one line per Workflow, back in seconds —
         // then let a worker run what is left here.
         match plan() {
             Ok(planned) => {
-                let on_cluster = planned.detach(true);
+                let on_cluster = planned.detach(crate::cluster::Ask::Flag);
                 let left = planned
                     .gates
                     .iter()
-                    .any(|g| !on_cluster.contains(g) && !planned.vouched(g));
+                    .any(|gate| !on_cluster.contains(gate) && !planned.vouched(gate));
                 if !left && planned.tree_todo.is_empty() && !on_cluster.is_empty() {
                     return 0;
                 }
             }
             Err(e) => {
+                // It ran and failed (no upstream, no HEAD): not a usage error.
                 eprintln!("amont: {e}");
-                return 2;
+                return 1;
             }
         }
     }
@@ -987,7 +1003,7 @@ pub fn command(args: &[OsString]) -> i32 {
             });
             let Some(state) = running else {
                 // Nothing running: do it here, in the foreground, and say so.
-                match worker(flag("--cluster")) {
+                match worker(ask) {
                     Ok(Outcome::Failed) => return 1,
                     Ok(Outcome::AlreadyRunning(_)) => continue,
                     Ok(_) => return 0,
@@ -1047,11 +1063,15 @@ pub fn command(args: &[OsString]) -> i32 {
 
 fn status() -> i32 {
     // What the cluster finished since the last hook is collected first, so the
-    // lines below are today's.
-    crate::cluster::collect();
-    let detached = crate::cluster::status_lines();
+    // lines below are today's. Asked for, so stdout: this is the answer.
+    let collected = crate::cluster::collect();
+    let mut detached = crate::cluster::settled_lines(&collected.settled);
+    detached.extend(crate::cluster::status_lines());
     for line in &detached {
         println!("{line}");
+    }
+    if let Some(trouble) = &collected.trouble {
+        eprintln!("cluster runs not refreshed — {trouble}");
     }
     let Some(state) = read() else {
         if detached.is_empty() {

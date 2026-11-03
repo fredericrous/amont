@@ -211,7 +211,7 @@ fn with_prepare(command: &'static str, code: i32) -> impl Fn(String) -> String {
 /// The fake cluster, the fake Forgejo and a repository that attests, with
 /// `feat/x` one commit ahead of `origin/main`.
 struct Lane {
-    c: Cluster,
+    cluster: Cluster,
     /// The commit `feat/x` branched from.
     base: String,
     tip: String,
@@ -221,47 +221,60 @@ struct Lane {
 impl Lane {
     fn new(conf: &str) -> Option<Lane> {
         if common::missing("ssh-keygen") {
+            // A skip on a laptop; on CI a silent skip would hide the whole
+            // module, so CI fails instead.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "ssh-keygen is missing on CI: the detached tests would be skipped silently"
+            );
             return None;
         }
-        let c = Cluster::attesting(conf);
-        let forgejo = c.kube.join("forgejo");
+        let cluster = Cluster::attesting(conf);
+        let forgejo = cluster.kube.join("forgejo");
         for repo in ["remote.git", "remote-mirror.git"] {
             let path = forgejo.join(repo);
             std::fs::create_dir_all(&path).unwrap();
-            assert!(c
+            assert!(cluster
                 .r
                 .git(&["init", "-q", "--bare", &path.display().to_string()])
                 .status
                 .success());
         }
-        let base = out(&c.r, &["rev-parse", "HEAD"]);
-        c.r.git(&["update-ref", "refs/remotes/origin/main", &base]);
-        let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
-        let lane = Lane { c, base, tip, tree };
+        let base = out(&cluster.r, &["rev-parse", "HEAD"]);
+        cluster
+            .r
+            .git(&["update-ref", "refs/remotes/origin/main", &base]);
+        let (tip, tree) = cluster.commit_on(&base, "feat/x", "a.txt");
+        let lane = Lane {
+            cluster,
+            base,
+            tip,
+            tree,
+        };
         lane.configure();
         Some(lane)
     }
 
     fn forgejo(&self) -> PathBuf {
-        self.c.kube.join("forgejo")
+        self.cluster.kube.join("forgejo")
     }
 
     fn configure(&self) {
         let forgejo = self.forgejo().display().to_string();
         let fetch = "http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots";
-        self.c.config(
+        self.cluster.config(
             "amont.cluster.snapshotRemote",
             &format!("{forgejo}/{{repo}}.git"),
         );
-        self.c.config(
+        self.cluster.config(
             "amont.cluster.snapshotFetch",
             &format!("{fetch}/{{repo}}.git"),
         );
-        self.c.config(
+        self.cluster.config(
             "amont.cluster.mirrorRemote",
             &format!("{forgejo}/{{repo}}-mirror.git"),
         );
-        self.c.config(
+        self.cluster.config(
             "amont.cluster.mirror",
             &format!("{fetch}/{{repo}}-mirror.git"),
         );
@@ -270,15 +283,16 @@ impl Lane {
     fn rehearse(&self, args: &[&str]) -> (i32, String) {
         let mut all = vec!["rehearse"];
         all.extend_from_slice(args);
-        self.c.amont(&all, &[], None)
+        self.cluster.amont(&all, &[], None)
     }
 
     fn pending(&self) -> String {
-        std::fs::read_to_string(self.c.r.dir.join(".git/amont/cluster-pending")).unwrap_or_default()
+        std::fs::read_to_string(self.cluster.r.dir.join(".git/amont/cluster-pending"))
+            .unwrap_or_default()
     }
 
     fn workflows(&self) -> Vec<Wf> {
-        let mut found: Vec<Wf> = std::fs::read_dir(self.c.kube.join("created-wf"))
+        let mut found: Vec<Wf> = std::fs::read_dir(self.cluster.kube.join("created-wf"))
             .map(|d| {
                 d.map(|e| Wf::parse(std::fs::read_to_string(e.unwrap().path()).unwrap()))
                     .collect()
@@ -304,11 +318,11 @@ impl Lane {
 
     /// What the cluster answers to the next batched call.
     fn answer(&self, items: &[String]) {
-        self.c.answer("wf_list.json", &list(items));
+        self.cluster.answer("wf_list.json", &list(items));
     }
 
     fn tokens(&self) -> String {
-        self.c
+        self.cluster
             .cluster_note(&self.tree)
             .lines()
             .next()
@@ -317,17 +331,17 @@ impl Lane {
     }
 
     fn collect(&self) -> (i32, String) {
-        self.c.amont(&["cluster", "collect"], &[], None)
+        self.cluster.amont(&["cluster", "collect"], &[], None)
     }
 
     /// How many Workflows `kubectl create` was asked for (the Job lane's
     /// creates are not counted).
     fn workflow_creates(&self) -> usize {
-        self.c.read("create_wf_n").trim().parse().unwrap_or(0)
+        self.cluster.read("create_wf_n").trim().parse().unwrap_or(0)
     }
 
     fn calls(&self, verb: &str) -> usize {
-        self.c
+        self.cluster
             .kubectl_calls()
             .lines()
             .filter(|l| l.contains(&format!(" {verb} ")))
@@ -337,16 +351,14 @@ impl Lane {
     /// Forget the calls the fake counted, and nothing else.
     fn forget_calls(&self) {
         for file in ["calls", "n"] {
-            let _ = std::fs::remove_file(self.c.kube.join(file));
+            let _ = std::fs::remove_file(self.cluster.kube.join(file)); // absent is the point: the fake may never have been called
         }
     }
 
     fn push(&self) -> (i32, String) {
-        self.c.pre_push(&self.base, &self.tip)
+        self.cluster.pre_push(&self.base, &self.tip)
     }
 }
-
-// ---------------------------------------------------------------------------
 
 /// The snapshot goes in, is read back, one Workflow names every `platform=any`
 /// gate and not the local one, a pending line is written, and the command
@@ -362,7 +374,7 @@ fn rehearse_cluster_pushes_the_snapshot_reads_it_back_and_creates_one_workflow()
         "one line, with the gates: {text}"
     );
     assert!(text.contains("the next commit or push collects"), "{text}");
-    assert_eq!(l.workflow_creates(), 1, "{}", l.c.kubectl_calls());
+    assert_eq!(l.workflow_creates(), 1, "{}", l.cluster.kubectl_calls());
     let wf = l.workflow();
     assert!(wf.name.len() <= 63, "{}", wf.name);
     assert!(wf
@@ -371,7 +383,7 @@ fn rehearse_cluster_pushes_the_snapshot_reads_it_back_and_creates_one_workflow()
     // the snapshot: on the remote, under the run label, and what the pod reads
     let snapshot_ref = format!("refs/snapshots/{}", wf.label);
     let on_remote = out(
-        &l.c.r,
+        &l.cluster.r,
         &[
             "--git-dir",
             &l.forgejo().join("remote.git").display().to_string(),
@@ -400,8 +412,11 @@ fn rehearse_cluster_pushes_the_snapshot_reads_it_back_and_creates_one_workflow()
     );
     assert!(!pending.contains("pre-push-local"), "{pending}");
     // only the local gate ran here, and no Job: the others went to the cluster
-    assert_eq!(l.c.local_runs(), 1, "{text}");
-    assert!(l.c.created_jobs().is_empty(), "no Job for a detached gate");
+    assert_eq!(l.cluster.local_runs(), 1, "{text}");
+    assert!(
+        l.cluster.created_jobs().is_empty(),
+        "no Job for a detached gate"
+    );
     assert!(started.elapsed().as_secs() < 60);
 }
 
@@ -416,9 +431,9 @@ fn rehearse_cluster_returns_once_the_workflow_is_created() {
         l.calls("get"),
         0,
         "no pod was looked at: {}",
-        l.c.kubectl_calls()
+        l.cluster.kubectl_calls()
     );
-    assert_eq!(l.c.local_runs(), 0);
+    assert_eq!(l.cluster.local_runs(), 0);
     assert!(l.pending().contains(&wf.name));
     // nothing but the Workflow's own run label identifies it
     assert_eq!(wf.name, format!("amont-rh-{}", wf.label));
@@ -438,7 +453,7 @@ fn the_snapshot_commit_has_head_as_parent_and_a_fresh_committer_date() {
     let git_dir = l.forgejo().join("remote.git").display().to_string();
     let show = |fmt: &str| {
         out(
-            &l.c.r,
+            &l.cluster.r,
             &[
                 "--git-dir",
                 &git_dir,
@@ -476,7 +491,7 @@ fn a_snapshot_that_is_not_read_back_submits_nothing() {
         l.workflow_creates(),
         0,
         "no Workflow: {}",
-        l.c.kubectl_calls()
+        l.cluster.kubectl_calls()
     );
     assert!(l.workflows().is_empty());
     assert_eq!(
@@ -485,12 +500,12 @@ fn a_snapshot_that_is_not_read_back_submits_nothing() {
         "no record for a run that was not submitted"
     );
     assert!(
-        l.c.cluster_log().contains("pre-push-lint detached:"),
+        l.cluster.cluster_log().contains("pre-push-lint detached:"),
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
     // the gate ran as it does without the lane: on the Job lane
-    assert_eq!(l.c.created_jobs().len(), 1, "{text}");
+    assert_eq!(l.cluster.created_jobs().len(), 1, "{text}");
 }
 
 /// HEAD is already on the mirror: nothing is pushed, and the pod fetches from
@@ -499,9 +514,10 @@ fn a_snapshot_that_is_not_read_back_submits_nothing() {
 fn a_commit_already_on_the_mirror_pushes_nothing_and_fetches_from_the_mirror() {
     let Some(l) = Lane::new(ONE) else { return };
     let mirror = l.forgejo().join("remote-mirror.git").display().to_string();
-    let pushed =
-        l.c.r
-            .git(&["push", "-q", "--no-verify", &mirror, "HEAD:refs/heads/main"]);
+    let pushed = l
+        .cluster
+        .r
+        .git(&["push", "-q", "--no-verify", &mirror, "HEAD:refs/heads/main"]);
     assert!(pushed.status.success());
     let wf = l.submitted();
     assert!(
@@ -512,7 +528,7 @@ fn a_commit_already_on_the_mirror_pushes_nothing_and_fetches_from_the_mirror() {
     );
     assert_eq!(wf.env("GATE_REF"), l.tip);
     let snapshots = out(
-        &l.c.r,
+        &l.cluster.r,
         &[
             "--git-dir",
             &l.forgejo().join("remote.git").display().to_string(),
@@ -529,7 +545,7 @@ fn a_commit_already_on_the_mirror_pushes_nothing_and_fetches_from_the_mirror() {
 fn a_mirror_without_the_commit_is_not_used() {
     let Some(l) = Lane::new(ONE) else { return };
     let mirror = l.forgejo().join("remote-mirror.git").display().to_string();
-    l.c.r.git(&[
+    l.cluster.r.git(&[
         "push",
         "-q",
         "--no-verify",
@@ -556,7 +572,7 @@ fn collect_writes_the_job_lanes_token_and_the_push_skips_and_signs() {
     let job_token = l.tokens();
     assert!(job_token.contains("pre-push-lint@"), "{job_token}");
     assert!(l
-        .c
+        .cluster
         .r
         .git(&["update-ref", "-d", "refs/notes/amont-gate-cluster"])
         .status
@@ -579,7 +595,7 @@ fn collect_writes_the_job_lanes_token_and_the_push_skips_and_signs() {
         job_token,
         "the Workflow lane writes the Job lane's token"
     );
-    let note = l.c.cluster_note(&l.tree);
+    let note = l.cluster.cluster_note(&l.tree);
     assert!(
         note.contains("platform=x86_64-linux") && note.contains(&wf.uid()),
         "{note}"
@@ -587,14 +603,14 @@ fn collect_writes_the_job_lanes_token_and_the_push_skips_and_signs() {
     assert_eq!(l.pending(), "", "a finished Workflow leaves the file");
 
     // the push: skipped on the cluster token, signed on x86_64-linux
-    l.c.reset_records();
+    l.cluster.reset_records();
     let (code, text) = l.push();
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("not repeating it here"), "{text}");
-    assert_eq!(l.c.local_runs(), 0, "{text}");
-    assert!(!l.c.kubectl_calls().contains(" create "), "{text}");
+    assert_eq!(l.cluster.local_runs(), 0, "{text}");
+    assert!(!l.cluster.kubectl_calls().contains(" create "), "{text}");
     assert_eq!(
-        names(&l.c.remote_blocks(&l.tree), "pre-push-lint"),
+        names(&l.cluster.remote_blocks(&l.tree), "pre-push-lint"),
         ["x86_64-linux"],
         "{text}"
     );
@@ -611,10 +627,10 @@ fn collecting_twice_writes_one_token() {
     ]);
     let (_, first) = l.collect();
     assert!(first.contains("collected 1 cluster pass"), "{first}");
-    let note = l.c.cluster_note(&l.tree);
+    let note = l.cluster.cluster_note(&l.tree);
     let (_, second) = l.collect();
     assert!(second.contains("collected 0 cluster passes"), "{second}");
-    assert_eq!(l.c.cluster_note(&l.tree), note);
+    assert_eq!(l.cluster.cluster_note(&l.tree), note);
     assert_eq!(
         note.matches("provenance pre-push-lint@").count(),
         1,
@@ -675,15 +691,15 @@ fn every_non_pass_collects_nothing_and_logs_one_line() {
         assert_eq!(code, 0, "{what}: {text}");
         assert_eq!(l.tokens(), "", "{what}: no token");
         assert_eq!(
-            l.c.cluster_log().lines().count(),
+            l.cluster.cluster_log().lines().count(),
             1,
             "{what}: {}",
-            l.c.cluster_log()
+            l.cluster.cluster_log()
         );
         assert!(
-            l.c.cluster_log().contains("pre-push-lint detached"),
+            l.cluster.cluster_log().contains("pre-push-lint detached"),
             "{what}: {}",
-            l.c.cluster_log()
+            l.cluster.cluster_log()
         );
         assert_eq!(
             l.pending(),
@@ -691,11 +707,15 @@ fn every_non_pass_collects_nothing_and_logs_one_line() {
             "{what}: the finished Workflow leaves the file"
         );
         // and the push runs the gate: nothing vouches for it
-        l.c.reset_records();
+        l.cluster.reset_records();
         let (code, text) = l.push();
         assert_eq!(code, 0, "{what}: {text}");
         assert!(!text.contains("not repeating it here"), "{what}: {text}");
-        assert_eq!(l.c.created_jobs().len(), 1, "{what}: the gate ran: {text}");
+        assert_eq!(
+            l.cluster.created_jobs().len(),
+            1,
+            "{what}: the gate ran: {text}"
+        );
     }
 }
 
@@ -718,15 +738,15 @@ fn a_tree_mismatch_or_a_failed_prepare_is_no_pass() {
     l.collect();
     assert_eq!(l.tokens(), "");
     assert_eq!(
-        l.c.cluster_log().lines().count(),
+        l.cluster.cluster_log().lines().count(),
         1,
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
     assert!(
-        l.c.cluster_log().contains("fetch reported"),
+        l.cluster.cluster_log().contains("fetch reported"),
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
 
     // a failed prepare
@@ -741,15 +761,15 @@ fn a_tree_mismatch_or_a_failed_prepare_is_no_pass() {
     l.collect();
     assert_eq!(l.tokens(), "");
     assert_eq!(
-        l.c.cluster_log().lines().count(),
+        l.cluster.cluster_log().lines().count(),
         1,
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
     assert!(
-        l.c.cluster_log().contains("prepare"),
+        l.cluster.cluster_log().contains("prepare"),
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
 }
 
@@ -782,10 +802,10 @@ fn a_workflow_gone_after_its_ttl_leaves_the_file_with_one_line() {
     assert_eq!(l.pending(), "");
     assert_eq!(l.tokens(), "");
     assert_eq!(
-        l.c.cluster_log().lines().count(),
+        l.cluster.cluster_log().lines().count(),
         1,
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
 }
 
@@ -798,14 +818,17 @@ fn status_shows_the_phase_and_stop_terminates_the_workflow() {
     let (code, text) = l.rehearse(&["--status"]);
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains(&format!("detached {}: Running", wf.name))
+        text.contains(&format!("cluster run {}: running", wf.name))
             && text.contains("waiting: pre-push-lint"),
         "{text}"
     );
     let (code, text) = l.rehearse(&["--stop"]);
     assert_eq!(code, 0, "{text}");
-    assert!(text.contains(&format!("terminating {}", wf.name)), "{text}");
-    let patches = l.c.read("patches");
+    assert!(
+        text.contains(&format!("terminating cluster run {}", wf.name)),
+        "{text}"
+    );
+    let patches = l.cluster.read("patches");
     assert!(
         patches.contains(&format!("patch workflow {} --type merge", wf.name))
             && patches.contains("\"shutdown\":\"Terminate\""),
@@ -824,11 +847,11 @@ fn collect_with_nothing_pending_spawns_no_kubectl() {
         text.contains("collected 0 cluster passes; 0 Workflows still pending"),
         "{text}"
     );
-    let (code, text) = l.c.amont(&["stamps", "--json"], &[], None);
+    let (code, text) = l.cluster.amont(&["stamps", "--json"], &[], None);
     assert_eq!(code, 0, "{text}");
-    let (code, text) = l.c.pre_commit(&[]);
+    let (code, text) = l.cluster.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
-    assert_eq!(l.c.kubectl_calls(), "", "kubectl was never started");
+    assert_eq!(l.cluster.kubectl_calls(), "", "kubectl was never started");
 }
 
 /// Three pending records, one question.
@@ -844,15 +867,16 @@ fn collect_makes_one_batched_call_for_three_pending_records() {
     l.answer(&[]);
     let (code, text) = l.collect();
     assert_eq!(code, 0, "{text}");
-    let batched: Vec<String> =
-        l.c.kubectl_calls()
-            .lines()
-            .filter(|c| c.contains("workflows,pods"))
-            .map(str::to_string)
-            .collect();
-    assert_eq!(batched.len(), 1, "{}", l.c.kubectl_calls());
+    let batched: Vec<String> = l
+        .cluster
+        .kubectl_calls()
+        .lines()
+        .filter(|c| c.contains("workflows,pods"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(batched.len(), 1, "{}", l.cluster.kubectl_calls());
     assert_eq!(
-        l.c.kubectl_calls().lines().count(),
+        l.cluster.kubectl_calls().lines().count(),
         1,
         "no per-Workflow call"
     );
@@ -877,8 +901,8 @@ impl Lane {
     /// Workflows pending.
     fn submitted_again(&self, file: &str) -> Wf {
         let known: Vec<String> = self.workflows().into_iter().map(|w| w.name).collect();
-        self.c.r.stage(file, "hello\n");
-        self.c.r.commit(&format!("feat: {file}"));
+        self.cluster.r.stage(file, "hello\n");
+        self.cluster.r.commit(&format!("feat: {file}"));
         let (code, text) = self.rehearse(&["--cluster"]);
         assert_eq!(code, 0, "{text}");
         self.workflows()
@@ -898,7 +922,7 @@ fn a_busy_lock_returns_at_once_without_asking_the_cluster() {
         wf.pod("g0", |p| p),
     ]);
     l.forget_calls();
-    let lock = l.c.r.dir.join(".git/amont/cluster-pending.lock");
+    let lock = l.cluster.r.dir.join(".git/amont/cluster-pending.lock");
     let mut holder = Command::new("perl")
         .args([
             "-MFcntl=:flock",
@@ -922,8 +946,10 @@ fn a_busy_lock_returns_at_once_without_asking_the_cluster() {
     holder.kill().unwrap();
     holder.wait().unwrap();
     assert_eq!(code, 0, "{text}");
+    assert!(text.contains("another collect is running"), "{text}");
+    assert!(!text.contains("0 cluster passes"), "{text}");
     assert!(waited.as_secs() < 5, "{waited:?}");
-    assert_eq!(l.calls("get"), 0, "{}", l.c.kubectl_calls());
+    assert_eq!(l.calls("get"), 0, "{}", l.cluster.kubectl_calls());
     assert_eq!(l.tokens(), "");
 }
 
@@ -932,7 +958,7 @@ fn a_busy_lock_returns_at_once_without_asking_the_cluster() {
 #[test]
 fn a_closed_lid_loses_nothing() {
     let Some(l) = Lane::new(ONE) else { return };
-    let (code, text) = l.c.amont(
+    let (code, text) = l.cluster.amont(
         &["rehearse", "--cluster"],
         &[("AMONT_TEST_CRASH", "after-create")],
         None,
@@ -949,7 +975,7 @@ fn a_closed_lid_loses_nothing() {
         wf.object("Succeeded", &[("g0", "Succeeded")]),
         wf.pod("g0", |p| p),
     ]);
-    l.c.reset_records();
+    l.cluster.reset_records();
     l.answer(&[
         wf.object("Succeeded", &[("g0", "Succeeded")]),
         wf.pod("g0", |p| p),
@@ -961,15 +987,15 @@ fn a_closed_lid_loses_nothing() {
         "{text}"
     );
     assert!(text.contains("not repeating it here"), "{text}");
-    assert_eq!(l.c.local_runs(), 0, "{text}");
+    assert_eq!(l.cluster.local_runs(), 0, "{text}");
     assert_eq!(
         l.calls("create"),
         0,
         "never created twice: {}",
-        l.c.kubectl_calls()
+        l.cluster.kubectl_calls()
     );
     assert_eq!(
-        names(&l.c.remote_blocks(&l.tree), "pre-push-lint"),
+        names(&l.cluster.remote_blocks(&l.tree), "pre-push-lint"),
         ["x86_64-linux"],
         "{text}"
     );
@@ -980,7 +1006,7 @@ fn a_closed_lid_loses_nothing() {
 #[test]
 fn a_crash_before_create_leaves_an_intent_and_creates_nothing_twice() {
     let Some(l) = Lane::new(ONE) else { return };
-    let (code, text) = l.c.amont(
+    let (code, text) = l.cluster.amont(
         &["rehearse", "--cluster"],
         &[("AMONT_TEST_CRASH", "before-create")],
         None,
@@ -995,7 +1021,7 @@ fn a_crash_before_create_leaves_an_intent_and_creates_nothing_twice() {
     // a rerun finds the intent and does not create anything
     let (code, text) = l.rehearse(&["--cluster"]);
     assert_eq!(code, 0, "{text}");
-    assert_eq!(l.workflow_creates(), 0, "{}", l.c.kubectl_calls());
+    assert_eq!(l.workflow_creates(), 0, "{}", l.cluster.kubectl_calls());
 }
 
 /// The apiserver accepted the Workflow and the answer was lost: `get` by the
@@ -1003,12 +1029,17 @@ fn a_crash_before_create_leaves_an_intent_and_creates_nothing_twice() {
 #[test]
 fn a_create_whose_answer_was_lost_is_adopted_by_name_not_repeated() {
     let Some(l) = Lane::new(ONE) else { return };
-    l.c.answer("create_wf", "lost\n");
+    l.cluster.answer("create_wf", "lost\n");
     let wf = l.submitted();
-    assert_eq!(l.workflow_creates(), 1, "{}", l.c.kubectl_calls());
-    assert_eq!(l.calls("get"), 1, "get by name: {}", l.c.kubectl_calls());
+    assert_eq!(l.workflow_creates(), 1, "{}", l.cluster.kubectl_calls());
+    assert_eq!(
+        l.calls("get"),
+        1,
+        "get by name: {}",
+        l.cluster.kubectl_calls()
+    );
     assert!(l
-        .c
+        .cluster
         .kubectl_calls()
         .contains(&format!("get workflow {}", wf.name)));
     assert!(
@@ -1023,13 +1054,13 @@ fn a_create_whose_answer_was_lost_is_adopted_by_name_not_repeated() {
 #[test]
 fn a_create_refused_by_the_apiserver_submits_nothing() {
     let Some(l) = Lane::new(ONE) else { return };
-    l.c.answer("create_wf", "reject\n");
+    l.cluster.answer("create_wf", "reject\n");
     let (code, text) = l.rehearse(&["--wait", "--cluster"]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(l.workflow_creates(), 1);
     assert_eq!(l.pending(), "");
     assert_eq!(
-        l.c.created_jobs().len(),
+        l.cluster.created_jobs().len(),
         1,
         "the gate ran on the Job lane: {text}"
     );
@@ -1041,12 +1072,12 @@ fn a_create_refused_by_the_apiserver_submits_nothing() {
 #[test]
 fn an_unconfirmed_create_keeps_the_intent_and_the_gates_run() {
     let Some(l) = Lane::new(ONE) else { return };
-    l.c.answer("create_wf", "never\n");
+    l.cluster.answer("create_wf", "never\n");
     let (code, text) = l.rehearse(&["--wait", "--cluster"]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(l.workflow_creates(), 1);
     assert!(l.pending().contains("\"uid\":null"), "{}", l.pending());
-    assert_eq!(l.c.created_jobs().len(), 1, "{text}");
+    assert_eq!(l.cluster.created_jobs().len(), 1, "{text}");
 }
 
 /// The token is the one frozen at submission: change the image between
@@ -1056,7 +1087,7 @@ fn a_changed_image_between_submission_and_collect_is_not_accepted_at_push() {
     let Some(l) = Lane::new(ONE) else { return };
     let wf = l.submitted();
     let other = format!("reg/gate:2@sha256:{}", "2".repeat(64));
-    l.c.config("amont.cluster.image", &other);
+    l.cluster.config("amont.cluster.image", &other);
     l.answer(&[
         wf.object("Succeeded", &[("g0", "Succeeded")]),
         wf.pod("g0", |p| p),
@@ -1068,14 +1099,14 @@ fn a_changed_image_between_submission_and_collect_is_not_accepted_at_push() {
         "the frozen token is written: {}",
         l.tokens()
     );
-    l.c.reset_records();
+    l.cluster.reset_records();
     let (code, text) = l.push();
     assert_eq!(code, 0, "{text}");
     assert!(
         !text.contains("not repeating it here"),
         "the new image has another identity, so the gate runs: {text}"
     );
-    assert_eq!(l.c.created_jobs().len(), 1, "the gate ran: {text}");
+    assert_eq!(l.cluster.created_jobs().len(), 1, "the gate ran: {text}");
 }
 
 /// The same for a changed prepare command.
@@ -1085,11 +1116,11 @@ fn a_changed_prepare_between_submission_and_collect_is_not_accepted_at_push() {
     let Some(l) = Lane::new(&conf) else { return };
     let wf = l.submitted();
     // the repository now says another prepare, trusted
-    l.c.r.write(
+    l.cluster.r.write(
         "amont.conf",
         &format!("{ONE}set clusterPrepare make other\n"),
     );
-    let (code, text) = l.c.amont(&["trust"], &[], None);
+    let (code, text) = l.cluster.amont(&["trust"], &[], None);
     assert_eq!(code, 0, "{text}");
     l.answer(&[
         wf.object("Succeeded", &[("g0", "Succeeded")]),
@@ -1102,11 +1133,11 @@ fn a_changed_prepare_between_submission_and_collect_is_not_accepted_at_push() {
         "the frozen token is written: {}",
         l.tokens()
     );
-    l.c.reset_records();
+    l.cluster.reset_records();
     let (code, text) = l.push();
     assert_eq!(code, 0, "{text}");
     assert!(!text.contains("not repeating it here"), "{text}");
-    assert_eq!(l.c.created_jobs().len(), 1, "the gate ran: {text}");
+    assert_eq!(l.cluster.created_jobs().len(), 1, "the gate ran: {text}");
 }
 
 /// A pod that is not the one submitted (another command) earns nothing even
@@ -1122,9 +1153,9 @@ fn a_pod_running_another_command_is_not_the_submission() {
     l.collect();
     assert_eq!(l.tokens(), "");
     assert!(
-        l.c.cluster_log().contains("not the one submitted"),
+        l.cluster.cluster_log().contains("not the one submitted"),
         "{}",
-        l.c.cluster_log()
+        l.cluster.cluster_log()
     );
 }
 
@@ -1134,7 +1165,7 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
     let Some(l) = Lane::new(ONE) else { return };
     for key in ["snapshotRemote", "snapshotFetch", "mirrorRemote", "mirror"] {
         assert!(l
-            .c
+            .cluster
             .r
             .git(&["config", "--unset", &format!("amont.cluster.{key}")])
             .status
@@ -1143,14 +1174,14 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
     let (code, text) = l.rehearse(&["--wait"]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(l.calls("create"), 1, "the Job lane, as today");
-    assert_eq!(l.c.created_jobs().len(), 1);
+    assert_eq!(l.cluster.created_jobs().len(), 1);
     assert!(l.workflows().is_empty());
     assert_eq!(l.pending(), "");
     assert!(!text.contains("submitted"), "{text}");
     // asking for it without the keys changes nothing but one warning
-    l.c.reset_records();
+    l.cluster.reset_records();
     assert!(l
-        .c
+        .cluster
         .r
         .git(&["update-ref", "-d", "refs/notes/amont-gate-cluster"])
         .status
@@ -1162,7 +1193,11 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
         "{text}"
     );
     assert!(l.workflows().is_empty(), "{text}");
-    assert_eq!(l.c.created_jobs().len(), 1, "the Job lane ran it: {text}");
+    assert_eq!(
+        l.cluster.created_jobs().len(),
+        1,
+        "the Job lane ran it: {text}"
+    );
 }
 
 /// `amont.rehearse.cluster true` alone sends the post-commit rehearsal's gates
@@ -1170,7 +1205,7 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
 #[test]
 fn the_machine_key_alone_detaches_the_rehearsal() {
     let Some(l) = Lane::new(MIXED) else { return };
-    l.c.config("amont.rehearse.cluster", "true");
+    l.cluster.config("amont.rehearse.cluster", "true");
     let (code, text) = l.rehearse(&["--wait"]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(
@@ -1179,10 +1214,14 @@ fn the_machine_key_alone_detaches_the_rehearsal() {
         "{text}"
     );
     assert!(
-        l.c.created_jobs().is_empty(),
+        l.cluster.created_jobs().is_empty(),
         "no Job for a detached gate: {text}"
     );
-    assert_eq!(l.c.local_runs(), 1, "only the local gate ran here: {text}");
+    assert_eq!(
+        l.cluster.local_runs(),
+        1,
+        "only the local gate ran here: {text}"
+    );
 }
 
 /// `amont stamps --json` collects first, and its stdout stays one JSON object.
@@ -1194,10 +1233,11 @@ fn stamps_collects_and_keeps_its_json_clean() {
         wf.object("Succeeded", &[("g0", "Succeeded")]),
         wf.pod("g0", |p| p),
     ]);
-    let output =
-        l.c.command(&["stamps", "--json", "lint"], &[])
-            .output()
-            .expect("amont stamps");
+    let output = l
+        .cluster
+        .command(&["stamps", "--json", "lint"], &[])
+        .output()
+        .expect("amont stamps");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -1213,4 +1253,186 @@ fn stamps_collects_and_keeps_its_json_clean() {
         "{stdout}"
     );
     assert!(l.tokens().contains("pre-push-lint@"), "{}", l.tokens());
+}
+
+/// The pass was judged, the Workflow is finished, and git refuses the token:
+/// the record stays, and the next collect writes the token.
+#[test]
+fn a_token_git_refuses_to_write_keeps_the_record_for_the_next_collect() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.answer(&[
+        wf.object("Succeeded", &[("g0", "Succeeded")]),
+        wf.pod("g0", |p| p),
+    ]);
+    let lock = l
+        .cluster
+        .r
+        .dir
+        .join(".git/refs/notes/amont-gate-cluster.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, "").unwrap();
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(l.tokens(), "", "git refused: {text}");
+    assert!(
+        l.pending().contains(&wf.name),
+        "the record stays: {}",
+        l.pending()
+    );
+    assert!(
+        l.cluster.cluster_log().contains("not recorded"),
+        "{}",
+        l.cluster.cluster_log()
+    );
+    std::fs::remove_file(&lock).unwrap();
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(l.tokens().contains("pre-push-lint@"), "{}", l.tokens());
+    assert_eq!(l.pending(), "");
+}
+
+/// A cluster nobody can read does not keep a record past its TTL.
+#[test]
+fn an_unreadable_cluster_still_lets_old_records_expire() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.cluster.answer("wf_down", "");
+    // young: kept, and the collect says the cluster was not reached
+    let (code, text) = l.collect();
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("cluster not reached"), "{text}");
+    assert!(!text.contains("0 cluster passes"), "{text}");
+    assert!(l.pending().contains(&wf.name));
+    // old: dropped with one line, even though the cluster is still down
+    let pending_file = l.cluster.r.dir.join(".git/amont/cluster-pending");
+    let aged = l
+        .pending()
+        .replacen("\"submitted\":", "\"submitted\":1,\"was\":", 1);
+    std::fs::write(&pending_file, aged).unwrap();
+    let before = l.cluster.cluster_log().lines().count();
+    l.collect();
+    assert_eq!(l.pending(), "");
+    let log = l.cluster.cluster_log();
+    assert_eq!(
+        log.lines().count(),
+        before + 2,
+        "the read failure and the drop: {log}"
+    );
+    assert!(
+        log.contains("older than the Workflow TTL; dropped"),
+        "{log}"
+    );
+}
+
+/// A command or its arguments changed in amont.conf after submitting: the
+/// pass is collected under the frozen token and the push runs the gate.
+#[test]
+fn a_changed_command_or_args_between_submission_and_collect_is_not_accepted_at_push() {
+    for changed in [
+        "pre-push  lint   *.txt  block  platform=any scripts/gate.sh --strict\n",
+        "pre-push  lint   *.txt  block  platform=any scripts/a.sh\n",
+    ] {
+        let Some(l) = Lane::new(ONE) else { return };
+        let wf = l.submitted();
+        l.cluster
+            .r
+            .write("amont.conf", &format!("set executor cluster\n{changed}"));
+        let (code, text) = l.cluster.amont(&["trust"], &[], None);
+        assert_eq!(code, 0, "{text}");
+        l.answer(&[
+            wf.object("Succeeded", &[("g0", "Succeeded")]),
+            wf.pod("g0", |p| p),
+        ]);
+        let (code, text) = l.collect();
+        assert_eq!(code, 0, "{text}");
+        assert!(
+            l.tokens().contains("pre-push-lint@"),
+            "frozen token: {}",
+            l.tokens()
+        );
+        l.cluster.reset_records();
+        let (code, text) = l.push();
+        assert_eq!(code, 0, "{changed}: {text}");
+        assert!(!text.contains("not repeating it here"), "{changed}: {text}");
+        assert_eq!(
+            l.cluster.created_jobs().len(),
+            1,
+            "{changed}: the gate ran: {text}"
+        );
+    }
+}
+
+/// `rehearse --status` shows the runs a collect has just finished, including
+/// the ones that did not pass.
+#[test]
+fn status_shows_a_finished_run_and_what_it_did_not_pass() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.answer(&[
+        wf.object("Failed", &[("g0", "Failed")]),
+        wf.pod("g0", main_exits(1, "Error")),
+    ]);
+    let (code, text) = l.rehearse(&["--status"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains(&format!(
+            "cluster run {} failed: did not pass: pre-push-lint",
+            wf.name
+        )) && text.contains("see cluster.log; the gate runs at the push"),
+        "{text}"
+    );
+}
+
+/// The talk is stderr; stdout is for asked-for data.
+#[test]
+fn submission_talks_on_stderr_and_stdout_stays_empty() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let output = l
+        .cluster
+        .command(&["rehearse", "--cluster"], &[])
+        .output()
+        .expect("amont rehearse");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("submitted amont-rh-"));
+}
+
+/// `--stop` exits 1 when a patch failed, with the command to do it by hand.
+#[test]
+fn stop_fails_loudly_when_a_workflow_cannot_be_terminated() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.cluster.answer("patch_fail", "");
+    let output = l
+        .cluster
+        .command(&["rehearse", "--stop"], &[])
+        .output()
+        .expect("amont rehearse");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("could not terminate cluster run {}", wf.name))
+            && stderr.contains("kubectl -n amont-gates patch workflow"),
+        "{stderr}"
+    );
+}
+
+/// A runtime failure of `rehearse --cluster` (here: no upstream to rehearse
+/// against) is exit 1, not a usage error; `cluster collect --help` is exit 0.
+#[test]
+fn exit_codes_follow_the_cli_contract() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let (code, text) = l
+        .cluster
+        .amont(&["cluster", "collect", "--help"], &[], None);
+    assert_eq!(code, 0, "{text}");
+    let (code, text) = l.cluster.amont(&["cluster", "bogus"], &[], None);
+    assert_eq!(code, 2, "{text}");
+    l.cluster.r.git(&["checkout", "-q", "--detach"]);
+    l.cluster
+        .r
+        .git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let (code, text) = l.rehearse(&["--cluster"]);
+    assert_eq!(code, 1, "{text}");
 }

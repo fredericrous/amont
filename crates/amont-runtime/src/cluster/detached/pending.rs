@@ -55,6 +55,97 @@ impl GateState {
     }
 }
 
+/// Where a Workflow stands, as the last collect saw it. The cases are the
+/// phases Argo reports, plus the one before the cluster has been asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecordPhase {
+    /// Written before `create`; no Workflow has been seen yet.
+    Submitting,
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Error,
+    /// A phase this amont does not know, or none yet.
+    Unknown,
+}
+
+impl RecordPhase {
+    /// The spelling in the file: Argo's own for its phases.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            RecordPhase::Submitting => "Submitting",
+            RecordPhase::Pending => "Pending",
+            RecordPhase::Running => "Running",
+            RecordPhase::Succeeded => "Succeeded",
+            RecordPhase::Failed => "Failed",
+            RecordPhase::Error => "Error",
+            RecordPhase::Unknown => "Unknown",
+        }
+    }
+
+    pub(super) fn parse(s: &str) -> RecordPhase {
+        match s {
+            "Submitting" => RecordPhase::Submitting,
+            "Pending" => RecordPhase::Pending,
+            "Running" => RecordPhase::Running,
+            "Succeeded" => RecordPhase::Succeeded,
+            "Failed" => RecordPhase::Failed,
+            "Error" => RecordPhase::Error,
+            _ => RecordPhase::Unknown,
+        }
+    }
+
+    /// Argo will run nothing more in it.
+    pub(super) fn finished(self) -> bool {
+        match self {
+            RecordPhase::Succeeded | RecordPhase::Failed | RecordPhase::Error => true,
+            RecordPhase::Submitting
+            | RecordPhase::Pending
+            | RecordPhase::Running
+            | RecordPhase::Unknown => false,
+        }
+    }
+
+    /// For a person reading `rehearse --status`.
+    pub(super) fn plain(self) -> &'static str {
+        match self {
+            RecordPhase::Submitting => "being submitted",
+            RecordPhase::Pending => "queued",
+            RecordPhase::Running => "running",
+            RecordPhase::Succeeded => "finished",
+            RecordPhase::Failed => "failed",
+            RecordPhase::Error => "ended in error",
+            RecordPhase::Unknown => "not reported yet",
+        }
+    }
+}
+
+/// A failed read or write of the pending file, rendered only where it is
+/// logged or said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingError {
+    pub(super) op: &'static str,
+    pub(super) path: PathBuf,
+    pub(super) cause: String,
+}
+
+impl PendingError {
+    fn new(op: &'static str, path: &Path, cause: impl ToString) -> PendingError {
+        PendingError {
+            op,
+            path: path.to_path_buf(),
+            cause: cause.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for PendingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}: {}", self.op, self.path.display(), self.cause)
+    }
+}
+
 /// One gate, as it was submitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Gate {
@@ -101,7 +192,7 @@ pub(super) struct Pending {
     /// Epoch seconds.
     pub(super) submitted: u64,
     /// The Workflow phase last seen, for `--status`.
-    pub(super) phase: String,
+    pub(super) phase: RecordPhase,
     pub(super) gates: Vec<Gate>,
 }
 
@@ -143,7 +234,7 @@ impl Pending {
                 "submitted",
                 i64::try_from(self.submitted).unwrap_or(i64::MAX),
             ),
-            string_field("phase", &self.phase),
+            string_field("phase", self.phase.as_str()),
             format!("\"gates\":{}", array(&gates)),
         ])
     }
@@ -176,7 +267,7 @@ impl Pending {
                 oid: source.get("oid")?.as_str()?.to_string(),
             },
             submitted,
-            phase: text("phase")?,
+            phase: RecordPhase::parse(&text("phase")?),
             gates,
         })
     }
@@ -321,50 +412,60 @@ impl Store {
 
     /// Every record. A missing file is no record; a file this amont cannot
     /// read is an error, so that nothing overwrites it.
-    pub(super) fn read(&self) -> Result<Vec<Pending>, String> {
-        match std::fs::read_to_string(self.file()) {
-            Ok(text) => parse_file(&text),
+    pub(super) fn read(&self) -> Result<Vec<Pending>, PendingError> {
+        let path = self.file();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                parse_file(&text).map_err(|why| PendingError::new("cannot read", &path, why))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(PendingError::new("cannot read", &path, e)),
         }
     }
 
     /// Replace the records, durably: a temporary file in the same directory,
     /// synced, renamed over the file, and the directory synced. With no
-    /// record left the file is removed.
-    pub(super) fn write(&self, _held: &Guard, records: &[Pending]) -> Result<(), String> {
+    /// record left the file is removed. A failure leaves no temporary file.
+    pub(super) fn write(&self, _held: &Guard, records: &[Pending]) -> Result<(), PendingError> {
+        let path = self.file();
         if records.is_empty() {
-            return match std::fs::remove_file(self.file()) {
+            return match std::fs::remove_file(&path) {
                 Ok(()) => sync_dir(&self.dir),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(PendingError::new("cannot remove", &path, e)),
             };
         }
-        let tmp = self
+        let staging = self
             .dir
             .join(format!("cluster-pending.tmp-{}", std::process::id()));
-        let mut file = File::create(&tmp).map_err(|e| e.to_string())?;
-        file.write_all(render_file(records).as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(file);
-        std::fs::rename(&tmp, self.file()).map_err(|e| e.to_string())?;
+        let staged = File::create(&staging).and_then(|mut file| {
+            file.write_all(render_file(records).as_bytes())?;
+            file.sync_all()
+        });
+        let moved = staged.and_then(|()| std::fs::rename(&staging, &path));
+        if let Err(e) = moved {
+            // The staging file is ours alone; if it cannot go either, the
+            // next write of this process truncates it.
+            let removed = std::fs::remove_file(&staging);
+            drop(removed);
+            return Err(PendingError::new("cannot write", &path, e));
+        }
         sync_dir(&self.dir)
     }
 }
 
 /// Make a rename or a removal in `dir` durable. Not meaningful on Windows,
 /// where a directory cannot be opened for syncing: the rename stands alone.
-fn sync_dir(dir: &Path) -> Result<(), String> {
+fn sync_dir(dir: &Path) -> Result<(), PendingError> {
     #[cfg(unix)]
     {
         File::open(dir)
             .and_then(|d| d.sync_all())
-            .map_err(|e| e.to_string())
+            .map_err(|e| PendingError::new("cannot sync", dir, e))
     }
     #[cfg(not(unix))]
     {
-        let _ = dir;
+        let _ = dir; // no directory sync off unix; the rename stands alone
         Ok(())
     }
 }
@@ -386,7 +487,7 @@ pub(in crate::cluster::detached) mod tests {
                 oid: "c".repeat(40),
             },
             submitted: 1_700_000_000,
-            phase: "Running".into(),
+            phase: RecordPhase::Running,
             gates: vec![Gate {
                 id: "pre-push-lint".into(),
                 task: "g0".into(),

@@ -21,10 +21,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::json_read::Value;
 
 use super::super::{
-    capture, judge, last_line, log_line, parse_pod_object, record_token, Call, JobEnd, Kube,
-    PodFacts, State, PLATFORM, RUN_LABEL_KEY,
+    capture, judge, last_line, log_line, parse_pod_object, record_token, Call, Fallback, JobEnd,
+    Kube, PodFacts, State, PLATFORM, RUN_LABEL_KEY,
 };
-use super::pending::{GateState, Pending, Store};
+use super::pending::{GateState, Pending, RecordPhase, Store};
 use super::workflow::{check_pod, check_workflow, node_name, template_name, TTL_SECS};
 
 /// The wall deadline for the one batched call. `kubectl`'s own request timeout
@@ -34,51 +34,68 @@ const COLLECT_SECS: u64 = 5;
 const PATCH_SECS: u64 = 10;
 const STOP_SECS: u64 = 30;
 /// An intent no Workflow appeared for in this long was never created.
+// holds-until: an apiserver slower than this to show a created Workflow — a
+// create that lands after the grace is not adopted, and its gates run at the
+// push instead
 const INTENT_GRACE_SECS: u64 = 600;
 /// A record outlives its Workflow's TTL by this long, then goes whatever the
 /// cluster says.
 const EXPIRY_SLACK_SECS: u64 = 3600;
 
-/// Once per hook process, however many callers ask.
+/// Once per hook process, however many callers ask. Process-scoped on
+/// purpose: a hook runs as one process and asks the cluster one question, so
+/// `stamps` inside a hook, or `--status` after a collect, do not repeat it;
+/// the next hook is a new process and asks again.
 static COLLECTED: AtomicBool = AtomicBool::new(false);
 
+/// Why a collect learned nothing, or could not keep what it learned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trouble {
+    /// Another collect, or a submission, holds the pending file.
+    Busy,
+    /// The cluster did not answer.
+    NotReached(String),
+    /// The pending file could not be read or written.
+    StoreFailed(String),
+}
+
+impl std::fmt::Display for Trouble {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Trouble::Busy => write!(f, "another collect is running"),
+            Trouble::NotReached(why) => write!(f, "cluster not reached: {why}"),
+            Trouble::StoreFailed(why) => write!(f, "pending store write failed: {why}"),
+        }
+    }
+}
+
+/// A Workflow that left the pending file in this collect, for `--status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    pub name: String,
+    /// The Workflow's last phase in plain words.
+    pub phase: &'static str,
+    pub passed: Vec<String>,
+    pub failed: Vec<String>,
+}
+
 /// What a collect did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Collected {
     /// Passes written as cluster tokens.
     pub passes: usize,
     /// Workflows still pending afterwards.
     pub pending: usize,
+    /// The Workflows this collect finished with.
+    pub settled: Vec<Settled>,
+    pub trouble: Option<Trouble>,
 }
 
-/// The Workflow phases Argo reports, as far as collect cares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkflowPhase {
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-    Error,
-    Unknown,
-}
-
-impl WorkflowPhase {
-    fn parse(s: &str) -> WorkflowPhase {
-        match s {
-            "Pending" => WorkflowPhase::Pending,
-            "Running" => WorkflowPhase::Running,
-            "Succeeded" => WorkflowPhase::Succeeded,
-            "Failed" => WorkflowPhase::Failed,
-            "Error" => WorkflowPhase::Error,
-            _ => WorkflowPhase::Unknown,
-        }
-    }
-
-    /// Argo will run nothing more in it.
-    fn finished(self) -> bool {
-        match self {
-            WorkflowPhase::Succeeded | WorkflowPhase::Failed | WorkflowPhase::Error => true,
-            WorkflowPhase::Pending | WorkflowPhase::Running | WorkflowPhase::Unknown => false,
+impl Collected {
+    fn troubled(trouble: Trouble) -> Collected {
+        Collected {
+            trouble: Some(trouble),
+            ..Collected::default()
         }
     }
 }
@@ -95,8 +112,11 @@ struct Pass {
 /// What one record became.
 #[derive(Debug)]
 struct Resolution {
-    /// The record as it stands now; `None` when it leaves the pending file.
-    record: Option<Pending>,
+    /// The record as it stands now.
+    record: Pending,
+    /// Whether it leaves the pending file: its Workflow is finished and judged,
+    /// or gone. A pass whose token is not written keeps it there all the same.
+    leaves: bool,
     passes: Vec<Pass>,
     /// One `cluster.log` line per gate that is not a pass: `(gate, why)`.
     notes: Vec<(String, String)>,
@@ -118,13 +138,13 @@ fn collect_from(store: &Store) -> Collected {
     }
     // Busy: another hook is collecting, or a submission is writing.
     let Some(held) = store.try_lock() else {
-        return Collected::default();
+        return Collected::troubled(Trouble::Busy);
     };
     let records = match store.read() {
         Ok(records) => records,
         Err(why) => {
-            log_line("collect", &format!("cluster-pending cannot be read: {why}"));
-            return Collected::default();
+            log_line("collect", &why.to_string());
+            return Collected::troubled(Trouble::StoreFailed(why.to_string()));
         }
     };
     if records.is_empty() {
@@ -132,7 +152,10 @@ fn collect_from(store: &Store) -> Collected {
     }
     let now = crate::gate_evidence::now();
     let mut kept: Vec<Pending> = Vec::new();
+    let mut settled: Vec<Settled> = Vec::new();
     let mut passes = 0;
+    let mut unreached: Option<String> = None;
+    let mut learned = false;
     for group in by_cluster(records) {
         let kube = Kube {
             kubeconfig: group[0].kubeconfig.clone(),
@@ -140,28 +163,55 @@ fn collect_from(store: &Store) -> Collected {
         };
         match fetch(&kube, &group) {
             Ok(list) => {
+                learned = true;
                 for record in group {
-                    let (after, written) = settle(resolve(record, &list, now));
-                    passes += written;
-                    kept.extend(after);
+                    let done = settle(resolve(record, &list, now));
+                    passes += done.written;
+                    settled.extend(done.settled);
+                    kept.extend(done.record);
                 }
             }
             Err(why) => {
                 log_line("collect", &format!("the cluster could not be read: {why}"));
-                kept.extend(group);
+                // The rollback says an unreadable record expires: it does,
+                // even when the cluster cannot be asked.
+                let (old, young): (Vec<Pending>, Vec<Pending>) =
+                    group.into_iter().partition(|r| is_expired(r, now));
+                for record in &old {
+                    log_line(
+                        record.gates.first().map_or("collect", |g| g.id.as_str()),
+                        &format!(
+                            "detached {}: older than the Workflow TTL; dropped",
+                            record.name
+                        ),
+                    );
+                }
+                kept.extend(young);
+                unreached = Some(why);
             }
         }
     }
-    if let Err(why) = store.write(&held, &kept) {
-        log_line(
-            "collect",
-            &format!("cluster-pending was not updated: {why}"),
-        );
-    }
+    let trouble = match (store.write(&held, &kept), unreached) {
+        (Err(why), _) => {
+            log_line(
+                "collect",
+                &format!("cluster-pending was not updated: {why}"),
+            );
+            Some(Trouble::StoreFailed(why.to_string()))
+        }
+        (Ok(()), Some(why)) if !learned => Some(Trouble::NotReached(why)),
+        (Ok(()), _) => None,
+    };
     Collected {
         passes,
         pending: kept.len(),
+        settled,
+        trouble,
     }
+}
+
+fn is_expired(record: &Pending, now: u64) -> bool {
+    now > record.submitted + TTL_SECS + EXPIRY_SLACK_SECS
 }
 
 /// The records grouped by the cluster they live on: one call each.
@@ -195,12 +245,34 @@ fn fetch(kube: &Kube, records: &[Pending]) -> Result<Value, String> {
     }
 }
 
-/// Write the passes of a resolution and log its notes; the record, with a pass
-/// whose token was not written returned to waiting so that the next collect
-/// tries again. The number of tokens written.
-fn settle(resolution: Resolution) -> (Option<Pending>, usize) {
+/// What settling a resolution left.
+struct Settlement {
+    /// The record if it stays in the file.
+    record: Option<Pending>,
+    /// Tokens written.
+    written: usize,
+    /// The record's end, when it left the file.
+    settled: Option<Settled>,
+}
+
+/// [`settle_with`], writing tokens to the cluster note.
+fn settle(resolution: Resolution) -> Settlement {
+    settle_with(resolution, |pass| {
+        record_token(&pass.tree, &pass.token, &pass.provenance)
+    })
+}
+
+/// Write the passes of a resolution through `write` and log its notes. A pass
+/// whose token was not written returns its gate to waiting and keeps the
+/// record in the file, finished Workflow or not, so that the next collect
+/// tries again.
+fn settle_with(
+    resolution: Resolution,
+    mut write: impl FnMut(&Pass) -> Result<(), Fallback>,
+) -> Settlement {
     let Resolution {
-        record,
+        mut record,
+        leaves,
         passes,
         notes,
     } = resolution;
@@ -208,9 +280,9 @@ fn settle(resolution: Resolution) -> (Option<Pending>, usize) {
         log_line(gate, why);
     }
     let mut written = 0;
-    let mut unwritten: Vec<String> = Vec::new();
+    let mut unwritten = 0;
     for pass in &passes {
-        match record_token(&pass.tree, &pass.token, &pass.provenance) {
+        match write(pass) {
             Ok(()) => {
                 written += 1;
                 // stderr: `amont stamps --json` collects first, and its stdout
@@ -226,17 +298,39 @@ fn settle(resolution: Resolution) -> (Option<Pending>, usize) {
                     &pass.gate,
                     &format!("detached: the pass was not recorded: {why}"),
                 );
-                unwritten.push(pass.gate.clone());
+                unwritten += 1;
+                for gate in record.gates.iter_mut().filter(|g| g.id == pass.gate) {
+                    gate.state = GateState::Waiting;
+                }
             }
         }
     }
-    let record = record.map(|mut r| {
-        for gate in r.gates.iter_mut().filter(|g| unwritten.contains(&g.id)) {
-            gate.state = GateState::Waiting;
-        }
-        r
-    });
-    (record, written)
+    if !leaves || unwritten > 0 {
+        return Settlement {
+            record: Some(record),
+            written,
+            settled: None,
+        };
+    }
+    let ids = |state: GateState| -> Vec<String> {
+        record
+            .gates
+            .iter()
+            .filter(|g| g.state == state)
+            .map(|g| g.id.clone())
+            .collect()
+    };
+    let settled = Settled {
+        name: record.name.clone(),
+        phase: record.phase.plain(),
+        passed: ids(GateState::Passed),
+        failed: ids(GateState::Failed),
+    };
+    Settlement {
+        record: None,
+        written,
+        settled: Some(settled),
+    }
 }
 
 fn short(oid: &str) -> &str {
@@ -286,10 +380,13 @@ fn pod_of<'a>(list: &'a Value, wf: &Value, name: &str, uid: &str, task: &str) ->
                     && text(Some(o), "name") == Some(name)
                     && o.get("controller").is_some_and(Value::is_true)
             });
+        // The node id is required, not optional: a pod that does not name its
+        // node cannot be bound to the Workflow's record of it.
+        let node_id = text(annotations, "workflows.argoproj.io/node-id");
         owned
             && text(annotations, "workflows.argoproj.io/node-name") == Some(node.as_str())
-            && text(annotations, "workflows.argoproj.io/node-id")
-                .map_or(true, |id| Some(id) == text(Some(recorded), "id"))
+            && node_id.is_some()
+            && node_id == text(Some(recorded), "id")
     })
 }
 
@@ -330,14 +427,26 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
                 RUN_LABEL_KEY,
             ) == Some(record.label.as_str())
     });
-    let expired = now > record.submitted + TTL_SECS + EXPIRY_SLACK_SECS;
-    let drop_all = |record: Pending, why: &str| Resolution {
-        notes: record
+    // The record ends here, its waiting gates failed, one note each.
+    let drop_all = |mut record: Pending, why: &str| {
+        let notes = record
             .waiting()
             .map(|g| (g.id.clone(), format!("detached {}: {why}", record.name)))
-            .collect(),
-        record: None,
-        passes: Vec::new(),
+            .collect();
+        for gate in record
+            .gates
+            .iter_mut()
+            .filter(|g| g.state == GateState::Waiting)
+        {
+            gate.state = GateState::Failed;
+        }
+        record.phase = RecordPhase::Unknown;
+        Resolution {
+            record,
+            leaves: true,
+            passes: Vec::new(),
+            notes,
+        }
     };
     let Some(wf) = wf else {
         return if record.uid.is_some() {
@@ -345,18 +454,19 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
                 record,
                 "the Workflow is gone (its TTL passed, or it was deleted)",
             )
-        } else if expired || now > record.submitted + INTENT_GRACE_SECS {
+        } else if is_expired(&record, now) || now > record.submitted + INTENT_GRACE_SECS {
             drop_all(record, "the Workflow never appeared")
         } else {
             // A create that may still land: the intent stays.
             Resolution {
-                record: Some(record),
+                record,
+                leaves: false,
                 passes: Vec::new(),
                 notes,
             }
         };
     };
-    if expired {
+    if is_expired(&record, now) {
         return drop_all(record, "older than the Workflow TTL");
     }
     let found_uid = text(wf.get("metadata"), "uid").map(str::to_string);
@@ -376,7 +486,7 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
         },
         (None, None) => return drop_all(record, "the Workflow has no UID"),
     };
-    let phase = WorkflowPhase::parse(text(wf.get("status"), "phase").unwrap_or(""));
+    let phase = RecordPhase::parse(text(wf.get("status"), "phase").unwrap_or(""));
     let mut passes: Vec<Pass> = Vec::new();
     let mut gates = record.gates.clone();
     for gate in gates.iter_mut().filter(|g| g.state == GateState::Waiting) {
@@ -386,8 +496,10 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
                 notes.push((
                     gate.id.clone(),
                     format!(
-                        "detached {}: no pod of {} was found ({phase:?})",
-                        record.name, gate.task
+                        "detached {}: no pod of {} was found ({})",
+                        record.name,
+                        gate.task,
+                        phase.as_str()
                     ),
                 ));
             }
@@ -405,6 +517,13 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
             continue;
         }
         let Some(facts) = parse_pod_object(pod, "main") else {
+            if phase.finished() {
+                gate.state = GateState::Failed;
+                notes.push((
+                    gate.id.clone(),
+                    format!("detached {}: the pod's status cannot be read", record.name),
+                ));
+            }
             continue;
         };
         let end = end_from_main(&facts.gate);
@@ -441,32 +560,50 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
         }
     }
     let settled = gates.iter().all(|g| g.state != GateState::Waiting);
-    let record = Pending {
-        uid: Some(uid),
-        phase: format!("{phase:?}"),
-        gates,
-        ..record
-    };
     Resolution {
-        record: (!(settled || phase.finished())).then_some(record),
+        leaves: settled || phase.finished(),
+        record: Pending {
+            uid: Some(uid),
+            phase,
+            gates,
+            ..record
+        },
         passes,
         notes,
     }
 }
 
-/// `amont cluster collect`.
+/// `amont cluster collect`: exit 0 when it asked the cluster (or had nothing
+/// to ask, or another collect is at it), 1 when it learned nothing or could
+/// not keep what it learned, 2 on usage.
 pub fn collect_command(args: &[std::ffi::OsString]) -> i32 {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage: amont cluster collect");
+        return 0;
+    }
     match args.first().and_then(|a| a.to_str()) {
         Some("collect") if args.len() == 1 => {
             let done = collect();
-            println!(
-                "collected {} cluster pass{}; {} Workflow{} still pending",
-                done.passes,
-                if done.passes == 1 { "" } else { "es" },
-                done.pending,
-                if done.pending == 1 { "" } else { "s" },
-            );
-            0
+            match &done.trouble {
+                Some(Trouble::Busy) => {
+                    eprintln!("{}; nothing was asked of the cluster", Trouble::Busy);
+                    0
+                }
+                Some(trouble) => {
+                    eprintln!("{trouble}");
+                    1
+                }
+                None => {
+                    eprintln!(
+                        "collected {} cluster pass{}; {} Workflow{} still pending",
+                        done.passes,
+                        if done.passes == 1 { "" } else { "es" },
+                        done.pending,
+                        if done.pending == 1 { "" } else { "s" },
+                    );
+                    0
+                }
+            }
         }
         _ => {
             eprintln!("usage: amont cluster collect");
@@ -483,74 +620,146 @@ pub fn status_lines() -> Vec<String> {
     };
     match store.read() {
         Ok(records) => records.iter().map(describe).collect(),
-        Err(why) => vec![format!("cluster-pending cannot be read: {why}")],
+        Err(why) => vec![format!("cluster run records cannot be read: {why}")],
     }
 }
 
+/// The Workflows a collect finished with, for the person who asked.
+pub fn settled_lines(settled: &[Settled]) -> Vec<String> {
+    settled
+        .iter()
+        .map(|run| {
+            let mut parts: Vec<String> = Vec::new();
+            if !run.passed.is_empty() {
+                parts.push(format!("collected: {}", run.passed.join(" ")));
+            }
+            if !run.failed.is_empty() {
+                parts.push(format!(
+                    "did not pass: {} — see cluster.log; the gate runs at the push",
+                    run.failed.join(" ")
+                ));
+            }
+            format!(
+                "cluster run {} {}: {}",
+                run.name,
+                run.phase,
+                parts.join("; ")
+            )
+        })
+        .collect()
+}
+
 fn describe(record: &Pending) -> String {
-    let named = |state: GateState| -> String {
+    let named = |label: &str, state: GateState| -> Option<String> {
         let ids: Vec<&str> = record
             .gates
             .iter()
             .filter(|g| g.state == state)
             .map(|g| g.id.as_str())
             .collect();
-        if ids.is_empty() {
-            "-".to_string()
-        } else {
-            ids.join(" ")
-        }
+        (!ids.is_empty()).then(|| format!("{label}: {}", ids.join(" ")))
+    };
+    let fields: Vec<String> = [
+        named("collected", GateState::Passed),
+        named("did not pass", GateState::Failed),
+        named("waiting", GateState::Waiting),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let follow = if record.phase.finished() {
+        String::new()
+    } else {
+        format!(
+            " (follow: kubectl -n {} get wf {})",
+            record.namespace, record.name
+        )
     };
     format!(
-        "detached {}: {} — collected: {}; failed: {}; waiting: {}",
+        "cluster run {}: {}{}{follow}",
         record.name,
-        record.phase,
-        named(GateState::Passed),
-        named(GateState::Failed),
-        named(GateState::Waiting),
+        record.phase.plain(),
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", fields.join("; "))
+        }
     )
 }
 
+/// The command that does by hand what `--stop` does for one Workflow.
+fn terminate_command(record: &Pending) -> String {
+    format!(
+        "kubectl -n {} patch workflow {} --type merge -p '{{\"spec\":{{\"shutdown\":\"Terminate\"}}}}'",
+        record.namespace, record.name
+    )
+}
+
+/// What `rehearse --stop` did to the pending Workflows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Stopped {
+    /// One line per Workflow asked to terminate.
+    pub done: Vec<String>,
+    /// One line per Workflow that was not, with the command to do it by hand.
+    pub failed: Vec<String>,
+}
+
 /// `rehearse --stop`: ask the cluster to terminate every pending Workflow,
-/// each call and all of them bounded. One line per Workflow.
-pub fn stop_pending() -> Vec<String> {
+/// each call and all of them bounded. Once the overall deadline is gone the
+/// rest are reported as not attempted.
+pub fn stop_pending() -> Stopped {
+    let mut report = Stopped::default();
     let Some(store) = Store::here() else {
-        return Vec::new();
+        return report;
     };
     let records = match store.read() {
         Ok(records) => records,
-        Err(why) => return vec![format!("cluster-pending cannot be read: {why}")],
+        Err(why) => {
+            report
+                .failed
+                .push(format!("cluster run records cannot be read: {why}"));
+            return report;
+        }
     };
     let until = std::time::Instant::now() + std::time::Duration::from_secs(STOP_SECS);
-    records
-        .iter()
-        .map(|record| {
-            let kube = Kube {
-                kubeconfig: record.kubeconfig.clone(),
-                namespace: record.namespace.clone(),
-            };
-            let left = until
-                .saturating_duration_since(std::time::Instant::now())
-                .as_secs()
-                .clamp(1, PATCH_SECS);
-            let patched = kube.bounded(
-                &[
-                    "patch",
-                    "workflow",
-                    &record.name,
-                    "--type",
-                    "merge",
-                    "-p",
-                    "{\"spec\":{\"shutdown\":\"Terminate\"}}",
-                ],
-                left,
-            );
-            match patched {
-                Ok(()) => format!("terminating {}", record.name),
-                Err(why) => format!("could not terminate {}: {why}", record.name),
-            }
-        })
-        .collect()
+    for record in &records {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            report.failed.push(format!(
+                "cluster run {} was not attempted: the stop deadline passed — {}",
+                record.name,
+                terminate_command(record)
+            ));
+            continue;
+        }
+        let kube = Kube {
+            kubeconfig: record.kubeconfig.clone(),
+            namespace: record.namespace.clone(),
+        };
+        let patched = kube.bounded(
+            &[
+                "patch",
+                "workflow",
+                &record.name,
+                "--type",
+                "merge",
+                "-p",
+                "{\"spec\":{\"shutdown\":\"Terminate\"}}",
+            ],
+            left.as_secs().clamp(1, PATCH_SECS),
+        );
+        match patched {
+            Ok(()) => report
+                .done
+                .push(format!("terminating cluster run {}", record.name)),
+            Err(why) => report.failed.push(format!(
+                "could not terminate cluster run {}: {why} — {}",
+                record.name,
+                terminate_command(record)
+            )),
+        }
+    }
+    report
 }
 
 #[cfg(test)]
@@ -630,7 +839,7 @@ mod tests {
             ("Pending", false),
             ("", false),
         ] {
-            assert_eq!(WorkflowPhase::parse(phase).finished(), finished, "{phase}");
+            assert_eq!(RecordPhase::parse(phase).finished(), finished, "{phase}");
         }
     }
 
@@ -688,7 +897,7 @@ mod tests {
             "the frozen token"
         );
         assert!(done.passes[0].provenance.contains("platform=x86_64-linux"));
-        assert!(done.record.is_none(), "a finished Workflow leaves the file");
+        assert!(done.leaves, "a finished Workflow leaves the file");
     }
 
     /// The node and the Workflow say Succeeded; `main` exited 1. Phases only
@@ -756,9 +965,9 @@ mod tests {
         });
         let done = collected(record, &list);
         assert!(done.passes.is_empty(), "{done:?}");
-        let kept = done.record.expect("still pending");
-        assert_eq!(kept.gates[0].state, GateState::Waiting);
-        assert_eq!(kept.phase, "Running");
+        assert!(!done.leaves);
+        assert_eq!(done.record.gates[0].state, GateState::Waiting);
+        assert_eq!(done.record.phase, RecordPhase::Running);
     }
 
     #[test]
@@ -766,7 +975,7 @@ mod tests {
         let record = record_of_the_fixture();
         let empty = crate::json_read::parse("{\"kind\":\"List\",\"items\":[]}").expect("json");
         let done = collected(record, &empty);
-        assert!(done.record.is_none());
+        assert!(done.leaves);
         assert_eq!(done.notes.len(), 1, "{done:?}");
     }
 
@@ -778,13 +987,84 @@ mod tests {
         record.uid = None;
         let empty = crate::json_read::parse("{\"kind\":\"List\",\"items\":[]}").expect("json");
         let young = resolve(record.clone(), &empty, record.submitted + 60);
-        assert!(young.record.is_some());
+        assert!(!young.leaves);
         let old = resolve(
             record.clone(),
             &empty,
             record.submitted + INTENT_GRACE_SECS + 1,
         );
-        assert!(old.record.is_none());
+        assert!(old.leaves);
         assert_eq!(old.notes.len(), 1);
+    }
+
+    /// The Workflow finished and passed, but the token cannot be written: the
+    /// record stays, its gate waiting, and the next collect writes the token.
+    #[test]
+    fn a_pass_whose_token_cannot_be_written_keeps_the_record() {
+        let record = record_of_the_fixture();
+        let list = list_for(&record, "Succeeded", "Succeeded", |p| p);
+        let refuse = |_: &Pass| Err(Fallback::NotProved("git refused".into()));
+        let first = settle_with(resolve(record.clone(), &list, 1_700_000_100), refuse);
+        assert_eq!(first.written, 0);
+        assert!(
+            first.settled.is_none(),
+            "the run has not ended for the person"
+        );
+        let kept = first.record.expect("the record survives");
+        assert_eq!(kept.gates[0].state, GateState::Waiting);
+
+        let mut tokens = Vec::new();
+        let second = settle_with(resolve(kept, &list, 1_700_000_200), |pass| {
+            tokens.push(pass.token.clone());
+            Ok(())
+        });
+        assert_eq!(second.written, 1);
+        assert_eq!(tokens, ["pre-push-lint@abc"]);
+        assert!(second.record.is_none());
+        let ended = second.settled.expect("now it ends");
+        assert_eq!(ended.passed, ["pre-push-lint"]);
+    }
+
+    /// A finished Workflow whose pod status cannot be read fails the gate.
+    #[test]
+    fn an_unreadable_pod_status_on_a_finished_workflow_fails_the_gate() {
+        let record = record_of_the_fixture();
+        let list = list_for(&record, "Failed", "Failed", |p| {
+            p.replace(
+                "\"name\":\"amont-rh-test\",\"namespace\"",
+                "\"namex\":\"amont-rh-test\",\"namespace\"",
+            )
+        });
+        let done = collected(record, &list);
+        assert!(done.passes.is_empty());
+        assert_eq!(done.notes.len(), 1, "{done:?}");
+        assert!(
+            done.notes[0].1.contains("status cannot be read"),
+            "{done:?}"
+        );
+    }
+
+    /// A pod that does not name its node cannot be bound to the Workflow's.
+    #[test]
+    fn a_pod_without_a_node_id_is_not_bound() {
+        let record = record_of_the_fixture();
+        let list = list_for(&record, "Succeeded", "Succeeded", |p| {
+            p.replace(
+                "workflows.argoproj.io/node-id",
+                "workflows.argoproj.io/node-idx",
+            )
+        });
+        let done = collected(record, &list);
+        assert!(done.passes.is_empty(), "{done:?}");
+    }
+
+    #[test]
+    fn a_record_older_than_the_ttl_expires_whatever_the_cluster_says() {
+        let record = record_of_the_fixture();
+        assert!(!is_expired(&record, record.submitted + TTL_SECS));
+        assert!(is_expired(
+            &record,
+            record.submitted + TTL_SECS + EXPIRY_SLACK_SECS + 1
+        ));
     }
 }

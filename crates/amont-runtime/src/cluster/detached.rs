@@ -29,9 +29,12 @@ mod collect;
 mod pending;
 mod workflow;
 
-pub use collect::{collect, collect_command, status_lines, stop_pending};
+pub use collect::{
+    collect, collect_command, settled_lines, status_lines, stop_pending, Collected, Settled,
+    Stopped, Trouble,
+};
 
-use pending::{Gate, GateState, Pending, Source, Store};
+use pending::{Gate, GateState, Pending, PendingError, RecordPhase, Source, Store};
 
 /// The machine key that sends every rehearsal to the cluster.
 const REHEARSE_CLUSTER: &str = "amont.rehearse.cluster";
@@ -42,10 +45,20 @@ const LS_REMOTE_SECS: u64 = 20;
 /// How long a submission waits for the pending file's lock.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
+/// Who asks for a rehearsal to go to the cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// `rehearse --cluster`: the person asked, so what goes wrong is said.
+    Flag,
+    /// Only the machine key may ask (`amont.rehearse.cluster`): the
+    /// post-commit rehearsal, which says nothing on the terminal.
+    Setting,
+}
+
 /// Does this rehearsal go to the cluster: asked for with `--cluster`, or the
 /// machine says `amont.rehearse.cluster true`?
-pub fn wanted(settings: &crate::config::Settings, asked: bool) -> bool {
-    asked || crate::config::boolean_or(settings, REHEARSE_CLUSTER, false)
+pub fn wanted(settings: &crate::config::Settings, ask: Ask) -> bool {
+    ask == Ask::Flag || crate::config::boolean_or(settings, REHEARSE_CLUSTER, false)
 }
 
 /// The gates of a rehearsal that are on the cluster for `HEAD`'s tree now.
@@ -91,11 +104,11 @@ fn machine(settings: &crate::config::Settings) -> Result<Machine, Fallback> {
     };
     let snapshot_remote = need(
         "amont.cluster.snapshotremote",
-        "amont.cluster.snapshotRemote is not set",
+        "amont.cluster.snapshotRemote is not set: `git config --global amont.cluster.snapshotRemote 'git@host:org/{repo}.git'`",
     )?;
     let snapshot_fetch = need(
         "amont.cluster.snapshotfetch",
-        "amont.cluster.snapshotFetch is not set",
+        "amont.cluster.snapshotFetch is not set: `git config --global amont.cluster.snapshotFetch 'http://forgejo-http.forgejo.svc.cluster.local:3000/org/{repo}.git'`",
     )?;
     let mirror = match (
         key(&keys, "amont.cluster.mirrorremote"),
@@ -160,6 +173,12 @@ fn eligible<'a>(
 
 /// The gates of the records of `tree` still waiting for a verdict, and every
 /// gate any record of `tree` holds, whatever its state.
+///
+/// An intent whose `create` never happened (amont died between the two)
+/// counts as waiting, so later rehearsals of the tree leave its gates alone.
+// holds-until: INTENT_GRACE_SECS (10 minutes) in collect.rs — collect drops an
+// intent no Workflow appeared for after that; until then the push, not the
+// rehearsal, runs those gates
 fn known_for(tree: &str) -> (Vec<String>, Vec<String>) {
     let Some(store) = Store::here() else {
         return (Vec::new(), Vec::new());
@@ -187,13 +206,14 @@ fn known_for(tree: &str) -> (Vec<String>, Vec<String>) {
 /// a record of this tree still waits for, and the ones this call submitted.
 /// The rest run here, exactly as without the lane.
 ///
-/// `asked` is `--cluster`; `amont.rehearse.cluster` asks too. With neither,
-/// nothing is submitted, but the gates an earlier call put there still count.
+/// `ask` is `--cluster` ([`Ask::Flag`]); `amont.rehearse.cluster` asks too.
+/// With neither, nothing is submitted, but the gates an earlier call put there
+/// still count. What is said goes to stderr, and only when the person asked.
 pub fn detach(
     settings: &crate::config::Settings,
     manifest: &Manifest,
     scoped: &[String],
-    asked: bool,
+    ask: Ask,
 ) -> Detached {
     let Some(tree) = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]) else {
         return Detached::default();
@@ -201,10 +221,10 @@ pub fn detach(
     let (waiting, known) = known_for(&tree);
     let mut riding: Vec<String> = scoped
         .iter()
-        .filter(|g| waiting.contains(g))
+        .filter(|gate| waiting.contains(gate))
         .cloned()
         .collect();
-    if !wanted(settings, asked) {
+    if !wanted(settings, ask) {
         return Detached { gates: riding };
     }
     let fresh: Vec<&External> = eligible(settings, manifest, scoped)
@@ -212,41 +232,77 @@ pub fn detach(
         .filter(|e| !known.contains(&e.id))
         .collect();
     if fresh.is_empty() {
-        if asked {
+        if ask == Ask::Flag {
             if riding.is_empty() {
-                println!(
+                eprintln!(
                     "no gate of this rehearsal can go to the cluster: it needs a trusted \
                      `platform=any` pre-push gate and `set executor cluster`"
                 );
             } else {
-                println!("already on the cluster: {}", riding.join(" "));
+                eprintln!("already on the cluster: {}", riding.join(" "));
             }
         }
         return Detached { gates: riding };
     }
     match submit(settings, &tree, &fresh) {
         Ok(submitted) => {
-            println!(
+            eprintln!(
                 "submitted {} to the cluster: {} — the next commit or push collects the result",
                 submitted.name,
                 submitted.gates.join(" ")
             );
             riding.extend(submitted.gates);
         }
-        Err(why) => {
-            let line = why.to_string();
+        Err(error) => {
+            let (line, spoken) = error.render();
             for e in &fresh {
                 log_line(&e.id, &format!("detached: {line}"));
             }
-            if asked {
-                crate::hooks::common::warn(&format!(
-                    "not submitted to the cluster, the gates run here: {}",
-                    crate::ui::sanitize(&line)
-                ));
+            if ask == Ask::Flag {
+                crate::hooks::common::warn(&crate::ui::sanitize(&spoken));
             }
         }
     }
     Detached { gates: riding }
+}
+
+/// Why a submission did not end with a recorded Workflow.
+#[derive(Debug)]
+enum SubmitError {
+    /// Nothing was created: the gates run here.
+    NotSubmitted(Fallback),
+    /// A Workflow may exist, or does, but this process cannot vouch for it:
+    /// the gates run here as well, and a later collect adopts it.
+    Unconfirmed(String),
+}
+
+impl From<Fallback> for SubmitError {
+    fn from(f: Fallback) -> SubmitError {
+        SubmitError::NotSubmitted(f)
+    }
+}
+
+impl SubmitError {
+    /// The line for `cluster.log`, and the sentence for the person.
+    fn render(&self) -> (String, String) {
+        match self {
+            SubmitError::NotSubmitted(Fallback::Misconfigured { why, fix }) => (
+                why.clone(),
+                format!("not submitted to the cluster, the gates run here: {why} — fix with {fix}"),
+            ),
+            SubmitError::NotSubmitted(f) => (
+                f.to_string(),
+                format!("not submitted to the cluster, the gates run here: {f}"),
+            ),
+            SubmitError::Unconfirmed(why) => (
+                format!("not confirmed: {why}"),
+                format!(
+                    "submitted, not confirmed ({why}); the gates also run here, and the next \
+                     commit or push collects the Workflow if it landed"
+                ),
+            ),
+        }
+    }
 }
 
 /// A Workflow that exists on the cluster and is recorded.
@@ -265,7 +321,7 @@ fn submit(
     settings: &crate::config::Settings,
     tree: &str,
     gates: &[&External],
-) -> Result<Submitted, Fallback> {
+) -> Result<Submitted, SubmitError> {
     let machine = machine(settings)?;
     let head = crate::git::stdout(&["rev-parse", "HEAD"])
         .ok_or_else(|| Fallback::NotProved("git would not name HEAD".into()))?;
@@ -282,7 +338,7 @@ fn submit(
         tree: tree.to_string(),
         source: origin.source,
         submitted: crate::gate_evidence::now(),
-        phase: "Submitting".into(),
+        phase: RecordPhase::Submitting,
         gates: frozen,
     };
     let store = Store::here()
@@ -394,7 +450,10 @@ fn choose_origin(
 /// The commit objects `git ls-remote <remote>` advertises. `ls-remote <sha>`
 /// would match ref NAMES, never commits, so the answer is compared here.
 fn advertised(remote: &str) -> Result<Vec<String>, String> {
-    let (probe, out) = crate::git::probe_remote_stdout(&["ls-remote", remote], LS_REMOTE_SECS);
+    let (probe, out) = crate::git::probe_remote_stdout(
+        &["ls-remote", remote, "refs/heads/*", "refs/tags/*"],
+        LS_REMOTE_SECS,
+    );
     match probe {
         crate::git::Probe::Exit(0) => Ok(out
             .lines()
@@ -461,23 +520,40 @@ fn push_snapshot(remote: &str, oid: &str, ref_name: &str) -> Result<(), Fallback
 }
 
 /// Write the intent: a record with no UID, durably, before anything is
-/// created.
+/// created. Under the same lock, a record of the same tree that already holds
+/// one of these gates refuses it: two rehearsals of one tree that both passed
+/// the unlocked look in [`known_for`] cannot both submit.
 fn record_intent(store: &Store, record: &Pending) -> Result<(), Fallback> {
-    let not = |why: String| Fallback::NotProved(format!("cluster-pending: {why}"));
-    let held = store
-        .lock_within(LOCK_WAIT)
-        .ok_or_else(|| not("busy, or no flock on this platform".into()))?;
+    let not = |why: PendingError| Fallback::NotProved(format!("cluster-pending: {why}"));
+    let held = store.lock_within(LOCK_WAIT).ok_or_else(|| {
+        Fallback::NotProved("cluster-pending: busy, or no flock on this platform".into())
+    })?;
     let mut records = store.read().map_err(not)?;
+    if let Some(taken) = holder_of(&records, record) {
+        return Err(Fallback::NotProved(format!(
+            "another submission of this tree already holds {taken}"
+        )));
+    }
     records.push(record.clone());
     store.write(&held, &records).map_err(not)
 }
 
+/// A gate of `record` that a record of the same tree in `records` holds.
+fn holder_of(records: &[Pending], record: &Pending) -> Option<String> {
+    records
+        .iter()
+        .filter(|other| other.tree == record.tree)
+        .flat_map(|other| other.gates.iter())
+        .find(|held| record.gates.iter().any(|g| g.id == held.id))
+        .map(|held| held.id.clone())
+}
+
 /// Set the UID of the record `name`, durably. The record may have been
 /// adopted already by a collect that found the Workflow first.
-fn adopt(store: &Store, name: &str, uid: &str) -> Result<(), Fallback> {
+fn adopt(store: &Store, name: &str, uid: &str) -> Result<(), SubmitError> {
     let not = |why: String| {
-        Fallback::NotProved(format!(
-            "the Workflow exists but its UID was not recorded ({why}); the next collect adopts it"
+        SubmitError::Unconfirmed(format!(
+            "the Workflow exists but its UID was not recorded: {why}"
         ))
     };
     let held = store
@@ -485,17 +561,17 @@ fn adopt(store: &Store, name: &str, uid: &str) -> Result<(), Fallback> {
         .ok_or_else(|| not("cluster-pending is busy".into()))?;
     let records: Vec<Pending> = store
         .read()
-        .map_err(not)?
+        .map_err(|e| not(e.to_string()))?
         .into_iter()
         .map(|mut r| {
             if r.name == name && r.uid.is_none() {
                 r.uid = Some(uid.to_string());
-                r.phase = "Submitted".into();
+                r.phase = RecordPhase::Pending;
             }
             r
         })
         .collect();
-    store.write(&held, &records).map_err(not)
+    store.write(&held, &records).map_err(|e| not(e.to_string()))
 }
 
 /// How a `kubectl create` of the Workflow ended.
@@ -530,10 +606,19 @@ fn classify(call: Call) -> Created {
     }
 }
 
+/// Why a `create` may or may not have landed, for [`reconcile`].
+#[derive(Debug, PartialEq, Eq)]
+enum Uncertain {
+    /// The name is taken: a Workflow of this name exists.
+    Taken,
+    /// The answer was lost, or never came.
+    Lost(String),
+}
+
 /// Create the Workflow ONCE, as `amont-gate-runner` (the kubeconfig's user),
 /// and return its UID. A create whose answer is lost is reconciled by `get`
 /// on its deterministic name and never repeated.
-fn create(kube: &Kube, record: &Pending, json: &str) -> Result<String, Fallback> {
+fn create(kube: &Kube, record: &Pending, json: &str) -> Result<String, SubmitError> {
     let file = ManifestFile::write(&record.label, json)?;
     let path = file.path.to_string_lossy().into_owned();
     let args = ["create", "-f", &path, "-o", "jsonpath={.metadata.uid}"];
@@ -543,36 +628,34 @@ fn create(kube: &Kube, record: &Pending, json: &str) -> Result<String, Fallback>
         Created::Made(uid) => Ok(uid),
         Created::Rejected(why) => {
             forget(record);
-            Err(Fallback::NotProved(format!(
-                "the cluster refused it: {why}"
-            )))
+            Err(Fallback::NotProved(format!("the cluster refused it: {why}")).into())
         }
         Created::NotSent(why) => {
             forget(record);
-            Err(Fallback::Unreachable(why))
+            Err(Fallback::Unreachable(why).into())
         }
-        Created::Taken | Created::Unknown(_) => reconcile(kube, record, outcome),
+        Created::Taken => reconcile(kube, record, Uncertain::Taken),
+        Created::Unknown(why) => reconcile(kube, record, Uncertain::Lost(why)),
     }
 }
 
 /// After a create that may have landed: `get` the Workflow by its name and
 /// adopt it only if its spec is the one submitted.
-fn reconcile(kube: &Kube, record: &Pending, outcome: Created) -> Result<String, Fallback> {
-    let said = match outcome {
-        Created::Unknown(why) => why,
-        Created::Taken => "the name was taken".to_string(),
-        Created::Made(_) | Created::Rejected(_) | Created::NotSent(_) => String::new(),
+fn reconcile(kube: &Kube, record: &Pending, uncertain: Uncertain) -> Result<String, SubmitError> {
+    let said = match uncertain {
+        Uncertain::Lost(why) => why,
+        Uncertain::Taken => "the name was taken".to_string(),
     };
     match kube.capture(&["get", "workflow", &record.name, "-o", "json"], CALL_SECS) {
         Call::Ok(json) => {
             let wf = crate::json_read::parse(&json).ok_or_else(|| {
-                Fallback::NotProved("the Workflow found by name is not JSON".into())
+                SubmitError::Unconfirmed("the Workflow found by name is not JSON".into())
             })?;
             let uid = wf
                 .get("metadata")
                 .and_then(|m| m.get("uid"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| Fallback::NotProved("the Workflow found has no UID".into()))?;
+                .ok_or_else(|| SubmitError::Unconfirmed("the Workflow found has no UID".into()))?;
             match workflow::check_workflow(&wf, record) {
                 Ok(()) => Ok(uid.to_string()),
                 Err(why) => {
@@ -580,21 +663,20 @@ fn reconcile(kube: &Kube, record: &Pending, outcome: Created) -> Result<String, 
                     Err(Fallback::NotProved(format!(
                         "a Workflow named {} exists and is not the one submitted: {why}",
                         record.name
-                    )))
+                    ))
+                    .into())
                 }
             }
         }
-        Call::Refused(err) if err.contains("NotFound") => {
-            // Not there: a create that was refused for good has no use for its
-            // intent; one whose answer was lost keeps it, so that a request
-            // landing late is adopted by the next collect and never repeated.
-            Err(Fallback::NotProved(format!(
-                "the cluster did not confirm the Workflow ({said}); the intent is kept and the next collect adopts it if it landed"
-            )))
-        }
+        // Not there: one whose answer was lost keeps its intent, so that a
+        // request landing late is adopted by the next collect and never
+        // repeated.
+        Call::Refused(err) if err.contains("NotFound") => Err(SubmitError::Unconfirmed(format!(
+            "the cluster did not show the Workflow ({said}); the intent is kept"
+        ))),
         Call::Refused(err) | Call::NotStarted(err) | Call::TimedOut(err) => {
-            Err(Fallback::Unreachable(format!(
-                "the Workflow could not be confirmed ({said}; {})",
+            Err(SubmitError::Unconfirmed(format!(
+                "the Workflow could not be looked up ({said}; {})",
                 last_line(&err)
             )))
         }
@@ -612,7 +694,7 @@ fn forget(record: &Pending) {
         );
         return;
     };
-    let kept: Result<Vec<Pending>, String> = store
+    let kept: Result<Vec<Pending>, PendingError> = store
         .read()
         .map(|rs| rs.into_iter().filter(|r| r.name != record.name).collect());
     let written = kept.and_then(|rs| store.write(&held, &rs));
@@ -625,9 +707,10 @@ fn forget(record: &Pending) {
 }
 
 /// The manifest handed to `kubectl create -f`, in a private file of its own:
-/// created fresh and unreadable to others, removed when dropped. Not a
-/// [`super::Scratch`]: that registers an interrupt clean-up which deletes
-/// Jobs, and a detached Workflow is meant to survive amont.
+/// created fresh and unreadable to others, removed when dropped, and listed
+/// with the interrupt clean-up, which deletes this file and nothing else. Not
+/// a [`super::Scratch`]: that registers a clean-up which deletes Jobs, and a
+/// detached Workflow is meant to survive amont.
 struct ManifestFile {
     path: std::path::PathBuf,
 }
@@ -643,12 +726,14 @@ impl ManifestFile {
             .open(&path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, json.as_bytes()))
             .map_err(|e| Fallback::NotProved(format!("manifest file: {e}")))?;
+        super::track_temp_file(&path);
         Ok(ManifestFile { path })
     }
 }
 
 impl Drop for ManifestFile {
     fn drop(&mut self) {
+        super::untrack_temp_file(&self.path);
         if let Err(e) = std::fs::remove_file(&self.path) {
             crate::hooks::common::warn(&format!("could not remove {}: {e}", self.path.display()));
         }
@@ -718,5 +803,37 @@ mod tests {
             classify(Call::NotStarted("kubectl: not found".into())),
             Created::NotSent(_)
         ));
+    }
+
+    #[test]
+    fn a_second_submission_of_a_tree_cannot_take_a_gate_already_held() {
+        let held = super::pending::tests::sample("wf-1");
+        let mut other = super::pending::tests::sample("wf-2");
+        assert_eq!(
+            holder_of(std::slice::from_ref(&held), &other),
+            Some("pre-push-lint".to_string())
+        );
+        other.tree = "0".repeat(40);
+        assert_eq!(holder_of(&[held], &other), None, "another tree");
+    }
+
+    /// Under the lock, a record of the same tree holding the gate refuses the
+    /// second intent: two rehearsals that both looked first cannot both submit.
+    #[cfg(unix)]
+    #[test]
+    fn record_intent_refuses_a_gate_a_record_of_the_tree_holds() {
+        let dir = std::env::temp_dir().join(format!("amont-intent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let store = Store::in_dir(&dir);
+        let first = super::pending::tests::sample("wf-1");
+        assert!(record_intent(&store, &first).is_ok());
+        let second = super::pending::tests::sample("wf-2");
+        let refused = record_intent(&store, &second).expect_err("held");
+        assert!(
+            refused.to_string().contains("already holds pre-push-lint"),
+            "{refused}"
+        );
+        assert_eq!(store.read().expect("read").len(), 1);
+        std::fs::remove_dir_all(&dir).expect("clean");
     }
 }

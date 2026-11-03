@@ -67,6 +67,7 @@ case "$1" in
     touch "$D/get-started"
     if [ -f "$D/get_sleep" ]; then sleep "$(cat "$D/get_sleep")"; [ -d "$D" ] || exit 1; fi
     if [ "$2" = "workflows,pods" ]; then
+      if [ -f "$D/wf_down" ]; then echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1; fi
       if [ -f "$D/wf_list.json" ]; then cat "$D/wf_list.json"; else printf '{"kind":"List","items":[]}'; fi
       exit 0
     fi
@@ -111,6 +112,7 @@ case "$1" in
     exit 0 ;;
   patch)
     printf '%s\n' "$*" >> "$D/patches"
+    [ -f "$D/patch_fail" ] && { echo 'Error from server (Forbidden): workflows.argoproj.io is forbidden: cannot patch' >&2; exit 1; }
     [ -f "$D/wf-$3.json" ] || { echo "Error from server (NotFound): workflows.argoproj.io \"$3\" not found" >&2; exit 1; }
     exit 0 ;;
   logs) echo "output of the gate in the pod"; exit 0 ;;
@@ -152,6 +154,8 @@ const ANSWERS: &[&str] = &[
     "get_sleep",
     "create_wf",
     "wf_list.json",
+    "wf_down",
+    "patch_fail",
 ];
 
 pub(crate) struct Cluster {

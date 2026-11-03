@@ -935,7 +935,7 @@ sends the gates the rehearsal would run and the cluster may take to one Argo
 Workflow, and returns (ADR-0017). A gate goes only if it is `platform=any`, in
 a trusted manifest that says `set executor cluster`, and nothing vouches for it
 on this tree yet; the rest of the rehearsal runs here as before. The command
-prints one line per Workflow submitted, with its name and gates. Close the lid:
+prints one line per Workflow submitted, with its name and gates, on stderr (stdout stays for asked-for data: `--status`). Close the lid:
 the next commit or push, in any worktree of the repository, collects what
 finished into cluster tokens, and the push skips those gates and signs the
 `x86_64-linux` attestation as it does for a Job-lane pass
@@ -979,6 +979,13 @@ node that says `Succeeded` while `main` exited 1 is no pass. The token written
 is the one worked out at submission: change the command, `clusterPrepare` or the
 image after submitting and the push does not accept the pass, it runs the gate.
 Anything else writes one line in `amont/cluster.log` and nothing more.
+
+`amont cluster collect` exits 0 when it asked the cluster (or another collect is
+already running, which it says), and 1 when the cluster was not reached or the
+pending file could not be written; `rehearse --stop` exits 1 when a Workflow
+could not be terminated and prints the `kubectl patch` that does it by hand.
+`rehearse --status` also lists the runs that ended since the last look, with the
+gates that did not pass.
 
 The record of what is pending is `$GIT_COMMON_DIR/amont/cluster-pending`;
 deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are

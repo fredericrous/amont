@@ -37,7 +37,8 @@ use crate::manifest::{External, Kind};
 
 mod detached;
 pub use detached::{
-    collect, collect_command, detach, status_lines, stop_pending, wanted, Detached,
+    collect, collect_command, detach, settled_lines, status_lines, stop_pending, wanted, Ask,
+    Collected, Detached, Settled, Stopped, Trouble,
 };
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:
@@ -90,6 +91,23 @@ static LIVE: Mutex<Vec<LiveRun>> = Mutex::new(Vec::new());
 /// read, merge and rewrite it.
 static STAMP_LOCK: Mutex<()> = Mutex::new(());
 static SEQ: AtomicU64 = AtomicU64::new(0);
+/// Temporary manifest files of detached submissions, for an interrupt to
+/// delete. Files only: a detached Workflow outlives amont on purpose.
+static TEMP_FILES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn track_temp_file(path: &Path) {
+    TEMP_FILES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(path.to_path_buf());
+}
+
+fn untrack_temp_file(path: &Path) {
+    TEMP_FILES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|p| p != path);
+}
 
 /// Did the cluster prove the check `id` on `tree` in this process?
 pub fn proved(id: &str, tree: &str) -> bool {
@@ -173,6 +191,10 @@ fn live_update(run: u64, update: impl FnOnce(&mut LiveRun)) {
 /// shared budget, and remove the temporary files and refs. A second signal
 /// meanwhile ends amont at once and leaves the Job to its own deadline.
 pub fn cancel_live() {
+    for file in std::mem::take(&mut *TEMP_FILES.lock().unwrap_or_else(|p| p.into_inner())) {
+        let removed = std::fs::remove_file(&file); // amont is dying: nothing to tell
+        drop(removed);
+    }
     let live: Vec<LiveRun> = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|p| p.into_inner()));
     if live.is_empty() {
         return;

@@ -1081,6 +1081,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // unscoped checks ask about a PUSH — its branch name, its target, its
     // secrets — and no push is happening. Said once, not per check.
     let rehearsing = crate::rehearsal::in_snapshot();
+    let handed_to_cluster = crate::rehearsal::handed_to_cluster();
     if rehearsing {
         crate::say!(
             "rehearsal: running the test gates only — the push-shaped checks run at push time"
@@ -1152,7 +1153,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         }
         // Handed to the cluster by the rehearsal that made this snapshot: not
         // repeated here, its pass comes back as a cluster token.
-        if rehearsing && crate::rehearsal::on_the_cluster(check.name()) {
+        if rehearsing && handed_to_cluster.iter().any(|gate| gate == check.name()) {
             crate::say!(
                 "{} {} runs on the cluster — the next commit or push collects it",
                 valid_sign(),
