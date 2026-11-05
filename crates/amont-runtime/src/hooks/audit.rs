@@ -1442,12 +1442,22 @@ fn pushed_commits(refs: &[PushRef]) -> Vec<String> {
         .iter()
         .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
         .filter_map(|r| {
-            crate::git::stdout(&[
+            // Memoized per process: the refusal and the replay both ask, on
+            // the push path, where every git spawn holds the connection.
+            static PEELED: std::sync::Mutex<Vec<(String, Option<String>)>> =
+                std::sync::Mutex::new(Vec::new());
+            let mut memo = PEELED.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, c)) = memo.iter().find(|(o, _)| *o == r.local_oid) {
+                return c.clone();
+            }
+            let c = crate::git::stdout(&[
                 "rev-parse",
                 "--verify",
                 "-q",
                 &format!("{}^{{commit}}", r.local_oid),
-            ])
+            ]);
+            memo.push((r.local_oid.clone(), c.clone()));
+            c
         })
         .collect();
     out.sort();
@@ -1583,6 +1593,37 @@ fn fresh_for_refs(
     if !crate::gate_stamp::push_stamps_enabled(settings) {
         return None;
     }
+    // Asked by the refusal and again by the replay: once per process. Nothing
+    // in one hook run writes a record before both have asked.
+    static MEMO: std::sync::Mutex<Vec<(String, Option<Concluded>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let memo_key = format!(
+        "{check} {}",
+        refs.iter()
+            .map(|r| format!("{} {}", r.local_oid, r.remote_ref))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if let Some((_, c)) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == memo_key)
+    {
+        return c.clone();
+    }
+    let found = fresh_uncached(settings, check, refs);
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((memo_key, found.clone()));
+    found
+}
+
+fn fresh_uncached(
+    settings: &crate::config::Settings,
+    check: &str,
+    refs: &[PushRef],
+) -> Option<Concluded> {
     let release = releasing(refs);
     let commits = pushed_commits(refs);
     let mut found: Option<Concluded> = None;
