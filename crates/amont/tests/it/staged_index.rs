@@ -17,22 +17,22 @@ use std::process::Stdio;
 /// A repository with `a.txt` committed as `ok`, a `sub/` directory, the gate
 /// `gate.sh` and the declaration `line`, trusted and installed.
 fn repo(gate: &str, line: &str) -> Repo {
-    let r = Repo::new();
-    r.stage("a.txt", "ok\n");
-    r.stage("sub/keep.txt", "keep\n");
-    r.stage("gate.sh", gate);
-    r.stage("amont.conf", line);
-    r.commit("chore: base");
-    crate::tree_gates::trust_and_install(&r);
-    r
+    let fixture = Repo::new();
+    fixture.stage("a.txt", "ok\n");
+    fixture.stage("sub/keep.txt", "keep\n");
+    fixture.stage("gate.sh", gate);
+    fixture.stage("amont.conf", line);
+    fixture.commit("chore: base");
+    crate::tree_gates::trust_and_install(&fixture);
+    fixture
 }
 
 /// `git commit -a` run from `sub/`, with the hooks. Whether it was accepted,
 /// and what it printed.
-fn commit_all_from_sub(r: &Repo, msg: &str) -> (bool, String) {
+fn commit_all_from_sub(fixture: &Repo, msg: &str) -> (bool, String) {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["commit", "-q", "-a", "-m", msg])
-        .current_dir(r.dir.join("sub"))
+        .current_dir(fixture.dir.join("sub"))
         .stdin(Stdio::null());
     Repo::strip_git_env_impl(&mut cmd);
     let out = cmd.output().expect("git commit");
@@ -54,18 +54,18 @@ fn a_gate_declared_index_judges_what_commit_dash_a_seals() {
     if missing("sh") {
         return;
     }
-    let r = repo(
+    let fixture = repo(
         READS_THE_INDEX,
         "pre-commit  staged  *.txt  block  index sh gate.sh\n",
     );
-    r.write("a.txt", "BAD\n");
-    let (accepted, out) = commit_all_from_sub(&r, "feat: bad");
+    fixture.write("a.txt", "BAD\n");
+    let (accepted, out) = commit_all_from_sub(&fixture, "feat: bad");
     assert!(
         !accepted,
         "the gate read the old index and passed on nothing:\n{out}"
     );
-    r.write("a.txt", "fine\n");
-    let (accepted, out) = commit_all_from_sub(&r, "feat: fine");
+    fixture.write("a.txt", "fine\n");
+    let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
     assert!(accepted, "{out}");
 }
 
@@ -78,12 +78,12 @@ fn every_pre_commit_gate_is_told_the_index_being_committed() {
     // and fails loudly when it is not set.
     let gate = "GIT_INDEX_FILE=\"${AMONT_INDEX_FILE:?not set}\" git show :a.txt \
                 | grep -q BAD && exit 1\nexit 0\n";
-    let r = repo(gate, "pre-commit  staged  *.txt  block  sh gate.sh\n");
-    r.write("a.txt", "fine\n");
-    let (accepted, out) = commit_all_from_sub(&r, "feat: fine");
+    let fixture = repo(gate, "pre-commit  staged  *.txt  block  sh gate.sh\n");
+    fixture.write("a.txt", "fine\n");
+    let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
     assert!(accepted, "AMONT_INDEX_FILE names a readable index:\n{out}");
-    r.write("a.txt", "BAD\n");
-    let (accepted, out) = commit_all_from_sub(&r, "feat: bad");
+    fixture.write("a.txt", "BAD\n");
+    let (accepted, out) = commit_all_from_sub(&fixture, "feat: bad");
     assert!(!accepted, "and it is the one commit -a seals:\n{out}");
 }
 
@@ -97,9 +97,9 @@ fn a_gate_not_declared_index_still_sees_no_git_variable() {
                 || { echo \"AMONT_INDEX_GIT_DIR is not this repository: $AMONT_INDEX_GIT_DIR\"; exit 1; }\n\
                 case \"$AMONT_INDEX_FILE\" in /*) exit 0 ;; esac\n\
                 echo \"AMONT_INDEX_FILE is not absolute: $AMONT_INDEX_FILE\"; exit 1\n";
-    let r = repo(gate, "pre-commit  clean  *.txt  block  sh gate.sh\n");
-    r.write("a.txt", "fine\n");
-    let (accepted, out) = commit_all_from_sub(&r, "feat: fine");
+    let fixture = repo(gate, "pre-commit  clean  *.txt  block  sh gate.sh\n");
+    fixture.write("a.txt", "fine\n");
+    let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
     assert!(accepted, "{out}");
 }
 
@@ -108,11 +108,11 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
     if missing("sh") {
         return;
     }
-    let r = repo(
+    let fixture = repo(
         READS_THE_INDEX,
         "pre-commit  staged  *.txt  block  index sh gate.sh\n",
     );
-    let wt = r
+    let wt = fixture
         .dir
         .parent()
         .expect("parent")
@@ -135,7 +135,7 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
         }
     }
     let _cleanup = RemoveOnDrop(wt.clone());
-    let added = r.git(&[
+    let added = fixture.git(&[
         "worktree",
         "add",
         "-q",
@@ -187,23 +187,25 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
     let gate = format!(
         "case \"$AMONT_INDEX_FILE\" in /*) ;; *) echo relative; exit 1 ;; esac\n{READS_THE_INDEX}"
     );
-    let r = repo(
+    let fixture = repo(
         &gate,
         "pre-commit  staged  *.txt  block  index sh gate.sh\n",
     );
     // An index of the caller's own, named relative to the repository root.
     let alt = |args: &[&str]| {
         let mut cmd = std::process::Command::new("git");
-        cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
+        cmd.args(args)
+            .current_dir(&fixture.dir)
+            .stdin(Stdio::null());
         Repo::strip_git_env_impl(&mut cmd);
         cmd.env("GIT_INDEX_FILE", ".git/alt-index");
         cmd.output().expect("git")
     };
     let stage_in_alt = |content: &str| {
         assert!(alt(&["read-tree", "HEAD"]).status.success(), "read-tree");
-        r.write("a.txt", content);
+        fixture.write("a.txt", content);
         assert!(alt(&["add", "a.txt"]).status.success(), "add");
-        r.write("a.txt", "ok\n"); // the working tree and the real index say ok
+        fixture.write("a.txt", "ok\n"); // the working tree and the real index say ok
     };
     let said = |out: &std::process::Output| {
         format!(
@@ -234,28 +236,28 @@ fn a_pre_push_gate_never_inherits_an_index() {
     if missing("sh") {
         return;
     }
-    let r = Repo::new();
-    let log = r.path(".git/seen.log");
-    r.stage(
+    let fixture = Repo::new();
+    let log = fixture.path(".git/seen.log");
+    fixture.stage(
         "gate.sh",
         &format!(
             "echo \"${{AMONT_INDEX_FILE:-unset}}\" > '{}'\n",
             log.to_str().expect("utf8").replace('\'', "'\\''")
         ),
     );
-    r.stage("amont.conf", "pre-push  probe  *  warn  sh gate.sh\n");
-    r.commit("chore: base");
-    crate::tree_gates::trust_and_install(&r);
-    r.git(&["config", "amont.pushGates", "inline"]);
-    let head = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD"]).stdout)
+    fixture.stage("amont.conf", "pre-push  probe  *  warn  sh gate.sh\n");
+    fixture.commit("chore: base");
+    crate::tree_gates::trust_and_install(&fixture);
+    fixture.git(&["config", "amont.pushGates", "inline"]);
+    let head = String::from_utf8_lossy(&fixture.git(&["rev-parse", "HEAD"]).stdout)
         .trim()
         .to_string();
     let zeros = "0".repeat(head.len());
     let mut cmd = crate::common::amont_cmd();
     cmd.arg("--hooks-dir")
-        .arg(r.path(".git/hooks"))
+        .arg(fixture.path(".git/hooks"))
         .arg("pre-push")
-        .current_dir(&r.dir)
+        .current_dir(&fixture.dir)
         .env("AMONT_INDEX_FILE", "/stale/index")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
