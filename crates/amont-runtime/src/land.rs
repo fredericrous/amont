@@ -521,10 +521,10 @@ fn land(mode: Mode) -> Report {
         // sha pre-staged too.
         let local_ref = format!("refs/heads/{}", report.branch);
         let dst = format!("refs/heads/{rb}");
-        let staged = prestage(&local_ref, &sha, &dst, &expected_old, &url);
-        if let Some(stopped) = staged.stopped(&mut report) {
-            return stopped;
-        }
+        report = match prestage(&local_ref, &sha, &dst, &expected_old, &url).into_report(report) {
+            Ok(report) => report,
+            Err(stopped) => return *stopped,
+        };
         let land_env = format!("{sha} {}", or_zeros(&expected_old));
         let run = push(&url, &sha, &dst, lease, &land_env);
         match run.outcome {
@@ -657,22 +657,22 @@ impl Staged {
         Staged::ended(owed, state, Prestage::Refused(why, Vec::new()))
     }
 
-    /// Fold this into `report`: the finished report when land must stop,
-    /// `None` when it may push.
-    fn stopped(self, report: &mut Report) -> Option<Report> {
+    /// `report` with this folded in: `Ok` when land may push, `Err` with the
+    /// finished report when it must stop.
+    fn into_report(self, mut report: Report) -> Result<Report, Box<Report>> {
         report.gates_owed = self.owed;
         report.prestage = self.state;
         match self.end {
-            Prestage::Ready => None,
+            Prestage::Ready => Ok(report),
             Prestage::Refused(why, next) => {
                 eprintln!("amont: land: {why}");
                 report.status = Status::Refused;
                 report.next = next;
-                Some(report.clone())
+                Err(Box::new(report))
             }
             Prestage::Interrupted(sig) => {
                 report.status = Status::Interrupted(sig);
-                Some(report.clone())
+                Err(Box::new(report))
             }
         }
     }
@@ -931,9 +931,10 @@ fn land_tag(name: &str) -> Report {
             return report;
         }
     }
-    if let Some(stopped) = prestage(&dst, &oid, &dst, "", &url).stopped(&mut report) {
-        return stopped;
-    }
+    report = match prestage(&dst, &oid, &dst, "", &url).into_report(report) {
+        Ok(report) => report,
+        Err(stopped) => return *stopped,
+    };
     let land_env = format!("{oid} {ZEROS}");
     let run = push(&url, &dst, &dst, None, &land_env);
     match run.outcome {

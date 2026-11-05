@@ -769,12 +769,12 @@ fn rust_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Ran {
     ) else {
         return Ran::Stopped(Outcome::Unavailable);
     };
-    Ran::Concluded(Concluded::new(
-        "audit-rust",
-        merged.report,
-        merged.full,
-        merged.waivable,
-    ))
+    Ran::Concluded(Concluded {
+        tool: "audit-rust".to_string(),
+        report: merged.report,
+        full: merged.full,
+        waivable: merged.waivable,
+    })
 }
 
 /// `cargo tree -i <crate>` over the edges a RELEASE ships: normal and build
@@ -1124,7 +1124,12 @@ fn js_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Ran {
     } else {
         Report::Clean
     };
-    Ran::Concluded(Concluded::new("audit-js", report, full, waivable))
+    Ran::Concluded(Concluded {
+        tool: "audit-js".to_string(),
+        report,
+        full,
+        waivable,
+    })
 }
 
 /// Go needs no production filter: modules have no dev-dependency set, and
@@ -1152,12 +1157,12 @@ fn go_run(settings: &crate::config::Settings, _: &[PushRef]) -> Ran {
     ) else {
         return Ran::Stopped(Outcome::Unavailable);
     };
-    Ran::Concluded(Concluded::new(
-        "audit-go",
-        merged.report,
-        merged.full,
-        merged.waivable,
-    ))
+    Ran::Concluded(Concluded {
+        tool: "audit-go".to_string(),
+        report: merged.report,
+        full: merged.full,
+        waivable: merged.waivable,
+    })
 }
 
 fn python_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Ran {
@@ -1193,12 +1198,12 @@ fn python_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Ran {
         // A row whose advisory id is not one a waiver can name makes the
         // whole report unwaivable.
         let waivable = merged.waivable && pip_rows_all_named(&merged.full);
-        return Ran::Concluded(Concluded::new(
-            "audit-python",
-            merged.report,
-            merged.full,
+        return Ran::Concluded(Concluded {
+            tool: "audit-python".to_string(),
+            report: merged.report,
+            full: merged.full,
             waivable,
-        ));
+        });
     }
     let argv = if let Some(site_packages) = venv_site_packages(&root) {
         // A uv/PEP-621 project has no requirements.txt, and EXPORTING one
@@ -1259,7 +1264,12 @@ fn python_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Ran {
             };
         }
     }
-    Ran::Concluded(Concluded::new("audit-python", report, out, waivable))
+    Ran::Concluded(Concluded {
+        tool: "audit-python".to_string(),
+        report,
+        full: out,
+        waivable,
+    })
 }
 
 /// PEP 503 normalised: `Foo_Bar.baz` and `foo-bar-baz` are one package.
@@ -1398,17 +1408,6 @@ struct Concluded {
     report: Report,
     full: String,
     waivable: bool,
-}
-
-impl Concluded {
-    fn new(tool: &str, report: Report, full: String, waivable: bool) -> Concluded {
-        Concluded {
-            tool: tool.to_string(),
-            report,
-            full,
-            waivable,
-        }
-    }
 }
 
 /// How one ecosystem's audit ended: with a report to judge, or before it had
@@ -1722,12 +1721,12 @@ fn recorded(
         ),
         Ran::Stopped(Outcome::Unavailable) => (
             Outcome::Unavailable,
-            Some(Concluded::new(
-                tool,
-                Report::CouldNotCheck,
-                String::new(),
-                false,
-            )),
+            Some(Concluded {
+                tool: tool.to_string(),
+                report: Report::CouldNotCheck,
+                full: String::new(),
+                waivable: false,
+            }),
         ),
         Ran::Stopped(outcome) => (outcome, None),
     };
