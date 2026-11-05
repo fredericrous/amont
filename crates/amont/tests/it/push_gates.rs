@@ -589,3 +589,97 @@ fn hook_in(
     all.extend_from_slice(env);
     hook(r, line, &all)
 }
+
+#[test]
+fn neither_land_variable_reaches_a_gate() {
+    if missing("node") {
+        return;
+    }
+    let fx = crate::land::fixture("feat/env");
+    let seen = fx.r.path(".git/env.log");
+    fx.r.stage(
+        "gate.js",
+        &format!(
+            "require('fs').appendFileSync({:?}, (process.env.AMONT_LAND||'-') + ' ' + (process.env.AMONT_LAND_PRESTAGE||'-') + '\\n')\n",
+            seen.to_str().expect("utf8")
+        ),
+    );
+    fx.r.stage(
+        "amont.conf",
+        "pre-push    suite  *.txt  block  node gate.js\n",
+    );
+    fx.r.commit("chore: the gate");
+    crate::tree_gates::trust_and_install(&fx.r);
+    let ran = crate::land::land(&fx, &[]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let log = std::fs::read_to_string(&seen).expect("the gate ran");
+    for line in log.lines() {
+        assert_eq!(line, "- -", "a gate child saw a land variable: {log}");
+    }
+}
+
+/// Age every audit record by `secs`.
+fn age_audit_records(r: &Repo, secs: i64) {
+    for line in audit_records(r).lines() {
+        let object = line.split_whitespace().nth(1).expect("object");
+        let body = String::from_utf8_lossy(
+            &r.git(&["notes", "--ref", "amont-audit", "show", object])
+                .stdout,
+        )
+        .into_owned();
+        let mut fields: Vec<String> = body
+            .lines()
+            .next()
+            .unwrap()
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        let at: i64 = fields[1].parse().unwrap();
+        fields[1] = (at - secs).to_string();
+        let aged = std::iter::once(fields.join(" "))
+            .chain(body.lines().skip(1).map(str::to_string))
+            .collect::<Vec<_>>()
+            .join("\n");
+        r.git(&[
+            "notes",
+            "--ref",
+            "amont-audit",
+            "add",
+            "-f",
+            "-m",
+            &aged,
+            object,
+        ]);
+    }
+}
+
+#[test]
+fn a_lockfile_change_owes_the_audit_again() {
+    let (fx, bin, log) = audit_fixture();
+    let ran = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let base = crate::land::head(&fx);
+    fx.r.stage("go.sum", "example.com/m v1.0.1 h1:def=\n");
+    fx.r.commit("fix(deps): bump");
+    let (code, _out, err) = hook_in(&fx.r, &push_line(&base, &crate::land::head(&fx)), &bin, &[]);
+    assert_ne!(code, 0, "a new lockfile has no record: {err}");
+    assert!(err.contains("pre-push-audit-go"), "{err}");
+    assert_eq!(runs(&log), 1, "and the tool did not run on the connection");
+}
+
+#[test]
+fn a_could_not_check_record_expires_after_an_hour() {
+    let (fx, bin, _log) = audit_fixture();
+    std::fs::write(fx.r.path(".git/OFFLINE"), "").expect("mark");
+    let ran = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let tip = crate::land::head(&fx);
+    // Fresh: the push replays "NOT checked".
+    let (code, _o, err) = hook_in(&fx.r, &push_line(&tip, &tip), &bin, &[]);
+    assert_eq!(code, 0, "{err}");
+    // Two hours later it is owed again, though a clean record would still hold.
+    age_audit_records(&fx.r, 2 * 3600);
+    let (code, _o, err) = hook_in(&fx.r, &push_line(&tip, &tip), &bin, &[]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("pre-push-audit-go"), "{err}");
+}
