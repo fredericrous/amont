@@ -10,6 +10,10 @@
 //! - Every pre-commit command is told the index as `AMONT_INDEX_FILE`.
 //! - A command declared `index` is handed it as `GIT_INDEX_FILE` too.
 //! - Any other command still sees no `GIT_*` variable.
+//!
+//! Unix only: the gates are `sh` scripts, and the fixtures are trusted and
+//! installed through `tree_gates`, which is Unix only too.
+#![cfg(unix)]
 
 use crate::common::{missing, Repo};
 use std::process::Stdio;
