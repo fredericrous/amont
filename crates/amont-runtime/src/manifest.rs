@@ -710,14 +710,15 @@ enum IndexEnv {
     Warn(String),
 }
 
-/// The variables `lookup` gives a pre-commit command (`reads_index`: declared
-/// `index`), or why it gets none. Not knowing the index is the original bug,
+/// The variables `lookup` gives a pre-commit command that runs as `runs_on`
+/// says, or why it gets none. Not knowing the index is the original bug,
 /// said out loud.
 fn index_env(
     lookup: &Result<crate::hooks::common::CommitIndex, String>,
-    reads_index: bool,
+    runs_on: RunsOn,
     gate: &str,
 ) -> IndexEnv {
+    let reads_index = runs_on == RunsOn::Here { reads_index: true };
     match lookup {
         Ok(index) => {
             let mut vars = vec![
@@ -1073,17 +1074,15 @@ impl External {
         cmd.env_remove(crate::hooks::common::INDEX_ENV);
         cmd.env_remove(crate::hooks::common::INDEX_GIT_DIR_ENV);
         if self.stage == Stage::PreCommit {
-            let reads_index = matches!(
-                self.kind,
-                Kind::Runnable {
-                    runs_on: RunsOn::Here { reads_index: true },
-                    ..
-                }
-            );
+            // An unusable check never runs; it reads nothing.
+            let runs_on = match &self.kind {
+                Kind::Runnable { runs_on, .. } => *runs_on,
+                Kind::Unusable { .. } => RunsOn::Here { reads_index: false },
+            };
             // Asked per gate, a few milliseconds of `git rev-parse`: no
             // process-wide cache to reason about.
             let lookup = crate::hooks::common::commit_index();
-            match index_env(&lookup, reads_index, &self.short_name) {
+            match index_env(&lookup, runs_on, &self.short_name) {
                 IndexEnv::Set(vars) => {
                     for (key, value) in vars {
                         cmd.env(key, value);
@@ -2390,23 +2389,25 @@ mod tests {
     fn an_index_that_cannot_be_located_refuses_only_an_index_gate() {
         let lost: Result<crate::hooks::common::CommitIndex, String> = Err("git failed".into());
         assert!(
-            matches!(index_env(&lost, true, "staged"), IndexEnv::Refuse(w) if w.contains("staged"))
+            matches!(index_env(&lost, RunsOn::Here { reads_index: true }, "staged"), IndexEnv::Refuse(w) if w.contains("staged"))
         );
         assert!(
-            matches!(index_env(&lost, false, "lint"), IndexEnv::Warn(w) if w.contains("AMONT_INDEX_FILE"))
+            matches!(index_env(&lost, RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Warn(w) if w.contains("AMONT_INDEX_FILE"))
         );
         let found = Ok(crate::hooks::common::CommitIndex {
             file: "/r/.git/index.lock".into(),
             git_dir: "/r/.git".into(),
         });
-        let IndexEnv::Set(plain) = index_env(&found, false, "lint") else {
+        let IndexEnv::Set(plain) = index_env(&found, RunsOn::Here { reads_index: false }, "lint")
+        else {
             panic!("an index that was found is set");
         };
         assert_eq!(
             plain.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
             ["AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"]
         );
-        let IndexEnv::Set(marked) = index_env(&found, true, "staged") else {
+        let IndexEnv::Set(marked) = index_env(&found, RunsOn::Here { reads_index: true }, "staged")
+        else {
             panic!("an index that was found is set");
         };
         assert!(marked.contains(&("GIT_INDEX_FILE", "/r/.git/index.lock".into())));
