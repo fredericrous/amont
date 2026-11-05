@@ -6,6 +6,34 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v1.70.0
+
+### Fixed
+
+- **A declared pre-commit gate judges the index `git commit` is sealing.**
+  `git commit -a` and `git commit <paths>` seal a temporary index that git
+  names to the hooks only in `GIT_INDEX_FILE`, and amont strips every `GIT_*`
+  variable before a declared command runs. A gate that reads the index
+  (`git diff --cached`, `amont-agent suppressions --staged`) therefore judged
+  the old one, passed on nothing, and its pass was stamped onto the tree
+  actually committed. Upgrading voids those passes: every declared pre-commit
+  gate's stamp token gains a version, so each gate runs once more, even
+  behind a wrapper script. Pre-push tokens are unchanged.
+
+### Added
+
+- **`AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR`** for every declared
+  pre-commit command: the absolute index being committed, and the absolute git
+  dir it belongs to. Git never reads either, so a test suite's fixture
+  repositories are untouched; a consumer honours the index only where its own
+  `git rev-parse --absolute-git-dir` matches. Neither is set on pre-push, and
+  an inherited value is always removed first.
+- **The `index` command-column marker** (pre-commit only, not beside
+  `platform=any`): that one command also gets `GIT_INDEX_FILE`, for a tool
+  that reads the index through git and cannot be taught the variable. When the
+  index cannot be located, an `index` gate is refused rather than run blind.
+  An older amont reads `index` as the program name and only warns.
+
 ## v1.69.0
 
 ### Added
