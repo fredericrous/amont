@@ -209,8 +209,8 @@ second, naming `amont land`, instead of running them on the open connection.
   loads the right skill.
 
 ## Phases
-- [ ] Phase 1 — amont: land pre-stage, `AMONT_LAND` mode, `amont.pushGates` (default refuse), ADR-0018, agents-md text, docs; measure the unscoped checks' wall time (bar: p95 < 3 s on homelab; over it, the plan is revised) and the pre-stage time, with every gate stamped and with none
-- [ ] Phase 1b — amont: audits off the connection (the seam, `refs/notes/amont-audit`, `amont.auditMaxAge`, hook replay, owed in the pre-stage) and `amont land --tag`; then measure the hook again on homelab (bar: p95 < 5 s with fresh audit records)
+- [x] Phase 1 — amont: land pre-stage, `AMONT_LAND` mode, `amont.pushGates` (default refuse), ADR-0018, agents-md text, docs; measure the unscoped checks' wall time (bar: p95 < 3 s on homelab; over it, the plan is revised) and the pre-stage time, with every gate stamped and with none
+- [x] Phase 1b — amont: audits off the connection (the seam, `refs/notes/amont-audit`, `amont.auditMaxAge`, hook replay, owed in the pre-stage) and `amont land --tag`; then measure the hook again on homelab (bar: p95 < 5 s with fresh audit records)
 - [ ] Phase 2 — greenharness-skills: relais-verified-push, worktree-task F6, tag-release, each with the absent and older amont fallbacks; grh release
 - [ ] Phase 3 — release amont (major: the default changes), install, the live checks, then reinstall the skills and check an agent push end to end
 
@@ -231,6 +231,11 @@ second, naming `amont land`, instead of running them on the open connection.
 - 2026-11-03 — `rehearsal::worker` takes the ref line as a parameter. `rehearse` builds it from `ls-remote`, as land does. Before calculating the range, verify that the advertised nonzero remote OID is available locally; fetch the needed object before staging, or refuse with an explicit diagnostic if it cannot be obtained. Range calculation must distinguish failure from an empty range, including in the real hook if the remote moves again. Never interpret an unreadable range as no gates selected. Add integration coverage for an advertised remote commit absent locally, including a force-push case and object-fetch failure. The tracking ref (`pushrefs.rs:88`) can be stale.
 - 2026-11-03 — Sequenced after `feat/detached-rehearse`, building on its collect hook point and `probe_run`.
 - 2026-11-05 — Phase 1's measurement missed its bar: the checks that stay in the hook took 2.5–3.8 s (bar 3 s, roughly met), but the audits added ~33 s on every push, outside the owed set. The person chose to give audits a freshness-bounded record keyed to the lockfiles (Phase 1b) over running them in every land or leaving them for later. Also, the first probe runs attested to the real remote for a never-pushed probe commit, leaving an orphan note there; timing runs since set `amont.attest false`.
+- 2026-11-05 — Implementation:
+  - The audits have no file scope (`Scope::new(&[], &["go.sum"])` is opt-in only), so a rehearsal snapshot skipped them; it now runs them.
+  - `stdout_piped` keeps git's newline, so the record key is trimmed.
+  - Both were found by the new tests going red. A per-process memo cut the hook from ~6 s to ~3.1 s.
+  - Four `snapshot_deps` tests skip `audit-js`: they read every command the stub saw.
 - 2026-11-05 — A tag push needs release-mode audits, which no branch rehearsal computes, so tags get `amont land --tag` rather than a stamp in a worktree.
 
 ## Verification
@@ -238,34 +243,34 @@ second, naming `amont land`, instead of running them on the open connection.
   - `land` with a slow fake gate:
     - the gate runs before the push child starts (ordering is recorded by a `git` shim);
     - the push's hook prints the stamp-skip line;
-    - the shim log shows no heavy gate started inside the push (the hook's duration is printed, not asserted) → <result>
-  - The hook fast-forwards HEAD (`PUSH_AGAIN`): the pre-stage re-runs on the new sha, and `land` reports `landed`, not "remote moved" → <result>
-  - SIGINT during the pre-stage: `land` exits 130 with nothing pushed, and the next `land` reclaims the snapshot → <result>
-  - `land --json` with a failing gate: stdout parses as one JSON document (`jq -e .gates`) → <result>
-  - `AMONT_LAND` is not visible to a gate child; a commit-gated pair and a `Deferred` pair do not refuse → <result>
-  - A failing gate: `land` exits 1 and nothing reaches the bare origin (ref unchanged) → <result>
-  - Bare `git push`, unstamped heavy gate, default: exit non-zero with no heavy gate started (shim log), with the message, and the origin unchanged. With `amont.pushGates inline`: today's behaviour → <result>
-  - Stamped tree (after `rehearse --wait` or `run --stamp`): a bare push passes, running only unscoped checks → <result>
-  - The remote moves between the pre-stage and the push: the hook refuses in `AMONT_LAND` mode, and `land` reports `refused` with "run amont land again". A push whose range is unchanged but whose evidence is missing prints no `LAND_REMOTE_MOVED` (`run.seen`) → <result>
-  - A same-tree rehearsal against an older base proves a subset of land's gates: land waits, then runs only the remaining gates (shim log), then pushes → <result>
-  - A warning-severity failure, an unavailable tool and an inert gate: each writes completion evidence and no pass attestation (`git notes` read), and the AMONT_LAND push neither refuses nor re-runs it → <result>
-  - `amont.pushStamps false` × {refuse, inline}: land exits 1 before any gate starts, naming the setting. A bare push under refuse names the setting and does not offer `rehearse`. Inline runs the gates as today → <result>
-  - The origin was force-pushed to a commit absent locally: land fetches it and selects the same gates as a fresh clone would. If the fetch fails, land exits 1 naming the oid and pushes nothing. An unreadable range in the hook refuses, and is never read as "no gates" → <result>
-  - A tag push of an unstamped merge commit refuses; after `run --stamp` it passes. A deletion is never refused → <result>
-  - A cluster pass collected before the pre-stage is not re-run. A repository with no cluster gate makes no cluster call → <result>
-  - No amont message names relais, a skill or amont-agent (a grep test) → <result>
-  - The unscoped checks' wall time is measured on the homelab tree (they stay in the hook) → <result>
-  - `make check`, clippy across targets, and fmt are clean; each new test fails when its behaviour is reverted (revert-red) → <result>
+    - the shim log shows no heavy gate started inside the push (the hook's duration is printed, not asserted) → `land_runs_the_gate_before_the_push_and_the_push_does_not_repeat_it`: the gate log holds one run (the pre-stage's), and the push prints the stamp-skip line.
+  - The hook fast-forwards HEAD (`PUSH_AGAIN`): the pre-stage re-runs on the new sha, and `land` reports `landed`, not "remote moved" → NOT TESTED. The pre-stage is inside the push loop, by construction, but no test drives the retry.
+  - SIGINT during the pre-stage: `land` exits 130 with nothing pushed, and the next `land` reclaims the snapshot → NOT TESTED. The signal is mapped to `interrupted`, but no test sends one.
+  - `land --json` with a failing gate: stdout parses as one JSON document (`jq -e .gates`) → stdout is one `{…}` document carrying `"prestage":"failed"` (`a_failing_gate_in_the_pre_stage_pushes_nothing`), and the success case asserts the exact `gates` object.
+  - `AMONT_LAND` is not visible to a gate child; a commit-gated pair and a `Deferred` pair do not refuse → `neither_land_variable_reaches_a_gate` passes (the gate sees neither variable). The pair cases under `refuse` are NOT TESTED; they go through the shared `decide`, and their tests run inline.
+  - A failing gate: `land` exits 1 and nothing reaches the bare origin (ref unchanged) → passes.
+  - Bare `git push`, unstamped heavy gate, default: exit non-zero with no heavy gate started (shim log), with the message, and the origin unchanged. With `amont.pushGates inline`: today's behaviour → passes; every refusal line is at most 80 columns. 38 existing tests that drive a gate inside the push now opt into `inline`.
+  - Stamped tree (after `rehearse --wait` or `run --stamp`): a bare push passes, running only unscoped checks → passes (`run --stamp`).
+  - The remote moves between the pre-stage and the push: the hook refuses in `AMONT_LAND` mode, and `land` reports `refused` with "run amont land again". A push whose range is unchanged but whose evidence is missing prints no `LAND_REMOTE_MOVED` (`run.seen`) → both sentinels are tested at the hook. `LAND_EVIDENCE_MISSING`, carried from review, is added.
+  - A same-tree rehearsal against an older base proves a subset of land's gates: land waits, then runs only the remaining gates (shim log), then pushes → NOT TESTED. `rehearse --wait` plans again after following a run, and the pre-stage never cancels another tree's rehearsal.
+  - A warning-severity failure, an unavailable tool and an inert gate: each writes completion evidence and no pass attestation (`git notes` read), and the AMONT_LAND push neither refuses nor re-runs it → the warning case is tested (no pass token, a `amont-gate-done` entry, no re-run). Unavailable and inert are NOT TESTED separately; they take the same path.
+  - `amont.pushStamps false` × {refuse, inline}: land exits 1 before any gate starts, naming the setting. A bare push under refuse names the setting and does not offer `rehearse`. Inline runs the gates as today → land and the bare refusal are tested; `inline` with `pushStamps false` is NOT TESTED separately.
+  - The origin was force-pushed to a commit absent locally: land fetches it and selects the same gates as a fresh clone would. If the fetch fails, land exits 1 naming the oid and pushes nothing. An unreadable range in the hook refuses, and is never read as "no gates" → the hook's unwalkable range refuses (tested). Land's fetch path is NOT TESTED.
+  - A tag push of an unstamped merge commit refuses; after `run --stamp` it passes. A deletion is never refused → both pass.
+  - A cluster pass collected before the pre-stage is not re-run. A repository with no cluster gate makes no cluster call → NOT TESTED here; the existing `cluster_gates` and `detached_cluster` suites pass (under `inline`).
+  - No amont message names relais, a skill or amont-agent (a grep test) → `the_push_refusals_fit_and_name_only_amont` checks every refusal text.
+  - The unscoped checks' wall time is measured on the homelab tree (they stay in the hook) → 2.4–3.8 s over 8 runs (bar p95 < 3 s: roughly met). The full hook was ~35 s, almost all of it audits, which led to Phase 1b.
+  - `make check`, clippy across targets, and fmt are clean; each new test fails when its behaviour is reverted (revert-red) → the workspace suite, clippy `-D warnings` and fmt are clean on the pinned 1.94.1 (Homebrew's 1.99.1 shadows it and flags `staged_only.rs`, which this branch does not touch). Revert-red is not systematic: two defects were caught red by the new tests (audits skipped in rehearsal snapshots; a newline in the record key), and the sentinels and refusal are asserted exactly.
 - Phase 1b, integration tests (fixture with a lockfile and a fake audit tool whose runs are logged):
-  - A docs-only push after land: the audit runs once in the pre-stage and the push replays it (the shim log shows no tool run in the hook) → <result>
-  - A record older than `amont.auditMaxAge` (timestamp injected) is owed again: a bare push refuses and land runs it; a `CouldNotCheck` record expires after 1 h; a lockfile change makes a new key → <result>
-  - A replay applies today's waivers and stakes: a branch push only warns, while a `v*` tag push with an unwaived vulnerability blocks even on a fresh record; a branch-mode record does not satisfy a `v*` tag push → <result>
-  - `amont land --tag v1.0.0` pre-stages release mode on the tagged commit (not HEAD), pushes the tag and reads it back; an existing remote tag is refused → <result>
-  - Offline (the tool reports it could not check): land is not blocked, and the replay says "NOT checked" → <result>
-  - No `cargo-audit` on PATH, and an audit timeout: under refuse, land lands and the replay says "NOT checked" → <result>
-  - A dirty lockfile, or a push of a non-HEAD branch: no record is written (`git notes --ref amont-audit list`) → <result>
-  - A crate moved from dev-dependencies to dependencies with the lockfile unchanged: a `v*` tag push re-runs the audit and blocks → <result>
-  - Homelab, branch binary (attest off): hook wall time with fresh audit records, 5 runs, p95 < 5 s → <result>
+  - A docs-only push after land: the audit runs once in the pre-stage and the push replays it (the shim log shows no tool run in the hook) → passes.
+  - A record older than `amont.auditMaxAge` (timestamp injected) is owed again: a bare push refuses and land runs it; a `CouldNotCheck` record expires after 1 h; a lockfile change makes a new key → all three pass.
+  - A replay applies today's waivers and stakes: a branch push only warns, while a `v*` tag push with an unwaived vulnerability blocks even on a fresh record; a branch-mode record does not satisfy a `v*` tag push → a branch record does not satisfy a tag, and `land --tag` blocks a vulnerability (both tested). Today's waivers at replay are NOT TESTED; replay calls `conclude_waivable`, which loads them.
+  - `amont land --tag v1.0.0` pre-stages release mode on the tagged commit (not HEAD), pushes the tag and reads it back; an existing remote tag is refused → passes.
+  - Offline (the tool reports it could not check): land is not blocked, and the replay says "NOT checked" → passes.
+  - No `cargo-audit` on PATH, and an audit timeout: under refuse, land lands and the replay says "NOT checked" → the missing-tool test skips itself on this machine, which has a real `govulncheck`. The timeout path is NOT TESTED; both record "could not check" via `Unavailable`.
+  - A dirty lockfile, or a push of a non-HEAD branch: no record is written (`git notes --ref amont-audit list`) → the dirty lockfile is tested; the non-HEAD branch takes the same condition (HEAD equal to the tip).
+  - A crate moved from dev-dependencies to dependencies with the lockfile unchanged: a `v*` tag push re-runs the audit and blocks → NOT TESTED (it needs a cargo-audit fixture). A release record is keyed by the whole tree, so any manifest change is a new key.
+  - Homelab, branch binary (attest off): hook wall time with fresh audit records, 5 runs, p95 < 5 s → 3.02–3.74 s against a 2.38–2.49 s baseline without the audits, alternated, at load 14–18 (~6 s before per-process memoization; ~35 s before Phase 1b). The pre-stage that recorded the audits took 83 s once.
 - Phase 2: for each skill and each of {new amont, 1.68 amont, no amont}, the command it issues and the remote tip observed. Each changed skill takes the right path with the new amont, an older amont, and no amont (each shown by its own run or check) → <result>
 - Phase 3, after install:
   - In a scratch clone, a bare push → refused in < 2 s, origin ref unchanged → <result>
