@@ -124,6 +124,17 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
             "a stale {wt:?}: {e}"
         );
     }
+    // Removed however the test ends, a panic included: it lives outside the
+    // fixture's own directory.
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                eprintln!("could not remove {:?}: {e}", self.0);
+            }
+        }
+    }
+    let _cleanup = RemoveOnDrop(wt.clone());
     let added = r.git(&[
         "worktree",
         "add",
@@ -158,14 +169,12 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
     };
     let (bad_accepted, bad_out) = commit_only("BAD\n", "feat: bad");
     let (good_accepted, good_out) = commit_only("fine\n", "feat: fine");
-    let removed = std::fs::remove_dir_all(&wt);
     assert!(!bad_accepted, "the gate read the old index:\n{bad_out}");
     assert!(
         bad_out.contains("staged"),
         "refused by the gate:\n{bad_out}"
     );
     assert!(good_accepted, "{good_out}");
-    removed.expect("remove the linked worktree");
 }
 
 #[test]

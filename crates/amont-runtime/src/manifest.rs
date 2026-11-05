@@ -699,16 +699,47 @@ fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
     VOUCHED.get_or_init(crate::gate_stamp::vouched_for_staged_tree)
 }
 
-/// The index being committed, read once per hook process: a stage's
-/// externals run concurrently, and each asking git would be a spawn per
-/// check for one answer (the shape of `vouched_for_staged_tree`).
-fn commit_index() -> Result<&'static crate::hooks::common::CommitIndex, &'static str> {
-    static INDEX: std::sync::OnceLock<Result<crate::hooks::common::CommitIndex, String>> =
-        std::sync::OnceLock::new();
-    INDEX
-        .get_or_init(crate::hooks::common::commit_index)
-        .as_ref()
-        .map_err(String::as_str)
+/// What a pre-commit command is told about the index being committed.
+#[derive(Debug, PartialEq, Eq)]
+enum IndexEnv {
+    /// These variables, in this order.
+    Set(Vec<(&'static str, std::path::PathBuf)>),
+    /// A gate declared `index` with no index to read: refused, not run blind.
+    Refuse(String),
+    /// Any other gate runs without the variables; this says so.
+    Warn(String),
+}
+
+/// The variables `lookup` gives a pre-commit command (`reads_index`: declared
+/// `index`), or why it gets none. Not knowing the index is the original bug,
+/// said out loud.
+fn index_env(
+    lookup: &Result<crate::hooks::common::CommitIndex, String>,
+    reads_index: bool,
+    gate: &str,
+) -> IndexEnv {
+    match lookup {
+        Ok(index) => {
+            let mut vars = vec![
+                (crate::hooks::common::INDEX_ENV, index.file.clone()),
+                (
+                    crate::hooks::common::INDEX_GIT_DIR_ENV,
+                    index.git_dir.clone(),
+                ),
+            ];
+            if reads_index {
+                vars.push(("GIT_INDEX_FILE", index.file.clone()));
+            }
+            IndexEnv::Set(vars)
+        }
+        Err(why) if reads_index => IndexEnv::Refuse(format!(
+            "{gate}: cannot locate the index being committed ({why})"
+        )),
+        Err(why) => IndexEnv::Warn(format!(
+            "{gate}: cannot locate the index being committed ({why}); {} is not set",
+            crate::hooks::common::INDEX_ENV
+        )),
+    }
 }
 
 impl External {
@@ -1049,29 +1080,20 @@ impl External {
                     ..
                 }
             );
-            match commit_index() {
-                Ok(index) => {
-                    cmd.env(crate::hooks::common::INDEX_ENV, &index.file);
-                    cmd.env(crate::hooks::common::INDEX_GIT_DIR_ENV, &index.git_dir);
-                    if reads_index {
-                        cmd.env("GIT_INDEX_FILE", &index.file);
+            // Asked per gate, a few milliseconds of `git rev-parse`: no
+            // process-wide cache to reason about.
+            let lookup = crate::hooks::common::commit_index();
+            match index_env(&lookup, reads_index, &self.short_name) {
+                IndexEnv::Set(vars) => {
+                    for (key, value) in vars {
+                        cmd.env(key, value);
                     }
                 }
-                // Not knowing the index is the original bug, said out loud:
-                // a gate declared to read it is refused rather than run blind.
-                Err(why) if reads_index => {
-                    crate::hooks::common::fail(&format!(
-                        "{}: cannot locate the index being committed ({why})",
-                        self.short_name
-                    ));
+                IndexEnv::Refuse(why) => {
+                    crate::hooks::common::fail(&why);
                     return Outcome::Failed;
                 }
-                Err(why) => crate::hooks::common::warn(&format!(
-                    "{}: cannot locate the index being committed ({why}); \
-                     {} is not set",
-                    self.short_name,
-                    crate::hooks::common::INDEX_ENV
-                )),
+                IndexEnv::Warn(why) => crate::hooks::common::warn(&why),
             }
         }
         // Under the deadline: repo-authored code that outlives the budget is
@@ -2360,6 +2382,34 @@ mod tests {
             why(&one("pre-push  adr  *  block  docs-skip aval check\n")),
             ParseError::DocsSkipOnPrePush
         );
+    }
+
+    /// A gate declared `index` with no index to read is refused, never run
+    /// blind; any other gate runs without the variables, and is warned.
+    #[test]
+    fn an_index_that_cannot_be_located_refuses_only_an_index_gate() {
+        let lost: Result<crate::hooks::common::CommitIndex, String> = Err("git failed".into());
+        assert!(
+            matches!(index_env(&lost, true, "staged"), IndexEnv::Refuse(w) if w.contains("staged"))
+        );
+        assert!(
+            matches!(index_env(&lost, false, "lint"), IndexEnv::Warn(w) if w.contains("AMONT_INDEX_FILE"))
+        );
+        let found = Ok(crate::hooks::common::CommitIndex {
+            file: "/r/.git/index.lock".into(),
+            git_dir: "/r/.git".into(),
+        });
+        let IndexEnv::Set(plain) = index_env(&found, false, "lint") else {
+            panic!("an index that was found is set");
+        };
+        assert_eq!(
+            plain.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            ["AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"]
+        );
+        let IndexEnv::Set(marked) = index_env(&found, true, "staged") else {
+            panic!("an index that was found is set");
+        };
+        assert!(marked.contains(&("GIT_INDEX_FILE", "/r/.git/index.lock".into())));
     }
 
     /// `index` is a leading marker too, meaningful only where an index is
