@@ -7,10 +7,10 @@ adrs: [ADR-0010, ADR-0013, ADR-0014, ADR-0015, ADR-0016]
 # Gates run before the push connection
 
 ## Review panel
-👉 **Decide:** none — your two calls are in: a bare push refuses by default, and every Green Harness part stays optional. Approve if land running every heavy gate before git connects is the shape you want.
-📍 amont + greenharness-skills · plan reviewed, nothing built; lands after `feat/detached-rehearse` is released · next: worktree, Phase 1. Panel: backend, lang:rust, tui, unix (opus-5-5; full panel, not the delta the tool reported for a reused plan file), codex.
-**Changed by review:** the pre-stage runs on every push attempt; stderr only, so `--json` stays clean; one shared skip decision; non-pass outcomes keep their own evidence; a remote tip absent locally is fetched or refused, never read as an empty range.
-**Verdicts:** round 1: 4 approve-with-changes (one blocker, the retry). Round 2: backend approve. Codex: 4 highs applied, then backend approve on the final body. 4 lows/mediums carried into implementation.
+👉 **Decide:** none: you chose the audit design (a fresh record per lockfile, 24 h). Approve if `amont land --tag` is the right way to push release tags.
+📍 amont + greenharness-skills · Phase 1 built (13 tests green; homelab measurement missed its bar: audits ~33 s per push) · next: Phase 1b. Panel: backend (opus-5-5; delta of a revision), with the original panel and codex on the Phase 1 body.
+**Changed by review (1b):** records written only where the working tree is the tip; release mode keyed by the tip's tree, since the dev-only split reads manifests; a missing tool or a timeout records "NOT checked" for 1 h; the record ref is local only.
+**Verdicts:** Phase 1 body: 4 approve-with-changes, then approve. 1b delta: backend approve-with-changes, then approve. Carried: map an audit timeout (`None`) to a `CouldNotCheck` record; cite `audit.rs:594`.
 📄 Full reviews: [2026-11-03-gates-before-the-push-connection.reviews.md](2026-11-03-gates-before-the-push-connection.reviews.md)
 
 ## Context
@@ -136,10 +136,54 @@ second, naming `amont land`, instead of running them on the open connection.
     rehearsal or land pre-stage are never refused.
   - `amont.unstampedPush` keeps working; `refuse` covers it.
   - Handle `amont.pushStamps=false` explicitly. When required scoped gates need stamp handoff, land refuses before starting expensive work and explains that stamp reuse must be enabled for land's pre-stage. Bare refusal diagnostics name this configuration and offer enabling stamp reuse or using bare `git push` with `amont.pushGates inline`. Do not suggest rehearsal alone as a remedy while stamp reuse is disabled. Test both pushGates modes with pushStamps enabled and disabled.
-- **Tags:** a tag push selects gates like any other ref. A release tag usually
-  points at a merge commit whose tree nobody stamped. `amont run --stamp` on
-  that commit (ADR-0015) stamps it, and the tag push then passes.
-  `tag-release` gains that step.
+- **Audits leave the connection too (revision, 2026-11-05).** Phase 1 measured
+  homelab: the checks that stay in the hook take ~2.6 s, but the dependency
+  audits (`pre-push-audit-{go,js,python,rust}`) add ~33 s on every push. They
+  run whether or not a lockfile changed, so they can block `v*` tags, and the
+  owed set above (scoped gates the range touches) never counted them. The
+  person chose option 1: a freshness-bounded record keyed to the lockfiles.
+  - **The seam** (`hooks/audit.rs`). Each ecosystem function splits into
+    `report(settings, release) -> Option<Merged>`, the expensive tool runs over
+    `audit_each_dir`, and the existing `conclude_waivable`, which applies the
+    push's stakes and today's waivers. The report depends on the stakes (a
+    release drops dev-only crates and audits production dependencies), so it
+    is computed per mode: `branch` or `release`.
+  - **The record:** `refs/notes/amont-audit`, keyed by a synthetic oid, sha1 of
+    `amont-audit-v1`, the check, the mode, and, for `branch`, the sorted
+    `path blob` lines of every lockfile that audit reads (for `release`, the
+    tip's tree oid, since the dev-only split reads the manifests too), taken from the pushed tip's tree (as the
+    inputs ref keys by fingerprint, ADR-0011). The body holds the unix time,
+    the report class, its ids, `waivable`, and the tools' full output. It is
+    written wherever an audit actually ran, in a push, a rehearsal snapshot or
+    `run --stamp`, only under `stamp_tips`' clean-tree-at-start condition with
+    HEAD equal to the keyed tip (the tools read the working tree, audit.rs:660,
+    :951), and is never a stamp or an attestation. It is a local ref, never
+    pushed.
+  - **Freshness:** `amont.auditMaxAge`, in hours, default 24. A `CouldNotCheck`
+    report stays fresh for 1 h, so an offline land is never blocked and is
+    retried soon. An absent tool or a timed-out audit writes a record of that
+    class too, so the audit is never owed forever.
+  - **The hook:** an opted-in audit (its lockfile is present) is owed on every
+    non-deletion push, in the push's mode, whether or not the range touches the
+    lockfile.
+    - When every pushed tip has a fresh record, the hook replays
+      `conclude_waivable`: the same lines and the same verdict, judged against
+      today's waivers and this push's stakes, with no tool run.
+    - Otherwise, under `refuse` or land, the audit joins the refusal's missing
+      set; under `inline` it runs and is recorded, as before.
+  - **The pre-stage:** the rehearsal plan owes stale audits besides
+    `scoped_push_gates`. The snapshot's pre-push already runs every opted-in
+    scoped check, so it records them.
+- **Tags: `amont land --tag <name>`.** It pre-stages and pushes one tag. The
+  ref line is `refs/tags/<name> <commit> refs/tags/<name> <zeros>`, so a `v*`
+  tag gets release-mode audits and the gates its range owes, run on a snapshot
+  of the tagged commit: the worker snapshots the pre-stage line's `local_oid`,
+  not HEAD.
+  - A tag that already exists on the remote is refused; there is no `--force`
+    for tags.
+  - It reads the remote tag back, exactly as a branch land does.
+  - `tag-release` uses it on amont ≥ 2.0, instead of `run --stamp` in a worktree
+    followed by a bare tag push.
 - **Guidance:** the `amont agents-md` block ("Run `amont rehearse --wait`
   BEFORE `git push`…") is rewritten:
   - push with `amont land`;
@@ -157,16 +201,16 @@ second, naming `amont land`, instead of running them on the open connection.
     agent that met the refusal what to do.
   - **`worktree-task` F6** drops the separate `amont rehearse --wait` before
     `amont land` on the new amont, and keeps today's paths otherwise.
-  - **`tag-release`**, where amont is installed, checks out the tagged commit
-    in a worktree and runs `amont run --stamp` there before pushing the tag
-    (`run --stamp` stamps HEAD of a clean worktree and runs every opted-in
-    scoped gate, `run_stamp.rs:122-219`). Without amont it is unchanged.
+  - **`tag-release`**, on amont ≥ 2.0, pushes the tag with
+    `amont land --tag v<version>`. Below 2.0, or without amont, it keeps the
+    plain `git push origin v<version>`.
 
   Their descriptions name the refusal text, so an agent that meets it
   loads the right skill.
 
 ## Phases
 - [ ] Phase 1 — amont: land pre-stage, `AMONT_LAND` mode, `amont.pushGates` (default refuse), ADR-0018, agents-md text, docs; measure the unscoped checks' wall time (bar: p95 < 3 s on homelab; over it, the plan is revised) and the pre-stage time, with every gate stamped and with none
+- [ ] Phase 1b — amont: audits off the connection (the seam, `refs/notes/amont-audit`, `amont.auditMaxAge`, hook replay, owed in the pre-stage) and `amont land --tag`; then measure the hook again on homelab (bar: p95 < 5 s with fresh audit records)
 - [ ] Phase 2 — greenharness-skills: relais-verified-push, worktree-task F6, tag-release, each with the absent and older amont fallbacks; grh release
 - [ ] Phase 3 — release amont (major: the default changes), install, the live checks, then reinstall the skills and check an agent push end to end
 
@@ -186,6 +230,8 @@ second, naming `amont land`, instead of running them on the open connection.
 - 2026-11-03 — The release is a major version: a default that refuses pushes is a breaking change for amont's users.
 - 2026-11-03 — `rehearsal::worker` takes the ref line as a parameter. `rehearse` builds it from `ls-remote`, as land does. Before calculating the range, verify that the advertised nonzero remote OID is available locally; fetch the needed object before staging, or refuse with an explicit diagnostic if it cannot be obtained. Range calculation must distinguish failure from an empty range, including in the real hook if the remote moves again. Never interpret an unreadable range as no gates selected. Add integration coverage for an advertised remote commit absent locally, including a force-push case and object-fetch failure. The tracking ref (`pushrefs.rs:88`) can be stale.
 - 2026-11-03 — Sequenced after `feat/detached-rehearse`, building on its collect hook point and `probe_run`.
+- 2026-11-05 — Phase 1's measurement missed its bar: the checks that stay in the hook took 2.5–3.8 s (bar 3 s, roughly met), but the audits added ~33 s on every push, outside the owed set. The person chose to give audits a freshness-bounded record keyed to the lockfiles (Phase 1b) over running them in every land or leaving them for later. Also, the first probe runs attested to the real remote for a never-pushed probe commit, leaving an orphan note there; timing runs since set `amont.attest false`.
+- 2026-11-05 — A tag push needs release-mode audits, which no branch rehearsal computes, so tags get `amont land --tag` rather than a stamp in a worktree.
 
 ## Verification
 - Phase 1, integration tests in `crates/amont/tests/it/`, with the bare-origin fixture of `it/land.rs`:
@@ -210,6 +256,16 @@ second, naming `amont land`, instead of running them on the open connection.
   - No amont message names relais, a skill or amont-agent (a grep test) → <result>
   - The unscoped checks' wall time is measured on the homelab tree (they stay in the hook) → <result>
   - `make check`, clippy across targets, and fmt are clean; each new test fails when its behaviour is reverted (revert-red) → <result>
+- Phase 1b, integration tests (fixture with a lockfile and a fake audit tool whose runs are logged):
+  - A docs-only push after land: the audit runs once in the pre-stage and the push replays it (the shim log shows no tool run in the hook) → <result>
+  - A record older than `amont.auditMaxAge` (timestamp injected) is owed again: a bare push refuses and land runs it; a `CouldNotCheck` record expires after 1 h; a lockfile change makes a new key → <result>
+  - A replay applies today's waivers and stakes: a branch push only warns, while a `v*` tag push with an unwaived vulnerability blocks even on a fresh record; a branch-mode record does not satisfy a `v*` tag push → <result>
+  - `amont land --tag v1.0.0` pre-stages release mode on the tagged commit (not HEAD), pushes the tag and reads it back; an existing remote tag is refused → <result>
+  - Offline (the tool reports it could not check): land is not blocked, and the replay says "NOT checked" → <result>
+  - No `cargo-audit` on PATH, and an audit timeout: under refuse, land lands and the replay says "NOT checked" → <result>
+  - A dirty lockfile, or a push of a non-HEAD branch: no record is written (`git notes --ref amont-audit list`) → <result>
+  - A crate moved from dev-dependencies to dependencies with the lockfile unchanged: a `v*` tag push re-runs the audit and blocks → <result>
+  - Homelab, branch binary (attest off): hook wall time with fresh audit records, 5 runs, p95 < 5 s → <result>
 - Phase 2: for each skill and each of {new amont, 1.68 amont, no amont}, the command it issues and the remote tip observed. Each changed skill takes the right path with the new amont, an older amont, and no amont (each shown by its own run or check) → <result>
 - Phase 3, after install:
   - In a scratch clone, a bare push → refused in < 2 s, origin ref unchanged → <result>
@@ -220,4 +276,4 @@ second, naming `amont land`, instead of running them on the open connection.
 
 
 
-<!-- panel: repos=amont,greenharness-skills reviewers=backend,lang:rust,tui,unix,codex body-sha=afdad7a58240 -->
+<!-- panel: repos=amont,greenharness-skills reviewers=backend,lang:rust,tui,unix,codex body-sha=7f4bea0085eb -->

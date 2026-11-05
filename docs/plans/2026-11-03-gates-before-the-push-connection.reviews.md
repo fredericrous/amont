@@ -6,4 +6,5 @@
 - **unix** r1 (approve-with-changes, 34k, 68 s): stdout (dup); SIGINT and snapshot failure; sentinel (dup); precedence. Accepted 2 and 4.
 - **backend** r2 (approve, 47k, 30 s): two lows carried (the env outranks config; `rehearse --wait` and a running same-tree verdict).
 - **codex** (approve-with-changes): 4 highs, all accepted: a same-tree rehearsal covers another gate set; non-pass outcomes need their own evidence; `pushStamps=false`; a remote oid absent locally.
+- **backend** 1b delta (approve-with-changes → approve, 49k + 36k): 3 highs and 1 medium accepted (records only where the working tree is the tip; release key = tree; absent tool or timeout records CouldNotCheck; the ref stays local); carried: an audit timeout maps to CouldNotCheck, and cite audit.rs:594.
 - **backend** final (approve-with-changes → approve, 36k + 40k): 2 highs accepted (Verification entries, an evidence store); 1 medium carried (a `LAND_EVIDENCE_MISSING` sentinel, and the refusal text when stamps are off); a low carried (bound and measure land's wait behind another tree's rehearsal).
