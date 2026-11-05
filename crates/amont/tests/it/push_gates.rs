@@ -12,6 +12,10 @@
 //!
 //! Gates are a node script appending to an ABSOLUTE log: inside a rehearsal
 //! snapshot the working directory is the snapshot, not the clone.
+//!
+//! Unix only: the fixtures are trusted and installed through `tree_gates`,
+//! which is Unix only, and the audit tool is a `sh` script.
+#![cfg(unix)]
 
 use crate::common::{self, missing, Repo};
 use std::process::Stdio;
