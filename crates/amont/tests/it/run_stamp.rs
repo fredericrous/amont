@@ -74,6 +74,11 @@ fn plain(s: &str) -> String {
 fn amont(r: &Repo, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> (i32, String) {
     let mut cmd = common::amont_cmd();
     cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
+    // The busy policy is the repository's here, never the caller's: a
+    // rehearsal runs this suite with `AMONT_ON_BUSY=wait` (ADR-0013), which
+    // would override a fixture's `set onBusy defer`. `busy_defers` does the
+    // same. A test that wants the variable passes it in `env`.
+    cmd.env_remove("AMONT_ON_BUSY");
     for k in unset {
         cmd.env_remove(k);
     }
@@ -501,7 +506,9 @@ mod busy_host {
             .arg("pre-commit")
             .current_dir(&r.dir)
             .stdin(Stdio::null())
-            .env_remove("AMONT_HOST_SLOT");
+            .env_remove("AMONT_HOST_SLOT")
+            // the repository's busy policy, never the caller's (see `amont`)
+            .env_remove("AMONT_ON_BUSY");
         for (k, v) in busy {
             hook.env(k, v);
         }
