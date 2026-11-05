@@ -279,6 +279,19 @@ impl Prestage {
     }
 }
 
+/// The working tree this rehearsal snapshot was taken from, when this process
+/// is the snapshot's pre-push (`AMONT_SOURCE_WORKTREE`). Read once and removed
+/// like [`ENV`]; `main` primes it and carries it on `Ctx`.
+pub fn source_worktree() -> Option<&'static std::path::Path> {
+    static IN: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    IN.get_or_init(|| {
+        let raw = std::env::var_os(crate::pushed_tree::SOURCE_WORKTREE_ENV)?;
+        std::env::remove_var(crate::pushed_tree::SOURCE_WORKTREE_ENV);
+        Some(std::path::PathBuf::from(raw))
+    })
+    .as_deref()
+}
+
 /// This process's pre-stage, settled once. Primed by `main`; read by
 /// `rehearse`, which passes it down.
 pub fn prestage() -> &'static Prestage {
@@ -350,6 +363,9 @@ pub struct State {
     /// Land's pre-stage (ADR-0018): a rehearsal that meets it waits for it
     /// instead of cancelling it, since land is about to push what it proves.
     pub prestage: bool,
+    /// The signal that stopped its push gate, when one did: no verdict, so a
+    /// follower reports it interrupted, not failed.
+    pub signal: Option<i32>,
 }
 
 impl State {
@@ -367,6 +383,10 @@ impl State {
             .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}={}\n", one_line(v))))
             .collect::<String>()
             + if self.prestage { "kind=prestage\n" } else { "" }
+            + &self
+                .signal
+                .map(|n| format!("signal={n}\n"))
+                .unwrap_or_default()
     }
 
     /// `None` for anything this version did not write — including a file
@@ -378,7 +398,7 @@ impl State {
         }
         let (mut pid, mut commit, mut tree, mut started, mut snapshot, mut phase) =
             (None, None, None, None, None, None);
-        let (mut step, mut reason, mut prestage) = (None, None, false);
+        let (mut step, mut reason, mut prestage, mut signal) = (None, None, false, None);
         for line in lines {
             let (k, v) = line.split_once('=')?;
             match k {
@@ -391,6 +411,7 @@ impl State {
                 "step" => step = Some(v.to_string()),
                 "reason" => reason = Some(v.to_string()),
                 "kind" => prestage = v == "prestage",
+                "signal" => signal = v.parse().ok(),
                 _ => {}
             }
         }
@@ -404,6 +425,7 @@ impl State {
             step,
             reason,
             prestage,
+            signal,
         })
     }
 
@@ -654,7 +676,7 @@ pub enum Outcome {
 }
 
 /// The signal that ended a child, if one did.
-fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+pub(crate) fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
     #[cfg(unix)]
     {
         std::os::unix::process::ExitStatusExt::signal(status)
@@ -877,7 +899,7 @@ pub fn worker(
             }
             continue;
         }
-        println!(
+        eprintln!(
             "cancelling the rehearsal of {} (pid {}) — {} is the tree that matters now",
             prev.short(),
             prev.pid,
@@ -927,6 +949,7 @@ pub fn worker(
         step: Some("preparing".to_string()),
         reason: None,
         prestage: prestage.is_some(),
+        signal: None,
     };
     // Checking out took time: a worker that registered since is not
     // overwritten when land is on either side (ADR-0018).
@@ -1016,6 +1039,7 @@ pub fn worker(
         phase: if passed { Phase::Passed } else { Phase::Failed },
         step: None,
         reason: signal_of(&status).map(|n| format!("the push gate was stopped by signal {n}")),
+        signal: signal_of(&status),
         ..me
     };
     write(&done);
@@ -1172,14 +1196,14 @@ fn follow(state: &State, budget: Option<Duration>) -> Option<(Phase, State)> {
 }
 
 /// `amont rehearse [--wait|--status|--stop|--worker] [--cluster]`.
-pub fn command(args: &[OsString]) -> i32 {
+pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let ask = if flag("--cluster") {
         crate::cluster::Ask::Flag
     } else {
         crate::cluster::Ask::Setting
     };
-    let prestage = match prestage() {
+    let prestage = match prestage {
         Prestage::Malformed(raw) => {
             eprintln!("amont: {PRESTAGE_ENV} is not a push line ({raw:?}); nothing was rehearsed");
             return 2;
@@ -1298,6 +1322,13 @@ pub fn command(args: &[OsString]) -> i32 {
                 // can owe another set, and the worker answers at once when
                 // the followed run covered everything (ADR-0018).
                 Some((Phase::Passed, _)) => continue,
+                // Stopped by a signal: no verdict, so not a failure either.
+                Some((
+                    _,
+                    State {
+                        signal: Some(n), ..
+                    },
+                )) => return 128 + n,
                 Some(_) => {
                     show_log_tail();
                     return 1;
@@ -1429,6 +1460,7 @@ mod tests {
             step: Some("preparing".to_string()),
             reason: None,
             prestage: false,
+            signal: None,
         }
     }
 
@@ -1438,6 +1470,7 @@ mod tests {
     fn a_prestage_survives_the_state_file() {
         let staged = State {
             prestage: true,
+            signal: Some(9),
             ..sample()
         };
         assert_eq!(State::parse(&staged.render()), Some(staged));

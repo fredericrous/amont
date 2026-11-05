@@ -923,21 +923,36 @@ fn now_secs() -> u64 {
 }
 
 /// Record on `tree` that the gates behind `tokens` completed there without
-/// passing, as `how` (ADR-0018). Merged into the note. A record that could
-/// not be written costs a refused push, which names the gate and how to run
-/// it; the caller says so.
-pub fn record_done(tree: &str, tokens: &[String], how: Completion) -> bool {
+/// passing, as `how` (ADR-0018). Merged into the note; an `Unavailable`
+/// record replaces the one before it for the same gate, so a tree's note does
+/// not grow by a word per run. The error names the tree, for the caller to
+/// say: a record that was not written costs a refused push.
+pub fn record_done(tree: &str, tokens: &[String], how: Completion) -> Result<(), String> {
     if tokens.is_empty() {
-        return true;
+        return Ok(());
     }
     let now = now_secs();
+    let mut note = note_in(DONE_REF, tree);
+    if how == Completion::Unavailable {
+        note.tokens.retain(|word| {
+            !word
+                .strip_prefix("unavailable:")
+                .and_then(|rest| rest.split_once(':'))
+                .is_some_and(|(_, token)| tokens.iter().any(|t| t == token))
+        });
+    }
     let words: Vec<String> = tokens
         .iter()
         .map(|t| completion_word(how, t, now))
         .collect();
-    let mut note = note_in(DONE_REF, tree);
     note.add_tokens(&words);
-    write_note_in(DONE_REF, tree, &note)
+    if write_note_in(DONE_REF, tree, &note) {
+        Ok(())
+    } else {
+        Err(format!(
+            "git refused to record the completed gates on {tree}"
+        ))
+    }
 }
 
 /// Did the gate behind `token` complete without passing on the tree of every

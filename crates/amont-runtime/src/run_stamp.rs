@@ -287,6 +287,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                         handed_to_cluster: &[],
                         land: &crate::rehearsal::LandEnv::Absent,
                         audits: &audits,
+                        source_worktree: None,
                     };
                     finish(
                         settings,
@@ -321,6 +322,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                                 handed_to_cluster: &[],
                                 land: &crate::rehearsal::LandEnv::Absent,
                                 audits: &audits,
+                                source_worktree: None,
                             };
                             finish(
                                 settings,

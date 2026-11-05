@@ -633,6 +633,7 @@ fn run_stage_traced(
                 handed_to_cluster: ctx.handed_to_cluster,
                 land: ctx.land,
                 audits: ctx.audits,
+                source_worktree: ctx.source_worktree,
             };
             let slot = enter(**check, || severities.of(**check));
             let outcome = deferred_or(&slot, check.run(&sub));
@@ -904,6 +905,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         handed_to_cluster: ctx.handed_to_cluster,
         land: ctx.land,
         audits: ctx.audits,
+        source_worktree: ctx.source_worktree,
     };
     // Under quiet, a check run by name is captured like one inside its stage
     // — one slot, its tool's output to a log, one line on a pass — whatever
@@ -1217,6 +1219,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 "amont: push refused: {} is not `<sha> <remote tip>` ({raw:?})",
                 crate::rehearsal::LAND_ENV
             );
+            eprintln!(
+                "    unset it, then push again:  unset {}",
+                crate::rehearsal::LAND_ENV
+            );
             return Verdict::Block;
         }
     };
@@ -1459,9 +1465,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         {
             continue;
         }
-        // A push that pushes no commit (every ref up to date, or deletions
-        // only) has nothing for an audit to answer for, and running one would
-        // hold the connection open for nothing (ADR-0018).
+        // A push of deletions only (or of no ref at all: git ran the hook
+        // with nothing to push) has no commit for an audit to answer for, and
+        // running one would hold the connection open for nothing (ADR-0018).
         if gate_before_push && tips.is_empty() && crate::hooks::audit::is_audit(check.name()) {
             continue;
         }
@@ -1576,6 +1582,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             handed_to_cluster: ctx.handed_to_cluster,
             land: ctx.land,
             audits: ctx.audits,
+            source_worktree: ctx.source_worktree,
         };
         // Wall clock around the check itself, not around the hook: the number
         // that catches a suite which stopped finding tests is how long THAT
@@ -2003,7 +2010,8 @@ fn record_audits(ledger: &crate::hooks::audit::Ledger, tree_at_start: &str) {
 
 /// Record the gates that completed without passing (ADR-0018), on exactly the
 /// tips `stamp_tips` would stamp: a tip whose content is what the gates ran
-/// on — HEAD, inside a rehearsal snapshot or with a clean worktree.
+/// on — HEAD, inside a rehearsal snapshot or with a clean worktree. One note
+/// write per tree and kind of completion.
 fn record_completions(
     externals: &[crate::manifest::External],
     tips: &[String],
@@ -2016,6 +2024,16 @@ fn record_completions(
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     let worktree_clean = tree_at_start.trim().is_empty();
     let in_snapshot = crate::rehearsal::in_snapshot();
+    let mut by_kind: Vec<(crate::gate_stamp::Completion, Vec<String>)> = Vec::new();
+    for (gate, how) in gates {
+        let Some(token) = crate::gate_identity::token(externals, gate) else {
+            continue;
+        };
+        match by_kind.iter_mut().find(|(kind, _)| kind == how) {
+            Some((_, tokens)) => tokens.push(token),
+            None => by_kind.push((*how, vec![token])),
+        }
+    }
     for tip in tips {
         let is_head = head.as_deref() == Some(tip.as_str());
         if !(is_head && (in_snapshot || worktree_clean)) {
@@ -2024,14 +2042,10 @@ fn record_completions(
         let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]) else {
             continue;
         };
-        for (gate, how) in gates {
-            let Some(token) = crate::gate_identity::token(externals, gate) else {
-                continue;
-            };
-            if !crate::gate_stamp::record_done(&tree, &[token], *how) {
+        for (how, tokens) in &by_kind {
+            if let Err(why) = crate::gate_stamp::record_done(&tree, tokens, *how) {
                 crate::hooks::common::warn(&format!(
-                    "git refused to record that {gate} completed — the next push of this \
-                     tree owes it again"
+                    "{why} — the next push of this tree owes those gates again"
                 ));
             }
         }
@@ -2404,6 +2418,7 @@ mod tests {
             handed_to_cluster: &[],
             land: &crate::rehearsal::LandEnv::Absent,
             audits: &Default::default(),
+            source_worktree: None,
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

@@ -33,6 +33,7 @@
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Read, Write};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -41,6 +42,7 @@ use crate::attest::{classify_push_stderr, PushFailure};
 use crate::git::{self, Probe};
 use crate::hooks::pull_rebase::PUSH_AGAIN;
 use crate::json;
+use crate::rehearsal::signal_of;
 
 /// The line the hook of land's own push prints, first, when the pushed
 /// range's remote side is not the one land's pre-stage ran against: the
@@ -289,7 +291,7 @@ pub fn command(args: &[OsString]) -> i32 {
         match a.as_str() {
             "--force" | "--json" | "--dry-run" => {}
             "--tag" => match it.next() {
-                Some(name) if !name.starts_with('-') => tag = Some(name),
+                Some(name) if !name.is_empty() && !name.starts_with('-') => tag = Some(name),
                 _ => {
                     eprintln!("amont: land: --tag needs a tag name");
                     return finish(&Report::new(Status::Usage), json_out);
@@ -316,7 +318,12 @@ pub fn command(args: &[OsString]) -> i32 {
             return finish(&Report::new(Status::Usage), json_out);
         }
         if dry_run {
-            return dry_run_tag_command(&name, json_out);
+            let (report, verdict) = dry_run_tag(&name);
+            say_dry_run(&report, verdict);
+            if json_out {
+                println!("{}", dry_run_json(&report, verdict, mode));
+            }
+            return i32::from(verdict != "would-land");
         }
         let started = now_nanos();
         let report = land_tag(&name);
@@ -324,7 +331,12 @@ pub fn command(args: &[OsString]) -> i32 {
         return finish(&report, json_out);
     }
     if dry_run {
-        return dry_run_command(mode, json_out);
+        let (report, verdict) = dry_run_branch();
+        say_dry_run(&report, verdict);
+        if json_out {
+            println!("{}", dry_run_json(&report, verdict, mode));
+        }
+        return i32::from(verdict != "would-land");
     }
     let started = now_nanos();
     let report = land(mode);
@@ -342,25 +354,29 @@ fn finish(report: &Report, json_out: bool) -> i32 {
     for line in &report.next {
         eprintln!("    {line}");
     }
-    // A tag land has no branch: the verdict names the tag.
-    let shown = if report.branch.is_empty() {
-        report.dst.strip_prefix("refs/tags/").unwrap_or(&report.dst)
-    } else {
-        &report.branch
-    };
     eprintln!(
         "{}",
         verdict(
             report.status,
             &report.remote_before,
             &report.remote_after,
-            shown
+            shown_ref(report)
         )
     );
     if json_out {
         println!("{}", report.json());
     }
     report.status.code()
+}
+
+/// What the verdict line names: the branch, or for a tag land (which has none)
+/// the tag.
+fn shown_ref(report: &Report) -> &str {
+    if report.branch.is_empty() {
+        report.dst.strip_prefix("refs/tags/").unwrap_or(&report.dst)
+    } else {
+        &report.branch
+    }
 }
 
 fn refuse(mut report: Report, why: &str, next: &[&str]) -> Report {
@@ -522,8 +538,8 @@ fn land(mode: Mode) -> Report {
         let local_ref = format!("refs/heads/{}", report.branch);
         let dst = format!("refs/heads/{rb}");
         report = match prestage(&local_ref, &sha, &dst, &expected_old, &url).into_report(report) {
-            Ok(report) => report,
-            Err(stopped) => return *stopped,
+            ControlFlow::Continue(report) => report,
+            ControlFlow::Break(stopped) => return *stopped,
         };
         let land_env = format!("{sha} {}", or_zeros(&expected_old));
         let run = push(&url, &sha, &dst, lease, &land_env);
@@ -657,22 +673,22 @@ impl Staged {
         Staged::ended(owed, state, Prestage::Refused(why, Vec::new()))
     }
 
-    /// `report` with this folded in: `Ok` when land may push, `Err` with the
-    /// finished report when it must stop.
-    fn into_report(self, mut report: Report) -> Result<Report, Box<Report>> {
+    /// `report` with this folded in: `Continue` when land may push, `Break`
+    /// with the finished report when it must stop.
+    fn into_report(self, mut report: Report) -> ControlFlow<Box<Report>, Report> {
         report.gates_owed = self.owed;
         report.prestage = self.state;
         match self.end {
-            Prestage::Ready => Ok(report),
+            Prestage::Ready => ControlFlow::Continue(report),
             Prestage::Refused(why, next) => {
                 eprintln!("amont: land: {why}");
                 report.status = Status::Refused;
                 report.next = next;
-                Err(Box::new(report))
+                ControlFlow::Break(Box::new(report))
             }
             Prestage::Interrupted(sig) => {
                 report.status = Status::Interrupted(sig);
-                Err(Box::new(report))
+                ControlFlow::Break(Box::new(report))
             }
         }
     }
@@ -689,10 +705,11 @@ fn status_of_failed_push(stderr: &str) -> Status {
     }
 }
 
-/// The rehearsal this worktree recorded last, as `(pid, started)`: what
-/// tells whether the pre-stage ran anything itself.
-fn last_rehearsal() -> Option<(u32, u64)> {
-    crate::rehearsal::read().map(|s| (s.pid, s.started))
+/// The rehearsal this worktree recorded last: `(pid, started, running)`.
+/// What tells whether gates ran during the pre-stage: one started by it, or
+/// one already running that it followed.
+fn last_rehearsal() -> Option<(u32, u64, bool)> {
+    crate::rehearsal::read().map(|s| (s.pid, s.started, s.alive()))
 }
 
 /// Run every heavy gate the push of `sha` onto `dst` (whose remote tip is
@@ -701,30 +718,45 @@ fn last_rehearsal() -> Option<(u32, u64)> {
 /// ref line, whose stdout goes to this process's stderr so a `--json` report
 /// stays the only thing on stdout.
 fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) -> Staged {
+    // What to run again after a refusal: the same land.
+    let again = match dst.strip_prefix("refs/tags/") {
+        Some(tag) => format!("amont land --tag {tag}"),
+        None => "amont land".to_string(),
+    };
+    let root = match crate::hooks::common::repo_root_checked() {
+        Ok(root) => root,
+        Err(e) => return Staged::refused(Vec::new(), PrestageState::Refused, e),
+    };
+    let manifest = crate::manifest::load(std::path::Path::new(&root));
+    let settings = crate::config::Settings::new(manifest.policy.clone());
     // The range starts at the remote's tip: a tip this clone never fetched
-    // (a force push elsewhere) would make it unwalkable. Fetch it, within the
-    // network budget, or refuse.
+    // (a force push elsewhere) would make it unwalkable. Fetch it, or refuse.
+    // A fetch moves objects, so it gets the check budget (`amont.timeout`),
+    // not the few seconds a reachability probe gets.
     if !remote_tip.is_empty() && !has_commit(remote_tip) {
         eprintln!(
             "amont: land: fetching {} ({dst}) from the remote",
             short(remote_tip)
         );
-        let budget =
-            crate::hooks::common::network_probe_budget(&crate::config::Settings::default());
+        let budget = crate::hooks::common::check_timeout(&settings);
         let (probe, _) = git::probe_remote_stdout(&["fetch", "-q", "--no-tags", url, dst], budget);
         if !has_commit(remote_tip) {
             let how = match probe {
                 Probe::Exit(0) => "it fetched, but not that commit".to_string(),
                 Probe::Exit(code) => format!("git fetch exited {code}"),
-                Probe::TimedOut(secs) => format!("git fetch did not answer within {secs}s"),
+                Probe::TimedOut(secs) => format!("git fetch did not finish within {secs}s"),
                 Probe::Failed => "git fetch did not run".to_string(),
             };
-            return Staged::refused(
+            return Staged::ended(
                 Vec::new(),
                 PrestageState::Refused,
-                format!(
-                    "the remote's {dst} is at {}, a commit this clone does not have ({how})",
-                    short(remote_tip)
+                Prestage::Refused(
+                    format!(
+                        "the remote's {dst} is at {}, a commit this clone does not have ({how})",
+                        short(remote_tip)
+                    ),
+                    // git's own words, which the bounded fetch could not keep
+                    vec![format!("git fetch {url} {dst}"), again],
                 ),
             );
         }
@@ -735,12 +767,6 @@ fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) 
         remote_ref: dst.to_string(),
         remote_oid: or_zeros(remote_tip).to_string(),
     };
-    let root = match crate::hooks::common::repo_root_checked() {
-        Ok(root) => root,
-        Err(e) => return Staged::refused(Vec::new(), PrestageState::Refused, e),
-    };
-    let manifest = crate::manifest::load(std::path::Path::new(&root));
-    let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&line));
     let mut owed = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
     let audits = crate::hooks::audit::Ledger::default();
@@ -755,12 +781,15 @@ fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) 
         return Staged::ended(owed, PrestageState::Stamped, Prestage::Ready);
     }
     if !crate::gate_stamp::push_stamps_enabled(&settings) {
-        return Staged::refused(
+        return Staged::ended(
             owed,
             PrestageState::Refused,
-            "stamp reuse is off (amont.pushStamps false), so the gates land runs cannot \
-             count at the push; turn it on with: git config amont.pushStamps true"
-                .to_string(),
+            Prestage::Refused(
+                "stamp reuse is off (amont.pushStamps false), so the gates land runs \
+                 cannot count at the push"
+                    .to_string(),
+                vec!["git config amont.pushStamps true".to_string(), again],
+            ),
         );
     }
     let exe = match std::env::current_exe() {
@@ -810,11 +839,16 @@ fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) 
     }
     match status.code() {
         Some(0) => {
-            // Nothing new recorded: every gate already had its evidence.
-            let state = if last_rehearsal() == before {
-                PrestageState::Stamped
-            } else {
+            // `ran` when gates ran meanwhile: a rehearsal this pre-stage
+            // started, or one already running that it followed. `stamped`
+            // when every gate already had its evidence.
+            let followed = before.is_some_and(|(_, _, running)| running);
+            let state = if followed
+                || last_rehearsal().map(|(p, t, _)| (p, t)) != before.map(|(p, t, _)| (p, t))
+            {
                 PrestageState::Ran
+            } else {
+                PrestageState::Stamped
             };
             Staged::ended(owed, state, Prestage::Ready)
         }
@@ -823,10 +857,7 @@ fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) 
             PrestageState::Failed,
             Prestage::Refused(
                 "a push gate failed before the push (named above); nothing was pushed".to_string(),
-                vec![
-                    "amont rehearse --status".to_string(),
-                    "amont land".to_string(),
-                ],
+                vec!["amont rehearse --status".to_string(), again],
             ),
         ),
         // `rehearse` reports a gate stopped by signal n as 128+n.
@@ -879,31 +910,11 @@ fn resolve_tag(name: &str) -> Result<(Report, String, String), Box<Report>> {
 
 /// `amont land --tag <name> --dry-run`: steps 1 and 2 only. Nothing is read
 /// from the network and nothing is pushed, so the verdict is `would-land`.
-fn dry_run_tag_command(name: &str, json_out: bool) -> i32 {
-    let (report, word) = match resolve_tag(name) {
+fn dry_run_tag(name: &str) -> (Report, &'static str) {
+    match resolve_tag(name) {
         Ok((report, _, _)) => (report, "would-land"),
         Err(refused) => (*refused, "refused"),
-    };
-    for line in &report.next {
-        eprintln!("    {line}");
     }
-    eprintln!("{}", verdict_word(word, "", &report.pushed, &report.dst));
-    if json_out {
-        println!(
-            "{}",
-            json::object(&[
-                json::string_field("branch", ""),
-                json::string_field("remote", &report.remote),
-                json::string_field("push_url", &report.push_url),
-                json::string_field("pushed", &report.pushed),
-                json::string_field("dst", &report.dst),
-                json::string_field("ref", &report.dst),
-                json::bool_field("retried", false),
-                json::string_field("status", word),
-            ])
-        );
-    }
-    i32::from(word != "would-land")
 }
 
 fn land_tag(name: &str) -> Report {
@@ -932,8 +943,8 @@ fn land_tag(name: &str) -> Report {
         }
     }
     report = match prestage(&dst, &oid, &dst, "", &url).into_report(report) {
-        Ok(report) => report,
-        Err(stopped) => return *stopped,
+        ControlFlow::Continue(report) => report,
+        ControlFlow::Break(stopped) => return *stopped,
     };
     let land_env = format!("{oid} {ZEROS}");
     let run = push(&url, &dst, &dst, None, &land_env);
@@ -946,10 +957,9 @@ fn land_tag(name: &str) -> Report {
         PushOutcome::Failed => {
             report.status = status_of_failed_push(&run.stderr);
             if run.seen.contains(LAND_EVIDENCE_MISSING) {
-                report.next = vec![
-                    "amont rehearse --wait".to_string(),
-                    format!("amont land --tag {name}"),
-                ];
+                // A rehearsal tests HEAD, never the tagged commit's release
+                // audits: land the tag again, which runs them first.
+                report.next = vec![format!("amont land --tag {name}")];
             }
             return report;
         }
@@ -984,43 +994,44 @@ fn land_tag(name: &str) -> Report {
 
 /// `--dry-run`: steps 1 and 2 of a land and nothing else. No network, no push,
 /// no ref written, no receipt.
-fn dry_run_command(mode: Mode, json_out: bool) -> i32 {
-    let (mut report, would) = match resolve() {
-        Ok((_, report)) => (report, true),
-        Err(refused) => (*refused, false),
-    };
-    if would {
-        report.pushed = git::stdout(&["rev-parse", "HEAD"]).unwrap_or_default();
+fn dry_run_branch() -> (Report, &'static str) {
+    match resolve() {
+        Ok((_, mut report)) => {
+            report.pushed = git::stdout(&["rev-parse", "HEAD"]).unwrap_or_default();
+            (report, "would-land")
+        }
+        Err(refused) => (*refused, "refused"),
     }
-    let word = if would { "would-land" } else { "refused" };
+}
+
+/// A dry run's talk, branch or tag alike: `next`, then the headline.
+fn say_dry_run(report: &Report, verdict: &str) {
     for line in &report.next {
         eprintln!("    {line}");
     }
-    eprintln!("{}", verdict_word(word, "", &report.pushed, &report.branch));
-    if json_out {
-        let dir = receipt_dir()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        println!(
-            "{}",
-            json::object(&[
-                json::string_field("branch", &report.branch),
-                json::string_field("remote", &report.remote),
-                json::string_field("push_url", &report.push_url),
-                json::string_field("pushed", &report.pushed),
-                json::string_field("dst", &report.dst),
-                json::bool_field("retried", false),
-                json::string_field("status", word),
-                json::string_field("receipt_dir", &dir),
-                json::bool_field("lease", mode == Mode::Force),
-            ])
-        );
-    }
-    if would {
-        0
-    } else {
-        1
-    }
+    eprintln!(
+        "{}",
+        verdict_word(verdict, "", &report.pushed, shown_ref(report))
+    );
+}
+
+/// A dry run's document: the same fields for a branch and a tag.
+fn dry_run_json(report: &Report, verdict: &str, mode: Mode) -> String {
+    let dir = receipt_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    json::object(&[
+        json::string_field("branch", &report.branch),
+        json::string_field("remote", &report.remote),
+        json::string_field("push_url", &report.push_url),
+        json::string_field("pushed", &report.pushed),
+        json::string_field("dst", &report.dst),
+        json::string_field("ref", &report.dst),
+        json::bool_field("retried", false),
+        json::string_field("status", verdict),
+        json::string_field("receipt_dir", &dir),
+        json::bool_field("lease", mode == Mode::Force),
+    ])
 }
 
 fn now_nanos() -> i64 {
@@ -1042,7 +1053,7 @@ fn receipt_dir() -> Option<PathBuf> {
 /// the final status. A receipt that cannot be written is a warning, never a
 /// change of exit code.
 fn write_receipt(report: &Report, started: i64, ended: i64) {
-    if report.branch.is_empty() {
+    if report.branch.is_empty() && report.dst.is_empty() {
         return;
     }
     let Some(dir) = receipt_dir() else {
@@ -1217,17 +1228,6 @@ fn push(url: &str, src: &str, dst: &str, lease: Option<&str>, land_env: &str) ->
         seen: format!("{out}{err}"),
         stderr: err,
     }
-}
-
-#[cfg(unix)]
-fn signal_of(s: &std::process::ExitStatus) -> Option<i32> {
-    use std::os::unix::process::ExitStatusExt;
-    s.signal()
-}
-
-#[cfg(not(unix))]
-fn signal_of(_: &std::process::ExitStatus) -> Option<i32> {
-    None
 }
 
 #[cfg(test)]

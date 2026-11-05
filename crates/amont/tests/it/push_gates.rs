@@ -562,9 +562,44 @@ fn land_tag_lands_a_clean_tag_and_refuses_one_already_on_the_remote() {
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     let remote = crate::land::plain_git(&fx.bare, &["rev-parse", "refs/tags/v1.0.0"]);
     assert_eq!(remote, tagged);
+    // A tag land leaves its receipt, as a branch land does.
+    let receipts = crate::land::receipts(&fx);
+    assert!(
+        receipts
+            .iter()
+            .any(|r| crate::land::receipt_field(r, "status") == "landed"),
+        "a landed tag writes a receipt: {receipts:?}"
+    );
     let again = crate::land::land_with(&fx, &["--tag", "v1.0.0"], Some(&bin));
     assert_eq!(again.code, 1, "{}", again.stderr);
     assert!(again.stderr.contains("already exists"), "{}", again.stderr);
+    // An empty tag name is a usage error, however it is spelled.
+    for args in [&["--tag", ""][..], &["--tag="][..]] {
+        let empty = crate::land::land_with(&fx, args, Some(&bin));
+        assert_eq!(empty.code, 2, "{args:?}: {}", empty.stderr);
+    }
+    // A branch dry run names its ref too, as a tag dry run does.
+    let dry = crate::land::land_with(&fx, &["--dry-run", "--json"], Some(&bin));
+    assert!(
+        dry.stdout.contains("\"ref\":\"refs/heads/"),
+        "{}",
+        dry.stdout
+    );
+}
+
+#[test]
+fn a_deletion_only_push_runs_no_audit() {
+    let (fx, bin, log) = audit_fixture();
+    let zeros = "0000000000000000000000000000000000000000";
+    let base = crate::land::head(&fx);
+    let line = format!("(delete) {zeros} refs/heads/old/branch {base}\n");
+    let (code, out, err) = hook_in(&fx.r, &line, &bin, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(
+        runs(&log),
+        0,
+        "no audit on a push of deletions only: {out}{err}"
+    );
 }
 
 #[test]

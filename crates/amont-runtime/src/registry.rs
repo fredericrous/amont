@@ -53,6 +53,9 @@ pub struct Ctx<'a> {
     /// This push's dependency-audit records and memos (ADR-0018): owned by
     /// whoever starts the hook, lent to each audit.
     pub audits: &'a crate::hooks::audit::Ledger,
+    /// The working tree a rehearsal snapshot was taken from, inside one
+    /// (`AMONT_SOURCE_WORKTREE`, read once in `main`); `None` elsewhere.
+    pub source_worktree: Option<&'a std::path::Path>,
 }
 
 pub type HookFn = fn(&Ctx) -> Verdict;

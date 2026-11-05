@@ -244,9 +244,19 @@ second, naming `amont land`, instead of running them on the open connection.
   - A refused bare tag push names `amont land --tag <name>`; `land --tag --dry-run` says `would-land`; `--tag=` alone is a usage error; JSON gains `ref` and `branch` is empty for a tag; `prestage` is an enum and reports `stamped` when nothing new ran; the fetch of a missing remote tip is bounded and names its failure.
   - A push of no commit runs no audit under `refuse` (found by the new stale-record land step).
   - Flag arguments, an output parameter, wildcard arms over amont's own enums, banners, progress on stdout, weak names.
+- 2026-11-05 — Second review round (all five approve-with-changes). Fixed:
+  - The snapshot borrows the source worktree's `.venv` only when the source's HEAD tree is the snapshot's and its Python manifests are unmodified; otherwise the audit could not check (backend: a `.venv` synced to a newer HEAD would vouch for an older tag). The source worktree is read once in `main` and carried on `Ctx`.
+  - The force-push fetch gets the check budget (`amont.timeout`), and its refusal names `git fetch …` to see git's own words (backend, lang:rust).
+  - `land --tag` writes its receipt again; `--tag ""` exits 2; branch and tag dry runs print one shape of document, with `ref`, and the headline names the bare tag (unix, tui).
+  - A followed rehearsal stopped by a signal records `signal=n` and ends `rehearse --wait` with 128+n, so land reports `interrupted` (unix). `prestage` is `ran` when land followed a running rehearsal (tui).
+  - Next steps: a tag refused for missing evidence is offered only `amont land --tag`; stamps off names `git config amont.pushStamps true` and land; a malformed `AMONT_LAND` names `unset` (tui).
+  - `rehearse` is handed the pre-stage by `main`; the last progress line moved to stderr; the dry-run flag argument is gone; `Ran` is `Concluded | Inert | Unavailable`; `AuditMode` is computed once; `into_report` returns `ControlFlow`; one `signal_of`; completion records are written once per kind and return a `Result`, and an `unavailable` record replaces the previous one (implementation-review, lang:rust, backend).
+  - A deletion-only push runs no audit (tested), and the comment says so.
 - 2026-11-05 — Declined at review, with reasons:
   - `gates.failed` in the JSON: the failing gate names itself in the hook output above land's verdict; land's `next` names `amont rehearse --status` and `amont land`.
   - Hiding the `amont-land:` sentinel lines: land streams the push's output as it comes, and a line filter would hold it back.
+  - A lock around the rehearsal state file between its last read and the write: the window is now the snapshot checkout, and a lost race costs one rehearsal, not a wrong verdict.
+  - The source-venv check is NOT TESTED end to end (it needs a uv project); its logic compares two trees and one `git status`.
   - govulncheck reachability: a branch record is keyed by `go.sum`/`go.mod`, so a `.go` change that reaches a vulnerable function goes unseen for up to `amont.auditMaxAge`. Bounded: branch audits only warn, and a release record is keyed by the whole tree.
   - `.adr/packs/decisions.pack` is refreshed in its own commit: it carries the fleet's current code rules, which the review briefs read.
 - 2026-11-05 — A tag push needs release-mode audits, which no branch rehearsal computes, so tags get `amont land --tag` rather than a stamp in a worktree.

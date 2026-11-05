@@ -388,6 +388,7 @@ fn main() {
     // The same, for the variable `amont land` sets on its own push.
     amont_runtime::rehearsal::land_env();
     amont_runtime::rehearsal::prestage();
+    amont_runtime::rehearsal::source_worktree();
     match parse(std::env::args_os().skip(1).collect()) {
         Invocation::Help => {
             print!("{USAGE}");
@@ -595,7 +596,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // `amont rehearse` — the push gate on a snapshot of HEAD, in the
         // background. The verb the post-commit hook spawns (`--worker`) and
         // the one a person or agent types to start, follow or stop it.
-        Sub::Rehearse => amont_runtime::rehearsal::command(args),
+        Sub::Rehearse => {
+            amont_runtime::rehearsal::command(args, amont_runtime::rehearsal::prestage())
+        }
         // Text against text: no manifest trust needed, nothing executed.
         // Prints each problem as `file:line: what`, exits 1 if any.
         Sub::TreeParity => {
@@ -1055,6 +1058,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
         land: amont_runtime::rehearsal::land_env(),
         audits: &audits,
+        source_worktree: amont_runtime::rehearsal::source_worktree(),
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -1299,6 +1303,7 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
         land: amont_runtime::rehearsal::land_env(),
         audits: &audits,
+        source_worktree: amont_runtime::rehearsal::source_worktree(),
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`. An unknown name is NOT the usage
