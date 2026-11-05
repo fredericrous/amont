@@ -139,6 +139,27 @@ over nothing.
   an attestation never tells CI the gate is covered. CI and the push-side
   checks see it.
 
+- **`$AMONT_INDEX_FILE`**, always at pre-commit: the absolute path of the
+  index `git commit` is sealing. A command runs with no `GIT_*` variable (a
+  test suite's fixture repositories must not write into this one), so under
+  `git commit -a` or `git commit <paths>`, whose index is a temporary file
+  git names only to the hooks, a command reading `git diff --cached` alone
+  sees the old index. Read the staged state with
+  `GIT_INDEX_FILE="$AMONT_INDEX_FILE" git diff --cached`. Never set on a
+  `pre-push` command.
+- **the `index` marker**, opt-in, pre-commit only: prefix the command with
+  `index ` when it reads the index through git and cannot be taught
+  `$AMONT_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
+  variable a declared command keeps. Declare it only on a command that makes
+  no repositories of its own. Adding it re-runs the gate once (a pass
+  recorded without it does not count). `index` on a `pre-push` line, or
+  beside `platform=any`, is a parse error. An older amont reads `index` as
+  the program name, so add it once everyone reading the file has upgraded.
+
+  ```
+  pre-commit  staged-lint  *.rs  block  index my-staged-linter
+  ```
+
 - **the `heavy` marker**, opt-in: prefix the command with `heavy ` when it
   compiles or executes the product (a test suite, a type checker, a build).
   A heavy check takes one of the machine's

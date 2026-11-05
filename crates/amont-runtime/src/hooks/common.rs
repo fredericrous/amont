@@ -695,6 +695,27 @@ pub fn strip_git_env(cmd: &mut Command) {
     }
 }
 
+/// The variable a pre-commit command is told the index being committed in:
+/// see [`commit_index`].
+pub const INDEX_ENV: &str = "AMONT_INDEX_FILE";
+
+/// The index `git commit` is sealing, as an absolute path: git's own
+/// `GIT_INDEX_FILE` when it handed the hook one (the temporary index of
+/// `commit -a` or `commit <paths>`), else the repository's index. Relative
+/// paths are resolved against this process's directory, where git ran the
+/// hook. `None` when git cannot name either.
+pub fn commit_index() -> Option<std::path::PathBuf> {
+    let named = std::env::var_os("GIT_INDEX_FILE")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::git::stdout(&["rev-parse", "--git-path", "index"]).map(Into::into))?;
+    if named.is_absolute() {
+        Some(named)
+    } else {
+        std::env::current_dir().ok().map(|dir| dir.join(named))
+    }
+}
+
 /// The wall-clock CEILING for one check's spawned command, in seconds.
 ///
 /// `amont.timeout`, default 3600. This used to be 600 and to be the only

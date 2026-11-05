@@ -55,14 +55,19 @@ pub fn external_token(ext: &External, name: &str) -> Option<String> {
         args,
         files,
         docs_skip,
+        index,
         ..
     } = &ext.kind
     else {
         return None;
     };
     let binary = binary_identity(program)?;
+    // `index` only where declared: it changes what the gate judges (the index
+    // being committed, not the old one), so a pass recorded before it does
+    // not count; every other gate keeps the token it had.
+    let reads_index = if *index { "\0index" } else { "" };
     let material = format!(
-        "declared\0{name}\0{program}\0{}\0files={files}\0docs-skip={docs_skip}\0{binary}",
+        "declared\0{name}\0{program}\0{}\0files={files}\0docs-skip={docs_skip}\0{binary}{reads_index}",
         args.join("\u{1f}")
     );
     seal(name, &material)
