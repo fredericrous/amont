@@ -93,6 +93,8 @@ fn a_gate_not_declared_index_still_sees_no_git_variable() {
         return;
     }
     let gate = "env | grep -q '^GIT_' && { env | grep '^GIT_'; exit 1; }\n\
+                [ \"$AMONT_INDEX_GIT_DIR\" = \"$(git rev-parse --absolute-git-dir)\" ] \
+                || { echo \"AMONT_INDEX_GIT_DIR is not this repository: $AMONT_INDEX_GIT_DIR\"; exit 1; }\n\
                 case \"$AMONT_INDEX_FILE\" in /*) exit 0 ;; esac\n\
                 echo \"AMONT_INDEX_FILE is not absolute: $AMONT_INDEX_FILE\"; exit 1\n";
     let r = repo(gate, "pre-commit  clean  *.txt  block  sh gate.sh\n");
@@ -115,7 +117,13 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
         .parent()
         .expect("parent")
         .join(format!("staged-index-wt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&wt);
+    if let Err(e) = std::fs::remove_dir_all(&wt) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::NotFound,
+            "a stale {wt:?}: {e}"
+        );
+    }
     let added = r.git(&[
         "worktree",
         "add",
@@ -129,22 +137,35 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
         "{}",
         String::from_utf8_lossy(&added.stderr)
     );
-    std::fs::write(wt.join("a.txt"), "BAD\n").expect("write");
     // `git commit <paths>` (`--only`) seals a temporary index too, from a
     // subdirectory of a linked worktree.
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["commit", "-q", "-m", "feat: bad", "--", "../a.txt"])
-        .current_dir(wt.join("sub"))
-        .stdin(Stdio::null());
-    Repo::strip_git_env_impl(&mut cmd);
-    let out = cmd.output().expect("git commit");
-    let _ = std::fs::remove_dir_all(&wt);
+    let commit_only = |content: &str, msg: &str| {
+        std::fs::write(wt.join("a.txt"), content).expect("write");
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["commit", "-q", "-m", msg, "--", "../a.txt"])
+            .current_dir(wt.join("sub"))
+            .stdin(Stdio::null());
+        Repo::strip_git_env_impl(&mut cmd);
+        let out = cmd.output().expect("git commit");
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let (bad_accepted, bad_out) = commit_only("BAD\n", "feat: bad");
+    let (good_accepted, good_out) = commit_only("fine\n", "feat: fine");
+    let removed = std::fs::remove_dir_all(&wt);
+    assert!(!bad_accepted, "the gate read the old index:\n{bad_out}");
     assert!(
-        !out.status.success(),
-        "the gate read the old index:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        bad_out.contains("staged"),
+        "refused by the gate:\n{bad_out}"
     );
+    assert!(good_accepted, "{good_out}");
+    removed.expect("remove the linked worktree");
 }
 
 #[test]
@@ -152,8 +173,13 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
     if missing("sh") {
         return;
     }
+    // Also refuses unless the index it is told is absolute: a consumer that
+    // changes directory must still find it.
+    let gate = format!(
+        "case \"$AMONT_INDEX_FILE\" in /*) ;; *) echo relative; exit 1 ;; esac\n{READS_THE_INDEX}"
+    );
     let r = repo(
-        READS_THE_INDEX,
+        &gate,
         "pre-commit  staged  *.txt  block  index sh gate.sh\n",
     );
     // An index of the caller's own, named relative to the repository root.
@@ -164,17 +190,34 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
         cmd.env("GIT_INDEX_FILE", ".git/alt-index");
         cmd.output().expect("git")
     };
-    alt(&["read-tree", "HEAD"]);
-    r.write("a.txt", "BAD\n");
-    alt(&["add", "a.txt"]);
-    r.write("a.txt", "ok\n"); // the working tree and the real index say ok
-    let out = alt(&["commit", "-q", "-m", "feat: bad"]);
+    let stage_in_alt = |content: &str| {
+        assert!(alt(&["read-tree", "HEAD"]).status.success(), "read-tree");
+        r.write("a.txt", content);
+        assert!(alt(&["add", "a.txt"]).status.success(), "add");
+        r.write("a.txt", "ok\n"); // the working tree and the real index say ok
+    };
+    let said = |out: &std::process::Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    stage_in_alt("BAD\n");
+    let bad = alt(&["commit", "-q", "-m", "feat: bad"]);
     assert!(
-        !out.status.success(),
-        "the gate read the real index, not the one named relative:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        !bad.status.success(),
+        "the gate read the real index, not the one named relative:\n{}",
+        said(&bad)
     );
+    assert!(
+        said(&bad).contains("staged"),
+        "refused by the gate:\n{}",
+        said(&bad)
+    );
+    stage_in_alt("fine\n");
+    let good = alt(&["commit", "-q", "-m", "feat: fine"]);
+    assert!(good.status.success(), "{}", said(&good));
 }
 
 #[test]
@@ -187,8 +230,8 @@ fn a_pre_push_gate_never_inherits_an_index() {
     r.stage(
         "gate.sh",
         &format!(
-            "echo \"${{AMONT_INDEX_FILE:-unset}}\" > {:?}\n",
-            log.to_str().expect("utf8")
+            "echo \"${{AMONT_INDEX_FILE:-unset}}\" > '{}'\n",
+            log.to_str().expect("utf8").replace('\'', "'\\''")
         ),
     );
     r.stage("amont.conf", "pre-push  probe  *  warn  sh gate.sh\n");
@@ -218,7 +261,10 @@ fn a_pre_push_gate_never_inherits_an_index() {
             .write_all(format!("refs/heads/feat/x {head} refs/heads/feat/x {zeros}\n").as_bytes())
             .expect("write");
     }
-    child.wait().expect("wait");
+    assert!(
+        child.wait().expect("wait").success(),
+        "the push hook passed"
+    );
     let seen = std::fs::read_to_string(&log).expect("the probe ran");
     assert_eq!(seen.trim(), "unset");
 }

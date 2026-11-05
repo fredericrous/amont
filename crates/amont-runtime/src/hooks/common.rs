@@ -698,22 +698,55 @@ pub fn strip_git_env(cmd: &mut Command) {
 /// The variable a pre-commit command is told the index being committed in:
 /// see [`commit_index`].
 pub const INDEX_ENV: &str = "AMONT_INDEX_FILE";
+/// The absolute git dir of the repository that index belongs to: a consumer
+/// honours [`INDEX_ENV`] only where its own `git rev-parse --absolute-git-dir`
+/// is this, so a suite's fixture repository never reads the outer index.
+pub const INDEX_GIT_DIR_ENV: &str = "AMONT_INDEX_GIT_DIR";
+
+/// The index `git commit` is sealing, and the repository it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitIndex {
+    pub file: std::path::PathBuf,
+    pub git_dir: std::path::PathBuf,
+}
 
 /// The index `git commit` is sealing, as an absolute path: git's own
 /// `GIT_INDEX_FILE` when it handed the hook one (the temporary index of
 /// `commit -a` or `commit <paths>`), else the repository's index. Relative
 /// paths are resolved against this process's directory, where git ran the
-/// hook. `None` when git cannot name either.
-pub fn commit_index() -> Option<std::path::PathBuf> {
-    let named = std::env::var_os("GIT_INDEX_FILE")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| crate::git::stdout(&["rev-parse", "--git-path", "index"]).map(Into::into))?;
-    if named.is_absolute() {
-        Some(named)
-    } else {
-        std::env::current_dir().ok().map(|dir| dir.join(named))
-    }
+/// hook. Paths are kept as bytes, so a non-UTF-8 one survives. The error
+/// names the step that failed.
+pub fn commit_index() -> Result<CommitIndex, String> {
+    let here = std::env::current_dir().map_err(|e| format!("current directory: {e}"))?;
+    let absolute = |p: std::path::PathBuf| if p.is_absolute() { p } else { here.join(p) };
+    let git_path = |args: &[&str]| -> Result<std::path::PathBuf, String> {
+        let mut out =
+            crate::git::stdout_raw(args).ok_or_else(|| format!("git {} failed", args.join(" ")))?;
+        while out.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+            out.pop();
+        }
+        Ok(path_from_bytes(out))
+    };
+    let file = match std::env::var_os("GIT_INDEX_FILE").filter(|v| !v.is_empty()) {
+        Some(named) => std::path::PathBuf::from(named),
+        None => git_path(&["rev-parse", "--git-path", "index"])?,
+    };
+    let git_dir = git_path(&["rev-parse", "--absolute-git-dir"])?;
+    Ok(CommitIndex {
+        file: absolute(file),
+        git_dir,
+    })
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: Vec<u8>) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: Vec<u8>) -> std::path::PathBuf {
+    std::path::PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The wall-clock CEILING for one check's spawned command, in seconds.

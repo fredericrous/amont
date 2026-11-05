@@ -446,7 +446,7 @@ fn is_platform_any(ext: &External) -> bool {
     matches!(
         ext.kind,
         Kind::Runnable {
-            platform_any: true,
+            runs_on: crate::manifest::RunsOn::AnyPlatform,
             ..
         }
     )

@@ -48,10 +48,16 @@ nothing to do for a tool that reads `AMONT_INDEX_FILE`.
   and beside `platform=any` (a pod cannot read this machine's index).
 - An inherited `AMONT_INDEX_FILE` is removed from every declared command first,
   so a pre-push command never sees one.
-- `index` is part of the gate's token only where declared: a marked gate's
-  earlier passes stop counting, every other gate keeps its token. A tool that
-  learns `AMONT_INDEX_FILE` changes its binary identity when it is installed,
-  which voids its earlier passes the same way.
+- Every pre-commit declared gate's token gains a version, and `index` where
+  declared: passes recorded before the variable existed stop counting, so each
+  gate runs once more after the upgrade (a wrapper script's binary identity is
+  its interpreter, so a fixed tool behind it would not void them). Pre-push
+  tokens are unchanged.
+- `AMONT_INDEX_GIT_DIR` names the repository the index belongs to: a consumer
+  honours `AMONT_INDEX_FILE` only where its own absolute git dir is that one,
+  so a suite's fixture repository never reads the outer index.
+- When amont cannot locate the index, an `index` gate is refused and others
+  get a warning naming the gate.
 - docs/custom-checks.md documents both.
 
 ## Phases
@@ -63,6 +69,7 @@ name, so take the marker out first.
 
 ## Decision log
 - 2026-11-05 — Options put to the person: an opt-in marker, `AMONT_INDEX_FILE` for every gate, `GIT_INDEX_FILE` for every pre-commit gate, or the marker plus `AMONT_INDEX_FILE`. The person said "choose for me … automation and least human interaction". I chose the marker plus `AMONT_INDEX_FILE`: the variable needs no declaration change for a tool that reads it, and the marker covers tools that cannot learn it. Handing `GIT_INDEX_FILE` to everything was rejected for the fixture-repository risk.
+- 2026-11-05 — Implementation review (implementation-review, backend, lang:rust, unix; all approve-with-changes). Fixed: the token version for every pre-commit gate (backend: a wrapper's identity is its interpreter); `AMONT_INDEX_GIT_DIR` binding (backend, unix: the variable reached fixture repositories); a failed lookup refuses an `index` gate and warns otherwise (lang:rust, unix); `RunsOn` replaces `platform_any`/`index` booleans so the forbidden pair cannot be built (lang:rust); the lookup reads bytes and runs once per hook (unix, lang:rust); the tests check their setup, name the refusing gate and accept good content (implementation-review, lang:rust). The amont-agent consumer's precedence changes to match the git-dir binding.
 - 2026-11-05 — Contract agreed with the suppressions-commit-gate session, which owns the amont-agent consumer: a non-empty `AMONT_INDEX_FILE` takes precedence there.
 
 ## Verification
@@ -71,9 +78,11 @@ name, so take the marker out first.
   - no marker, gate reading `$AMONT_INDEX_FILE` alone: accepts good, blocks bad → passes
   - an unmarked gate sees no `GIT_*` variable, and `AMONT_INDEX_FILE` is absolute → passes
   - linked worktree, `git commit -- <path>` from a subdirectory → passes
-  - a relative caller `GIT_INDEX_FILE` is handed on absolute and judged → passes
+  - a relative caller `GIT_INDEX_FILE` is handed on absolute and judged; bad refused by the gate, good accepted → passes
   - a pre-push command never inherits a caller's `AMONT_INDEX_FILE` → passes
 - Unit test: `index` parses with other markers, and is refused on pre-push and beside `platform=any` → passes
+- Unit test: a pre-commit token differs from the one recorded before the version, `index` changes it again, a pre-push token is unchanged → passes
+- End to end (suppressions-commit-gate session, this branch's debug build with amont-agent 61a49e25): the unmarked suppressions pack blocks subdir `commit -a` in primary and linked worktrees, `commit <path>`/`--only`, and an old false-clean stamp stops counting after the binaries are replaced in place → passes (~/.claude/amont-agent/attestations/suppressions-2026-11-05/)
 - clippy `-D warnings` and fmt clean on the pinned toolchain → passes
 - The workspace suite → passes (623 integration, 725 unit; exit 0)
 

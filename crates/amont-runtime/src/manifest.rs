@@ -246,16 +246,8 @@ pub struct Declared {
     /// The command column carried the `heavy` marker: the check compiles or
     /// executes the product and takes a host slot (ADR-0013).
     pub heavy: bool,
-    /// The command column carried the `index` marker: the command reads the
-    /// index `git commit` is sealing through git itself (`git diff --cached`),
-    /// so it is handed `GIT_INDEX_FILE` — the one git variable a declared
-    /// command keeps. Every pre-commit command gets `AMONT_INDEX_FILE` either
-    /// way; see `External::execute`.
-    pub index: bool,
-    /// The command column carried `platform=any`: the gate's verdict does not
-    /// depend on the platform, so a trusted repository with `set executor
-    /// cluster` may run it as a Kubernetes Job (ADR-0016).
-    pub platform_any: bool,
+    /// Where the command may run, and what it may read there: see [`RunsOn`].
+    pub runs_on: RunsOn,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -653,6 +645,22 @@ pub struct External {
     pub kind: Kind,
 }
 
+/// Where a declared command runs, and what it reads there. One value, so the
+/// combination nothing can honour — a pod reading this machine's index —
+/// cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunsOn {
+    /// On this machine. `reads_index`: the command column carried `index`,
+    /// so the command reads the index `git commit` is sealing through git
+    /// itself (`git diff --cached`) and is handed `GIT_INDEX_FILE`, the one
+    /// git variable a declared command keeps (see `External::execute`).
+    Here { reads_index: bool },
+    /// The command column carried `platform=any`: the verdict does not depend
+    /// on the platform, so a trusted repository with `set executor cluster`
+    /// may run it as a Kubernetes Job (ADR-0016).
+    AnyPlatform,
+}
+
 /// The two things an external can be. `Scope` and `Severity` live only on the
 /// runnable side, so a broken external cannot carry a severity nobody applies.
 pub enum Kind {
@@ -669,12 +677,9 @@ pub enum Kind {
         docs_skip: bool,
         /// The command column carried `heavy` — see `Declared::heavy`.
         heavy: bool,
-        /// The command column carried `index` — see `Declared::index`.
-        index: bool,
-        /// The command column carried `platform=any` — see
-        /// `Declared::platform_any`. A `Runnable` exists only for a trusted
-        /// manifest (`gate`), so this is always the trusted declaration.
-        platform_any: bool,
+        /// See [`RunsOn`]. A `Runnable` exists only for a trusted manifest
+        /// (`gate`), so `AnyPlatform` is always the trusted declaration.
+        runs_on: RunsOn,
     },
     Unusable {
         why: String,
@@ -692,6 +697,18 @@ fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
     static VOUCHED: std::sync::OnceLock<std::collections::HashSet<String>> =
         std::sync::OnceLock::new();
     VOUCHED.get_or_init(crate::gate_stamp::vouched_for_staged_tree)
+}
+
+/// The index being committed, read once per hook process: a stage's
+/// externals run concurrently, and each asking git would be a spawn per
+/// check for one answer (the shape of `vouched_for_staged_tree`).
+fn commit_index() -> Result<&'static crate::hooks::common::CommitIndex, &'static str> {
+    static INDEX: std::sync::OnceLock<Result<crate::hooks::common::CommitIndex, String>> =
+        std::sync::OnceLock::new();
+    INDEX
+        .get_or_init(crate::hooks::common::commit_index)
+        .as_ref()
+        .map_err(String::as_str)
 }
 
 impl External {
@@ -1014,19 +1031,47 @@ impl External {
         // `GIT_INDEX_FILE`; stripped, a gate that reads the index judged the
         // old one, passed on nothing, and its pass was stamped onto the tree
         // that was actually committed. Every pre-commit command is told the
-        // index as `AMONT_INDEX_FILE`, absolute and never consulted by git,
-        // so a suite's fixture repositories cannot write into it; a command
+        // index, and the repository it belongs to, in variables git never
+        // reads, so a suite's fixture repositories can neither write into it
+        // nor, honouring the git-dir binding, read it by mistake; a command
         // declared `index` reads it through git, as `GIT_INDEX_FILE`.
+        //
         // Removed first: a value this process inherited (a commit made from
         // inside another gate) names an index that is not this one, and a
         // push has none at all.
         cmd.env_remove(crate::hooks::common::INDEX_ENV);
+        cmd.env_remove(crate::hooks::common::INDEX_GIT_DIR_ENV);
         if self.stage == Stage::PreCommit {
-            if let Some(index) = crate::hooks::common::commit_index() {
-                cmd.env(crate::hooks::common::INDEX_ENV, &index);
-                if matches!(self.kind, Kind::Runnable { index: true, .. }) {
-                    cmd.env("GIT_INDEX_FILE", &index);
+            let reads_index = matches!(
+                self.kind,
+                Kind::Runnable {
+                    runs_on: RunsOn::Here { reads_index: true },
+                    ..
                 }
+            );
+            match commit_index() {
+                Ok(index) => {
+                    cmd.env(crate::hooks::common::INDEX_ENV, &index.file);
+                    cmd.env(crate::hooks::common::INDEX_GIT_DIR_ENV, &index.git_dir);
+                    if reads_index {
+                        cmd.env("GIT_INDEX_FILE", &index.file);
+                    }
+                }
+                // Not knowing the index is the original bug, said out loud:
+                // a gate declared to read it is refused rather than run blind.
+                Err(why) if reads_index => {
+                    crate::hooks::common::fail(&format!(
+                        "{}: cannot locate the index being committed ({why})",
+                        self.short_name
+                    ));
+                    return Outcome::Failed;
+                }
+                Err(why) => crate::hooks::common::warn(&format!(
+                    "{}: cannot locate the index being committed ({why}); \
+                     {} is not set",
+                    self.short_name,
+                    crate::hooks::common::INDEX_ENV
+                )),
             }
         }
         // Under the deadline: repo-authored code that outlives the budget is
@@ -1667,8 +1712,13 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         files: wants_files,
         docs_skip: wants_docs_skip,
         heavy: wants_heavy,
-        index: wants_index,
-        platform_any: wants_platform_any,
+        runs_on: if wants_platform_any {
+            RunsOn::AnyPlatform
+        } else {
+            RunsOn::Here {
+                reads_index: wants_index,
+            }
+        },
         name: declared.to_string(),
         stage,
         severity,
@@ -1929,8 +1979,7 @@ impl From<Line> for External {
                 files: d.files,
                 docs_skip: d.docs_skip,
                 heavy: d.heavy,
-                index: d.index,
-                platform_any: d.platform_any,
+                runs_on: d.runs_on,
             },
             Err(why) => Kind::Unusable {
                 why,
@@ -2321,7 +2370,8 @@ mod tests {
         else {
             panic!("index should parse on pre-commit");
         };
-        assert!(d.index && d.heavy);
+        assert_eq!(d.runs_on, RunsOn::Here { reads_index: true });
+        assert!(d.heavy);
         assert_eq!(d.program, "my-lint");
         assert_eq!(
             why(&one("pre-push  staged  *.rs  block  index my-lint\n")),
@@ -2906,11 +2956,14 @@ mod tests {
     fn platform_any_is_a_marker_refused_with_fix_or_files() {
         let line = one("pre-commit lint *.ts block heavy platform=any make lint");
         let d = usable(&line);
-        assert!(d.platform_any && d.heavy);
+        assert!(d.runs_on == RunsOn::AnyPlatform && d.heavy);
         assert_eq!(d.program, "make");
         let line = one("pre-commit lint *.ts block platform=any docs-skip make lint");
-        assert!(usable(&line).platform_any && usable(&line).docs_skip);
-        assert!(!usable(&one("pre-commit lint * block make lint")).platform_any);
+        assert!(usable(&line).runs_on == RunsOn::AnyPlatform && usable(&line).docs_skip);
+        assert_eq!(
+            usable(&one("pre-commit lint * block make lint")).runs_on,
+            RunsOn::Here { reads_index: false }
+        );
         assert_eq!(
             why(&one("pre-commit lint * block platform=any fix make fmt")),
             ParseError::PlatformAnyWithFix
