@@ -139,6 +139,38 @@ over nothing.
   an attestation never tells CI the gate is covered. CI and the push-side
   checks see it.
 
+- **`$AMONT_INDEX_FILE`** and **`$AMONT_INDEX_GIT_DIR`**, at pre-commit
+  whenever git names an index: the absolute path of the index `git commit` is
+  sealing, and the absolute git dir of the repository it belongs to. A
+  command runs with no `GIT_*` variable (a test suite's fixture repositories
+  must not write into this one), so under `git commit -a` or
+  `git commit <paths>`, whose index is a temporary file git names only to the
+  hooks, a command reading `git diff --cached` alone sees the old index. Read
+  the staged state with `GIT_INDEX_FILE="$AMONT_INDEX_FILE" git diff --cached`,
+  and only where your own `git rev-parse --absolute-git-dir` is
+  `$AMONT_INDEX_GIT_DIR`: anywhere else (a suite's fixture repository) the
+  index is not yours, and the variables are ignored. Treat the index as
+  read-only: under a plain `git commit` it is git's own lock file. Neither
+  variable is set on a `pre-push` command, and a suite that runs pre-commit
+  can unset both for its fixtures, as it does the `GIT_*` ones.
+- **the `index` marker**, opt-in, pre-commit only: prefix the command with
+  `index ` when it reads the index through git and cannot be taught
+  `$AMONT_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
+  variable a declared command keeps. Declare it only on a command that makes
+  no repositories of its own. When amont cannot locate the index, an `index`
+  command is refused rather than run blind. `index` on a `pre-push` line, or
+  beside `platform=any`, is a parse error. An older amont reads `index` as the
+  program name, cannot start it, and only warns, so the line stops blocking
+  until everyone reading the file has upgraded.
+
+  A pre-commit pass recorded by an amont that did not set these variables
+  does not count: each declared pre-commit gate runs once more after the
+  upgrade, and once more when `index` is added or removed.
+
+  ```
+  pre-commit  staged-lint  *.rs  block  index my-staged-linter
+  ```
+
 - **the `heavy` marker**, opt-in: prefix the command with `heavy ` when it
   compiles or executes the product (a test suite, a type checker, a build).
   A heavy check takes one of the machine's

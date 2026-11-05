@@ -116,6 +116,10 @@ pub enum ParseError {
     },
     /// `docs-skip` on a pre-push line: a push has no staged change to judge as docs.
     DocsSkipOnPrePush,
+    /// `index` on a pre-push line: a push has no index being committed.
+    IndexOnPrePush,
+    /// `index` beside `platform=any`: a pod cannot read this machine's index.
+    PlatformAnyWithIndex,
     /// A `tree` line with the wrong shape; carries what was wrong.
     BadTreeLine(&'static str),
     /// A `tree` line naming a tool amont does not know how to attest.
@@ -209,6 +213,15 @@ impl std::fmt::Display for ParseError {
                 f,
                 "`docs-skip` is only for pre-commit — a push has no staged change to judge"
             ),
+            ParseError::IndexOnPrePush => write!(
+                f,
+                "`index` is only for pre-commit — a push has no index being committed"
+            ),
+            ParseError::PlatformAnyWithIndex => write!(
+                f,
+                "`platform=any` cannot be combined with `index` — the cluster cannot read \
+                 this machine's index"
+            ),
             ParseError::BadSeverity(t) => {
                 write!(f, "severity {t:?} must be `block` or `warn`")
             }
@@ -233,10 +246,8 @@ pub struct Declared {
     /// The command column carried the `heavy` marker: the check compiles or
     /// executes the product and takes a host slot (ADR-0013).
     pub heavy: bool,
-    /// The command column carried `platform=any`: the gate's verdict does not
-    /// depend on the platform, so a trusted repository with `set executor
-    /// cluster` may run it as a Kubernetes Job (ADR-0016).
-    pub platform_any: bool,
+    /// Where the command may run, and what it may read there: see [`RunsOn`].
+    pub runs_on: RunsOn,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -634,6 +645,22 @@ pub struct External {
     pub kind: Kind,
 }
 
+/// Where a declared command runs, and what it reads there. One value, so the
+/// combination nothing can honour — a pod reading this machine's index —
+/// cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunsOn {
+    /// On this machine. `reads_index`: the command column carried `index`,
+    /// so the command reads the index `git commit` is sealing through git
+    /// itself (`git diff --cached`) and is handed `GIT_INDEX_FILE`, the one
+    /// git variable a declared command keeps (see `External::execute`).
+    Here { reads_index: bool },
+    /// The command column carried `platform=any`: the verdict does not depend
+    /// on the platform, so a trusted repository with `set executor cluster`
+    /// may run it as a Kubernetes Job (ADR-0016).
+    AnyPlatform,
+}
+
 /// The two things an external can be. `Scope` and `Severity` live only on the
 /// runnable side, so a broken external cannot carry a severity nobody applies.
 pub enum Kind {
@@ -650,10 +677,9 @@ pub enum Kind {
         docs_skip: bool,
         /// The command column carried `heavy` — see `Declared::heavy`.
         heavy: bool,
-        /// The command column carried `platform=any` — see
-        /// `Declared::platform_any`. A `Runnable` exists only for a trusted
-        /// manifest (`gate`), so this is always the trusted declaration.
-        platform_any: bool,
+        /// See [`RunsOn`]. A `Runnable` exists only for a trusted manifest
+        /// (`gate`), so `AnyPlatform` is always the trusted declaration.
+        runs_on: RunsOn,
     },
     Unusable {
         why: String,
@@ -671,6 +697,50 @@ fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
     static VOUCHED: std::sync::OnceLock<std::collections::HashSet<String>> =
         std::sync::OnceLock::new();
     VOUCHED.get_or_init(crate::gate_stamp::vouched_for_staged_tree)
+}
+
+/// What a pre-commit command is told about the index being committed.
+#[derive(Debug, PartialEq, Eq)]
+enum IndexEnv {
+    /// These variables, in this order.
+    Set(Vec<(&'static str, std::path::PathBuf)>),
+    /// A gate declared `index` with no index to read: refused, not run blind.
+    Refuse(String),
+    /// Any other gate runs without the variables; this says so.
+    Warn(String),
+}
+
+/// The variables `lookup` gives a pre-commit command that runs as `runs_on`
+/// says, or why it gets none. Not knowing the index is the original bug,
+/// said out loud.
+fn index_env(
+    lookup: &Result<crate::hooks::common::CommitIndex, String>,
+    runs_on: RunsOn,
+    gate: &str,
+) -> IndexEnv {
+    let reads_index = runs_on == RunsOn::Here { reads_index: true };
+    match lookup {
+        Ok(index) => {
+            let mut vars = vec![
+                (crate::hooks::common::INDEX_ENV, index.file.clone()),
+                (
+                    crate::hooks::common::INDEX_GIT_DIR_ENV,
+                    index.git_dir.clone(),
+                ),
+            ];
+            if reads_index {
+                vars.push(("GIT_INDEX_FILE", index.file.clone()));
+            }
+            IndexEnv::Set(vars)
+        }
+        Err(why) if reads_index => IndexEnv::Refuse(format!(
+            "{gate}: cannot locate the index being committed ({why})"
+        )),
+        Err(why) => IndexEnv::Warn(format!(
+            "{gate}: cannot locate the index being committed ({why}); {} is not set",
+            crate::hooks::common::INDEX_ENV
+        )),
+    }
 }
 
 impl External {
@@ -987,6 +1057,44 @@ impl External {
             cmd.args(matched);
         }
         crate::hooks::common::strip_git_env(&mut cmd);
+        // The one thing the strip above must not take from a commit-time
+        // gate: WHICH index is being committed. `git commit -a` and `git
+        // commit <paths>` seal a temporary index git names only in
+        // `GIT_INDEX_FILE`; stripped, a gate that reads the index judged the
+        // old one, passed on nothing, and its pass was stamped onto the tree
+        // that was actually committed. Every pre-commit command is told the
+        // index, and the repository it belongs to, in variables git never
+        // reads, so a suite's fixture repositories can neither write into it
+        // nor, honouring the git-dir binding, read it by mistake; a command
+        // declared `index` reads it through git, as `GIT_INDEX_FILE`.
+        //
+        // Removed first: a value this process inherited (a commit made from
+        // inside another gate) names an index that is not this one, and a
+        // push has none at all.
+        cmd.env_remove(crate::hooks::common::INDEX_ENV);
+        cmd.env_remove(crate::hooks::common::INDEX_GIT_DIR_ENV);
+        if self.stage == Stage::PreCommit {
+            // An unusable check never runs; it reads nothing.
+            let runs_on = match &self.kind {
+                Kind::Runnable { runs_on, .. } => *runs_on,
+                Kind::Unusable { .. } => RunsOn::Here { reads_index: false },
+            };
+            // Asked per gate, a few milliseconds of `git rev-parse`: no
+            // process-wide cache to reason about.
+            let lookup = crate::hooks::common::commit_index();
+            match index_env(&lookup, runs_on, &self.short_name) {
+                IndexEnv::Set(vars) => {
+                    for (key, value) in vars {
+                        cmd.env(key, value);
+                    }
+                }
+                IndexEnv::Refuse(why) => {
+                    crate::hooks::common::fail(&why);
+                    return Outcome::Failed;
+                }
+                IndexEnv::Warn(why) => crate::hooks::common::warn(&why),
+            }
+        }
         // Under the deadline: repo-authored code that outlives the budget is
         // killed and FAILS — "hung" must not read as "passed", and pre-push
         // runs these serially where one hang stalls the entire push.
@@ -1558,6 +1666,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     let mut wants_files = false;
     let mut wants_docs_skip = false;
     let mut wants_heavy = false;
+    let mut wants_index = false;
     let mut wants_platform_any = false;
     loop {
         if let Some(rest) = command.strip_prefix("fix ") {
@@ -1578,6 +1687,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         if let Some(rest) = command.strip_prefix("heavy ") {
             command = rest.trim_start();
             wants_heavy = true;
+            continue;
+        }
+        if let Some(rest) = command.strip_prefix("index ") {
+            command = rest.trim_start();
+            wants_index = true;
             continue;
         }
         if let Some(rest) = command.strip_prefix("platform=") {
@@ -1603,6 +1717,12 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     if wants_docs_skip && stage == Stage::PrePush {
         return fail(ParseError::DocsSkipOnPrePush);
     }
+    if wants_index && stage == Stage::PrePush {
+        return fail(ParseError::IndexOnPrePush);
+    }
+    if wants_index && wants_platform_any {
+        return fail(ParseError::PlatformAnyWithIndex);
+    }
     // `tokenise` guarantees a non-empty command, so the split cannot fail.
     let mut argv = command.split_whitespace().map(str::to_owned);
     let Some(program) = argv.next() else {
@@ -1613,7 +1733,13 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         files: wants_files,
         docs_skip: wants_docs_skip,
         heavy: wants_heavy,
-        platform_any: wants_platform_any,
+        runs_on: if wants_platform_any {
+            RunsOn::AnyPlatform
+        } else {
+            RunsOn::Here {
+                reads_index: wants_index,
+            }
+        },
         name: declared.to_string(),
         stage,
         severity,
@@ -1874,7 +2000,7 @@ impl From<Line> for External {
                 files: d.files,
                 docs_skip: d.docs_skip,
                 heavy: d.heavy,
-                platform_any: d.platform_any,
+                runs_on: d.runs_on,
             },
             Err(why) => Kind::Unusable {
                 why,
@@ -2254,6 +2380,59 @@ mod tests {
         assert_eq!(
             why(&one("pre-push  adr  *  block  docs-skip aval check\n")),
             ParseError::DocsSkipOnPrePush
+        );
+    }
+
+    /// A gate declared `index` with no index to read is refused, never run
+    /// blind; any other gate runs without the variables, and is warned.
+    #[test]
+    fn an_index_that_cannot_be_located_refuses_only_an_index_gate() {
+        let lost: Result<crate::hooks::common::CommitIndex, String> = Err("git failed".into());
+        assert!(
+            matches!(index_env(&lost, RunsOn::Here { reads_index: true }, "staged"), IndexEnv::Refuse(w) if w.contains("staged"))
+        );
+        assert!(
+            matches!(index_env(&lost, RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Warn(w) if w.contains("AMONT_INDEX_FILE"))
+        );
+        let found = Ok(crate::hooks::common::CommitIndex {
+            file: "/r/.git/index.lock".into(),
+            git_dir: "/r/.git".into(),
+        });
+        let IndexEnv::Set(plain) = index_env(&found, RunsOn::Here { reads_index: false }, "lint")
+        else {
+            panic!("an index that was found is set");
+        };
+        assert_eq!(
+            plain.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            ["AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"]
+        );
+        let IndexEnv::Set(marked) = index_env(&found, RunsOn::Here { reads_index: true }, "staged")
+        else {
+            panic!("an index that was found is set");
+        };
+        assert!(marked.contains(&("GIT_INDEX_FILE", "/r/.git/index.lock".into())));
+    }
+
+    /// `index` is a leading marker too, meaningful only where an index is
+    /// being committed, and never beside a pod that cannot read it.
+    #[test]
+    fn index_is_a_marker_refused_on_pre_push_and_beside_platform_any() {
+        let Line::Usable(d) = one("pre-commit  staged  *.rs  block  heavy index my-lint --x\n")
+        else {
+            panic!("index should parse on pre-commit");
+        };
+        assert_eq!(d.runs_on, RunsOn::Here { reads_index: true });
+        assert!(d.heavy);
+        assert_eq!(d.program, "my-lint");
+        assert_eq!(
+            why(&one("pre-push  staged  *.rs  block  index my-lint\n")),
+            ParseError::IndexOnPrePush
+        );
+        assert_eq!(
+            why(&one(
+                "pre-commit  staged  *.rs  block  index platform=any my-lint\n"
+            )),
+            ParseError::PlatformAnyWithIndex
         );
     }
 
@@ -2828,11 +3007,14 @@ mod tests {
     fn platform_any_is_a_marker_refused_with_fix_or_files() {
         let line = one("pre-commit lint *.ts block heavy platform=any make lint");
         let d = usable(&line);
-        assert!(d.platform_any && d.heavy);
+        assert!(d.runs_on == RunsOn::AnyPlatform && d.heavy);
         assert_eq!(d.program, "make");
         let line = one("pre-commit lint *.ts block platform=any docs-skip make lint");
-        assert!(usable(&line).platform_any && usable(&line).docs_skip);
-        assert!(!usable(&one("pre-commit lint * block make lint")).platform_any);
+        assert!(usable(&line).runs_on == RunsOn::AnyPlatform && usable(&line).docs_skip);
+        assert_eq!(
+            usable(&one("pre-commit lint * block make lint")).runs_on,
+            RunsOn::Here { reads_index: false }
+        );
         assert_eq!(
             why(&one("pre-commit lint * block platform=any fix make fmt")),
             ParseError::PlatformAnyWithFix

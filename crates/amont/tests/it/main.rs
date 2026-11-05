@@ -86,6 +86,7 @@ mod sigpipe;
 mod slot_run;
 mod snapshot_deps;
 mod spawn_budget;
+mod staged_index;
 mod tool_tables;
 mod tree_gates;
 mod trust_display;

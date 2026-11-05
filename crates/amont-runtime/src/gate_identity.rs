@@ -24,7 +24,7 @@
 //! guess.
 
 use crate::check::Stage;
-use crate::manifest::{External, Kind};
+use crate::manifest::{External, Kind, RunsOn};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -55,14 +55,27 @@ pub fn external_token(ext: &External, name: &str) -> Option<String> {
         args,
         files,
         docs_skip,
+        runs_on,
         ..
     } = &ext.kind
     else {
         return None;
     };
     let binary = binary_identity(program)?;
+    // A pre-commit pass recorded before a declared command could find the
+    // index being committed (`AMONT_INDEX_FILE`) may have judged the old one
+    // under `commit -a`, through any wrapper: none of them counts, so each
+    // pre-commit gate runs once more. `index` changes what the gate reads
+    // again, so it is part of the token too. Pre-push tokens are unchanged.
+    let commit_index = match (ext.stage, runs_on) {
+        (Stage::PreCommit, RunsOn::Here { reads_index: true }) => "\0commit-index-v1\0index",
+        (Stage::PreCommit, RunsOn::Here { reads_index: false } | RunsOn::AnyPlatform) => {
+            "\0commit-index-v1"
+        }
+        (Stage::PrePush, _) => "",
+    };
     let material = format!(
-        "declared\0{name}\0{program}\0{}\0files={files}\0docs-skip={docs_skip}\0{binary}",
+        "declared\0{name}\0{program}\0{}\0files={files}\0docs-skip={docs_skip}\0{binary}{commit_index}",
         args.join("\u{1f}")
     );
     seal(name, &material)
@@ -263,6 +276,36 @@ mod tests {
         assert_eq!(
             cluster_token(&ext, "pre-commit-lint", None, "sha256:aa"),
             Some(a)
+        );
+    }
+
+    /// A pre-commit pass from before amont told a gate the index being
+    /// committed does not count (it may have judged the old index), and the
+    /// `index` marker changes what the gate reads again: both are in the
+    /// token. A pre-push gate keeps the token it had.
+    #[test]
+    fn a_commit_time_token_follows_what_the_gate_could_read() {
+        let one = |line: &str| crate::manifest::parse(line).pop().expect("one check");
+        let plain = one("pre-commit lint * block sh -c true\n");
+        let marked = one("pre-commit lint * block index sh -c true\n");
+        let pushed = one("pre-push lint * block sh -c true\n");
+        let plain_token = external_token(&plain, "lint").expect("sh is there");
+        let marked_token = external_token(&marked, "lint").expect("sh is there");
+        assert_ne!(plain_token, marked_token);
+        let binary = binary_identity("sh").expect("sh is there");
+        let before = seal(
+            "lint",
+            &format!("declared\0lint\0sh\0-c\u{1f}true\0files=false\0docs-skip=false\0{binary}"),
+        )
+        .expect("hash");
+        assert_ne!(
+            plain_token, before,
+            "a blind pass recorded before no longer counts"
+        );
+        assert_eq!(
+            external_token(&pushed, "lint").expect("sh is there"),
+            before,
+            "a pre-push token is unchanged"
         );
     }
 
