@@ -537,7 +537,9 @@ fn land(mode: Mode) -> Report {
         // sha pre-staged too.
         let local_ref = format!("refs/heads/{}", report.branch);
         let dst = format!("refs/heads/{rb}");
-        report = match prestage(&local_ref, &sha, &dst, &expected_old, &url).into_report(report) {
+        report = match prestage(&local_ref, &sha, &dst, &expected_old, (&remote, &url))
+            .into_report(report)
+        {
             ControlFlow::Continue(report) => report,
             ControlFlow::Break(stopped) => return *stopped,
         };
@@ -717,7 +719,15 @@ fn last_rehearsal() -> Option<(u32, u64, bool)> {
 /// connection (ADR-0018). In a child `amont rehearse --wait`, told the real
 /// ref line, whose stdout goes to this process's stderr so a `--json` report
 /// stays the only thing on stdout.
-fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) -> Staged {
+/// `remote` is the remote's name, for what land tells the person: its URL
+/// may carry credentials, and is only ever handed to git.
+fn prestage(
+    local_ref: &str,
+    sha: &str,
+    dst: &str,
+    remote_tip: &str,
+    (remote, url): (&str, &str),
+) -> Staged {
     // What to run again after a refusal: the same land.
     let again = match dst.strip_prefix("refs/tags/") {
         Some(tag) => format!("amont land --tag {tag}"),
@@ -756,7 +766,7 @@ fn prestage(local_ref: &str, sha: &str, dst: &str, remote_tip: &str, url: &str) 
                         short(remote_tip)
                     ),
                     // git's own words, which the bounded fetch could not keep
-                    vec![format!("git fetch {url} {dst}"), again],
+                    vec![format!("git fetch --no-tags {remote} {dst}"), again],
                 ),
             );
         }
@@ -942,7 +952,7 @@ fn land_tag(name: &str) -> Report {
             return report;
         }
     }
-    report = match prestage(&dst, &oid, &dst, "", &url).into_report(report) {
+    report = match prestage(&dst, &oid, &dst, "", (&remote, &url)).into_report(report) {
         ControlFlow::Continue(report) => report,
         ControlFlow::Break(stopped) => return *stopped,
     };

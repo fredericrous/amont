@@ -1262,6 +1262,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An `unavailable` record replaces the one before it for the same gate,
+    /// and leaves every other gate's record alone: a tree's note does not grow
+    /// by a word per run (ADR-0018).
+    #[test]
+    fn an_unavailable_record_replaces_its_predecessor_only() {
+        let dir = repo("done-unavailable");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "chore: a"]);
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let one = |t: &str| vec![t.to_string()];
+            record_done(&tree, &one("suite@a"), Completion::Unavailable).expect("first");
+            record_done(&tree, &one("lint@b"), Completion::Unavailable).expect("other gate");
+            record_done(&tree, &one("lint@b"), Completion::Warned).expect("a warning");
+            record_done(&tree, &one("suite@a"), Completion::Unavailable).expect("again");
+            let words = note_in(DONE_REF, &tree).tokens;
+            let unavailable_for = |token: &str| {
+                words
+                    .iter()
+                    .filter(|w| w.starts_with("unavailable:") && w.ends_with(&format!(":{token}")))
+                    .count()
+            };
+            assert_eq!(unavailable_for("suite@a"), 1, "{words:?}");
+            assert_eq!(unavailable_for("lint@b"), 1, "{words:?}");
+            assert!(words.contains(&"warned:lint@b".to_string()), "{words:?}");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_commit_with_only_a_tree_note_still_reads_the_tree_tokens() {
         let dir = repo("tree-only");
