@@ -232,14 +232,19 @@ enum Seen {
 }
 
 fn read_tip(url: &str, rb: &str, budget: u64) -> Seen {
-    let refname = format!("refs/heads/{rb}");
-    match git::probe_remote_stdout(&["ls-remote", url, &refname], budget) {
+    read_ref(url, &format!("refs/heads/{rb}"), budget)
+}
+
+/// Where `refname` stands on `url`: empty when absent.
+fn read_ref(url: &str, refname: &str, budget: u64) -> Seen {
+    match git::probe_remote_stdout(&["ls-remote", url, refname], budget) {
         (Probe::Exit(0), out) => Seen::Tip(parse_tip(&out)),
         _ => Seen::Unreachable,
     }
 }
 
-/// `amont land [--force] [--json] [--dry-run]`.
+/// `amont land [--force] [--json] [--dry-run]`, or
+/// `amont land --tag <name> [--json] [--dry-run]`.
 pub fn command(args: &[OsString]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
     let dry_run = args.iter().any(|a| a == "--dry-run");
@@ -248,12 +253,38 @@ pub fn command(args: &[OsString]) -> i32 {
     } else {
         Mode::Plain
     };
-    if args.iter().any(|a| {
-        let a = a.to_string_lossy();
-        a != "--force" && a != "--json" && a != "--dry-run"
-    }) {
-        eprintln!("amont: land: takes no arguments, only [--force] [--json] [--dry-run]");
-        return finish(&Report::new(Status::Usage), json_out);
+    let mut tag: Option<String> = None;
+    let mut it = args.iter().map(|a| a.to_string_lossy().into_owned());
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--force" | "--json" | "--dry-run" => {}
+            "--tag" => match it.next() {
+                Some(name) if !name.starts_with('-') => tag = Some(name),
+                _ => {
+                    eprintln!("amont: land: --tag needs a tag name");
+                    return finish(&Report::new(Status::Usage), json_out);
+                }
+            },
+            other if other.starts_with("--tag=") => tag = Some(other["--tag=".len()..].to_string()),
+            _ => {
+                eprintln!(
+                    "amont: land: takes no arguments, only [--force] [--json] [--dry-run] [--tag <name>]"
+                );
+                return finish(&Report::new(Status::Usage), json_out);
+            }
+        }
+    }
+    if let Some(name) = tag {
+        if mode == Mode::Force {
+            eprintln!("amont: land: a tag is never forced; --tag takes no --force");
+            return finish(&Report::new(Status::Usage), json_out);
+        }
+        let started = now_nanos();
+        let report = land_tag(&name, dry_run);
+        if !dry_run {
+            write_receipt(&report, started, now_nanos());
+        }
+        return finish(&report, json_out);
     }
     if dry_run {
         return dry_run_command(mode, json_out);
@@ -302,6 +333,31 @@ struct Resolved {
     rb: String,
     url: String,
     has_upstream: bool,
+}
+
+/// The one push URL of `remote`, or the refusal saying why there is not one.
+fn one_push_url(remote: &str, mut report: Report) -> Result<(String, Report), Box<Report>> {
+    let Some(urls) = git::stdout(&["remote", "get-url", "--push", "--all", remote]) else {
+        return Err(Box::new(refuse(
+            report,
+            &format!("no remote named {remote:?}"),
+            &["git remote -v"],
+        )));
+    };
+    let urls: Vec<&str> = urls.lines().filter(|l| !l.is_empty()).collect();
+    if urls.len() != 1 {
+        return Err(Box::new(refuse(
+            report,
+            &format!(
+                "{remote:?} has {} push destinations; land verifies exactly one",
+                urls.len()
+            ),
+            &[&format!("git remote get-url --push --all {remote}")],
+        )));
+    }
+    let url = urls[0].to_string();
+    report.push_url = url.clone();
+    Ok((url, report))
 }
 
 /// Steps 1 and 2: the branch, its upstream, the refusals, and the one push
@@ -366,26 +422,7 @@ fn resolve() -> Result<(Resolved, Report), Box<Report>> {
     }
 
     // 2. The endpoint the push will really use.
-    let Some(urls) = git::stdout(&["remote", "get-url", "--push", "--all", &remote]) else {
-        return Err(Box::new(refuse(
-            report,
-            &format!("no remote named {remote:?}"),
-            &["git remote -v"],
-        )));
-    };
-    let urls: Vec<&str> = urls.lines().filter(|l| !l.is_empty()).collect();
-    if urls.len() != 1 {
-        return Err(Box::new(refuse(
-            report,
-            &format!(
-                "{remote:?} has {} push destinations; land verifies exactly one",
-                urls.len()
-            ),
-            &[&format!("git remote get-url --push --all {remote}")],
-        )));
-    }
-    let url = urls[0].to_string();
-    report.push_url = url.clone();
+    let (url, report) = one_push_url(&remote, report)?;
     Ok((
         Resolved {
             remote,
@@ -439,7 +476,9 @@ fn land(mode: Mode) -> Report {
         // ADR-0018: every heavy gate this push owes runs HERE, before git
         // connects — on every attempt, so a hook that moved HEAD gets its new
         // sha pre-staged too.
-        match prestage(&mut report, &sha, &rb, &expected_old, &url) {
+        let local_ref = format!("refs/heads/{}", report.branch);
+        let dst = format!("refs/heads/{rb}");
+        match prestage(&mut report, &local_ref, &sha, &dst, &expected_old, &url) {
             Prestage::Ready => {}
             Prestage::Refused(why) => {
                 eprintln!("amont: land: {why}");
@@ -452,7 +491,7 @@ fn land(mode: Mode) -> Report {
             }
         }
         let land_env = format!("{sha} {}", or_zeros(&expected_old));
-        let run = push(&url, &sha, &rb, lease, &land_env);
+        let run = push(&url, &sha, &dst, lease, &land_env);
         match run.outcome {
             PushOutcome::Done => break sha,
             PushOutcome::Signal(sig) => {
@@ -570,7 +609,14 @@ enum Prestage {
 /// git opens a connection (ADR-0018). In a child `amont rehearse --wait`, told
 /// the real ref line, whose stdout goes to this process's stderr so a `--json`
 /// report stays the only thing on stdout.
-fn prestage(report: &mut Report, sha: &str, rb: &str, remote_tip: &str, url: &str) -> Prestage {
+fn prestage(
+    report: &mut Report,
+    local_ref: &str,
+    sha: &str,
+    dst: &str,
+    remote_tip: &str,
+    url: &str,
+) -> Prestage {
     // The range starts at the remote's tip: a tip this clone never fetched
     // (a force push elsewhere) would make it unwalkable. Fetch it, or refuse.
     if !remote_tip.is_empty() && !has_commit(remote_tip) {
@@ -580,22 +626,22 @@ fn prestage(report: &mut Report, sha: &str, rb: &str, remote_tip: &str, url: &st
             fetch.args(pre).envs(env);
         }
         let _ = fetch
-            .args(["fetch", "-q", "--no-tags", url, &format!("refs/heads/{rb}")])
+            .args(["fetch", "-q", "--no-tags", url, dst])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .status();
         if !has_commit(remote_tip) {
             report.prestage = "refused".to_string();
             return Prestage::Refused(format!(
-                "the remote's {rb} is at {}, a commit this clone does not have and could not fetch",
+                "the remote's {dst} is at {}, a commit this clone does not have and could not fetch",
                 short(remote_tip)
             ));
         }
     }
     let line = crate::pushrefs::PushRef {
-        local_ref: format!("refs/heads/{}", report.branch),
+        local_ref: local_ref.to_string(),
         local_oid: sha.to_string(),
-        remote_ref: format!("refs/heads/{rb}"),
+        remote_ref: dst.to_string(),
         remote_oid: or_zeros(remote_tip).to_string(),
     };
     let Ok(root) = crate::hooks::common::repo_root_checked() else {
@@ -606,6 +652,11 @@ fn prestage(report: &mut Report, sha: &str, rb: &str, remote_tip: &str, url: &st
     let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&line));
     report.gates_owed = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
+    for audit in crate::dispatch::owed_audits(&settings, &manifest, std::slice::from_ref(&line)) {
+        if !report.gates_owed.contains(&audit) {
+            report.gates_owed.push(audit);
+        }
+    }
     if report.gates_owed.is_empty() {
         report.prestage = "stamped".to_string();
         return Prestage::Ready;
@@ -674,6 +725,111 @@ fn prestage(report: &mut Report, sha: &str, rb: &str, remote_tip: &str, url: &st
 
 fn has_commit(oid: &str) -> bool {
     git::succeeds(&["cat-file", "-e", &format!("{oid}^{{commit}}")])
+}
+
+/// `amont land --tag <name>` (ADR-0018): pre-stage the push of one existing
+/// local tag (release-mode audits for a `v*` tag, on a snapshot of the tagged
+/// commit), push it, and read it back. A tag already on the remote is refused:
+/// a tag is never moved.
+fn land_tag(name: &str, dry_run: bool) -> Report {
+    let settings = crate::config::Settings::default();
+    let budget = crate::hooks::common::network_probe_budget(&settings);
+    let mut report = Report::new(Status::Refused);
+    report.branch = name.to_string();
+    let dst = format!("refs/tags/{name}");
+    report.dst = dst.clone();
+    let Some(oid) = git::stdout(&["rev-parse", "--verify", "-q", &dst]) else {
+        return refuse(
+            report,
+            &format!("there is no local tag {name:?}"),
+            &["git tag --list"],
+        );
+    };
+    report.pushed = oid.clone();
+    let remote = git::stdout(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .and_then(|b| git::stdout(&["config", &format!("branch.{b}.remote")]))
+        .filter(|r| r != ".")
+        .unwrap_or_else(|| "origin".to_string());
+    report.remote = remote.clone();
+    let (url, mut report) = match one_push_url(&remote, report) {
+        Ok(ok) => ok,
+        Err(refused) => return *refused,
+    };
+    if dry_run {
+        report.status = Status::Landed;
+        return report;
+    }
+    match read_ref(&url, &dst, budget) {
+        Seen::Tip(t) if t.is_empty() => {}
+        Seen::Tip(t) => {
+            report.remote_before = t.clone();
+            return refuse(
+                report,
+                &format!("{dst} already exists on {remote}; a tag is never moved"),
+                &[&format!("git ls-remote {remote} {dst}")],
+            );
+        }
+        Seen::Unreachable => {
+            report.status = Status::Unreachable;
+            eprintln!("amont: land: could not read {dst} from {remote}");
+            report.next = vec![format!("git ls-remote {remote} {dst}")];
+            return report;
+        }
+    }
+    match prestage(&mut report, &dst, &oid, &dst, "", &url) {
+        Prestage::Ready => {}
+        Prestage::Refused(why) => {
+            eprintln!("amont: land: {why}");
+            report.status = Status::Refused;
+            return report;
+        }
+        Prestage::Interrupted(sig) => {
+            report.status = Status::Interrupted(sig);
+            return report;
+        }
+    }
+    let land_env = format!("{oid} {ZEROS}");
+    let run = push(&url, &dst, &dst, None, &land_env);
+    match run.outcome {
+        PushOutcome::Done => {}
+        PushOutcome::Signal(sig) => {
+            report.status = Status::Interrupted(sig);
+            return report;
+        }
+        PushOutcome::Failed => {
+            report.status = match classify_push_stderr(&run.stderr) {
+                PushFailure::Unreachable => Status::Unreachable,
+                _ => Status::Refused,
+            };
+            return report;
+        }
+    }
+    let mut observed = Seen::Unreachable;
+    for i in 0..=REREADS {
+        if i > 0 {
+            std::thread::sleep(crate::clock::scaled(REREAD_PAUSE));
+        }
+        observed = read_ref(&url, &dst, budget);
+        if matches!(&observed, Seen::Tip(t) if *t == oid) {
+            break;
+        }
+    }
+    match observed {
+        Seen::Tip(t) if t == oid => {
+            report.remote_after = t;
+            report.status = Status::Landed;
+        }
+        Seen::Tip(t) => {
+            report.remote_after = t;
+            report.status = Status::NotObserved;
+            report.next = vec![format!("git ls-remote {remote} {dst}")];
+        }
+        Seen::Unreachable => {
+            report.status = Status::Unverified;
+            report.next = vec![format!("git ls-remote {remote} {dst}")];
+        }
+    }
+    report
 }
 
 /// `--dry-run`: steps 1 and 2 of a land and nothing else. No network, no push,
@@ -848,7 +1004,7 @@ struct PushRun {
 /// terminal the push gets the no-prompt environment, which bounds the
 /// network legs only: a custom ssh command, a credential helper or an
 /// established session can still stall, and Ctrl-C is the answer.
-fn push(url: &str, sha: &str, rb: &str, lease: Option<&str>, land_env: &str) -> PushRun {
+fn push(url: &str, src: &str, dst: &str, lease: Option<&str>, land_env: &str) -> PushRun {
     let mut cmd = Command::new("git");
     // What the pre-stage ran against, for the hook of THIS push (ADR-0018).
     cmd.env(crate::rehearsal::LAND_ENV, land_env);
@@ -858,10 +1014,10 @@ fn push(url: &str, sha: &str, rb: &str, lease: Option<&str>, land_env: &str) -> 
     }
     cmd.arg("push");
     if let Some(old) = lease {
-        cmd.arg(format!("--force-with-lease=refs/heads/{rb}:{old}"));
+        cmd.arg(format!("--force-with-lease={dst}:{old}"));
     }
     cmd.arg(url)
-        .arg(format!("{sha}:refs/heads/{rb}"))
+        .arg(format!("{src}:{dst}"))
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

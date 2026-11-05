@@ -598,9 +598,15 @@ struct Plan {
 fn plan() -> Result<Plan, String> {
     let root = crate::hooks::common::repo_root_checked()?;
     let repo = Path::new(&root);
-    let head = crate::git::stdout(&["rev-parse", "HEAD"]).ok_or("could not resolve HEAD")?;
-    let tree = crate::git::stdout(&["rev-parse", "HEAD^{tree}"])
-        .ok_or("could not resolve the tree of HEAD")?;
+    // Land's pre-stage names the commit it will push (a tag's, for
+    // `land --tag`); a plain rehearsal tests HEAD.
+    let head = match prestage_line() {
+        Some(line) => crate::git::stdout(&["rev-parse", &format!("{}^{{commit}}", line.local_oid)])
+            .ok_or("could not resolve the commit to pre-stage")?,
+        None => crate::git::stdout(&["rev-parse", "HEAD"]).ok_or("could not resolve HEAD")?,
+    };
+    let tree = crate::git::stdout(&["rev-parse", &format!("{head}^{{tree}}")])
+        .ok_or("could not resolve the tree to rehearse")?;
     // The branch and its upstream, read HERE in the primary worktree: the
     // snapshot is a detached HEAD and could not answer.
     let push_ref = match prestage_line() {
@@ -610,7 +616,15 @@ fn plan() -> Result<Plan, String> {
     let manifest = crate::manifest::load(repo);
     let settings = crate::config::Settings::new(manifest.policy.clone());
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&push_ref));
-    let gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
+    let mut gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
+    // Audits are owed whatever the range touches, until a fresh record
+    // answers for them (ADR-0018).
+    for audit in crate::dispatch::owed_audits(&settings, &manifest, std::slice::from_ref(&push_ref))
+    {
+        if !gates.contains(&audit) {
+            gates.push(audit);
+        }
+    }
     // Tree gates this tree has not proven yet (ADR-0024). Resolved BEFORE
     // the nothing-to-do exit: a push whose only gates are lint must still be
     // rehearsed, or a rebased branch could never be attested.
@@ -641,6 +655,13 @@ impl Plan {
     /// Is `gate` already vouched for on HEAD: by a local token, or by a
     /// cluster token (ADR-0016, ADR-0017)?
     fn vouched(&self, gate: &str) -> bool {
+        if crate::hooks::audit::is_audit(gate) {
+            return !crate::hooks::audit::owed(
+                &self.settings,
+                gate,
+                std::slice::from_ref(&self.push_ref),
+            );
+        }
         vouched_by(&self.settings, &self.manifest, &self.head, gate)
     }
 

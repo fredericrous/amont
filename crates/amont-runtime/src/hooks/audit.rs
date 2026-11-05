@@ -28,7 +28,7 @@ use crate::pushrefs::PushRef;
 use super::common;
 
 /// What an audit's output said, before the push's stakes are applied.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Report {
     Clean,
     /// Warning-class advisories (unmaintained/unsound) — named, never
@@ -67,6 +67,17 @@ fn conclude_waivable(
     full: &str,
     waivable: bool,
 ) -> Outcome {
+    // What the push's stakes are applied to, kept for the audit record
+    // (ADR-0018): replaying exactly these arguments later gives the same
+    // lines and verdict, judged against that day's waivers and that push.
+    CAPTURE.with(|c| {
+        *c.borrow_mut() = Some(Concluded {
+            tool: tool.to_string(),
+            report: report.clone(),
+            full: full.to_string(),
+            waivable,
+        })
+    });
     match report {
         Report::Clean => {
             common::ok(settings, &format!("{tool}: no known vulnerabilities"));
@@ -717,7 +728,7 @@ fn audit_each_dir(
     })
 }
 
-pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn rust_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if !has_lockfile("Cargo.lock") {
         return Outcome::Inert;
     }
@@ -1044,7 +1055,7 @@ const JS_AUDITORS: [JsAuditor; 2] = [
 /// is named but does not refuse the tag. Nobody who installs the package
 /// installs it. A finding whose production re-audit cannot answer still
 /// blocks: an unknown is not a pass.
-pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn js_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     let projects: Vec<(&JsAuditor, String)> = JS_AUDITORS
         .iter()
         .flat_map(|a| lockfile_dirs(a.lockfile).into_iter().map(move |d| (a, d)))
@@ -1125,7 +1136,7 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
 /// Go needs no production filter: modules have no dev-dependency set, and
 /// `govulncheck ./...` without `-test` reports only vulnerabilities the
 /// module's non-test code can reach — what ships, already.
-pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn go_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if !has_lockfile("go.sum") {
         return Outcome::Inert;
     }
@@ -1157,7 +1168,7 @@ pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     )
 }
 
-pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn python_run(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     if !has_lockfile("requirements.txt") && !has_lockfile("pyproject.toml") {
         return Outcome::Inert;
     }
@@ -1339,6 +1350,333 @@ fn uv_production_names(
                     .map(normalise)
             })
             .collect(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0018: an audit's report is recorded, so a push replays it instead of
+// running the tool while git holds the connection open.
+// ---------------------------------------------------------------------------
+
+/// The notes ref of audit records: local, never pushed, never a stamp.
+pub const AUDIT_REF: &str = "amont-audit";
+const AUDIT_FORMAT: &str = "amont-audit-v1";
+/// How long a record answers for its lockfiles, in hours.
+const AUDIT_MAX_AGE: &str = "amont.auditMaxAge";
+/// A report that could not check anything answers for an hour only: an
+/// offline push is never blocked, and the audit is tried again soon.
+const UNCHECKED_MAX_AGE_SECS: i64 = 60 * 60;
+
+/// Is `check` one of the dependency audits?
+pub fn is_audit(check: &str) -> bool {
+    check.starts_with("pre-push-audit-")
+}
+
+/// The files (by name) whose content an audit's branch-mode report depends
+/// on. A release reads the manifests too (its dev-only split), so a release
+/// record is keyed by the whole tree instead.
+fn inputs_of(check: &str) -> &'static [&'static str] {
+    match check {
+        "pre-push-audit-rust" => &["Cargo.lock"],
+        "pre-push-audit-js" => &["package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+        "pre-push-audit-go" => &["go.sum", "go.mod"],
+        "pre-push-audit-python" => &["requirements.txt", "pyproject.toml", "uv.lock"],
+        _ => &[],
+    }
+}
+
+/// The arguments one `conclude_waivable` call was given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Concluded {
+    tool: String,
+    report: Report,
+    full: String,
+    waivable: bool,
+}
+
+thread_local! {
+    /// Set by `conclude_waivable`; read by `recorded` on the same thread.
+    static CAPTURE: std::cell::RefCell<Option<Concluded>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A record waiting for the hook to decide it may be written: only where the
+/// working tree is the keyed tip (the tools read the working tree).
+#[derive(Debug, Clone)]
+pub struct Pending {
+    pub tip: String,
+    material: String,
+    body: String,
+}
+
+static PENDING: std::sync::Mutex<Vec<Pending>> = std::sync::Mutex::new(Vec::new());
+
+/// The records the audits of this process produced, handed to the hook.
+pub fn take_pending() -> Vec<Pending> {
+    std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Write `pending` as a note on the blob of its key text. Best-effort.
+pub fn write_pending(pending: &Pending) -> bool {
+    // `stdout_piped` keeps git's trailing newline; a key with one names no
+    // object, and `notes add` would refuse it.
+    let Some(key) = crate::git::stdout_piped(&["hash-object", "-w", "--stdin"], &pending.material)
+        .map(|k| k.trim().to_string())
+    else {
+        return false;
+    };
+    crate::git::succeeds(&[
+        "notes",
+        "--ref",
+        AUDIT_REF,
+        "add",
+        "-f",
+        "-m",
+        &pending.body,
+        &key,
+    ])
+}
+
+/// The pushed commits: every non-deleting ref's tip, peeled to its commit.
+fn pushed_commits(refs: &[PushRef]) -> Vec<String> {
+    let mut out: Vec<String> = refs
+        .iter()
+        .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+        .filter_map(|r| {
+            crate::git::stdout(&[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("{}^{{commit}}", r.local_oid),
+            ])
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The text a record is keyed by (the key is its blob's oid).
+fn key_material(check: &str, release: bool, commit: &str) -> Option<String> {
+    if release {
+        let tree = crate::git::stdout(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+        return Some(format!("{AUDIT_FORMAT}\n{check}\nrelease\n{tree}\n"));
+    }
+    let names = inputs_of(check);
+    let listing = crate::git::stdout(&["ls-tree", "-r", "--full-tree", commit])?;
+    let mut lines: Vec<String> = listing
+        .lines()
+        .filter_map(|l| {
+            let (meta, path) = l.split_once('\t')?;
+            let blob = meta.split_whitespace().nth(2)?;
+            let base = path.rsplit('/').next().unwrap_or(path);
+            names.contains(&base).then(|| format!("{path} {blob}"))
+        })
+        .collect();
+    lines.sort();
+    Some(format!(
+        "{AUDIT_FORMAT}\n{check}\nbranch\n{}\n",
+        lines.join("\n")
+    ))
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn class_of(report: &Report) -> &'static str {
+    match report {
+        Report::Clean => "clean",
+        Report::Advisories(_) => "advisories",
+        Report::Vulnerabilities(_) => "vulnerabilities",
+        Report::CouldNotCheck => "unchecked",
+    }
+}
+
+fn render(c: &Concluded, at: i64) -> String {
+    let items: &[String] = match &c.report {
+        Report::Advisories(v) | Report::Vulnerabilities(v) => v,
+        _ => &[],
+    };
+    let mut body = format!(
+        "{AUDIT_FORMAT} {at} {} {} {}",
+        class_of(&c.report),
+        u8::from(c.waivable),
+        c.tool
+    );
+    for item in items {
+        body.push_str("\nitem ");
+        body.push_str(item);
+    }
+    body.push_str("\n---\n");
+    body.push_str(&c.full);
+    body
+}
+
+fn parse(body: &str) -> Option<(i64, Concluded)> {
+    let (head, rest) = body.split_once('\n').unwrap_or((body, ""));
+    let mut f = head.split_whitespace();
+    if f.next()? != AUDIT_FORMAT {
+        return None;
+    }
+    let at: i64 = f.next()?.parse().ok()?;
+    let class = f.next()?;
+    let waivable = f.next()? == "1";
+    let tool = f.next()?.to_string();
+    let (items_part, full) = match rest.split_once("---\n") {
+        Some((i, full)) => (i, full.to_string()),
+        None => (rest.strip_suffix("---").unwrap_or(rest), String::new()),
+    };
+    let items: Vec<String> = items_part
+        .lines()
+        .filter_map(|l| l.strip_prefix("item ").map(str::to_string))
+        .collect();
+    let report = match class {
+        "clean" => Report::Clean,
+        "advisories" => Report::Advisories(items),
+        "vulnerabilities" => Report::Vulnerabilities(items),
+        "unchecked" => Report::CouldNotCheck,
+        _ => return None,
+    };
+    Some((
+        at,
+        Concluded {
+            tool,
+            report,
+            full,
+            waivable,
+        },
+    ))
+}
+
+/// The fresh record of `check` for `commit` in this mode, if any.
+fn fresh_record(
+    settings: &crate::config::Settings,
+    check: &str,
+    release: bool,
+    commit: &str,
+) -> Option<Concluded> {
+    let material = key_material(check, release, commit)?;
+    let key = crate::git::stdout_piped(&["hash-object", "--stdin"], &material)?
+        .trim()
+        .to_string();
+    let body = crate::git::stdout(&["notes", "--ref", AUDIT_REF, "show", &key])?;
+    let (at, c) = parse(&body)?;
+    let max_age = if matches!(c.report, Report::CouldNotCheck) {
+        UNCHECKED_MAX_AGE_SECS
+    } else {
+        crate::config::integer_or(settings, AUDIT_MAX_AGE, 24, 1..=24 * 30) * 3600
+    };
+    let age = now_secs() - at;
+    (0..=max_age).contains(&age).then_some(c)
+}
+
+/// Does every commit `refs` pushes carry a fresh record of `check`, all the
+/// same, in this push's mode? The one the push would replay, or None.
+fn fresh_for_refs(
+    settings: &crate::config::Settings,
+    check: &str,
+    refs: &[PushRef],
+) -> Option<Concluded> {
+    if !crate::gate_stamp::push_stamps_enabled(settings) {
+        return None;
+    }
+    let release = releasing(refs);
+    let commits = pushed_commits(refs);
+    let mut found: Option<Concluded> = None;
+    for commit in &commits {
+        let c = fresh_record(settings, check, release, commit)?;
+        match &found {
+            Some(prev) if *prev != c => return None,
+            _ => found = Some(c),
+        }
+    }
+    found
+}
+
+/// Is `check` owed by a push of `refs`: opted in, and with no fresh record?
+pub fn owed(settings: &crate::config::Settings, check: &str, refs: &[PushRef]) -> bool {
+    !pushed_commits(refs).is_empty() && fresh_for_refs(settings, check, refs).is_none()
+}
+
+/// Run an audit through its record: replay a fresh one, or run the tool and
+/// keep what it concluded (a tool that never got to a report counts as
+/// "could not check").
+fn recorded(
+    check: &str,
+    tool: &str,
+    settings: &crate::config::Settings,
+    refs: &[PushRef],
+    run: fn(&crate::config::Settings, &[PushRef]) -> Outcome,
+) -> Outcome {
+    if let Some(c) = fresh_for_refs(settings, check, refs) {
+        common::ok(
+            settings,
+            &format!("{tool}: replaying the audit recorded for this push"),
+        );
+        return conclude_waivable(
+            settings,
+            &c.tool,
+            c.report,
+            releasing(refs),
+            &c.full,
+            c.waivable,
+        );
+    }
+    CAPTURE.with(|c| *c.borrow_mut() = None);
+    let outcome = run(settings, refs);
+    let concluded = CAPTURE.with(|c| c.borrow_mut().take()).or_else(|| {
+        (outcome == Outcome::Unavailable).then(|| Concluded {
+            tool: tool.to_string(),
+            report: Report::CouldNotCheck,
+            full: String::new(),
+            waivable: false,
+        })
+    });
+    if let (Some(c), true) = (concluded, crate::gate_stamp::push_stamps_enabled(settings)) {
+        let release = releasing(refs);
+        let at = now_secs();
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        for commit in pushed_commits(refs) {
+            if let Some(material) = key_material(check, release, &commit) {
+                pending.push(Pending {
+                    tip: commit,
+                    material,
+                    body: render(&c, at),
+                });
+            }
+        }
+    }
+    outcome
+}
+
+pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    recorded(
+        "pre-push-audit-rust",
+        "audit-rust",
+        settings,
+        refs,
+        rust_run,
+    )
+}
+
+pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    recorded("pre-push-audit-js", "audit-js", settings, refs, js_run)
+}
+
+pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    recorded("pre-push-audit-go", "audit-go", settings, refs, go_run)
+}
+
+pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+    recorded(
+        "pre-push-audit-python",
+        "audit-python",
+        settings,
+        refs,
+        python_run,
     )
 }
 

@@ -107,11 +107,15 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
-  land           push this branch, then read the remote back to prove the ref
-                 moved. Exits 0 landed, 1 refused, 3 unreachable or unverified,
-                 4 accepted but the expected tip was not observed (2 is usage)
+  land           run the push gates on a snapshot of this branch with no
+                 connection open, push it, then read the remote back to prove
+                 the ref moved. Exits 0 landed, 1 refused (a gate failed, or
+                 the push was refused), 3 unreachable or unverified, 4 accepted
+                 but the expected tip was not observed (2 is usage)
                  [--force: lease on the tip it just read] [--json: stdout]
                  [--dry-run: resolve the target only; no network, no push]
+                 [--tag <name>: land that existing tag instead, never moving
+                  one already on the remote; a v* tag gets release audits]
   slot run       run a heavy command in a host slot, queued with every other
                  one on this machine; exits 75 without running it when no
                  slot frees in time [--weight N] [--max-wait S, default 90]
@@ -438,7 +442,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         ),
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
-        Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
+        Sub::Land => (&["--force", "--json", "--dry-run"], &["--tag"]),
         Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),

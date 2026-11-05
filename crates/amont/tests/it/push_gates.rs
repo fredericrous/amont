@@ -370,3 +370,222 @@ fn a_tag_push_of_an_unstamped_commit_refuses_until_run_stamp_stamps_it() {
     let (code, out, err) = hook(&r, &line, &[]);
     assert_eq!(code, 0, "the stamped tag push passes: {out}{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1b: dependency audits off the connection (ADR-0018). A repository
+// tracking `go.sum` is opted into `audit-go`; a fake `govulncheck` logs each
+// run to an absolute path and answers from marker files: `VULN` → exit 1 with
+// a GO- id (a vulnerability), `OFFLINE` → exit 1 with no id (could not check),
+// neither → exit 0 (clean).
+// ---------------------------------------------------------------------------
+
+/// A land fixture opted into audit-go, and the fake tool's bin dir and log.
+fn audit_fixture() -> (crate::land::Fx, std::path::PathBuf, std::path::PathBuf) {
+    let fx = crate::land::fixture("feat/audited");
+    let bin = fx.r.path(".git/fakebin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let log = fx.r.path(".git/audit.log");
+    let marks = fx.r.path(".git");
+    let tool = bin.join("govulncheck");
+    std::fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\nprintf x >> {log:?}\n\
+             if [ -e {m:?}/VULN ]; then echo 'Vulnerability #1: GO-2026-0001'; exit 3; fi\n\
+             if [ -e {m:?}/OFFLINE ]; then echo 'fetching vulndb: no route to host'; exit 1; fi\n\
+             echo 'No vulnerabilities found.'\n",
+            log = log.to_str().expect("utf8"),
+            m = marks.to_str().expect("utf8"),
+        ),
+    )
+    .expect("write tool");
+    common::fixture_exec(&tool, &std::fs::read_to_string(&tool).expect("read"));
+    fx.r.stage("go.sum", "example.com/m v1.0.0 h1:abc=\n");
+    fx.r.stage("go.mod", "module example.com/x\n");
+    fx.r.commit("chore: go module");
+    crate::tree_gates::trust_and_install(&fx.r);
+    (fx, bin, log)
+}
+
+fn audit_records(r: &Repo) -> String {
+    String::from_utf8_lossy(&r.git(&["notes", "--ref", "amont-audit", "list"]).stdout).into_owned()
+}
+
+#[test]
+fn land_runs_the_audit_once_and_a_later_docs_push_replays_it() {
+    let (fx, bin, log) = audit_fixture();
+    let ran = crate::land::land_with(&fx, &["--json"], Some(&bin));
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(runs(&log), 1, "once, in the pre-stage: {}", ran.stderr);
+    assert!(
+        ran.stderr.contains("replaying the audit recorded"),
+        "{}",
+        ran.stderr
+    );
+    assert!(!audit_records(&fx.r).is_empty(), "a record was written");
+    // A docs-only commit: same lockfiles, same key — a bare push replays.
+    fx.r.stage("notes.md", "docs\n");
+    fx.r.commit("docs: notes");
+    let tip = crate::land::head(&fx);
+    let base = crate::land::tip(&fx, "feat/audited");
+    let (code, out, err) = hook_in(&fx.r, &push_line(&base, &tip), &bin, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(runs(&log), 1, "the tool did not run again: {out}{err}");
+}
+
+#[test]
+fn a_stale_record_is_owed_again_and_a_bare_push_refuses() {
+    let (fx, bin, log) = audit_fixture();
+    let ran = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    // Age every record by two days.
+    for line in audit_records(&fx.r).lines() {
+        let object = line.split_whitespace().nth(1).expect("object");
+        let body = String::from_utf8_lossy(
+            &fx.r
+                .git(&["notes", "--ref", "amont-audit", "show", object])
+                .stdout,
+        )
+        .into_owned();
+        let mut fields: Vec<String> = body
+            .lines()
+            .next()
+            .unwrap()
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        let at: i64 = fields[1].parse().unwrap();
+        fields[1] = (at - 2 * 24 * 3600).to_string();
+        let aged = std::iter::once(fields.join(" "))
+            .chain(body.lines().skip(1).map(str::to_string))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fx.r.git(&[
+            "notes",
+            "--ref",
+            "amont-audit",
+            "add",
+            "-f",
+            "-m",
+            &aged,
+            object,
+        ]);
+    }
+    let tip = crate::land::head(&fx);
+    let (code, out, err) = hook_in(&fx.r, &push_line(&tip, &tip), &bin, &[]);
+    let _ = out;
+    assert_ne!(code, 0, "a stale audit is owed: {err}");
+    assert!(err.contains("pre-push-audit-go"), "{err}");
+    assert_eq!(runs(&log), 1, "and was not run on the connection");
+}
+
+#[test]
+fn a_branch_record_does_not_answer_for_a_release_tag() {
+    let (fx, bin, log) = audit_fixture();
+    let ran = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let tip = crate::land::head(&fx);
+    let zeros = "0000000000000000000000000000000000000000";
+    let line = format!("refs/tags/v1.0.0 {tip} refs/tags/v1.0.0 {zeros}\n");
+    let (code, _out, err) = hook_in(&fx.r, &line, &bin, &[]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("pre-push-audit-go"), "{err}");
+    assert_eq!(runs(&log), 1);
+}
+
+#[test]
+fn land_tag_runs_release_audits_on_the_tagged_commit_and_blocks_a_vulnerability() {
+    let (fx, bin, log) = audit_fixture();
+    fx.r.git(&["tag", "v1.0.0"]);
+    std::fs::write(fx.r.path(".git/VULN"), "").expect("mark");
+    let ran = crate::land::land_with(&fx, &["--tag", "v1.0.0"], Some(&bin));
+    assert_eq!(
+        ran.code, 1,
+        "a v* tag does not ship a vulnerability: {}",
+        ran.stderr
+    );
+    assert_eq!(runs(&log), 1);
+    let on_remote = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "-q", "refs/tags/v1.0.0"])
+        .current_dir(&fx.bare)
+        .output()
+        .expect("git");
+    assert!(!on_remote.status.success(), "nothing pushed");
+}
+
+#[test]
+fn land_tag_lands_a_clean_tag_and_refuses_one_already_on_the_remote() {
+    let (fx, bin, _log) = audit_fixture();
+    // Tag the commit BEFORE head, so the pre-stage must snapshot the tag, not HEAD.
+    let tagged = crate::land::head(&fx);
+    fx.r.stage("later.md", "after the tag\n");
+    fx.r.commit("docs: after");
+    fx.r.git(&["tag", "v1.0.0", &tagged]);
+    let ran = crate::land::land_with(&fx, &["--tag", "v1.0.0", "--json"], Some(&bin));
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let remote = crate::land::plain_git(&fx.bare, &["rev-parse", "refs/tags/v1.0.0"]);
+    assert_eq!(remote, tagged);
+    let again = crate::land::land_with(&fx, &["--tag", "v1.0.0"], Some(&bin));
+    assert_eq!(again.code, 1, "{}", again.stderr);
+    assert!(again.stderr.contains("already exists"), "{}", again.stderr);
+}
+
+#[test]
+fn an_audit_that_could_not_check_never_blocks_a_land() {
+    let (fx, bin, _log) = audit_fixture();
+    std::fs::write(fx.r.path(".git/OFFLINE"), "").expect("mark");
+    let ran = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("NOT checked"), "{}", ran.stderr);
+}
+
+#[test]
+fn a_missing_audit_tool_never_blocks_a_land() {
+    let (fx, _bin, _log) = audit_fixture();
+    // An empty bin dir first on PATH, and no govulncheck anywhere on it.
+    let empty = fx.r.path(".git/emptybin");
+    std::fs::create_dir_all(&empty).expect("mkdir");
+    if std::process::Command::new("sh")
+        .args(["-c", "command -v govulncheck"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return; // this machine has a real govulncheck on PATH
+    }
+    let ran = crate::land::land_with(&fx, &[], Some(&empty));
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+}
+
+#[test]
+fn a_dirty_lockfile_writes_no_record() {
+    let (fx, bin, log) = audit_fixture();
+    fx.r.git(&["config", "amont.pushGates", "inline"]);
+    std::fs::write(fx.r.path("go.sum"), "example.com/m v1.0.1 h1:def=\n").expect("dirty");
+    let tip = crate::land::head(&fx);
+    let (code, out, err) = hook_in(&fx.r, &push_line(&tip, &tip), &bin, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(runs(&log), 1, "inline, the audit ran");
+    assert!(
+        audit_records(&fx.r).is_empty(),
+        "but nothing was recorded for a tree it did not read"
+    );
+}
+
+/// `hook` with `bin` first on PATH.
+fn hook_in(
+    r: &Repo,
+    line: &str,
+    bin: &std::path::Path,
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
+    let rest = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(bin.to_path_buf()).chain(std::env::split_paths(&rest)),
+    )
+    .expect("PATH");
+    let path = path.to_string_lossy().into_owned();
+    let mut all: Vec<(&str, &str)> = vec![("PATH", path.as_str())];
+    all.extend_from_slice(env);
+    hook(r, line, &all)
+}

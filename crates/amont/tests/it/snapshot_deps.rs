@@ -253,6 +253,9 @@ fn js_repo(layout: impl FnOnce(&Repo)) -> (Repo, String) {
     );
     r.commit("chore: the gate");
     trust_and_install(&r);
+    // A rehearsal now runs the dependency audits too (ADR-0018); these tests
+    // read every command the stub saw, and are about preparing a snapshot.
+    r.git(&["config", "hook.skip", "pre-push-audit-js"]);
     r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     r.git(&["update-ref", "refs/remotes/origin/main", &base]);
     r.stage("a.txt", "hello\n");

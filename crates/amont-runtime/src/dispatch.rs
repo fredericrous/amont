@@ -1133,7 +1133,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .get()
             .iter()
             .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
-            .map(|r| r.local_oid.clone())
+            // An annotated tag pushes its tag object; what was tested, stamped
+            // and recorded is the commit it points at (ADR-0018).
+            .map(|r| {
+                crate::git::stdout(&[
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    &format!("{}^{{commit}}", r.local_oid),
+                ])
+                .unwrap_or_else(|| r.local_oid.clone())
+            })
             .collect();
         t.dedup();
         t
@@ -1227,6 +1237,14 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         if rehearsing && handed_to_cluster.iter().any(|gate| gate == check.name()) {
             return Decision::Skip(Skip::HandedToCluster);
         }
+        // A dependency audit is never skipped: its verdict depends on the
+        // day's advisories and the push's stakes, so it replays a fresh
+        // record instead, inside the check (ADR-0018).
+        if crate::hooks::audit::is_audit(check.name()) {
+            return Decision::Run {
+                unstamped_pair: None,
+            };
+        }
         if !check.scope().is_unscoped()
             && (stamped_on_every_tip(check.name()) || cluster_stamped(check.name()))
         {
@@ -1302,6 +1320,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             },
         }
     };
+    // The question `amont list` answers with "inert here — needs go.sum",
+    // asked of the index once (see the loop below).
+    let tracked = crate::tracked_paths();
     // ADR-0018: refuse before any heavy gate starts. The gates this push
     // owes are the scoped ones its range touches (`scoped_push_gates`, the
     // same set a rehearsal stamps); each is asked `decide`, and any it would
@@ -1311,8 +1332,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let owed = scoped_push_gates(settings, ctx.manifest, &changed);
         let missing: Vec<&str> = pre_push_checks
             .iter()
-            .filter(|c| owed.iter().any(|o| o == c.name()))
-            .filter(|c| matches!(decide(**c), Decision::Run { .. }))
+            .filter(|c| {
+                if crate::hooks::audit::is_audit(c.name()) {
+                    // Owed on every push it is opted into, whatever the
+                    // range touches, unless a fresh record answers for it.
+                    c.scope().opted_in(&tracked)
+                        && crate::hooks::audit::owed(settings, c.name(), ctx.push.get())
+                } else {
+                    owed.iter().any(|o| o == c.name())
+                        && matches!(decide(**c), Decision::Run { .. })
+                }
+            })
             .map(|c| c.name())
             .collect();
         if !missing.is_empty() {
@@ -1348,7 +1378,6 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // registry calls inert used to run anyway, find its tool or lockfile
     // missing, and warn that it "could not run" on every push of a
     // repository it was never meant to touch.
-    let tracked = crate::tracked_paths();
     for (idx, check) in pre_push_checks.iter().enumerate() {
         if !check.scope().opted_in(&tracked) {
             continue;
@@ -1365,7 +1394,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // `pytest`, anything). Messages mirror the npm gate's exactly;
         // docs/checks.md quotes them. `decide` holds the reasoning, shared
         // with the refusal above.
-        if rehearsing && check.scope().is_unscoped() {
+        // The dependency audits are unscoped too (opted in by a lockfile,
+        // with no file scope), but a rehearsal is exactly where their record
+        // is earned (ADR-0018), so they run here.
+        if rehearsing && check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
+        {
             continue;
         }
         match decide(*check) {
@@ -1500,14 +1533,15 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         match outcome {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
-                if !check.scope().is_unscoped() {
+                // An audit's pass is a record of its report, never a stamp.
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
                     ran_and_passed.push(check.name().to_string());
                 }
             }
             // Announced, never fatal: a check that could not run has not
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
-                if !check.scope().is_unscoped() {
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
                     completed_otherwise.push(check.name().to_string());
                 }
                 println!(
@@ -1528,7 +1562,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             Outcome::Fixed => {}
             Outcome::Failed => match severities.of(*check) {
                 Severity::Warn => {
-                    if !check.scope().is_unscoped() {
+                    if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
+                    {
                         completed_otherwise.push(check.name().to_string());
                     }
                     downgraded.push((
@@ -1583,6 +1618,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .collect();
         stamp_tips(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
     }
+    record_audits(&tree_at_start);
     if reuse_stamps && !completed_otherwise.is_empty() {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         let really_ran: Vec<String> = pre_push_checks
@@ -1743,6 +1779,25 @@ pub fn scoped_push_gates(
         .collect()
 }
 
+/// The dependency audits a push of `refs` owes (ADR-0018): opted in, and
+/// with no fresh record for the pushed commits in the push's mode. Owed
+/// whatever the range touches, unlike `scoped_push_gates`.
+pub fn owed_audits(
+    settings: &crate::config::Settings,
+    manifest: &crate::manifest::Manifest,
+    refs: &[crate::pushrefs::PushRef],
+) -> Vec<String> {
+    let in_progress = crate::git_states_in_progress();
+    let tracked = crate::tracked_paths();
+    selected_during(settings, Stage::PrePush, &in_progress, manifest)
+        .into_iter()
+        .filter(|c| crate::hooks::audit::is_audit(c.name()))
+        .filter(|c| c.scope().opted_in(&tracked))
+        .filter(|c| crate::hooks::audit::owed(settings, c.name(), refs))
+        .map(|c| c.name().to_string())
+        .collect()
+}
+
 /// Push-stamp every tip whose content is what the gates actually tested.
 ///
 /// See the comment at the call site for the two cases. Silent when nothing
@@ -1839,6 +1894,23 @@ fn stamp_tips(
             highlight(&stamped.join(" ")),
             crate::gate_stamp::NOTES_REF,
         );
+    }
+}
+
+/// Write the audit records this push produced (ADR-0018), only for a commit
+/// the working tree IS: HEAD, inside a rehearsal snapshot or with a clean
+/// worktree — the tools read the working tree, not the commit.
+fn record_audits(tree_at_start: &str) {
+    let pending = crate::hooks::audit::take_pending();
+    if pending.is_empty() {
+        return;
+    }
+    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
+    let here_is_head = crate::rehearsal::in_snapshot() || tree_at_start.trim().is_empty();
+    for p in pending {
+        if here_is_head && head.as_deref() == Some(p.tip.as_str()) {
+            crate::hooks::audit::write_pending(&p);
+        }
     }
 }
 
