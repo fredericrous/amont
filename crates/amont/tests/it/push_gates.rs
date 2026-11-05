@@ -326,6 +326,37 @@ fn land_runs_the_gate_before_the_push_and_the_push_does_not_repeat_it() {
     );
 }
 
+/// A declared gate whose program is not installed has no identity, so no
+/// stamp or record can ever answer for it. It must not be owed: it runs in the
+/// push, fails to start, and warns, as before 2.0, and land lands.
+#[test]
+fn a_gate_whose_program_is_missing_never_blocks_a_land() {
+    let fx = crate::land::fixture("feat/missing-tool");
+    let base = crate::land::head(&fx);
+    fx.r.stage(
+        "amont.conf",
+        "pre-push    lint  *.txt  block  definitely-not-a-program-xyz --check\n",
+    );
+    fx.r.commit("chore: a gate nobody installed");
+    crate::tree_gates::trust_and_install(&fx.r);
+    fx.r.stage("a.txt", "hello\n");
+    fx.r.commit("feat: something the gate judges");
+    let tip = crate::land::head(&fx);
+    // A bare push does not refuse over it.
+    let (code, out, err) = hook(&fx.r, &push_line(&base, &tip), &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    // And land lands, every time.
+    for attempt in 0..2 {
+        let ran = crate::land::land(&fx, &[]);
+        assert_eq!(
+            ran.code, 0,
+            "attempt {attempt}: {}{}",
+            ran.stdout, ran.stderr
+        );
+    }
+    assert_eq!(crate::land::tip(&fx, "feat/missing-tool"), tip);
+}
+
 #[test]
 fn a_failing_gate_in_the_pre_stage_pushes_nothing() {
     if missing("node") {

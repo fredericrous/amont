@@ -693,6 +693,11 @@ pub fn strip_git_env(cmd: &mut Command) {
             cmd.env_remove(&k);
         }
     }
+    // The index hints name the index of a commit this process may be inside
+    // (amont started from a pre-commit gate's fixture): a child never inherits
+    // them. `External::execute` sets them again for a pre-commit gate.
+    cmd.env_remove(INDEX_ENV);
+    cmd.env_remove(INDEX_GIT_DIR_ENV);
 }
 
 /// The variable a pre-commit command is told the index being committed in:

@@ -599,6 +599,10 @@ fn strip_repo_env(cmd: &mut Command) {
         "GIT_NAMESPACE",
         "GIT_REFLOG_ACTION",
         "GIT_EXEC_PATH",
+        // the index hints of a commit this process may be inside (see
+        // `hooks::common::strip_git_env`)
+        crate::hooks::common::INDEX_ENV,
+        crate::hooks::common::INDEX_GIT_DIR_ENV,
     ] {
         cmd.env_remove(key);
     }

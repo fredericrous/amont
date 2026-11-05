@@ -252,6 +252,10 @@ second, naming `amont land`, instead of running them on the open connection.
   - Next steps: a tag refused for missing evidence is offered only `amont land --tag`; stamps off names `git config amont.pushStamps true` and land; a malformed `AMONT_LAND` names `unset` (tui).
   - `rehearse` is handed the pre-stage by `main`; the last progress line moved to stderr; the dry-run flag argument is gone; `Ran` is `Concluded | Inert | Unavailable`; `AuditMode` is computed once; `into_report` returns `ControlFlow`; one `signal_of`; completion records are written once per kind and return a `Result`, and an `unavailable` record replaces the previous one (implementation-review, lang:rust, backend).
   - A deletion-only push runs no audit (tested), and the comment says so.
+- 2026-11-06 — Rebased onto amont 1.70.0 (#409, declared gates see the commit index); the patches carried over unchanged, and `push_gates.rs` became `cfg(unix)` (its fixtures use the unix-only `tree_gates`, which failed #409's Windows build). Review of the rebased tree (all five):
+  - A declared push gate whose program is not installed has no token, so no record could ever answer for it, and land refused forever (backend, high). Such a gate is no longer owed: it runs in the push, fails to start, and warns (tested, red without the fix).
+  - `strip_git_env` and the rehearsal's `strip_repo_env` drop the 1.70.0 index hints too, so no child of the audit, the snapshot prepare or the rehearsal inherits them (unix, low).
+  - CHANGELOG `## Unreleased` names the breaking default, the opt-out, and the first refused push after an upgrade from before 1.70.0; three doc passages that still had gates running in the push now say where they run (tui).
 - 2026-11-05 — Declined at review, with reasons:
   - `gates.failed` in the JSON: the failing gate names itself in the hook output above land's verdict; land's `next` names `amont rehearse --status` and `amont land`.
   - Hiding the `amont-land:` sentinel lines: land streams the push's output as it comes, and a line filter would hold it back.

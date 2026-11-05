@@ -6,6 +6,43 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- **A heavy push gate no longer runs while git holds the connection open**
+  (ADR-0018). git connects to the remote before it runs `pre-push`, so a test
+  suite or an audit run there held the connection for as long as it took, and
+  a forge dropping the idle session failed a push whose gates had passed. A
+  bare `git push` whose scoped push gates have not run on its tree is now
+  **refused** at once, naming the gates and `amont land`. This is a breaking
+  default: a script that pushes bare exits non-zero where it used to run the
+  gates. `git config amont.pushGates inline` restores the old behaviour, per
+  repository or `--global`. After upgrading from before 1.70.0, commit-time
+  stamps no longer count, so the first bare push of an existing branch is
+  refused once; `amont land` clears it.
+
+### Added
+
+- **`amont land` runs the push gates first**, on a snapshot of the exact
+  commit, with no connection open, then pushes; the push itself skips them. A
+  failing gate pushes nothing. `--json` adds a `gates` object (`owed`, and
+  `prestage`: `stamped`, `ran`, `failed`, `refused`, `interrupted`) and a `ref`
+  field.
+- **`amont land --tag <name>`** pushes one existing tag the same way: the gates
+  its range owes and, for a `v*` tag, the release audits run on the tagged
+  commit first. A tag already on the remote is refused; `--dry-run` says
+  `would-land`.
+- **Dependency audits leave the connection too.** Wherever an audit runs on
+  the pushed content, its report is recorded in `refs/notes/amont-audit`
+  (local, never pushed), keyed by the lockfiles for a branch push and by the
+  tree for a `v*` tag. A push with a fresh record replays it against today's
+  waivers, without running the tool. Freshness is `amont.auditMaxAge` (24 h);
+  a report that could not check lasts one hour.
+- A gate that completed without passing (a warning, a missing tool) is
+  recorded in `refs/notes/amont-gate-done`, never as a pass, so a refusing
+  push does not ask for it again while the record holds.
+
 ## v1.70.0
 
 ### Fixed
