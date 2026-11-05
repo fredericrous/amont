@@ -184,16 +184,53 @@ pub fn handed_to_cluster() -> &'static [String] {
 /// fixture pushes must not inherit it. `main` primes it on the main thread.
 pub const LAND_ENV: &str = "AMONT_LAND";
 
-/// The land pre-stage's `<sha> <remote tip>`, when this process is the hook of
-/// the push `amont land` makes.
-pub fn land_env() -> Option<&'static str> {
-    static IN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    IN.get_or_init(|| {
-        let raw = std::env::var_os(LAND_ENV)?.to_string_lossy().into_owned();
-        std::env::remove_var(LAND_ENV);
-        Some(raw)
+/// What land's pre-stage saw: the sha it ran the gates on, and the remote tip
+/// it ran them against (all zeros for a ref the remote lacks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandLine {
+    pub sha: String,
+    pub remote_tip: String,
+}
+
+/// [`LAND_ENV`], parsed where it is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LandEnv {
+    /// Not land's push.
+    Absent,
+    Valid(LandLine),
+    /// Set, but not two object names: the hook refuses rather than guess.
+    Malformed(String),
+}
+
+/// A full object name: 40 (sha-1) or 64 (sha-256) hex digits.
+fn is_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+impl LandEnv {
+    pub fn parse(raw: &str) -> LandEnv {
+        let fields: Vec<&str> = raw.split_whitespace().collect();
+        match fields.as_slice() {
+            [sha, remote_tip] if is_oid(sha) && is_oid(remote_tip) => LandEnv::Valid(LandLine {
+                sha: sha.to_string(),
+                remote_tip: remote_tip.to_string(),
+            }),
+            _ => LandEnv::Malformed(raw.to_string()),
+        }
+    }
+}
+
+/// The land pre-stage's line, when this process is the hook of the push
+/// `amont land` makes. `main` reads it and carries it on `Ctx`.
+pub fn land_env() -> &'static LandEnv {
+    static IN: std::sync::OnceLock<LandEnv> = std::sync::OnceLock::new();
+    IN.get_or_init(|| match std::env::var_os(LAND_ENV) {
+        None => LandEnv::Absent,
+        Some(raw) => {
+            std::env::remove_var(LAND_ENV);
+            LandEnv::parse(&raw.to_string_lossy())
+        }
     })
-    .as_deref()
 }
 
 /// Set by `amont land` on the `amont rehearse --wait` it runs as its
@@ -204,28 +241,55 @@ pub fn land_env() -> Option<&'static str> {
 /// wait for it". Read once and removed, like [`ENV`].
 pub const PRESTAGE_ENV: &str = "AMONT_LAND_PRESTAGE";
 
-/// The pre-stage's push line, when this process is land's pre-stage.
-fn prestage_line() -> Option<&'static crate::pushrefs::PushRef> {
-    static IN: std::sync::OnceLock<Option<crate::pushrefs::PushRef>> = std::sync::OnceLock::new();
-    IN.get_or_init(|| {
-        let raw = std::env::var_os(PRESTAGE_ENV)?
-            .to_string_lossy()
-            .into_owned();
-        std::env::remove_var(PRESTAGE_ENV);
-        let mut it = raw.split_whitespace().map(str::to_string);
-        Some(crate::pushrefs::PushRef {
-            local_ref: it.next()?,
-            local_oid: it.next()?,
-            remote_ref: it.next()?,
-            remote_oid: it.next()?,
-        })
-    })
-    .as_ref()
+/// [`PRESTAGE_ENV`], parsed where it is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prestage {
+    /// A plain rehearsal of HEAD.
+    Absent,
+    /// Land's pre-stage, of this push line.
+    Of(crate::pushrefs::PushRef),
+    /// Set, but not a push line: `rehearse` refuses rather than fall back to
+    /// an ordinary rehearsal that might cancel somebody else's.
+    Malformed(String),
 }
 
-/// Is this process land's pre-stage? Primed by `main`.
-pub fn in_prestage() -> bool {
-    prestage_line().is_some()
+impl Prestage {
+    pub fn parse(raw: &str) -> Prestage {
+        let fields: Vec<&str> = raw.split_whitespace().collect();
+        match fields.as_slice() {
+            [local_ref, local_oid, remote_ref, remote_oid]
+                if is_oid(local_oid) && is_oid(remote_oid) =>
+            {
+                Prestage::Of(crate::pushrefs::PushRef {
+                    local_ref: local_ref.to_string(),
+                    local_oid: local_oid.to_string(),
+                    remote_ref: remote_ref.to_string(),
+                    remote_oid: remote_oid.to_string(),
+                })
+            }
+            _ => Prestage::Malformed(raw.to_string()),
+        }
+    }
+
+    fn line(&self) -> Option<&crate::pushrefs::PushRef> {
+        match self {
+            Prestage::Of(line) => Some(line),
+            Prestage::Absent | Prestage::Malformed(_) => None,
+        }
+    }
+}
+
+/// This process's pre-stage, settled once. Primed by `main`; read by
+/// `rehearse`, which passes it down.
+pub fn prestage() -> &'static Prestage {
+    static IN: std::sync::OnceLock<Prestage> = std::sync::OnceLock::new();
+    IN.get_or_init(|| match std::env::var_os(PRESTAGE_ENV) {
+        None => Prestage::Absent,
+        Some(raw) => {
+            std::env::remove_var(PRESTAGE_ENV);
+            Prestage::parse(&raw.to_string_lossy())
+        }
+    })
 }
 
 /// What a push does about a heavy gate (a scoped one its range touches) with
@@ -283,6 +347,9 @@ pub struct State {
     pub step: Option<String>,
     /// Why a rehearsal failed without the gate ever running.
     pub reason: Option<String>,
+    /// Land's pre-stage (ADR-0018): a rehearsal that meets it waits for it
+    /// instead of cancelling it, since land is about to push what it proves.
+    pub prestage: bool,
 }
 
 impl State {
@@ -299,6 +366,7 @@ impl State {
             .iter()
             .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}={}\n", one_line(v))))
             .collect::<String>()
+            + if self.prestage { "kind=prestage\n" } else { "" }
     }
 
     /// `None` for anything this version did not write — including a file
@@ -310,7 +378,7 @@ impl State {
         }
         let (mut pid, mut commit, mut tree, mut started, mut snapshot, mut phase) =
             (None, None, None, None, None, None);
-        let (mut step, mut reason) = (None, None);
+        let (mut step, mut reason, mut prestage) = (None, None, false);
         for line in lines {
             let (k, v) = line.split_once('=')?;
             match k {
@@ -322,6 +390,7 @@ impl State {
                 "phase" => phase = Phase::parse(v),
                 "step" => step = Some(v.to_string()),
                 "reason" => reason = Some(v.to_string()),
+                "kind" => prestage = v == "prestage",
                 _ => {}
             }
         }
@@ -334,6 +403,7 @@ impl State {
             phase: phase?,
             step,
             reason,
+            prestage,
         })
     }
 
@@ -579,7 +649,32 @@ pub enum Outcome {
     Detached,
     Passed,
     Failed,
+    /// The snapshot's push gate was stopped by this signal: no verdict.
+    Interrupted(i32),
 }
+
+/// The signal that ended a child, if one did.
+fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        std::os::unix::process::ExitStatusExt::signal(status)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
+/// Is the rehearsal `state` recorded still the one running now?
+fn still_running(state: &State) -> bool {
+    read().is_some_and(|now| now.alive() && now.pid == state.pid && now.started == state.started)
+}
+
+/// How long a rehearsal waits behind land's pre-stage, or land's pre-stage
+/// behind another rehearsal, before giving up (ADR-0018). Nothing holds a
+/// connection open meanwhile; the bound is for a worker that hangs.
+const PRESTAGE_WAIT: Duration = Duration::from_secs(3 * 60 * 60);
 
 /// What a rehearsal of `HEAD` has to decide with.
 struct Plan {
@@ -593,14 +688,16 @@ struct Plan {
     gates: Vec<String>,
     /// Tree gates this tree has not proven yet (ADR-0024).
     tree_todo: Vec<crate::manifest::TreeGate>,
+    /// The audit reads this plan made, asked again by `vouched`.
+    audits: crate::hooks::audit::Ledger,
 }
 
-fn plan() -> Result<Plan, String> {
+fn plan(prestage: Option<&crate::pushrefs::PushRef>) -> Result<Plan, String> {
     let root = crate::hooks::common::repo_root_checked()?;
     let repo = Path::new(&root);
     // Land's pre-stage names the commit it will push (a tag's, for
     // `land --tag`); a plain rehearsal tests HEAD.
-    let head = match prestage_line() {
+    let head = match prestage {
         Some(line) => crate::git::stdout(&["rev-parse", &format!("{}^{{commit}}", line.local_oid)])
             .ok_or("could not resolve the commit to pre-stage")?,
         None => crate::git::stdout(&["rev-parse", "HEAD"]).ok_or("could not resolve HEAD")?,
@@ -609,7 +706,7 @@ fn plan() -> Result<Plan, String> {
         .ok_or("could not resolve the tree to rehearse")?;
     // The branch and its upstream, read HERE in the primary worktree: the
     // snapshot is a detached HEAD and could not answer.
-    let push_ref = match prestage_line() {
+    let push_ref = match prestage {
         Some(line) => line.clone(),
         None => crate::pushrefs::synthetic_from_upstream()?,
     };
@@ -619,8 +716,13 @@ fn plan() -> Result<Plan, String> {
     let mut gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
     // Audits are owed whatever the range touches, until a fresh record
     // answers for them (ADR-0018).
-    for audit in crate::dispatch::owed_audits(&settings, &manifest, std::slice::from_ref(&push_ref))
-    {
+    let audits = crate::hooks::audit::Ledger::default();
+    for audit in crate::dispatch::owed_audits(
+        &settings,
+        &manifest,
+        &audits,
+        std::slice::from_ref(&push_ref),
+    ) {
         if !gates.contains(&audit) {
             gates.push(audit);
         }
@@ -648,6 +750,7 @@ fn plan() -> Result<Plan, String> {
         settings,
         gates,
         tree_todo,
+        audits,
     })
 }
 
@@ -658,6 +761,7 @@ impl Plan {
         if crate::hooks::audit::is_audit(gate) {
             return !crate::hooks::audit::owed(
                 &self.settings,
+                &self.audits,
                 gate,
                 std::slice::from_ref(&self.push_ref),
             );
@@ -709,8 +813,11 @@ fn vouched_by(
 /// THE worker. Runs in the foreground of whoever called it — the detached
 /// process `spawn_detached` started, or `amont rehearse --wait` when nothing
 /// was running — and returns only when the verdict is in.
-pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
-    let planned = plan()?;
+pub fn worker(
+    ask: crate::cluster::Ask,
+    prestage: Option<&crate::pushrefs::PushRef>,
+) -> Result<Outcome, String> {
+    let planned = plan(prestage)?;
     let repo = Path::new(&planned.root);
     let (head, tree) = (planned.head.clone(), planned.tree.clone());
     let short = head.get(..8).unwrap_or(&head);
@@ -726,38 +833,62 @@ pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
         );
         return Ok(Outcome::AlreadyStamped);
     }
-    if let Some(prev) = read() {
-        if prev.alive() {
-            if prev.tree == tree {
-                println!(
-                    "a rehearsal of this tree is already running (pid {}, started {} ago)",
-                    prev.pid,
-                    human_secs(prev.age_secs())
-                );
-                return Ok(Outcome::AlreadyRunning(prev.pid));
+    // Another tree's rehearsal is cancelled — the newer tree is what matters —
+    // except where land is involved: land's pre-stage never cancels anyone,
+    // and is never cancelled; whoever meets it waits for it, within a bound
+    // (ADR-0018). Then the state is read again, since another worker may
+    // have registered meanwhile.
+    let mut settled = false;
+    for _ in 0..3 {
+        let Some(prev) = read() else {
+            settled = true;
+            break;
+        };
+        if !prev.alive() {
+            if prev.phase == Phase::Running {
+                // Died without a verdict. Its snapshot is nobody's now.
+                remove_snapshot(repo, &prev.snapshot);
             }
-            if in_prestage() {
-                // `amont land` never cancels somebody else's rehearsal: it
-                // waits for it, then runs its own (ADR-0018).
-                println!(
-                    "waiting for the rehearsal of {} (pid {}) before rehearsing {short}",
-                    prev.short(),
-                    prev.pid,
-                );
-                let _ = follow(&prev, None);
-            } else {
-                println!(
-                    "cancelling the rehearsal of {} (pid {}) — {} is the tree that matters now",
-                    prev.short(),
-                    prev.pid,
-                    short
-                );
-                cancel(&prev, repo);
-            }
-        } else if prev.phase == Phase::Running {
-            // Died without a verdict. Its snapshot is nobody's now.
-            remove_snapshot(repo, &prev.snapshot);
+            settled = true;
+            break;
         }
+        if prev.tree == tree {
+            println!(
+                "a rehearsal of this tree is already running (pid {}, started {} ago)",
+                prev.pid,
+                human_secs(prev.age_secs())
+            );
+            return Ok(Outcome::AlreadyRunning(prev.pid));
+        }
+        if prestage.is_some() || prev.prestage {
+            eprintln!(
+                "waiting for the rehearsal of {} (pid {}) before rehearsing {short}",
+                prev.short(),
+                prev.pid,
+            );
+            if follow(&prev, Some(PRESTAGE_WAIT)).is_none() && still_running(&prev) {
+                return Err(format!(
+                    "the rehearsal of {} (pid {}) is still running after {}; \
+                     not starting another beside it",
+                    prev.short(),
+                    prev.pid,
+                    human_secs(PRESTAGE_WAIT.as_secs())
+                ));
+            }
+            continue;
+        }
+        println!(
+            "cancelling the rehearsal of {} (pid {}) — {} is the tree that matters now",
+            prev.short(),
+            prev.pid,
+            short
+        );
+        cancel(&prev, repo);
+        settled = true;
+        break;
+    }
+    if !settled {
+        return Err("other rehearsals kept starting in this worktree; try again".to_string());
     }
     // Gates the cluster may take go there (ADR-0017); the snapshot below runs
     // the rest, and its pre-push is told which gates not to repeat.
@@ -795,7 +926,21 @@ pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
         phase: Phase::Running,
         step: Some("preparing".to_string()),
         reason: None,
+        prestage: prestage.is_some(),
     };
+    // Checking out took time: a worker that registered since is not
+    // overwritten when land is on either side (ADR-0018).
+    if let Some(other) = read().filter(|s| s.alive() && s.pid != me.pid) {
+        if prestage.is_some() || other.prestage {
+            drop(snapshot);
+            return Err(format!(
+                "the rehearsal of {} (pid {}) started meanwhile; try again",
+                other.short(),
+                other.pid
+            ));
+        }
+        cancel(&other, repo);
+    }
     write(&me);
     if let Err(why) = snapshot.prepare(&settings) {
         write(&State {
@@ -849,27 +994,39 @@ pub fn worker(ask: crate::cluster::Ask) -> Result<Outcome, String> {
         // waits for a slot rather than defer: a rehearsal whose gates all
         // deferred would report "passed" having run nothing (ADR-0013).
         .env(crate::host_slots::ON_BUSY_ENV, "wait")
+        // where the source's installed environment lives (a virtualenv the
+        // Python audit reads; ADR-0018)
+        .env(crate::pushed_tree::SOURCE_WORKTREE_ENV, repo)
         .stdin(Stdio::piped());
     strip_repo_env(&mut cmd);
     let line = format!(
         "{} {} {} {}\n",
         push_ref.local_ref, push_ref.local_oid, push_ref.remote_ref, push_ref.remote_oid
     );
-    let passed = (|| -> std::io::Result<bool> {
+    let status = (|| -> std::io::Result<std::process::ExitStatus> {
         let mut child = cmd.spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(line.as_bytes())?;
         }
-        Ok(child.wait()?.success())
+        child.wait()
     })()
     .map_err(|e| format!("could not run the push gate in the snapshot: {e}"))?;
+    let passed = status.success();
     let done = State {
         phase: if passed { Phase::Passed } else { Phase::Failed },
         step: None,
+        reason: signal_of(&status).map(|n| format!("the push gate was stopped by signal {n}")),
         ..me
     };
     write(&done);
     drop(snapshot);
+    if let Some(n) = signal_of(&status) {
+        eprintln!(
+            "{} rehearsal of {short} stopped by signal {n}",
+            warning_sign()
+        );
+        return Ok(Outcome::Interrupted(n));
+    }
     if passed {
         println!("{} rehearsal of {short} passed", valid_sign());
         Ok(Outcome::Passed)
@@ -943,7 +1100,19 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
                     None => String::new(),
                 },
             );
-            follow(&state, budget).map(|(phase, _)| phase)
+            let followed = follow(&state, budget).map(|(phase, _)| phase);
+            if followed.is_none() && still_running(&state) {
+                // Left RUNNING on purpose: it may still finish and stamp the
+                // tree for the next push. We simply stop holding an open
+                // connection open for it.
+                warn(&format!(
+                    "the rehearsal is still running after {} — running the gate here \
+                     rather than holding the push open (`git config \
+                     amont.rehearsalWait <secs>`, or 0 to wait indefinitely)",
+                    human_secs(state.age_secs())
+                ));
+            }
+            followed
         }
     }
 }
@@ -970,15 +1139,7 @@ fn follow(state: &State, budget: Option<Duration>) -> Option<(Phase, State)> {
                     return None;
                 }
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-                    // Left RUNNING on purpose: it may still finish and stamp
-                    // the tree for the next push. We simply stop holding an
-                    // open connection open for it.
-                    warn(&format!(
-                        "the rehearsal is still running after {} — running the gate here \
-                         rather than holding the push open (`git config \
-                         amont.rehearsalWait <secs>`, or 0 to wait indefinitely)",
-                        human_secs(now_state.age_secs())
-                    ));
+                    // The caller says what stopping the wait means for it.
                     return None;
                 }
                 if last_word.elapsed() >= Duration::from_secs(60) {
@@ -1018,9 +1179,17 @@ pub fn command(args: &[OsString]) -> i32 {
     } else {
         crate::cluster::Ask::Setting
     };
+    let prestage = match prestage() {
+        Prestage::Malformed(raw) => {
+            eprintln!("amont: {PRESTAGE_ENV} is not a push line ({raw:?}); nothing was rehearsed");
+            return 2;
+        }
+        line => line.line(),
+    };
     if flag("--worker") {
-        return match worker(ask) {
+        return match worker(ask, prestage) {
             Ok(Outcome::Failed) => 1,
+            Ok(Outcome::Interrupted(n)) => 128 + n,
             Ok(_) => 0,
             Err(e) => {
                 eprintln!("amont: {e}");
@@ -1061,7 +1230,7 @@ pub fn command(args: &[OsString]) -> i32 {
     if flag("--cluster") && !flag("--wait") {
         // Submit in the foreground — one line per Workflow, back in seconds —
         // then let a worker run what is left here.
-        match plan() {
+        match plan(prestage) {
             Ok(planned) => {
                 let on_cluster = planned.detach(crate::cluster::Ask::Flag);
                 let left = planned
@@ -1093,16 +1262,23 @@ pub fn command(args: &[OsString]) -> i32 {
         //
         // No budget here: nothing is connected, and somebody typed this
         // command to be told when the suite ends. See `WAIT_BUDGET`.
+        // The tree to follow is the one being rehearsed: HEAD's, or the
+        // commit land's pre-stage names (a tag's may be older than HEAD).
+        let target = match prestage {
+            Some(line) => format!("{}^{{tree}}", line.local_oid),
+            None => "HEAD^{tree}".to_string(),
+        };
         for _ in 0..3 {
             let running = read().filter(|s| {
                 s.alive()
                     && Some(s.tree.as_str())
-                        == crate::git::stdout(&["rev-parse", "HEAD^{tree}"]).as_deref()
+                        == crate::git::stdout(&["rev-parse", &target]).as_deref()
             });
             let Some(state) = running else {
                 // Nothing running: do it here, in the foreground, and say so.
-                match worker(ask) {
+                match worker(ask, prestage) {
                     Ok(Outcome::Failed) => return 1,
+                    Ok(Outcome::Interrupted(n)) => return 128 + n,
                     Ok(Outcome::AlreadyRunning(_)) => continue,
                     Ok(_) => return 0,
                     Err(e) => {
@@ -1111,7 +1287,7 @@ pub fn command(args: &[OsString]) -> i32 {
                     }
                 }
             };
-            println!(
+            eprintln!(
                 "following the rehearsal of {} (pid {}, started {} ago)",
                 state.short(),
                 state.pid,
@@ -1252,6 +1428,58 @@ mod tests {
             phase: Phase::Running,
             step: Some("preparing".to_string()),
             reason: None,
+            prestage: false,
+        }
+    }
+
+    /// A pre-stage is recorded as one, so a rehearsal that meets it waits
+    /// instead of cancelling it (ADR-0018); an older file reads as not one.
+    #[test]
+    fn a_prestage_survives_the_state_file() {
+        let staged = State {
+            prestage: true,
+            ..sample()
+        };
+        assert_eq!(State::parse(&staged.render()), Some(staged));
+        assert_eq!(State::parse(&sample().render()), Some(sample()));
+    }
+
+    /// The land variables are parsed where they are read: a malformed value
+    /// is never mistaken for a remote that moved, or for a plain rehearsal.
+    #[test]
+    fn the_land_variables_take_object_names_only() {
+        let (a, b) = ("a".repeat(40), "0".repeat(40));
+        assert_eq!(
+            LandEnv::parse(&format!("{a} {b}")),
+            LandEnv::Valid(LandLine {
+                sha: a.clone(),
+                remote_tip: b.clone()
+            })
+        );
+        for bad in [
+            "",
+            "abc",
+            a.as_str(),
+            &format!("{a} {b} extra"),
+            &format!("{a} xyz"),
+        ] {
+            assert!(
+                matches!(LandEnv::parse(bad), LandEnv::Malformed(_)),
+                "{bad:?}"
+            );
+        }
+        assert!(matches!(
+            Prestage::parse(&format!("refs/heads/x {a} refs/heads/x {b}")),
+            Prestage::Of(_)
+        ));
+        for bad in [
+            format!("refs/heads/x {a} refs/heads/x"),
+            "x y z w".to_string(),
+        ] {
+            assert!(
+                matches!(Prestage::parse(&bad), Prestage::Malformed(_)),
+                "{bad:?}"
+            );
         }
     }
 

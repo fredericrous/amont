@@ -871,27 +871,89 @@ pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
     written
 }
 
-/// Record on `tree` that the gates behind `tokens` completed there without
-/// passing (ADR-0018). Merged into the note, best-effort like every writer
-/// here: a record that could not be written costs a refused push, which names
-/// the gate and how to run it.
-pub fn record_done(tree: &str, tokens: &[String]) -> bool {
-    if tokens.is_empty() {
-        return false;
+/// How a gate completed without passing (ADR-0018). The kind is part of the
+/// record, so each answers only for as long as it should.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completion {
+    /// The gate reported a warning itself.
+    Warned,
+    /// The gate failed while its severity was `warn`: answers only while it
+    /// still is, since a gate set back to `block` must run again.
+    FailedUnderWarn,
+    /// The gate could not run (a tool missing): answers for an hour, then
+    /// the gate is tried again.
+    Unavailable,
+}
+
+/// How long an `Unavailable` completion answers for.
+const UNAVAILABLE_FOR_SECS: u64 = 60 * 60;
+
+/// The record word for `token` completed as `how`, at `now`.
+fn completion_word(how: Completion, token: &str, now: u64) -> String {
+    match how {
+        Completion::Warned => format!("warned:{token}"),
+        Completion::FailedUnderWarn => format!("failed-under-warn:{token}"),
+        Completion::Unavailable => format!("unavailable:{now}:{token}"),
     }
+}
+
+/// Does record word `word` answer for `token` now, under `severity`?
+fn completion_answers(word: &str, token: &str, severity: crate::check::Severity, now: u64) -> bool {
+    if word.strip_prefix("warned:") == Some(token) {
+        return true;
+    }
+    if word.strip_prefix("failed-under-warn:") == Some(token) {
+        return severity == crate::check::Severity::Warn;
+    }
+    word.strip_prefix("unavailable:")
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(at, tok)| {
+            tok == token
+                && at
+                    .parse::<u64>()
+                    .is_ok_and(|at| now.saturating_sub(at) <= UNAVAILABLE_FOR_SECS)
+        })
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Record on `tree` that the gates behind `tokens` completed there without
+/// passing, as `how` (ADR-0018). Merged into the note. A record that could
+/// not be written costs a refused push, which names the gate and how to run
+/// it; the caller says so.
+pub fn record_done(tree: &str, tokens: &[String], how: Completion) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+    let now = now_secs();
+    let words: Vec<String> = tokens
+        .iter()
+        .map(|t| completion_word(how, t, now))
+        .collect();
     let mut note = note_in(DONE_REF, tree);
-    note.add_tokens(tokens);
+    note.add_tokens(&words);
     write_note_in(DONE_REF, tree, &note)
 }
 
 /// Did the gate behind `token` complete without passing on the tree of every
-/// one of `commits`? An unreadable tree or note is "no", the direction that
-/// refuses rather than skips.
-pub fn done_on_every(commits: &[String], token: &str) -> bool {
+/// one of `commits`, by a record that still answers under `severity`? An
+/// unreadable tree or note is "no", the direction that refuses rather than
+/// skips.
+pub fn done_on_every(commits: &[String], token: &str, severity: crate::check::Severity) -> bool {
+    let now = now_secs();
     !commits.is_empty()
         && commits.iter().all(|c| {
-            crate::git::stdout(&["rev-parse", &format!("{c}^{{tree}}")])
-                .is_some_and(|tree| note_in(DONE_REF, &tree).tokens.iter().any(|t| t == token))
+            crate::git::stdout(&["rev-parse", &format!("{c}^{{tree}}")]).is_some_and(|tree| {
+                note_in(DONE_REF, &tree)
+                    .tokens
+                    .iter()
+                    .any(|word| completion_answers(word, token, severity, now))
+            })
         })
 }
 
@@ -1063,6 +1125,53 @@ pub fn forget_in(repo: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A completion answers only as long as it should (ADR-0018): a failure
+    /// under `warn` stops answering once the gate blocks again, and a gate
+    /// that could not run is tried again after an hour.
+    #[test]
+    fn a_completion_answers_only_while_it_should() {
+        use crate::check::Severity::{Block, Warn};
+        let now = 1_700_000_000;
+        let word = |how| completion_word(how, "gate-tok", now);
+        assert!(completion_answers(
+            &word(Completion::Warned),
+            "gate-tok",
+            Block,
+            now
+        ));
+        assert!(completion_answers(
+            &word(Completion::FailedUnderWarn),
+            "gate-tok",
+            Warn,
+            now
+        ));
+        assert!(!completion_answers(
+            &word(Completion::FailedUnderWarn),
+            "gate-tok",
+            Block,
+            now
+        ));
+        let unavailable = word(Completion::Unavailable);
+        assert!(completion_answers(
+            &unavailable,
+            "gate-tok",
+            Block,
+            now + 3600
+        ));
+        assert!(!completion_answers(
+            &unavailable,
+            "gate-tok",
+            Block,
+            now + 3601
+        ));
+        assert!(!completion_answers(
+            &word(Completion::Warned),
+            "other-tok",
+            Warn,
+            now
+        ));
+    }
 
     /// A real repository, because every function here is a conversation with
     /// git — hand-rolled fixtures would test the conversation we imagined.

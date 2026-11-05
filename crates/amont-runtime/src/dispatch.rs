@@ -631,6 +631,8 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
                 handed_to_cluster: ctx.handed_to_cluster,
+                land: ctx.land,
+                audits: ctx.audits,
             };
             let slot = enter(**check, || severities.of(**check));
             let outcome = deferred_or(&slot, check.run(&sub));
@@ -900,6 +902,8 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         manifest: ctx.manifest,
         settings: ctx.settings,
         handed_to_cluster: ctx.handed_to_cluster,
+        land: ctx.land,
+        audits: ctx.audits,
     };
     // Under quiet, a check run by name is captured like one inside its stage
     // — one slot, its tool's output to a log, one line on a pass — whatever
@@ -1007,43 +1011,75 @@ enum Decision {
     },
 }
 
+/// `amont.pushStamps`, as the refusal needs it: whether anything run before
+/// the push can let it skip its gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StampReuse {
+    On,
+    Off,
+}
+
+/// The tag a push carries, if it pushes one: its refusal names
+/// `amont land --tag`, since `amont land` alone pushes the branch.
+fn pushed_tag(refs: &[crate::pushrefs::PushRef]) -> Option<&str> {
+    refs.iter()
+        .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+        .find_map(|r| r.remote_ref.strip_prefix("refs/tags/"))
+}
+
 /// The bare push's refusal (ADR-0018), one command per line, each line at most
-/// 80 columns, so each copies cleanly. `stamps_on` is `amont.pushStamps`:
-/// with stamp reuse off, nothing amont can run beforehand lets this push skip
-/// its gates, so the stamping remedies are not offered.
-pub(crate) fn push_refusal(short: &str, missing: &[&str], stamps_on: bool) -> Vec<String> {
+/// 80 columns, so each copies cleanly. With stamp reuse off, nothing amont can
+/// run beforehand lets this push skip its gates, so `rehearse` is not
+/// offered. A tag push is offered `amont land --tag`, never the branch
+/// remedies, whose records do not answer for a release.
+pub(crate) fn push_refusal(
+    short: &str,
+    missing: &[&str],
+    reuse: StampReuse,
+    tag: Option<&str>,
+) -> Vec<String> {
     let mut out = vec![format!(
-        "amont: {} push gate{} {} not run on {short}:",
+        "amont: push refused: {} push gate{} {} not run on {short}:",
         missing.len(),
         if missing.len() == 1 { "" } else { "s" },
         if missing.len() == 1 { "has" } else { "have" },
     )];
     out.extend(wrap_names(missing));
-    if stamps_on {
-        out.push("    run them before git connects, then push:  amont land".to_string());
-        out.push("    or stamp this tree first:                 amont rehearse --wait".to_string());
-    } else {
+    let land = match tag {
+        Some(tag) => format!("amont land --tag {tag}"),
+        None => "amont land".to_string(),
+    };
+    if reuse == StampReuse::Off {
         out.push("    stamp reuse is off (amont.pushStamps false); turn it on:".to_string());
         out.push("        git config amont.pushStamps true".to_string());
+        out.push("    then run the gates before git connects, and push:".to_string());
+        out.push(format!("        {land}"));
+    } else {
+        out.push("    run them before git connects, then push:".to_string());
+        out.push(format!("        {land}"));
+        if tag.is_none() {
+            out.push("    or stamp this tree first:".to_string());
+            out.push("        amont rehearse --wait".to_string());
+        }
     }
-    out.push("    or run them in this push:  git config amont.pushGates inline".to_string());
+    out.push("    or run them in this push:".to_string());
+    out.push("        git config amont.pushGates inline".to_string());
     out
 }
 
 /// The refusal inside `amont land`'s own push, led by the sentinel `land`
-/// matches. `land` is `<sha> <remote tip>` as land's pre-stage saw them: a
-/// pushed range whose remote side differs is the remote moving under land;
-/// anything else is evidence the pre-stage should have left and did not.
+/// matches. `land` is what land's pre-stage saw: a pushed range whose remote
+/// side differs is the remote moving under land; anything else is evidence
+/// the pre-stage should have left and did not.
 pub(crate) fn land_refusal(
-    land: &str,
+    land: &crate::rehearsal::LandLine,
     refs: &[crate::pushrefs::PushRef],
     missing: &[&str],
 ) -> Vec<String> {
-    let seen_remote = land.split_whitespace().nth(1).unwrap_or("");
     let moved = refs
         .iter()
         .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
-        .any(|r| r.remote_oid != seen_remote);
+        .any(|r| r.remote_oid != land.remote_tip);
     let mut out = Vec::new();
     if moved {
         out.push(crate::land::LAND_REMOTE_MOVED.to_string());
@@ -1057,7 +1093,7 @@ pub(crate) fn land_refusal(
 }
 
 /// Gate names as indented lines of at most 80 columns.
-fn wrap_names(names: &[&str]) -> Vec<String> {
+pub(crate) fn wrap_names(names: &[&str]) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::from("       ");
     for name in names {
@@ -1145,6 +1181,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .unwrap_or_else(|| r.local_oid.clone())
             })
             .collect();
+        t.sort_unstable();
         t.dedup();
         t
     };
@@ -1172,7 +1209,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     let handed_to_cluster = ctx.handed_to_cluster;
     // The push `amont land` makes after its pre-stage ran the gates
     // (ADR-0018), as `<sha> <remote tip>`.
-    let land = crate::rehearsal::land_env();
+    let land = match ctx.land {
+        crate::rehearsal::LandEnv::Absent => None,
+        crate::rehearsal::LandEnv::Valid(line) => Some(line),
+        crate::rehearsal::LandEnv::Malformed(raw) => {
+            eprintln!(
+                "amont: push refused: {} is not `<sha> <remote tip>` ({raw:?})",
+                crate::rehearsal::LAND_ENV
+            );
+            return Verdict::Block;
+        }
+    };
     // ADR-0018: a heavy gate never runs while git holds the remote's
     // connection open, unless this machine asked for that
     // (`amont.pushGates inline`). Land's own push expects its pre-stage's
@@ -1252,7 +1299,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         }
         if gate_before_push && reuse_stamps && !check.scope().is_unscoped() {
             let done = crate::gate_identity::token(&ctx.manifest.externals, check.name())
-                .is_some_and(|token| crate::gate_stamp::done_on_every(&tips, &token));
+                .is_some_and(|token| {
+                    crate::gate_stamp::done_on_every(&tips, &token, severities.of(check))
+                });
             if done {
                 return Decision::Skip(Skip::CompletedEarlier);
             }
@@ -1337,7 +1386,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     // Owed on every push it is opted into, whatever the
                     // range touches, unless a fresh record answers for it.
                     c.scope().opted_in(&tracked)
-                        && crate::hooks::audit::owed(settings, c.name(), ctx.push.get())
+                        && crate::hooks::audit::owed(settings, ctx.audits, c.name(), ctx.push.get())
                 } else {
                     owed.iter().any(|o| o == c.name())
                         && matches!(decide(**c), Decision::Run { .. })
@@ -1351,8 +1400,17 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .map(|t| t.chars().take(8).collect())
                 .unwrap_or_default();
             let lines = match land {
-                Some(l) => land_refusal(l, ctx.push.get(), &missing),
-                None => push_refusal(&short, &missing, reuse_stamps),
+                Some(line) => land_refusal(line, ctx.push.get(), &missing),
+                None => push_refusal(
+                    &short,
+                    &missing,
+                    if reuse_stamps {
+                        StampReuse::On
+                    } else {
+                        StampReuse::Off
+                    },
+                    pushed_tag(ctx.push.get()),
+                ),
             };
             for line in lines {
                 eprintln!("{line}");
@@ -1366,7 +1424,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // Scoped gates that RAN here and completed without passing — a warning,
     // or a tool that was missing (ADR-0018): recorded beside the stamps, never
     // as one, so a refusing push does not ask for them again.
-    let mut completed_otherwise: Vec<String> = Vec::new();
+    let mut completed_otherwise: Vec<(String, crate::gate_stamp::Completion)> = Vec::new();
     // What each gate COST and how it ENDED, for the record `gate_evidence`
     // reads. Every outcome, failures included: the stamp deliberately has no
     // opinion about a gate that failed, and a dataset that kept only the
@@ -1399,6 +1457,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // is earned (ADR-0018), so they run here.
         if rehearsing && check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
         {
+            continue;
+        }
+        // A push that pushes no commit (every ref up to date, or deletions
+        // only) has nothing for an audit to answer for, and running one would
+        // hold the connection open for nothing (ADR-0018).
+        if gate_before_push && tips.is_empty() && crate::hooks::audit::is_audit(check.name()) {
             continue;
         }
         match decide(*check) {
@@ -1510,6 +1574,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             manifest: ctx.manifest,
             settings: ctx.settings,
             handed_to_cluster: ctx.handed_to_cluster,
+            land: ctx.land,
+            audits: ctx.audits,
         };
         // Wall clock around the check itself, not around the hook: the number
         // that catches a suite which stopped finding tests is how long THAT
@@ -1542,7 +1608,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
                 if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
-                    completed_otherwise.push(check.name().to_string());
+                    completed_otherwise.push((
+                        check.name().to_string(),
+                        crate::gate_stamp::Completion::Unavailable,
+                    ));
                 }
                 println!(
                     "{} {} could not run",
@@ -1550,7 +1619,14 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     highlight(check.name())
                 )
             }
-            Outcome::Warned => {}
+            Outcome::Warned => {
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                    completed_otherwise.push((
+                        check.name().to_string(),
+                        crate::gate_stamp::Completion::Warned,
+                    ));
+                }
+            }
             // Not run, never fatal, never passed: CI runs it (ADR-0013).
             Outcome::Deferred => announce_deferred(&[check.name()]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
@@ -1564,7 +1640,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 Severity::Warn => {
                     if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
                     {
-                        completed_otherwise.push(check.name().to_string());
+                        completed_otherwise.push((
+                            check.name().to_string(),
+                            crate::gate_stamp::Completion::FailedUnderWarn,
+                        ));
                     }
                     downgraded.push((
                         check.name().to_string(),
@@ -1618,14 +1697,16 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .collect();
         stamp_tips(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
     }
-    record_audits(&tree_at_start);
+    record_audits(ctx.audits, &tree_at_start);
     if reuse_stamps && !completed_otherwise.is_empty() {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
-        let really_ran: Vec<String> = pre_push_checks
-            .iter()
-            .filter(|c| completed_otherwise.iter().any(|p| p == c.name()))
-            .filter(|c| c.scope().touches(&changed))
-            .map(|c| c.name().to_string())
+        let really_ran: Vec<(String, crate::gate_stamp::Completion)> = completed_otherwise
+            .into_iter()
+            .filter(|(name, _)| {
+                pre_push_checks
+                    .iter()
+                    .any(|c| c.name() == name && c.scope().touches(&changed))
+            })
             .collect();
         record_completions(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
     }
@@ -1785,6 +1866,7 @@ pub fn scoped_push_gates(
 pub fn owed_audits(
     settings: &crate::config::Settings,
     manifest: &crate::manifest::Manifest,
+    ledger: &crate::hooks::audit::Ledger,
     refs: &[crate::pushrefs::PushRef],
 ) -> Vec<String> {
     let in_progress = crate::git_states_in_progress();
@@ -1793,7 +1875,7 @@ pub fn owed_audits(
         .into_iter()
         .filter(|c| crate::hooks::audit::is_audit(c.name()))
         .filter(|c| c.scope().opted_in(&tracked))
-        .filter(|c| crate::hooks::audit::owed(settings, c.name(), refs))
+        .filter(|c| crate::hooks::audit::owed(settings, ledger, c.name(), refs))
         .map(|c| c.name().to_string())
         .collect()
 }
@@ -1900,16 +1982,21 @@ fn stamp_tips(
 /// Write the audit records this push produced (ADR-0018), only for a commit
 /// the working tree IS: HEAD, inside a rehearsal snapshot or with a clean
 /// worktree — the tools read the working tree, not the commit.
-fn record_audits(tree_at_start: &str) {
-    let pending = crate::hooks::audit::take_pending();
+fn record_audits(ledger: &crate::hooks::audit::Ledger, tree_at_start: &str) {
+    let pending = ledger.take_pending();
     if pending.is_empty() {
         return;
     }
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     let here_is_head = crate::rehearsal::in_snapshot() || tree_at_start.trim().is_empty();
-    for p in pending {
-        if here_is_head && head.as_deref() == Some(p.tip.as_str()) {
-            crate::hooks::audit::write_pending(&p);
+    for record in pending {
+        if !(here_is_head && head.as_deref() == Some(record.tip.as_str())) {
+            continue;
+        }
+        if let Err(why) = crate::hooks::audit::write_pending(&record) {
+            crate::hooks::common::warn(&format!(
+                "{why} — the next push of this tree owes the audit again"
+            ));
         }
     }
 }
@@ -1920,7 +2007,7 @@ fn record_audits(tree_at_start: &str) {
 fn record_completions(
     externals: &[crate::manifest::External],
     tips: &[String],
-    gates: &[String],
+    gates: &[(String, crate::gate_stamp::Completion)],
     tree_at_start: &str,
 ) {
     if gates.is_empty() {
@@ -1929,17 +2016,24 @@ fn record_completions(
     let head = crate::git::stdout(&["rev-parse", "HEAD"]);
     let worktree_clean = tree_at_start.trim().is_empty();
     let in_snapshot = crate::rehearsal::in_snapshot();
-    let tokens: Vec<String> = gates
-        .iter()
-        .filter_map(|g| crate::gate_identity::token(externals, g))
-        .collect();
     for tip in tips {
         let is_head = head.as_deref() == Some(tip.as_str());
         if !(is_head && (in_snapshot || worktree_clean)) {
             continue;
         }
-        if let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]) {
-            crate::gate_stamp::record_done(&tree, &tokens);
+        let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]) else {
+            continue;
+        };
+        for (gate, how) in gates {
+            let Some(token) = crate::gate_identity::token(externals, gate) else {
+                continue;
+            };
+            if !crate::gate_stamp::record_done(&tree, &[token], *how) {
+                crate::hooks::common::warn(&format!(
+                    "git refused to record that {gate} completed — the next push of this \
+                     tree owes it again"
+                ));
+            }
         }
     }
 }
@@ -2011,17 +2105,29 @@ mod tests {
             remote_oid: "b".repeat(40),
         }];
         let sets = [
-            push_refusal("abcdef12", &names, true),
-            push_refusal("abcdef12", &names, false),
+            push_refusal("abcdef12", &names, StampReuse::On, None),
+            push_refusal("abcdef12", &names, StampReuse::Off, None),
             land_refusal(
-                &format!("{} {}", "a".repeat(40), "b".repeat(40)),
+                &crate::rehearsal::LandLine {
+                    sha: "a".repeat(40),
+                    remote_tip: "b".repeat(40),
+                },
                 &refs,
                 &names,
             ),
             land_refusal(
-                &format!("{} {}", "a".repeat(40), "c".repeat(40)),
+                &crate::rehearsal::LandLine {
+                    sha: "a".repeat(40),
+                    remote_tip: "c".repeat(40),
+                },
                 &refs,
                 &names,
+            ),
+            push_refusal(
+                "abcdef12",
+                &names,
+                StampReuse::On,
+                Some("v12.345.6789-rc.1+build.2026-11-05"),
             ),
         ];
         for lines in &sets {
@@ -2044,8 +2150,23 @@ mod tests {
             sets[1]
         );
         assert!(sets[1].iter().any(|l| l.contains("amont.pushStamps true")));
+        assert!(sets[1].iter().any(|l| l.ends_with("amont land")));
         assert_eq!(sets[2][0], crate::land::LAND_EVIDENCE_MISSING);
         assert_eq!(sets[3][0], crate::land::LAND_REMOTE_MOVED);
+        assert!(sets[0][0].starts_with("amont: push refused:"));
+        // A tag push is offered the tag's own land, never the branch remedies.
+        assert!(
+            sets[4]
+                .iter()
+                .any(|l| l.ends_with("amont land --tag v12.345.6789-rc.1+build.2026-11-05")),
+            "{:?}",
+            sets[4]
+        );
+        assert!(
+            !sets[4].iter().any(|l| l.contains("rehearse")),
+            "{:?}",
+            sets[4]
+        );
     }
 
     /// A check whose only job is to carry a name and a severity into `report`.
@@ -2281,6 +2402,8 @@ mod tests {
             manifest: &manifest,
             settings: &settings,
             handed_to_cluster: &[],
+            land: &crate::rehearsal::LandEnv::Absent,
+            audits: &Default::default(),
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

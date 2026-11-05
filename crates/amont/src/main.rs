@@ -386,8 +386,8 @@ fn main() {
     // first — an ordering nothing stated and nothing tested.
     let _ = amont_runtime::rehearsal::in_snapshot();
     // The same, for the variable `amont land` sets on its own push.
-    let _ = amont_runtime::rehearsal::land_env();
-    let _ = amont_runtime::rehearsal::in_prestage();
+    amont_runtime::rehearsal::land_env();
+    amont_runtime::rehearsal::prestage();
     match parse(std::env::args_os().skip(1).collect()) {
         Invocation::Help => {
             print!("{USAGE}");
@@ -1014,6 +1014,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         }
         other => other,
     };
+    let audits = amont_runtime::hooks::audit::Ledger::default();
     let push = if named
         .as_deref()
         .is_some_and(|n| needs_synthetic_push_refs(n, &manifest))
@@ -1052,6 +1053,8 @@ fn run_mode(args: &[OsString]) -> i32 {
         manifest: &manifest,
         settings: &settings,
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
+        land: amont_runtime::rehearsal::land_env(),
+        audits: &audits,
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -1273,6 +1276,7 @@ fn pointer_path(block: &std::path::Path) -> Option<PathBuf> {
 /// Dispatch a git-invoked hook. `args` is whatever git passed, verbatim.
 fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     let push = pushrefs::PushRefs::default();
+    let audits = amont_runtime::hooks::audit::Ledger::default();
     // The manifest is parsed ONCE, here, at the process boundary — the same
     // shape as the push refs above it: owned by the entrypoint, lent to
     // everything downstream through the Ctx. git invokes hooks with the
@@ -1293,6 +1297,8 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
         manifest: &manifest,
         settings: &settings,
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
+        land: amont_runtime::rehearsal::land_env(),
+        audits: &audits,
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`. An unknown name is NOT the usage

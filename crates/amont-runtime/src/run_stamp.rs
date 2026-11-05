@@ -241,6 +241,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
     }
     let hooks_dir = std::path::PathBuf::from(".git/hooks");
     let empty = PushRefs::preloaded(Vec::new());
+    let audits = crate::hooks::audit::Ledger::default();
     // A push gate judges a push; standalone there is none, so the one ref a
     // rehearsal would push is synthesised, as `amont run pre-push` does —
     // only when a push gate actually has to run (one covered by its twin
@@ -284,6 +285,8 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                         manifest,
                         settings,
                         handed_to_cluster: &[],
+                        land: &crate::rehearsal::LandEnv::Absent,
+                        audits: &audits,
                     };
                     finish(
                         settings,
@@ -316,6 +319,8 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                                 manifest,
                                 settings,
                                 handed_to_cluster: &[],
+                                land: &crate::rehearsal::LandEnv::Absent,
+                                audits: &audits,
                             };
                             finish(
                                 settings,

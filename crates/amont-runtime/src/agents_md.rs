@@ -65,7 +65,9 @@ with no connection open, then pushes, and the push itself skips them (git\n\
 connects before pre-push runs, and a remote may drop the idle session while a\n\
 suite runs). A bare `git push` whose push gates have not run on its tree is\n\
 refused at once (`amont.pushGates refuse`, the default): run `amont land`, or\n\
-`amont rehearse --wait` (or `amont run --stamp`) first and push again. Where\n\
+`amont rehearse --wait` (or `amont run --stamp`) first and push again. Push a\n\
+release tag with `amont land --tag <name>`: it runs the release audits on the\n\
+tagged commit first, which a branch rehearsal never does. Where\n\
 `amont.rehearseOnCommit` is on, every commit already starts that rehearsal in\n\
 the background and `--wait` only follows it. Give these commands the\n\
 longest timeout your tooling allows, never its default: here a check is\n\

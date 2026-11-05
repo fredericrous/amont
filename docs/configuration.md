@@ -460,10 +460,40 @@ once, before any gate starts, naming the gates and how to run them first:
   push that follows skips the gates.
 
 `inline` runs them in the push, as before 2.0. A deletion owes nothing, and a
-gate that completed earlier without passing (a warning, a missing tool) is not
-asked for again. With `amont.pushStamps false` nothing can be stamped, so the
-refusal names that setting instead of offering a rehearsal, and `amont land`
-refuses before running anything.
+gate that completed earlier without passing is not asked for again while its
+record holds: a warning for good, a failure under `warn` severity while the
+gate is still `warn`, a missing tool for an hour. With `amont.pushStamps
+false` nothing can be stamped, so the refusal names that setting instead of
+offering a rehearsal, and `amont land` refuses before running anything.
+
+A tag push is refused the same way, and offered `amont land --tag <name>`:
+it pushes one existing local tag after running, on a snapshot of the tagged
+commit, the gates its range owes and, for a `v*` tag, the release audits. A
+tag already on the remote is refused (a tag is never moved), and `--dry-run`
+reports `would-land` without reading the network.
+
+`amont land --json` reports what the pre-stage did in a `gates` object:
+`owed` (the gates the push owed) and `prestage` — `stamped` (nothing left to
+run), `ran`, `failed`, `refused`, `interrupted`, or empty when land stopped
+before it. `ref` is the ref pushed (`refs/heads/…` or `refs/tags/…`);
+`branch` is empty for a tag.
+
+## `amont.auditMaxAge` — how long an audit's record answers
+
+```sh
+git config amont.auditMaxAge 24   # hours, 1..720; default 24
+```
+
+The dependency audits (`pre-push-audit-{go,js,python,rust}`) depend on the
+day's advisories, not only on the tree, so they are never stamped. Wherever
+one runs on the content being pushed — land's pre-stage, a rehearsal,
+`amont run --stamp`, an `inline` push of a clean HEAD — its report is
+recorded in `refs/notes/amont-audit` (local, never pushed), keyed by the
+lockfiles' content for a branch push and by the tree for a `v*` tag. A push
+with a fresh record replays it, judged against today's waivers and that
+push's stakes, without running the tool. A record answers for
+`amont.auditMaxAge` hours; one that could not check anything (offline, tool
+missing) for one hour.
 
 ## `amont.unstampedPush` — refuse a push nothing has tested yet
 

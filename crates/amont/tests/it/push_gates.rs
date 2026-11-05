@@ -193,6 +193,20 @@ fn lands_own_push_whose_remote_side_moved_says_so() {
 }
 
 #[test]
+fn a_malformed_land_variable_refuses_and_is_never_a_moved_remote() {
+    if missing("node") {
+        return;
+    }
+    let (r, base, log) = gated("block", 0);
+    let tip = head(&r);
+    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("AMONT_LAND", "not a sha")]);
+    assert_ne!(code, 0, "{out}{err}");
+    assert_eq!(runs(&log), 0);
+    assert!(err.contains("AMONT_LAND"), "{err}");
+    assert!(!err.contains("amont-land: remote-moved"), "{err}");
+}
+
+#[test]
 fn a_deletion_is_never_refused() {
     if missing("node") {
         return;
@@ -356,6 +370,10 @@ fn a_tag_push_of_an_unstamped_commit_refuses_until_run_stamp_stamps_it() {
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
     assert!(err.contains("pre-push-suite"), "{err}");
+    // The tag's own land, never the branch remedies, whose records do not
+    // answer for a release.
+    assert!(err.contains("amont land --tag v1.0.0"), "{err}");
+    assert!(!err.contains("amont rehearse --wait"), "{err}");
     let stamped = common::amont_cmd()
         .args(["run", "--stamp"])
         .current_dir(&r.dir)
@@ -371,13 +389,11 @@ fn a_tag_push_of_an_unstamped_commit_refuses_until_run_stamp_stamps_it() {
     assert_eq!(code, 0, "the stamped tag push passes: {out}{err}");
 }
 
-// ---------------------------------------------------------------------------
 // Phase 1b: dependency audits off the connection (ADR-0018). A repository
 // tracking `go.sum` is opted into `audit-go`; a fake `govulncheck` logs each
 // run to an absolute path and answers from marker files: `VULN` → exit 1 with
 // a GO- id (a vulnerability), `OFFLINE` → exit 1 with no id (could not check),
 // neither → exit 0 (clean).
-// ---------------------------------------------------------------------------
 
 /// A land fixture opted into audit-go, and the fake tool's bin dir and log.
 fn audit_fixture() -> (crate::land::Fx, std::path::PathBuf, std::path::PathBuf) {
@@ -477,6 +493,10 @@ fn a_stale_record_is_owed_again_and_a_bare_push_refuses() {
     assert_ne!(code, 0, "a stale audit is owed: {err}");
     assert!(err.contains("pre-push-audit-go"), "{err}");
     assert_eq!(runs(&log), 1, "and was not run on the connection");
+    // Land runs it again, before git connects, and lands.
+    let again = crate::land::land_with(&fx, &[], Some(&bin));
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert_eq!(runs(&log), 2, "land ran the owed audit: {}", again.stderr);
 }
 
 #[test]
@@ -521,6 +541,23 @@ fn land_tag_lands_a_clean_tag_and_refuses_one_already_on_the_remote() {
     fx.r.stage("later.md", "after the tag\n");
     fx.r.commit("docs: after");
     fx.r.git(&["tag", "v1.0.0", &tagged]);
+    // A dry run reads nothing from the network and pushes nothing: it would
+    // land, it did not.
+    let dry = crate::land::land_with(&fx, &["--tag", "v1.0.0", "--dry-run", "--json"], Some(&bin));
+    assert_eq!(dry.code, 0, "{}{}", dry.stdout, dry.stderr);
+    assert_eq!(crate::land::status_of(&dry), "would-land");
+    assert!(dry.stdout.contains("\"branch\":\"\""), "{}", dry.stdout);
+    assert!(
+        dry.stdout.contains("\"ref\":\"refs/tags/v1.0.0\""),
+        "{}",
+        dry.stdout
+    );
+    let absent = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "-q", "refs/tags/v1.0.0"])
+        .current_dir(&fx.bare)
+        .output()
+        .expect("git");
+    assert!(!absent.status.success(), "a dry run pushes nothing");
     let ran = crate::land::land_with(&fx, &["--tag", "v1.0.0", "--json"], Some(&bin));
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     let remote = crate::land::plain_git(&fx.bare, &["rev-parse", "refs/tags/v1.0.0"]);
@@ -539,22 +576,34 @@ fn an_audit_that_could_not_check_never_blocks_a_land() {
     assert!(ran.stderr.contains("NOT checked"), "{}", ran.stderr);
 }
 
+/// The system directories only: `git` and `sh`, and no audit tool a
+/// developer installed (`~/go/bin`, `~/.cargo/bin`).
+const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
 #[test]
 fn a_missing_audit_tool_never_blocks_a_land() {
     let (fx, _bin, _log) = audit_fixture();
-    // An empty bin dir first on PATH, and no govulncheck anywhere on it.
-    let empty = fx.r.path(".git/emptybin");
-    std::fs::create_dir_all(&empty).expect("mkdir");
-    if std::process::Command::new("sh")
+    let found = std::process::Command::new("sh")
         .args(["-c", "command -v govulncheck"])
+        .env("PATH", SYSTEM_PATH)
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return; // this machine has a real govulncheck on PATH
-    }
-    let ran = crate::land::land_with(&fx, &[], Some(&empty));
-    assert_eq!(ran.code, 0, "{}", ran.stderr);
+        .unwrap_or(false);
+    assert!(!found, "the system PATH carries no govulncheck");
+    let mut cmd = crate::common::amont_cmd();
+    cmd.arg("land")
+        .current_dir(&fx.r.dir)
+        .stdin(Stdio::null())
+        .env("PATH", SYSTEM_PATH);
+    Repo::strip_git_env_impl(&mut cmd);
+    let out = cmd.output().expect("run amont land");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(err.contains("did NOT run"), "the pre-stage says so: {err}");
+    assert!(
+        err.contains("NOT checked"),
+        "and the push's replay says the tree was not checked: {err}"
+    );
 }
 
 #[test]
@@ -604,15 +653,26 @@ fn neither_land_variable_reaches_a_gate() {
             seen.to_str().expect("utf8")
         ),
     );
+    // `suite` is scoped: it runs in land's pre-stage, under
+    // AMONT_LAND_PRESTAGE. `probe` is unscoped (`*`): it runs in land's own
+    // push, under AMONT_LAND. Both write what they saw.
     fx.r.stage(
         "amont.conf",
-        "pre-push    suite  *.txt  block  node gate.js\n",
+        "pre-push    suite  *.txt  block  node gate.js\n\
+         pre-push    probe  *      warn   node gate.js\n",
     );
-    fx.r.commit("chore: the gate");
+    fx.r.commit("chore: the gates");
     crate::tree_gates::trust_and_install(&fx.r);
+    fx.r.stage("a.txt", "hello\n");
+    fx.r.commit("feat: something the suite judges");
     let ran = crate::land::land(&fx, &[]);
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
-    let log = std::fs::read_to_string(&seen).expect("the gate ran");
+    let log = std::fs::read_to_string(&seen).expect("the gates ran");
+    assert!(
+        log.lines().count() >= 2,
+        "the pre-stage's gate and the push's gate both ran: {log}\n{}",
+        ran.stderr
+    );
     for line in log.lines() {
         assert_eq!(line, "- -", "a gate child saw a land variable: {log}");
     }

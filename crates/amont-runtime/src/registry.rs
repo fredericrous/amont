@@ -47,6 +47,12 @@ pub struct Ctx<'a> {
     /// cluster (ADR-0017), parsed once in `main` with the rest of the
     /// environment it removes; empty everywhere else.
     pub handed_to_cluster: &'a [String],
+    /// What `amont land` set on its own push (ADR-0018), parsed once in
+    /// `main` with the rest of the environment it removes.
+    pub land: &'a crate::rehearsal::LandEnv,
+    /// This push's dependency-audit records and memos (ADR-0018): owned by
+    /// whoever starts the hook, lent to each audit.
+    pub audits: &'a crate::hooks::audit::Ledger,
 }
 
 pub type HookFn = fn(&Ctx) -> Verdict;
@@ -482,7 +488,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::go(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::audit::go(ctx),
     },
     // `pnpm-lock.yaml` too: a pnpm workspace has no package-lock.json, and
     // without it here the dispatcher's opt-in gate silenced the audit for
@@ -494,7 +500,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::js(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::audit::js(ctx),
     },
     // `pyproject.toml` too: a uv/PEP-621 project has no requirements.txt
     // and the runner audits its virtualenv instead — the registry must
@@ -507,7 +513,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::python(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::audit::python(ctx),
     },
     Builtin {
         name: "pre-push-audit-rust",
@@ -516,7 +522,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| hooks::audit::rust(ctx.settings, ctx.push.get()),
+        run: |ctx| hooks::audit::rust(ctx),
     },
     Builtin {
         name: "pre-push-run-tests-js",
