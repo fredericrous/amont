@@ -1289,7 +1289,7 @@ mod tests {
             assert_eq!(unavailable_for("lint@b"), 1, "{words:?}");
             assert!(words.contains(&"warned:lint@b".to_string()), "{words:?}");
         });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // a temp fixture; `repo` clears it on the next run
     }
 
     #[test]
