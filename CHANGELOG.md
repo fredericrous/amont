@@ -6,6 +6,53 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v2.1.0
+
+### Added
+
+- **`amont attest covered --strict`** (#271): exits 3 when an attestation
+  for the checked-out tree was found but its signature did not verify, where
+  the default fail-open answer is 0. Either way the rejection is now named
+  on stderr ("an attestation was found but did not verify: …"), so "nobody
+  attested this" and "somebody attested it and the signature is bad" are no
+  longer the same silence. stdout keeps its covered-names-only contract.
+- `amont tree-parity` and `pre-commit-tree-parity` now compare a CI step
+  skipped on a built-in test gate (`pre-push-cargo-test`, `pre-push-go-test`,
+  `pre-push-pytest`, `pre-push-run-tests-js`) with that gate's local command,
+  and warn when they differ (#288): CI was skipping a step on a signature of
+  another command. A warning, never a failure; the accepted equivalences are
+  in docs/ci.md.
+
+### Fixed
+
+- `pre-commit-prettier` no longer runs in a repository that never chose
+  prettier just because a dependency hoisted `node_modules/.bin/prettier`
+  (#307). A prettier config file, or `prettier` in the root package.json, is
+  the opt-in; `amont list` now reads the same config names as the check.
+- When amont cannot locate the index being committed, every declared
+  pre-commit gate is now refused, not only an `index` one: a gate reading
+  `$AMONT_INDEX_FILE` could fall back to the default index and pass blind.
+  The refusal carries git's own reason (`safe.directory`, not a repository),
+  and a git dir whose name ends in `\r` is no longer cut short (#411).
+- `amont land --json` no longer prints a credential carried in the push URL:
+  a password, or the user part of an http(s) URL, reads `***` (#411).
+- A declared `heavy` pre-push gate is now owed before the connection
+  whatever its scope (#414). A `*` declaration can be any command; one ran
+  for over a minute inside `amont land`'s own push. It is stamped by a
+  rehearsal, `amont land` and `amont run --stamp`, and a bare push without
+  that stamp refuses, as for a scoped gate. A light `*` gate still runs in the
+  hook.
+- The "git opened its connection to the remote" advice is no longer printed
+  inside a rehearsal snapshot or `amont land`'s pre-stage, where no
+  connection is open (#414).
+- A pre-push gate that passed in a working tree with uncommitted tracked
+  changes is no longer attested for CI on the pushed commit (#289): it tested
+  what was on disk, not the commit. The attestation now signs, per pushed
+  tip, only the gates that saw that tip's content (a clean HEAD, a rehearsal
+  snapshot, or a checkout under `amont.testPushedTree`), the same rule the
+  push stamps follow. With `amont.pushStamps false`, a dirty tree no longer
+  writes an audit record either. CI runs what is left unattested.
+
 ## v2.0.1
 
 ### Fixed
