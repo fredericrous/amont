@@ -704,17 +704,17 @@ fn vouched_for_staged_tree() -> &'static std::collections::HashSet<String> {
 enum IndexEnv {
     /// These variables, in this order.
     Set(Vec<(&'static str, std::path::PathBuf)>),
-    /// A gate declared `index` with no index to read: refused, not run blind.
+    /// No index to read: refused, never run blind. An unmarked gate may read
+    /// `$AMONT_INDEX_FILE` and fall back to the default index, so it is
+    /// refused too: a blind pass would be stamped onto the committed tree.
     Refuse(String),
-    /// Any other gate runs without the variables; this says so.
-    Warn(String),
 }
 
 /// The variables `lookup` gives a pre-commit command that runs as `runs_on`
 /// says, or why it gets none. Not knowing the index is the original bug,
 /// said out loud.
 fn index_env(
-    lookup: &Result<crate::hooks::common::CommitIndex, String>,
+    lookup: Result<&crate::hooks::common::CommitIndex, &crate::hooks::common::IndexLookupError>,
     runs_on: RunsOn,
     gate: &str,
 ) -> IndexEnv {
@@ -733,11 +733,8 @@ fn index_env(
             }
             IndexEnv::Set(vars)
         }
-        Err(why) if reads_index => IndexEnv::Refuse(format!(
-            "{gate}: cannot locate the index being committed ({why})"
-        )),
-        Err(why) => IndexEnv::Warn(format!(
-            "{gate}: cannot locate the index being committed ({why}); {} is not set",
+        Err(why) => IndexEnv::Refuse(format!(
+            "{gate}: cannot locate the index being committed ({why}); {} cannot be set",
             crate::hooks::common::INDEX_ENV
         )),
     }
@@ -796,7 +793,7 @@ impl Check for External {
 
     fn run(&self, ctx: &Ctx) -> Outcome {
         let settings = ctx.settings;
-        let (scope, program, args, fix, files, docs_skip) = match &self.kind {
+        let (scope, program, args, fix, files, docs_skip, runs_on) = match &self.kind {
             Kind::Runnable {
                 scope,
                 program,
@@ -804,8 +801,9 @@ impl Check for External {
                 fix,
                 files,
                 docs_skip,
+                runs_on,
                 ..
-            } => (scope, program, args, *fix, *files, *docs_skip),
+            } => (scope, program, args, *fix, *files, *docs_skip, *runs_on),
             Kind::Unusable { why, .. } => {
                 crate::hooks::common::warn(&format!(
                     "{MANIFEST}: {} — {}",
@@ -937,6 +935,7 @@ impl Check for External {
                     args,
                     fix,
                     files,
+                    runs_on,
                     &matched,
                     Path::new(&root),
                 )
@@ -974,7 +973,9 @@ impl Check for External {
                     // names and what `stamp_tips` asks `ran_on_tip` about.
                     let (run_in, _guard) =
                         crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, &self.id);
-                    match self.execute(settings, program, args, fix, files, &matched, &run_in) {
+                    match self.execute(
+                        settings, program, args, fix, files, runs_on, &matched, &run_in,
+                    ) {
                         Outcome::Passed => {}
                         other => return other,
                     }
@@ -1027,6 +1028,7 @@ impl External {
         args: &[String],
         fix: Fix,
         files: bool,
+        runs_on: RunsOn,
         matched: &[String],
         run_in: &Path,
     ) -> Outcome {
@@ -1070,25 +1072,21 @@ impl External {
         // value this process inherited is already gone: `strip_git_env`
         // drops it, so a push gate never sees one.
         if self.stage == Stage::PreCommit {
-            // An unusable check never runs; it reads nothing.
-            let runs_on = match &self.kind {
-                Kind::Runnable { runs_on, .. } => *runs_on,
-                Kind::Unusable { .. } => RunsOn::Here { reads_index: false },
-            };
             // Asked per gate, a few milliseconds of `git rev-parse`: no
-            // process-wide cache to reason about.
+            // process-wide cache to reason about. A `platform=any` gate asks
+            // too: it reaches here only when the cluster did not take it, and
+            // then it runs on this machine, where the index is readable.
             let lookup = crate::hooks::common::commit_index();
-            match index_env(&lookup, runs_on, &self.short_name) {
+            match index_env(lookup.as_ref(), runs_on, &self.short_name) {
                 IndexEnv::Set(vars) => {
                     for (key, value) in vars {
                         cmd.env(key, value);
                     }
                 }
                 IndexEnv::Refuse(why) => {
-                    crate::hooks::common::fail(&why);
+                    crate::hooks::common::fail(&crate::ui::sanitize(&why));
                     return Outcome::Failed;
                 }
-                IndexEnv::Warn(why) => crate::hooks::common::warn(&why),
             }
         }
         // Under the deadline: repo-authored code that outlives the budget is
@@ -2379,22 +2377,26 @@ mod tests {
         );
     }
 
-    /// A gate declared `index` with no index to read is refused, never run
-    /// blind; any other gate runs without the variables, and is warned.
+    /// No index to read refuses every pre-commit gate, never runs one blind,
+    /// and says git's own reason.
     #[test]
-    fn an_index_that_cannot_be_located_refuses_only_an_index_gate() {
-        let lost: Result<crate::hooks::common::CommitIndex, String> = Err("git failed".into());
+    fn an_index_that_cannot_be_located_refuses_every_gate() {
+        let lost = crate::hooks::common::IndexLookupError::Git {
+            args: "rev-parse --absolute-git-dir".into(),
+            why: "fatal: detected dubious ownership".into(),
+        };
         assert!(
-            matches!(index_env(&lost, RunsOn::Here { reads_index: true }, "staged"), IndexEnv::Refuse(w) if w.contains("staged"))
+            matches!(index_env(Err(&lost), RunsOn::Here { reads_index: true }, "staged"), IndexEnv::Refuse(w) if w.contains("staged") && w.contains("dubious ownership"))
         );
         assert!(
-            matches!(index_env(&lost, RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Warn(w) if w.contains("AMONT_INDEX_FILE"))
+            matches!(index_env(Err(&lost), RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Refuse(w) if w.contains("AMONT_INDEX_FILE"))
         );
-        let found = Ok(crate::hooks::common::CommitIndex {
+        let found = crate::hooks::common::CommitIndex {
             file: "/r/.git/index.lock".into(),
             git_dir: "/r/.git".into(),
-        });
-        let IndexEnv::Set(plain) = index_env(&found, RunsOn::Here { reads_index: false }, "lint")
+        };
+        let found = Ok(&found);
+        let IndexEnv::Set(plain) = index_env(found, RunsOn::Here { reads_index: false }, "lint")
         else {
             panic!("an index that was found is set");
         };
@@ -2402,7 +2404,7 @@ mod tests {
             plain.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
             ["AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"]
         );
-        let IndexEnv::Set(marked) = index_env(&found, RunsOn::Here { reads_index: true }, "staged")
+        let IndexEnv::Set(marked) = index_env(found, RunsOn::Here { reads_index: true }, "staged")
         else {
             panic!("an index that was found is set");
         };
