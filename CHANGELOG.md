@@ -6,6 +6,22 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v2.0.1
+
+### Fixed
+
+- **A push no longer re-runs a paired suite on a tip that already passed it**
+  (ADR-0019). A push-side twin such as `pre-push-cargo-test` was skipped
+  only when every pushed commit in its scope carried the commit-time stamp,
+  so one older commit without it — made without hooks (relais's
+  `commit-tree`), or deferred on a busy host — ran the whole suite again on
+  code whose tip had passed. Now a ref is covered when its tip's own stamp
+  key (tree, declared inputs, canonical tree) holds the pair's token, and a
+  second line says so: `the code at tip <sha> passed at commit`. A pair
+  declared with the `files` marker keeps the per-commit rule; a command that
+  picks the staged paths itself should carry `files` if it has a `pre-push`
+  twin (`docs/custom-checks.md`).
+
 ## v2.0.0
 
 ### Changed
