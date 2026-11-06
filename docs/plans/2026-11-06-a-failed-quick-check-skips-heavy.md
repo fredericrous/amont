@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/pre-commit-fail-fast
 repos: [amont]
 adrs: [ADR-0020, ADR-0013]
@@ -112,7 +112,7 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   - docs: `docs/checks.md` (pre-commit) and `docs/configuration.md`;
   - the doc comment fix;
   - an ADR-0020 (`hooks.pre-commit-fail-fast`) plus `aval heads --write`.
-- [ ] Phase 2 — release amont 2.1.x or the next free version after the open-issues session's 2.1.0, coordinated with that session; install and verify.
+- [x] Phase 2 — release amont 2.1.x or the next free version after the open-issues session's 2.1.0, coordinated with that session; install and verify.
 
 ## Decision log
 - 2026-11-06 — waves by weight, not cancellation, because the check
@@ -220,6 +220,18 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   skip line and one `amont run` line per check, and cargo ran only `fmt`. The
   wave ledger wrote `1153 2 pre-commit-clippy,pre-commit-cargo-test`: the
   Light wave took 1.2 s, and 2 Heavy checks were skipped.
+- **Phase 2, observed 2026-11-07:**
+  - v2.2.0 tagged on `da1dfdc7` (#432) with `amont land --tag`. Release
+    workflow 42308324797 concluded success: 7 platform builds, GitHub
+    release with 7 assets, crates.io 2.2.0, npm, homebrew tap, and "brew can
+    install what was published".
+  - `brew upgrade fredericrous/tap/amont` → `amont 2.2.0`. The hooks are
+    baked to `/usr/local/bin/amont`.
+  - Probe with the installed binary: the skip line names clippy and
+    cargo-test, and cargo ran only `fmt`.
+  - Pushes for #430, #432 and the tag ran with `hook.skip
+    pre-push-adr-lint-cli-probe` (approved by the person; amont #431). Its
+    removal from the shared config is the person's.
 - **14 days after install:** from the pre-commit wave ledger on the laptop, count the
   heavy runs skipped and estimate the minutes saved. Measure the extra start
   delay on passing commits (the slowest Light check per commit). A median
@@ -233,5 +245,19 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - unix (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83. Fixed: compaction by rename, accurate `append` comment. Deliberate: "the reader" is the manual 14-day read.
 
 ## Outcome
+Shipped in amont 2.2.0. A commit a quick check refuses no longer runs
+clippy or the test suite. The change is said, unstamped, and mirrored in
+`amont run`, and a ledger measures the cost.
+Surprises:
+- Code review took four rounds beyond the first, each costing a ~17 min
+  commit gate. Most findings were literal rule points (comment placement, a
+  placeholder name). Two were real: the ledger counted clippy on a `.txt`
+  commit, and a manual spawn count disagreed with the test's own.
+- The push hit amont #431: a warn-only Heavy gate never waits for a slot,
+  so `land` refused for missing evidence while another session held the
+  queue.
+- Mid-branch, main moved by 8 PRs (another session's 2.1.0); the rebase
+  was clean.
+Open: the 14-day measure, due 2026-11-21; #431; removing the `hook.skip`.
 
 <!-- panel: repos=amont adds= reviewers=backend,language,tui,unix body-sha=b6f5751c93dd -->
