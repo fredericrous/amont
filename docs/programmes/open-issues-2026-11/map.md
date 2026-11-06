@@ -29,10 +29,12 @@ fix that has shipped in a verified release.
 
 ## Decisions so far
 
+- [Which CI test steps run more than their local built-in gate](t03-ci-parity-survey.md): all of them differ; tree-parity compares each skipped step's argv with the gate's, with stated equivalences, at warn severity
+- [How many pushes signed a tree their gates did not run on](t01-attest-dirty-tree-count.md): none can be counted (no clean/dirty record); the fix needs a CHANGELOG line, no migration
+
 ## Not yet specified
 
-- Whether the CI-parity survey (t03) finds CI test steps the built-in gates
-  cannot express (coverage floors, markers, `-race`), and if so what the gate
-  grows: a setting, or a declared gate in their place.
 
 ## Out of scope
+
+- Fixing the ~25 repositories' CI test steps that tree-parity will name (t03's table): fleet work, one PR per repository, after t04 ships the check.
