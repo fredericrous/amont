@@ -2,7 +2,7 @@
 //! actually opt into prettier.
 
 use super::common::{
-    fail, first_existing, fixing_enabled, hl, ok, pinned_tool, repo_root, resolve_js_tool, restage,
+    fail, first_existing, fixing_enabled, hl, ok, repo_root, resolve_js_tool, restage,
     run as run_tool, run_quiet, staged_files, JsTool, Restaged,
 };
 use crate::check::Outcome;
@@ -19,10 +19,14 @@ pub const EXTS: &[&str] = &[
     ".html", ".vue", ".md", ".mdx", ".yaml", ".yml",
 ];
 
-/// A repo opts in via a prettier config file or a `"prettier"` key in
-/// package.json. Without that signal the hook does nothing — in a repo that
-/// does not use prettier, `npx prettier` would download it and flag every file
-/// against defaults.
+/// A repo opts in via a prettier config file, or `prettier` named in its root
+/// package.json (a `"prettier"` key, or a direct dependency). Without that
+/// signal the hook does nothing — in a repo that does not use prettier, `npx
+/// prettier` would download it and flag every file against defaults.
+///
+/// A `node_modules/.bin/prettier` alone is NOT a signal (#307): a transitive
+/// dependency (an eslint preset, a storybook) hoists one into any workspace,
+/// and the check then judged a repository that never chose prettier.
 fn has_config(root: &str) -> bool {
     if first_existing(
         root,
@@ -56,11 +60,11 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     }
     let root = repo_root();
 
-    // A pinned local prettier is itself an opt-in signal; without config AND
-    // without a local binary the repo simply does not use prettier. Decided
-    // before resolving, which may probe a PATH copy's `--version`: a repo
-    // that does not use prettier must not pay for that.
-    if !has_config(&root) && pinned_tool(&root, "prettier").is_none() {
+    // Without config the repo does not use prettier, whatever a dependency
+    // hoisted into node_modules/.bin (#307). Decided before resolving, which
+    // may probe a PATH copy's `--version`: a repo that does not use prettier
+    // must not pay for that.
+    if !has_config(&root) {
         return Outcome::Passed;
     }
     let js = resolve_js_tool(&root, "prettier");

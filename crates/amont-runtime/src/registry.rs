@@ -310,13 +310,20 @@ pub const CHECKS: &[Builtin] = &[
         stage: Stage::PreCommit,
         scope: Scope::new(
             &[],
+            // The same markers `hooks::prettier::has_config` reads, so
+            // `amont list` and the gate agree (#307).
             &[
                 ".prettierrc",
                 ".prettierrc.json",
                 ".prettierrc.yml",
                 ".prettierrc.yaml",
                 ".prettierrc.js",
+                ".prettierrc.cjs",
+                ".prettierrc.mjs",
+                ".prettierrc.toml",
                 "prettier.config.js",
+                "prettier.config.mjs",
+                "prettier.config.cjs",
             ],
         )
         .not_during(MID_OPERATION),
