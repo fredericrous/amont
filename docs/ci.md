@@ -415,6 +415,21 @@ bash's `-e` and `pipefail` cannot change the verdict. Run
 `amont tree-parity` as an ungated CI step, so a drift committed with
 `--no-verify` still fails.
 
+A step skipped on a built-in test gate (`!contains(…, 'pre-push-cargo-test')`,
+and likewise `pre-push-go-test`, `pre-push-pytest`, `pre-push-run-tests-js`)
+is compared with that gate's local command, and a difference is a
+**warning**, never a failure: CI is skipping a step on a signature of a
+different command. The equivalences it accepts:
+
+- `cargo test`, with `--workspace` and `--all-features` optional;
+- `go test ./...`;
+- `pytest`, `python -m pytest`, or `uv run [--no-sync|--frozen] pytest`;
+- one of `typecheck`, `test:unit` or `test`, through npm, pnpm or yarn.
+
+`-q` and `-v` are ignored. Anything else differs: a coverage floor, `-race`,
+`--locked`, a package subset, a `make` target, a pipe. A check only CI makes
+belongs in a step that is never skipped.
+
 ## The provenance record (not a skip)
 
 Next to its attestation, a push can publish a second signed note,
