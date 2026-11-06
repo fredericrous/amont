@@ -31,7 +31,7 @@
 use std::path::Path;
 
 use crate::check::Outcome;
-use crate::hooks::common::{fail, hl, ok, repo_root};
+use crate::hooks::common::{fail, hl, ok, repo_root, warn};
 use crate::manifest::{normalize_command, tree_gates, TreeGate, MANIFEST};
 
 /// Where workflows live, per forge.
@@ -455,15 +455,157 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
     problems
 }
 
-/// Read `root`'s manifest and workflows, and compare them.
-pub fn check_repo(root: &Path) -> Vec<Problem> {
-    let Ok(manifest) = std::fs::read_to_string(root.join(MANIFEST)) else {
-        return Vec::new();
-    };
-    let gates = tree_gates(&manifest);
-    if gates.is_empty() {
-        return Vec::new();
+/// The built-in test gates a CI step may be skipped on (#288).
+pub const BUILTIN_TEST_GATES: &[&str] = &[
+    "pre-push-cargo-test",
+    "pre-push-go-test",
+    "pre-push-pytest",
+    "pre-push-run-tests-js",
+];
+
+/// Flags that change what a run prints, never its verdict.
+const NOISE: &[&str] = &["-q", "--quiet", "-v", "--verbose"];
+
+/// Whether `command` runs what the built-in `gate` runs locally, under the
+/// stated equivalences (#288, the t03 survey):
+///
+/// - `pre-push-cargo-test`: `cargo test`, with `--workspace` and
+///   `--all-features` optional (the local gate passes both; a single-package
+///   repository is the same suite without them).
+/// - `pre-push-go-test`: `go test ./...`.
+/// - `pre-push-pytest`: `pytest`, bare, as `python -m pytest`, or under
+///   `uv run` with `--no-sync` or `--frozen`.
+/// - `pre-push-run-tests-js`: one of the scripts the local gate runs
+///   (`typecheck`, `test:unit`, `test`), through npm, pnpm or yarn.
+///
+/// `-q`/`-v` are ignored everywhere. Anything else differs: a coverage
+/// floor, `-race`, `--locked`, a package subset, a `make` target, a pipe.
+fn builtin_matches(gate: &str, command: &str) -> bool {
+    if !is_simple(command) {
+        return false;
     }
+    let tokens: Vec<&str> = command
+        .split_whitespace()
+        .filter(|t| !NOISE.contains(t))
+        .collect();
+    match gate {
+        "pre-push-cargo-test" => {
+            tokens.starts_with(&["cargo", "test"])
+                && tokens[2..]
+                    .iter()
+                    .all(|t| matches!(*t, "--workspace" | "--all-features"))
+        }
+        "pre-push-go-test" => tokens == ["go", "test", "./..."],
+        "pre-push-pytest" => {
+            let rest: Vec<&str> = match tokens.as_slice() {
+                ["uv", "run", rest @ ..] => rest
+                    .iter()
+                    .copied()
+                    .filter(|t| !matches!(*t, "--no-sync" | "--frozen"))
+                    .collect(),
+                ["python" | "python3", "-m", rest @ ..] => rest.to_vec(),
+                other => other.to_vec(),
+            };
+            rest == ["pytest"]
+        }
+        "pre-push-run-tests-js" => {
+            let script = match tokens.as_slice() {
+                ["npm" | "pnpm" | "yarn", "test"] => Some("test"),
+                ["npm" | "pnpm", "run", s] => Some(*s),
+                ["pnpm" | "yarn", s] => Some(*s),
+                _ => None,
+            };
+            matches!(script, Some("typecheck" | "test:unit" | "test"))
+        }
+        _ => false,
+    }
+}
+
+/// The built-in test gate a step is skipped on (`!contains(…, '<gate>')`),
+/// if any. A step that runs only WHEN attested (`contains(…)` without `!`)
+/// reports the skip and is not one.
+fn skipped_builtin(text: &str) -> Option<&'static str> {
+    if !text.contains("!contains(") {
+        return None;
+    }
+    BUILTIN_TEST_GATES
+        .iter()
+        .copied()
+        .find(|g| text.contains(&format!("'{g}'")) || text.contains(&format!("\"{g}\"")))
+}
+
+/// Every CI step skipped on a built-in test gate whose command is not that
+/// gate's (#288). Reported at warn severity: about 25 repositories differ
+/// today, and a blocking check would stop their commits on upgrade. The same
+/// fail-closed reading as the tree gates: what cannot be read with certainty
+/// differs.
+pub fn builtin_drift_texts(workflows: &[(String, String)]) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    for (file, text) in workflows {
+        let wf = read_workflow(text);
+        for job in &wf.jobs {
+            for step in &job.steps {
+                let Some(gate) = skipped_builtin(&step.text) else {
+                    continue;
+                };
+                let at = |line: usize, what: String| Problem {
+                    file: file.clone(),
+                    line,
+                    what: format!(
+                        "`{gate}` {what} — CI skips this step on a signature of a \
+                         different command"
+                    ),
+                };
+                let inherited: Vec<(usize, Inherited)> =
+                    wf.inherits.iter().chain(&job.inherits).copied().collect();
+                if let Some((l, _)) = inherited.iter().find(|(_, k)| *k == Inherited::Other) {
+                    problems.push(at(
+                        *l,
+                        "is skipped in a job that inherits `env:` or `defaults:`".into(),
+                    ));
+                    continue;
+                }
+                let mut run = None;
+                let mut bad = None;
+                for (k, v, l) in &step.keys {
+                    match k.as_str() {
+                        "run" => run = Some((v, *l)),
+                        "env" | "shell" | "working-directory" => {
+                            bad = Some((*l, format!("gates a step with its own `{k}:`")))
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some((l, why)) = bad {
+                    problems.push(at(l, why));
+                    continue;
+                }
+                let Some((raw, line)) = run else {
+                    problems.push(at(step.line, "gates a step with no `run:`".into()));
+                    continue;
+                };
+                match scalar(raw) {
+                    Err(why) => problems.push(at(line, format!("gates a `run:` that is {why}"))),
+                    Ok(value) => {
+                        let got = normalize_command(&value);
+                        if !builtin_matches(gate, &got) {
+                            problems.push(at(line, format!("gates `{got}`")));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// [`builtin_drift_texts`] over `root`'s workflows.
+pub fn builtin_drift(root: &Path) -> Vec<Problem> {
+    builtin_drift_texts(&read_workflows(root))
+}
+
+/// Every workflow file under `root`, as (relative path, text), sorted.
+fn read_workflows(root: &Path) -> Vec<(String, String)> {
     let mut workflows = Vec::new();
     for dir in WORKFLOW_DIRS {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
@@ -482,23 +624,48 @@ pub fn check_repo(root: &Path) -> Vec<Problem> {
             }
         }
     }
-    check_texts(&gates, &workflows)
+    workflows
 }
 
-/// The pre-commit check. `Inert` when the repository declares no tree gate.
+/// Read `root`'s manifest and workflows, and compare them.
+pub fn check_repo(root: &Path) -> Vec<Problem> {
+    let Ok(manifest) = std::fs::read_to_string(root.join(MANIFEST)) else {
+        return Vec::new();
+    };
+    let gates = tree_gates(&manifest);
+    if gates.is_empty() {
+        return Vec::new();
+    }
+    check_texts(&gates, &read_workflows(root))
+}
+
+/// The pre-commit check. A built-in test gate's drift warns (#288); a tree
+/// gate's blocks. `Inert` when there is neither a tree gate nor a step
+/// skipped on a built-in one.
 pub fn run(settings: &crate::config::Settings) -> Outcome {
     let root = repo_root();
     let root = Path::new(&root);
+    let drift = builtin_drift(root);
+    for p in &drift {
+        warn(&crate::ui::sanitize(&p.to_string()));
+    }
     let declares = std::fs::read_to_string(root.join(MANIFEST))
         .map(|t| !tree_gates(&t).is_empty())
         .unwrap_or(false);
-    if !declares {
-        return Outcome::Inert;
-    }
-    let problems = check_repo(root);
+    let problems = if declares {
+        check_repo(root)
+    } else {
+        Vec::new()
+    };
     if problems.is_empty() {
-        ok(settings, "tree gates match their CI steps");
-        return Outcome::Passed;
+        return match (declares, drift.is_empty()) {
+            (_, false) => Outcome::Warned,
+            (true, true) => {
+                ok(settings, "tree gates match their CI steps");
+                Outcome::Passed
+            }
+            (false, true) => Outcome::Inert,
+        };
     }
     for p in &problems {
         eprintln!("  {}", crate::ui::sanitize(&p.to_string()));
@@ -515,6 +682,75 @@ pub fn run(settings: &crate::config::Settings) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn drift(step_run: &str) -> Vec<Problem> {
+        let text = format!(
+            "name: ci\non:\n  push:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - id: attest\n        uses: fredericrous/attest@v1\n      - if: ${{{{ !contains(fromJSON(steps.attest.outputs.gates || '[]'), 'pre-push-cargo-test') }}}}\n        {step_run}\n"
+        );
+        builtin_drift_texts(&[(".github/workflows/ci.yaml".into(), text)])
+    }
+
+    /// #288: a step skipped on a built-in test gate must run that gate's
+    /// command, under the stated equivalences.
+    #[test]
+    fn a_builtin_gate_step_is_compared_with_the_local_command() {
+        assert_eq!(drift("run: cargo test"), vec![]);
+        assert_eq!(
+            drift("run: cargo test --workspace --all-features -q"),
+            vec![]
+        );
+        let locked = drift("run: cargo test --workspace --locked");
+        assert_eq!(locked.len(), 1, "{locked:?}");
+        assert!(locked[0].what.contains("pre-push-cargo-test"), "{locked:?}");
+        assert_eq!(drift("run: make test").len(), 1);
+        assert_eq!(
+            drift("run: |\n          cargo test").len(),
+            1,
+            "a block scalar differs"
+        );
+        assert_eq!(
+            drift("run: cargo test\n        env:\n          X: 1").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_builtin_equivalences() {
+        assert!(builtin_matches("pre-push-go-test", "go test ./..."));
+        assert!(!builtin_matches("pre-push-go-test", "go test -race ./..."));
+        assert!(builtin_matches(
+            "pre-push-pytest",
+            "uv run --no-sync pytest"
+        ));
+        assert!(builtin_matches("pre-push-pytest", "python -m pytest -q"));
+        assert!(!builtin_matches(
+            "pre-push-pytest",
+            "uv run pytest --cov-fail-under=80"
+        ));
+        assert!(builtin_matches(
+            "pre-push-run-tests-js",
+            "pnpm run test:unit"
+        ));
+        assert!(builtin_matches("pre-push-run-tests-js", "npm test"));
+        assert!(!builtin_matches("pre-push-run-tests-js", "pnpm coverage"));
+        assert!(!builtin_matches(
+            "pre-push-cargo-test",
+            "cargo test | tee log"
+        ));
+    }
+
+    /// A step that runs only when attested reports the skip; it is not one.
+    #[test]
+    fn a_step_run_when_attested_is_not_a_skipped_one() {
+        assert_eq!(
+            skipped_builtin("if: ${{ contains(fromJSON(x), 'pre-push-cargo-test') }}"),
+            None
+        );
+        assert_eq!(
+            skipped_builtin("if: ${{ !contains(fromJSON(x), 'pre-push-cargo-test') }}"),
+            Some("pre-push-cargo-test")
+        );
+    }
 
     fn gates(text: &str) -> Vec<TreeGate> {
         let g = tree_gates(text);

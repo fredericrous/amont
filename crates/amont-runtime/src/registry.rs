@@ -376,7 +376,9 @@ pub const CHECKS: &[Builtin] = &[
     },
     // A CI step skipped on `tree-<name>` must run exactly that gate's
     // command (ADR-0024). Text against text — it executes nothing, so it
-    // needs no trust. Blocking: a drifted step is a skip nobody proved.
+    // needs no trust. Blocking: a drifted step is a skip nobody proved. A
+    // step skipped on a BUILT-IN test gate is compared too, and its drift
+    // only warns (#288): the check reports `Warned` for it.
     Builtin {
         name: "pre-commit-tree-parity",
         stage: Stage::PreCommit,

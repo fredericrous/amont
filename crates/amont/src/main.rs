@@ -606,10 +606,15 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // Prints each problem as `file:line: what`, exits 1 if any.
         Sub::TreeParity => {
             let root = amont_runtime::hooks::common::repo_root();
-            let problems =
-                amont_runtime::hooks::tree_parity::check_repo(std::path::Path::new(&root));
+            let root = std::path::Path::new(&root);
+            let problems = amont_runtime::hooks::tree_parity::check_repo(root);
             for p in &problems {
                 println!("{}", amont_runtime::ui::sanitize(&p.to_string()));
+            }
+            // A built-in test gate's drift is a warning (#288): printed on
+            // stderr, never in the exit code.
+            for p in amont_runtime::hooks::tree_parity::builtin_drift(root) {
+                eprintln!("warning: {}", amont_runtime::ui::sanitize(&p.to_string()));
             }
             i32::from(!problems.is_empty())
         }
