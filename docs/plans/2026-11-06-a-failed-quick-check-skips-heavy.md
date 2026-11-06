@@ -157,7 +157,9 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - 2026-11-06 — implementation review (fresh round on 87608d83): the
   budget comment named a spawn that was not there. Re-measured with a
   counting git shim, the waves add one spawn (the `amont.failFast` read), so
-  the budget is 27, not 28. The measure also found that the ledger counted
+  the budget is 27, not 28. Inside the test, with the bound lowered to
+  print the count: 27 with the setting read, 26 under
+  `AMONT_FAIL_FAST=false`. A manual shim outside it had counted 29 and 28. The measure also found that the ledger counted
   clippy, go vet and pyright on a `.txt`-only commit, where they return
   `Passed` having judged nothing. It now counts only Heavy checks the change
   reaches, and reads the tracked list only for those.
