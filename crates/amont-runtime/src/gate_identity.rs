@@ -36,15 +36,19 @@ const WIDTH: usize = 16;
 /// The token for the gate called `name`, whether that is a declared check
 /// (looked up by id, then by a pre-commit short name) or a built-in.
 pub fn token(externals: &[External], name: &str) -> Option<String> {
-    let declared = externals.iter().find(|e| e.id == name).or_else(|| {
-        externals
-            .iter()
-            .find(|e| e.stage == Stage::PreCommit && e.short_name == name)
-    });
-    match declared {
+    match declared(externals, name) {
         Some(ext) => external_token(ext, name),
         None => builtin_token(name),
     }
+}
+
+/// The declared check called `name`: by id, then by a pre-commit short name.
+fn declared<'a>(externals: &'a [External], name: &str) -> Option<&'a External> {
+    externals.iter().find(|e| e.id == name).or_else(|| {
+        externals
+            .iter()
+            .find(|e| e.stage == Stage::PreCommit && e.short_name == name)
+    })
 }
 
 /// Is the gate called `name` a declared command whose program is not
@@ -52,12 +56,7 @@ pub fn token(externals: &[External], name: &str) -> Option<String> {
 /// record can ever answer for it. Any other reason a token cannot be made (a
 /// hash git would not compute, a built-in) is not this: those gates stay owed.
 pub fn program_missing(externals: &[External], name: &str) -> bool {
-    let declared = externals.iter().find(|e| e.id == name).or_else(|| {
-        externals
-            .iter()
-            .find(|e| e.stage == Stage::PreCommit && e.short_name == name)
-    });
-    match declared.map(|ext| &ext.kind) {
+    match declared(externals, name).map(|ext| &ext.kind) {
         Some(Kind::Runnable { program, .. }) => binary_identity(program).is_none(),
         Some(Kind::Unusable { .. }) | None => false,
     }
@@ -331,8 +330,16 @@ mod tests {
     fn only_a_declared_program_that_is_not_there_is_missing() {
         let externals = crate::manifest::parse(
             "pre-push gone * block definitely-not-a-program-xyz --x\n\
-             pre-push here * block sh -c true\n",
+             pre-push here * block sh -c true\n\
+             pre-push broken * nonsense sh -c true\n",
         );
+        assert!(
+            externals
+                .iter()
+                .any(|e| e.id == "pre-push-broken" && matches!(e.kind, Kind::Unusable { .. })),
+            "the fixture's third line is unusable"
+        );
+        assert!(!program_missing(&externals, "pre-push-broken"));
         assert!(program_missing(&externals, "pre-push-gone"));
         assert!(!program_missing(&externals, "pre-push-here"));
         assert!(!program_missing(&externals, "pre-push-cargo-test"));

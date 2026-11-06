@@ -1302,12 +1302,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 unstamped_pair: None,
             };
         }
-        if !check.scope().is_unscoped()
+        if stamped_push_gate(check)
             && (stamped_on_every_tip(check.name()) || cluster_stamped(check.name()))
         {
             return Decision::Skip(Skip::Stamped);
         }
-        if gate_before_push && reuse_stamps && !check.scope().is_unscoped() {
+        if gate_before_push && reuse_stamps && stamped_push_gate(check) {
             let done = crate::gate_identity::token(&ctx.manifest.externals, check.name())
                 .is_some_and(|token| {
                     crate::gate_stamp::done_on_every(&tips, &token, severities.of(check))
@@ -1475,7 +1475,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // The dependency audits are unscoped too (opted in by a lockfile,
         // with no file scope), but a rehearsal is exactly where their record
         // is earned (ADR-0018), so they run here.
-        if rehearsing && check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
+        if rehearsing && !stamped_push_gate(*check) && !crate::hooks::audit::is_audit(check.name())
         {
             continue;
         }
@@ -1630,14 +1630,14 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
                 // An audit's pass is a record of its report, never a stamp.
-                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                if stamped_push_gate(*check) {
                     ran_and_passed.push(check.name().to_string());
                 }
             }
             // Announced, never fatal: a check that could not run has not
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
-                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                if stamped_push_gate(*check) {
                     completed_otherwise.push((
                         check.name().to_string(),
                         crate::gate_stamp::Completion::Unavailable,
@@ -1650,7 +1650,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 )
             }
             Outcome::Warned => {
-                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                if stamped_push_gate(*check) {
                     completed_otherwise.push((
                         check.name().to_string(),
                         crate::gate_stamp::Completion::Warned,
@@ -1668,8 +1668,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             Outcome::Fixed => {}
             Outcome::Failed => match severities.of(*check) {
                 Severity::Warn => {
-                    if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
-                    {
+                    if stamped_push_gate(*check) {
                         completed_otherwise.push((
                             check.name().to_string(),
                             crate::gate_stamp::Completion::FailedUnderWarn,
@@ -1878,9 +1877,22 @@ fn record_evidence(tips: &[String], runs: &[crate::gate_stamp::Run]) {
     }
 }
 
-/// The scoped pre-push gates — test suites — that have work to do for a
-/// push that changed `changed`: what a rehearsal would run, and therefore
-/// what its stamp would have to name before a push may skip anything.
+/// Is `check` a push gate that runs before git connects, and is stamped for
+/// it (ADR-0018)? A scoped one, or a declared `heavy` one whatever its scope:
+/// a `*` declaration can be any command, and one that runs for a minute on
+/// the open connection is the failure ADR-0018 exists to stop (#414). The
+/// built-in unscoped checks (branch-protect, secrets) are light and need the
+/// push's own refs, so they stay in the hook; the dependency audits answer
+/// through their own record.
+pub fn stamped_push_gate(check: &dyn Check) -> bool {
+    !crate::hooks::audit::is_audit(check.name())
+        && (!check.scope().is_unscoped() || check.weight() == crate::host_slots::Weight::Heavy)
+}
+
+/// The stamped pre-push gates ([`stamped_push_gate`]) — test suites, and
+/// declared heavy gates — that have work to do for a push that changed
+/// `changed`: what a rehearsal would run, and therefore what its stamp would
+/// have to name before a push may skip anything.
 ///
 /// The same two filters `pre_push` applies before stamping (selected here,
 /// and `scope().touches` the change), so the rehearsal's idea of "nothing to
@@ -1894,7 +1906,7 @@ pub fn scoped_push_gates(
     let tracked = crate::tracked_paths();
     selected_during(settings, Stage::PrePush, &in_progress, manifest)
         .into_iter()
-        .filter(|c| !c.scope().is_unscoped() && c.scope().touches(changed))
+        .filter(|c| stamped_push_gate(*c) && c.scope().touches(changed))
         // The same opt-in gate `pre_push` applies: a suite the repository
         // never turned on is not work a rehearsal owes a stamp for.
         .filter(|c| c.scope().opted_in(&tracked))

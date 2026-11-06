@@ -131,7 +131,7 @@ pub fn default_gates(settings: &crate::config::Settings, manifest: &Manifest) ->
             .collect();
     for c in crate::registry::all_stage_checks(Stage::PrePush, manifest) {
         let scope = c.scope();
-        if !scope.is_unscoped() && scope.opted_in(&tracked) && !skipped(c.name()) {
+        if crate::dispatch::stamped_push_gate(c) && scope.opted_in(&tracked) && !skipped(c.name()) {
             let id = c.name().to_string();
             if !out.contains(&id) {
                 out.push(id);

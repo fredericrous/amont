@@ -506,10 +506,11 @@ record of the commit-time run — rewritten by a rebase or an amend, or made
 with `--no-verify` — the push runs the check itself, with git's connection
 to the remote held open for as long as the suite takes. That happens only
 under `amont.pushGates inline`: by default, `amont.pushGates refuse` turns the
-push away before the check runs, and `amont land` runs it first. A long suite
-outlives the forge's idle timeout and the push fails *after* passing.
-Under `inline`, `amont.unstampedPush refuse` turns that push away at once instead, and says how to earn the
-stamp with nothing waiting on it: `amont rehearse --wait`, then push again.
+push away before the check runs, and `amont land` runs it first. Under
+`inline`, a long suite can outlive the forge's idle timeout, and the push
+fails *after* passing. There, `amont.unstampedPush refuse` turns that push
+away at once instead, and says how to earn the stamp with nothing waiting on
+it: `amont rehearse --wait`, then push again.
 A rehearsal of the tree that is still running or has failed is reported the
 same way. Pairs with `amont.rehearseOnCommit`, which usually earns the stamp
 before you push.
