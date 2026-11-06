@@ -504,6 +504,11 @@ pub const SETTABLE: &[&str] = &[
     // whole number of seconds for `slotWait`, each once.
     "onBusy",
     "slotWait",
+    // Whether pre-commit's Heavy checks wait for its Light ones and are
+    // skipped when one blocks (ADR-0020). On by default; `false` runs every
+    // check at once, as before 2.1. A local `git config` outranks it, and
+    // `AMONT_FAIL_FAST` outranks both for one run.
+    "failFast",
     // Where a `platform=any` gate runs (ADR-0016): `cluster` sends it to the
     // homelab as one Kubernetes Job, `local` (the default) keeps it here, and
     // `clusterPrepare` is the shell command the Job's `prepare` container

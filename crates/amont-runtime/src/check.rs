@@ -307,6 +307,12 @@ pub enum Outcome {
     /// may be stamped or attested and CI runs it; it never blocks, whatever
     /// the severity, because nothing was judged.
     Deferred,
+    /// SKIPPED — a Heavy pre-commit check that never started, because a
+    /// Light check before it already blocked the commit (ADR-0020). Nothing
+    /// was judged, so nothing may be stamped or attested; it never blocks by
+    /// itself (the Light failure does), and it is always said, so a commit
+    /// that was refused never reads as one whose suite passed.
+    Skipped,
 }
 
 /// What a HOOK concluded — the only thing git actually reads.

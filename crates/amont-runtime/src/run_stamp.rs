@@ -374,6 +374,7 @@ fn finish(
         Outcome::Warned => Ended::NotStamped("warned"),
         Outcome::Unavailable => Ended::NotStamped("could not run"),
         Outcome::Inert => Ended::NotStamped("judged nothing"),
+        Outcome::Skipped => Ended::NotStamped("skipped, an earlier gate failed"),
     }
 }
 

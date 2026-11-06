@@ -97,7 +97,7 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   (`dispatch.rs:1001-1003`) is corrected in passing.
 
 ## Phases
-- [ ] Phase 1 — implementation:
+- [x] Phase 1 — implementation:
   - `Outcome::Skipped` in `check.rs`, with every match handled (grep each `Outcome` match across the 21 files and replace each wildcard arm with an explicit one):
     `classify`/`Report` (a `skipped` list and the `announce` line, its sign
     from a new `ui::skipped_sign()` and names through `highlight()`), `live`,
@@ -117,6 +117,31 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   runner kills only the direct child and would orphan test binaries.
   Cancellation stays a non-goal until data shows heavy-on-heavy failures
   matter.
+
+- 2026-11-06 — implementation: the plan's "any `Fixed` withholds every stamp
+  (`dispatch.rs:498-499`)" was wrong. That `stampable` governs tree gates only.
+  A declared gate that `Passed` or was `Fixed` is stamped on the restaged
+  index (`dispatch.rs:471-496`). With the waves that stamp is now true, since
+  the Heavy gate judged the repaired index. The fixer test asserts it.
+- 2026-11-06 — implementation: a Heavy check the waves hold back is `Skipped`
+  only if it would have judged something: its scope touches the staged files
+  and the repository opted in. Otherwise it is `Inert`, so a repository with
+  no Rust never reads "skipped pre-commit-clippy". The first test run caught
+  clippy, go vet and pyright named that way.
+- 2026-11-06 — implementation: the live view shows no `waiting for quick
+  checks` label, and plain mode prints no line when the Heavy wave starts
+  (tui round 1, finding 3). A slot that has not started is simply not drawn
+  (`live.rs` `running`), so nothing is wrong on screen. A line on every
+  passing commit would be noise for a wait of seconds. The wave ledger
+  measures the wait; the label waits for that number.
+
+- 2026-11-06 — implementation: the first commit attempt failed
+  `spawn_budget::a_small_commit_stays_inside_the_git_spawn_budget` (29 > 26).
+  `fail_fast` is now read once per process, and the ledger counts a Heavy
+  check only if the change touches its scope, so it spends no `rev-parse`
+  on a commit no Heavy check judged. The remaining two reads, `amont.failFast`
+  and the cached staged list, raise the budget to 28. The reasons are written
+  in the test.
 
 ## Verification
 - **Tests** (a scratch repo per test, as in `gate_pairs.rs`, with a Heavy
@@ -140,6 +165,19 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   `cargo-fmt` blocks, there is no `test` line in `runs.log`, and the skip
   line names clippy and cargo-test. The installed 2.0.1 on the same commit
   runs `cargo test`.
+**Observed (Phase 1, 2026-11-06, branch `fix/pre-commit-fail-fast`):**
+- `cargo test -p amont --test it fail_fast`: 11 pass (the eleven cases
+  above, the fixer and ledger cases included); the `amont-runtime` dispatch
+  unit tests pass (`[Skipped]` is `Proceed`; the `AMONT_FAIL_FAST` resolver).
+- Real input, `/tmp/claude-501/ffprobe.sh`: a `cargo new` crate with
+  `cargo-test` declared at pre-commit, an unformatted `src/lib.rs` staged,
+  and a counting `cargo` shim.
+  - Branch binary: `✗ Unformatted Rust`, then `↷ 2 check(s) skipped, a
+    blocking check failed: pre-commit-clippy, pre-commit-cargo-test` and the
+    `run them now:` line, before `Error raised by: pre-commit-cargo-fmt`.
+    cargo ran only `fmt` (2 calls).
+  - Installed 2.0.1, same commit: the same refusal, after `clippy` (2 calls)
+    and `test` (1 call) ran.
 - **14 days after install:** from the pre-commit wave ledger on the laptop, count the
   heavy runs skipped and estimate the minutes saved. Measure the extra start
   delay on passing commits (the slowest Light check per commit). A median

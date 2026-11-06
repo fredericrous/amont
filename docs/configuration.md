@@ -400,6 +400,25 @@ declaration, or a gate that failed all run the gate. `false` turns the reuse
 off; the record is still written. See "Moving a gate entry earlier" on the
 checks page.
 
+## `amont.failFast` — skip the heavy checks of a commit already refused
+
+```sh
+git config amont.failFast false   # default true
+```
+
+Pre-commit runs its Light checks first and starts the Heavy ones (clippy, go
+vet, pyright, declared `heavy` and moved gates) only when no Light check
+blocked ([ADR-0020](../adr/0020-a-failed-quick-check-skips-the-heavy-ones.md)).
+A Heavy check that would have judged something is reported as skipped,
+with an `amont run <name>` for each one. It earns no stamp. A passing commit
+starts its Heavy checks once the slowest Light check has finished.
+`<common-dir>/amont-waves` records that wait and what was skipped, one line
+per commit.
+
+The order, stated once: `AMONT_FAIL_FAST` (`true` or `false`, one run), then
+`git config amont.failFast` (any scope), then a trusted `set failFast` in
+`amont.conf`, then on. `false` runs every check at once, as before 2.1.
+
 ## `amont.rehearseOnCommit` — run the push gate in the background after every commit
 
 ```sh
@@ -1168,6 +1187,7 @@ git config --global commit.template ~/.config/git/git-templates/message
 | `AMONT_BIN_DIR` | Where `amont install` and the installer script put binaries. Default `~/.local/bin`. |
 | `AMONT_VERSION` | Pins the version the installer script fetches. |
 | `AMONT_ATTEST_PUSH` | Set by amont itself on the notes push [`amont.attest`](#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci) makes, so the recursive pre-push stands down. Not for humans. |
+| `AMONT_FAIL_FAST` | `false` runs this commit's checks in one wave, `true` in two; outranks [`amont.failFast`](#amontfailfast--skip-the-heavy-checks-of-a-commit-already-refused). |
 | `NO_COLOR` | Honoured, as is a non-tty stdout: output to a pipe, a file or a CI log carries no colour. `TERM=dumb` too. |
 | `FORCE_COLOR` | Colour through a pipe anyway, for a caller that renders it (non-empty, not `0` or `false`). `NO_COLOR` and `TERM=dumb` still win. |
 
