@@ -31,6 +31,14 @@ fix that has shipped in a verified release.
 
 - [Which CI test steps run more than their local built-in gate](t03-ci-parity-survey.md): all of them differ; tree-parity compares each skipped step's argv with the gate's, with stated equivalences, at warn severity
 - [How many pushes signed a tree their gates did not run on](t01-attest-dirty-tree-count.md): none can be counted (no clean/dirty record); the fix needs a CHANGELOG line, no migration
+- [Tell a rejected attestation from a missing one](t05-attest-covered-rejected.md): rejections named, `--strict` exits 3 (amont#419, v2.1.0)
+- [A transitive prettier does not opt a repository in](t06-prettier-opt-in.md): only config or package.json opts in (amont#420, v2.1.0)
+- [Close the 1.70.0 index-hint follow-ups](t07-index-hint-lows.md): blind gates refused, git reason kept, push URL redacted (amont#421, v2.1.0)
+- [Close the 2.0 follow-ups](t08-two-oh-follow-ups.md): heavy `*` gates owed up front, lows closed (amont#422, v2.1.0)
+- [Attest only the tree a gate ran on](t02-attest-dirty-tree.md): per-tip witness shared by stamps and attestation (amont#424, v2.1.0)
+- [Extend tree-parity to the built-in test gates](t04-tree-parity-test-gates.md): built-in gate steps compared, drift warns (amont#425, v2.1.0)
+- [The push guard reads amont land --tag](t09-guard-land-tag.md): land guard reads `--tag` (amont-agent#208, v3.19.0)
+- [Group three functions' arguments into structs](t10-parameter-structs.md): parameter structs, no behaviour change (amont-agent#210)
 
 ## Not yet specified
 
