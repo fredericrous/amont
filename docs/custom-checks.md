@@ -170,8 +170,8 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   `index ` when it reads the index through git and cannot be taught
   `$AMONT_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
   variable a declared command keeps. Declare it only on a command that makes
-  no repositories of its own. When amont cannot locate the index, an `index`
-  command is refused rather than run blind. `index` on a `pre-push` line, or
+  no repositories of its own. When amont cannot locate the index, every
+  pre-commit command is refused rather than run blind, with git's reason. `index` on a `pre-push` line, or
   beside `platform=any`, is a parse error. An older amont reads `index` as the
   program name, cannot start it, and only warns, so the line stops blocking
   until everyone reading the file has upgraded.

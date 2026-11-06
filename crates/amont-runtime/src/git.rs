@@ -153,6 +153,24 @@ pub fn stdout_raw(args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// As [`stdout_raw`], but a failure keeps git's own reason: its stderr,
+/// trimmed (`safe.directory`, "not a git repository"), or why it could not
+/// be started.
+pub fn stdout_raw_or_why(args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    let out = retrying(|| cmd.output()).map_err(|e| format!("cannot run git: {e}"))?;
+    if out.status.success() {
+        return Ok(out.stdout);
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if said.is_empty() {
+        format!("exit {}", out.status.code().unwrap_or(-1))
+    } else {
+        said
+    })
+}
+
 /// Everything a git command said: its exit code, its stdout and its stderr.
 pub struct Output {
     pub code: i32,

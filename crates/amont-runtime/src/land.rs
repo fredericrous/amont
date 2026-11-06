@@ -415,8 +415,31 @@ fn one_push_url(remote: &str, mut report: Report) -> Result<(String, Report), Bo
         )));
     }
     let url = urls[0].to_string();
-    report.push_url = url.clone();
+    report.push_url = redact_url(&url);
     Ok((url, report))
+}
+
+/// `url` as a report may print it: a password, or any user part of an
+/// http(s) URL (a token rides there), becomes `***`. The push itself uses
+/// the URL unchanged.
+fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string(); // scp-like `git@host:path` or a path: no secret
+    };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let Some((user, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let user = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+        "***".to_string()
+    } else {
+        match user.split_once(':') {
+            Some((name, _)) => format!("{name}:***"),
+            None => user.to_string(),
+        }
+    };
+    format!("{scheme}://{user}@{host}{path}")
 }
 
 /// Steps 1 and 2: the branch, its upstream, the refusals, and the one push
@@ -1242,6 +1265,31 @@ fn push(url: &str, src: &str, dst: &str, lease: Option<&str>, land_env: &str) ->
 
 #[cfg(test)]
 mod tests {
+
+    /// A credential in the push URL never reaches `land --json`.
+    #[test]
+    fn a_push_url_is_reported_without_its_credentials() {
+        let r = super::redact_url;
+        assert_eq!(
+            r("https://x:tok@github.com/o/r.git"),
+            "https://***@github.com/o/r.git"
+        );
+        assert_eq!(
+            r("https://tok@github.com/o/r.git"),
+            "https://***@github.com/o/r.git"
+        );
+        assert_eq!(r("ssh://git:pw@host/o/r"), "ssh://git:***@host/o/r");
+        assert_eq!(
+            r("ssh://git@github.com/o/r.git"),
+            "ssh://git@github.com/o/r.git"
+        );
+        assert_eq!(r("git@github.com:o/r.git"), "git@github.com:o/r.git");
+        assert_eq!(
+            r("https://github.com/o/r.git"),
+            "https://github.com/o/r.git"
+        );
+        assert_eq!(r("/tmp/bare.git"), "/tmp/bare.git");
+    }
     use super::*;
 
     #[test]

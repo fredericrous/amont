@@ -715,22 +715,39 @@ pub struct CommitIndex {
     pub git_dir: std::path::PathBuf,
 }
 
+/// Why [`commit_index`] could not locate the index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexLookupError {
+    /// This process's directory could not be read.
+    CurrentDir(String),
+    /// A `git rev-parse` failed; `why` is git's own stderr.
+    Git { args: String, why: String },
+}
+
+impl std::fmt::Display for IndexLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurrentDir(e) => write!(f, "current directory: {e}"),
+            Self::Git { args, why } => write!(f, "git {args} failed: {why}"),
+        }
+    }
+}
+
 /// The index `git commit` is sealing, as an absolute path: git's own
 /// `GIT_INDEX_FILE` when it handed the hook one (the temporary index of
 /// `commit -a` or `commit <paths>`), else the repository's index. Relative
 /// paths are resolved against this process's directory, where git ran the
 /// hook. Paths are kept as bytes, so a non-UTF-8 one survives. The error
-/// names the step that failed.
-pub fn commit_index() -> Result<CommitIndex, String> {
-    let here = std::env::current_dir().map_err(|e| format!("current directory: {e}"))?;
+/// names the step that failed, with git's own reason.
+pub fn commit_index() -> Result<CommitIndex, IndexLookupError> {
+    let here = std::env::current_dir().map_err(|e| IndexLookupError::CurrentDir(e.to_string()))?;
     let absolute = |p: std::path::PathBuf| if p.is_absolute() { p } else { here.join(p) };
-    let git_path = |args: &[&str]| -> Result<std::path::PathBuf, String> {
-        let mut out =
-            crate::git::stdout_raw(args).ok_or_else(|| format!("git {} failed", args.join(" ")))?;
-        while out.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-            out.pop();
-        }
-        Ok(path_from_bytes(out))
+    let git_path = |args: &[&str]| -> Result<std::path::PathBuf, IndexLookupError> {
+        let out = crate::git::stdout_raw_or_why(args).map_err(|why| IndexLookupError::Git {
+            args: args.join(" "),
+            why,
+        })?;
+        Ok(path_from_bytes(strip_one_newline(out)))
     };
     let file = match std::env::var_os("GIT_INDEX_FILE").filter(|v| !v.is_empty()) {
         Some(named) => std::path::PathBuf::from(named),
@@ -741,6 +758,15 @@ pub fn commit_index() -> Result<CommitIndex, String> {
         file: absolute(file),
         git_dir,
     })
+}
+
+/// Git ends a path with exactly one `\n`; anything before it, a `\r`
+/// included, is part of the name.
+fn strip_one_newline(mut out: Vec<u8>) -> Vec<u8> {
+    if out.last() == Some(&b'\n') {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(unix)]
@@ -2204,6 +2230,36 @@ pub fn hl(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Git ends a path with one `\n`; a `\r` before it is part of the name.
+    #[test]
+    fn only_the_one_newline_git_prints_is_stripped() {
+        assert_eq!(super::strip_one_newline(b"/r/.git\n".to_vec()), b"/r/.git");
+        assert_eq!(super::strip_one_newline(b"/r/x\r\n".to_vec()), b"/r/x\r");
+        assert_eq!(super::strip_one_newline(b"/r/x".to_vec()), b"/r/x");
+    }
+
+    /// Runs on every platform, so the non-unix `path_from_bytes` is covered
+    /// on Windows CI too.
+    #[test]
+    fn a_git_path_becomes_the_same_path() {
+        assert_eq!(
+            super::path_from_bytes(b"/r/.git/index".to_vec()),
+            std::path::PathBuf::from("/r/.git/index")
+        );
+    }
+
+    #[test]
+    fn a_lookup_error_says_git_s_reason() {
+        let e = super::IndexLookupError::Git {
+            args: "rev-parse --git-path index".into(),
+            why: "fatal: not a git repository".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "git rev-parse --git-path index failed: fatal: not a git repository"
+        );
+    }
 
     /// A window of `milli` thousandths of a core between `start` and `end`
     /// (a zero-length window still reports `milli`: `milli_cores` floors the

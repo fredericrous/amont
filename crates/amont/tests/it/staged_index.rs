@@ -60,7 +60,7 @@ fn a_gate_declared_index_judges_what_commit_dash_a_seals() {
     }
     let fixture = repo(
         READS_THE_INDEX,
-        "pre-commit  staged  *.txt  block  index sh gate.sh\n",
+        "pre-commit  idxgate7  *.txt  block  index sh gate.sh\n",
     );
     fixture.write("a.txt", "BAD\n");
     let (accepted, out) = commit_all_from_sub(&fixture, "feat: bad");
@@ -82,7 +82,7 @@ fn every_pre_commit_gate_is_told_the_index_being_committed() {
     // and fails loudly when it is not set.
     let gate = "GIT_INDEX_FILE=\"${AMONT_INDEX_FILE:?not set}\" git show :a.txt \
                 | grep -q BAD && exit 1\nexit 0\n";
-    let fixture = repo(gate, "pre-commit  staged  *.txt  block  sh gate.sh\n");
+    let fixture = repo(gate, "pre-commit  idxgate7  *.txt  block  sh gate.sh\n");
     fixture.write("a.txt", "fine\n");
     let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
     assert!(accepted, "AMONT_INDEX_FILE names a readable index:\n{out}");
@@ -114,7 +114,7 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
     }
     let fixture = repo(
         READS_THE_INDEX,
-        "pre-commit  staged  *.txt  block  index sh gate.sh\n",
+        "pre-commit  idxgate7  *.txt  block  index sh gate.sh\n",
     );
     let wt = fixture
         .dir
@@ -175,7 +175,7 @@ fn a_linked_worktree_commit_of_named_paths_is_judged_too() {
     let (good_accepted, good_out) = commit_only("fine\n", "feat: fine");
     assert!(!bad_accepted, "the gate read the old index:\n{bad_out}");
     assert!(
-        bad_out.contains("staged"),
+        bad_out.contains("idxgate7"),
         "refused by the gate:\n{bad_out}"
     );
     assert!(good_accepted, "{good_out}");
@@ -193,7 +193,7 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
     );
     let fixture = repo(
         &gate,
-        "pre-commit  staged  *.txt  block  index sh gate.sh\n",
+        "pre-commit  idxgate7  *.txt  block  index sh gate.sh\n",
     );
     // An index of the caller's own, named relative to the repository root.
     let alt = |args: &[&str]| {
@@ -226,7 +226,7 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
         said(&bad)
     );
     assert!(
-        said(&bad).contains("staged"),
+        said(&bad).contains("idxgate7"),
         "refused by the gate:\n{}",
         said(&bad)
     );
@@ -245,7 +245,7 @@ fn a_pre_push_gate_never_inherits_an_index() {
     fixture.stage(
         "gate.sh",
         &format!(
-            "echo \"${{AMONT_INDEX_FILE:-unset}}\" > '{}'\n",
+            "echo \"${{AMONT_INDEX_FILE:-unset}} ${{AMONT_INDEX_GIT_DIR:-unset}}\" > '{}'\n",
             log.to_str().expect("utf8").replace('\'', "'\\''")
         ),
     );
@@ -263,6 +263,7 @@ fn a_pre_push_gate_never_inherits_an_index() {
         .arg("pre-push")
         .current_dir(&fixture.dir)
         .env("AMONT_INDEX_FILE", "/stale/index")
+        .env("AMONT_INDEX_GIT_DIR", "/stale/.git")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -281,5 +282,5 @@ fn a_pre_push_gate_never_inherits_an_index() {
         "the push hook passed"
     );
     let seen = std::fs::read_to_string(&log).expect("the probe ran");
-    assert_eq!(seen.trim(), "unset");
+    assert_eq!(seen.trim(), "unset unset");
 }
