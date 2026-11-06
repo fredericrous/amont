@@ -42,6 +42,7 @@ mod docs_counts;
 mod downgrades;
 mod excerpt_golden;
 mod external;
+mod fail_fast;
 mod fixing;
 mod flows;
 mod gate_evidence;

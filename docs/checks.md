@@ -152,7 +152,23 @@ mode, `everywhere`, keeps the distinction inert.
 ## `pre-commit`
 
 All twenty-two run **concurrently**, and a panic in one is isolated so the
-other twenty-one still report.
+other twenty-one still report — in two waves
+([ADR-0020](../adr/0020-a-failed-quick-check-skips-the-heavy-ones.md)). The
+Light checks run first. The Heavy ones (clippy, go vet, pyright, and any
+declared `heavy` or moved gate) start only once none of the Light checks has
+blocked. When one has, a commit that is already refused does not wait for
+its test suite:
+
+```
+  ↷ 1 check(s) skipped because pre-commit-cargo-fmt failed: pre-commit-clippy
+  fix the failures above and commit again; to run one now:
+    amont run pre-commit-clippy
+```
+
+A skipped check earns no stamp, so the corrected commit runs it. A Light
+failure at `warn` does not skip anything. `git config amont.failFast false`
+(or `AMONT_FAIL_FAST=false` for one commit) runs every check at once, as
+before 2.1.
 
 | id | fires when | what it does |
 |---|---|---|

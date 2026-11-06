@@ -108,6 +108,13 @@ pub fn warning_sign() -> &'static str {
     S.get_or_init(|| sign("!", YELLOW))
 }
 
+/// A check that never started because one before it blocked (ADR-0020).
+/// The word `skipped` always follows it, so the glyph is never the only
+/// carrier of the meaning.
+pub fn skipped_sign() -> String {
+    sign("↷", YELLOW)
+}
+
 /// Emphasise a fragment inside a message, in the terminal's own accent.
 ///
 /// Sanitises what it is given, because most of what is highlighted came from

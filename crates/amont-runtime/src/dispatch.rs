@@ -432,7 +432,12 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     });
 
     let severities = Overrides::read(settings);
-    let (verdict, outcomes, durations) = run_stage_traced(settings, &checks, ctx, &severities);
+    // Resolved once and handed down (ADR-0020): the stage and the wave
+    // ledger below ask the same question, and each read of a git setting is
+    // a spawn the commit's budget counts (`spawn_budget.rs`).
+    let waves = Waves::resolve(settings);
+    let (verdict, outcomes, durations) =
+        run_stage_traced(settings, &checks, ctx, &severities, waves);
     // Remember how long the declared checks that judged something took, for
     // the next commit's cover estimate.
     if !ctx.manifest.tree.is_empty() {
@@ -448,6 +453,44 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .map(|(c, (_, ms))| (c.name().to_string(), *ms))
             .collect();
         crate::tree_cache::record_durations(&measured);
+    }
+
+    // The wave ledger (ADR-0020): how long the Light wave held the Heavy one
+    // back, and what a blocking Light failure skipped. Hook only, never
+    // `amont run`, like the downgrade ledger below.
+    if waves == Waves::LightThenHeavy {
+        let light_ms = checks
+            .iter()
+            .zip(&durations)
+            .filter(|(c, _)| !is_heavy(**c))
+            .map(|(_, ms)| *ms)
+            .max()
+            .unwrap_or(0);
+        let skipped: Vec<&str> = checks
+            .iter()
+            .zip(&outcomes)
+            .filter(|(_, o)| **o == Outcome::Skipped)
+            .map(|(c, _)| c.name())
+            .collect();
+        // Heavy checks this change reached that judged something, or would
+        // have: clippy on a `.txt`-only commit returns `Passed` having judged
+        // nothing, and one that came back `Inert`, `Unavailable` or `Deferred`
+        // waited for nothing either. A commit with none writes no line, and
+        // spends no git spawn on the ledger's path (`spawn_budget.rs`). The
+        // staged list is the stage's own, cached; the tracked list is read
+        // only for a Heavy check this change touched (`would_judge` asks it
+        // only then), so an ordinary commit pays nothing here.
+        let staged = crate::hooks::common::staged_files(&[]);
+        let heavy_checks = checks
+            .iter()
+            .zip(&outcomes)
+            .filter(|(c, o)| is_heavy(**c) && o.judged_or_skipped())
+            .filter(|(c, _)| c.scope().touches(&staged))
+            .filter(|(c, _)| {
+                c.would_judge(&staged, crate::hooks::common::tracked_files().as_deref())
+            })
+            .count();
+        crate::waves::note(light_ms, heavy_checks, &skipped);
     }
 
     // The shadow-mode ledger. Silent, best-effort, and never consulted by any
@@ -587,7 +630,7 @@ fn downgrade_origin(check: &dyn Check, severities: &Overrides) -> crate::downgra
 /// could reach — the rule was asserted on the runner and merely hoped for here.
 fn run_stage(checks: &[&dyn Check], ctx: &Ctx, severities: &Overrides) -> Verdict {
     let settings = ctx.settings;
-    run_stage_traced(settings, checks, ctx, severities).0
+    run_stage_traced(settings, checks, ctx, severities, Waves::resolve(settings)).0
 }
 
 /// [`run_stage`], keeping the per-check outcomes — index-aligned with
@@ -599,6 +642,7 @@ fn run_stage_traced(
     checks: &[&dyn Check],
     ctx: &Ctx,
     severities: &Overrides,
+    waves: Waves,
 ) -> (Verdict, Vec<Outcome>, Vec<u64>) {
     if checks.is_empty() {
         return (Verdict::Proceed, Vec::new(), Vec::new());
@@ -612,49 +656,162 @@ fn run_stage_traced(
         crate::live::Stage::begin(settings, &names)
     });
     let items: Vec<(usize, &&dyn Check)> = checks.iter().enumerate().collect();
-    let timed = run_concurrently(
-        &items,
-        |(idx, check)| {
-            let started = std::time::Instant::now();
-            let _sink = stage.as_ref().map(|s| s.enter(*idx));
-            // The block is emitted however the check leaves — a panicking
-            // check's partial output still reaches the reader, above the
-            // dead-check verdict `run_concurrently` fills in.
-            let flush = stage
-                .as_ref()
-                .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, *idx));
-            let sub = Ctx {
-                name: check.name(),
-                args: ctx.args,
-                hooks_dir: ctx.hooks_dir,
-                push: ctx.push,
-                manifest: ctx.manifest,
-                settings: ctx.settings,
-                handed_to_cluster: ctx.handed_to_cluster,
-                land: ctx.land,
-                audits: ctx.audits,
-                source_worktree: ctx.source_worktree,
-            };
-            let slot = enter(**check, || severities.of(**check));
-            let outcome = deferred_or(&slot, check.run(&sub));
-            if let Some(f) = &flush {
-                f.outcome(outcome);
-            }
-            // The record measures the check, not its wait for a host slot.
-            let ran = started.elapsed().saturating_sub(slot.queued());
-            let ms = u64::try_from(ran.as_millis()).unwrap_or(u64::MAX);
-            (outcome, ms)
-        },
-        // A check whose thread died has not passed. Stated here, where the slot
-        // is filled, rather than hidden in a `Default` impl that every future
-        // `#[derive(Default)]` would silently inherit.
-        (Outcome::Failed, 0),
-    );
+    let run_one = |(idx, check): &(usize, &&dyn Check)| -> (Outcome, u64) {
+        let started = std::time::Instant::now();
+        let _sink = stage.as_ref().map(|s| s.enter(*idx));
+        // The block is emitted however the check leaves — a panicking
+        // check's partial output still reaches the reader, above the
+        // dead-check verdict `run_concurrently` fills in.
+        let flush = stage
+            .as_ref()
+            .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, *idx));
+        let sub = Ctx {
+            name: check.name(),
+            args: ctx.args,
+            hooks_dir: ctx.hooks_dir,
+            push: ctx.push,
+            manifest: ctx.manifest,
+            settings: ctx.settings,
+            handed_to_cluster: ctx.handed_to_cluster,
+            land: ctx.land,
+            audits: ctx.audits,
+            source_worktree: ctx.source_worktree,
+        };
+        let slot = enter(**check, || severities.of(**check));
+        let outcome = deferred_or(&slot, check.run(&sub));
+        if let Some(f) = &flush {
+            f.outcome(outcome);
+        }
+        // The record measures the check, not its wait for a host slot.
+        let ran = started.elapsed().saturating_sub(slot.queued());
+        let ms = u64::try_from(ran.as_millis()).unwrap_or(u64::MAX);
+        (outcome, ms)
+    };
+    // A check whose thread died has not passed. Stated here, where the slot
+    // is filled, rather than hidden in a `Default` impl that every future
+    // `#[derive(Default)]` would silently inherit.
+    let died = (Outcome::Failed, 0);
+    let timed = match waves {
+        Waves::LightThenHeavy => in_waves(&items, &run_one, died, severities),
+        Waves::One => run_concurrently(&items, run_one, died),
+    };
     let (outcomes, durations): (Vec<Outcome>, Vec<u64>) = timed.into_iter().unzip();
 
     let report = classify(checks, &outcomes, severities);
     announce(settings, &report);
     (report.verdict(), outcomes, durations)
+}
+
+/// How a pre-commit stage runs its checks (ADR-0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Waves {
+    /// Every check at once, as before 2.1 (`amont.failFast false`).
+    One,
+    /// The Light checks, then the Heavy ones only if none blocked.
+    LightThenHeavy,
+}
+
+impl Waves {
+    /// `AMONT_FAIL_FAST` for one run, then `amont.failFast` (git config, then
+    /// a trusted `set failFast` in `amont.conf`), then on. Read once by the
+    /// caller and handed down, never cached behind the settings it takes.
+    fn resolve(settings: &crate::config::Settings) -> Waves {
+        if resolve_fail_fast(std::env::var(FAIL_FAST_ENV).ok().as_deref(), settings) {
+            Waves::LightThenHeavy
+        } else {
+            Waves::One
+        }
+    }
+}
+
+/// Heavy checks take a host slot and run in the second wave (ADR-0009,
+/// ADR-0020); everything else is Light.
+fn is_heavy(check: &dyn Check) -> bool {
+    check.weight() == crate::host_slots::Weight::Heavy
+}
+
+const FAIL_FAST_ENV: &str = "AMONT_FAIL_FAST";
+
+/// [`Waves::resolve`] with the environment value handed in: the testable seam,
+/// because setting a variable in a threaded test binary races its siblings.
+fn resolve_fail_fast(from_env: Option<&str>, settings: &crate::config::Settings) -> bool {
+    match from_env
+        .filter(|v| !v.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("true" | "1" | "yes" | "on") => true,
+        Some("false" | "0" | "no" | "off") => false,
+        Some(other) => {
+            crate::config::complain(
+                FAIL_FAST_ENV,
+                &format!("{other:?} is not true or false"),
+                "amont.failFast",
+            );
+            crate::config::boolean_or(settings, "amont.failFast", true)
+        }
+        None => crate::config::boolean_or(settings, "amont.failFast", true),
+    }
+}
+
+/// The stage in two waves (ADR-0020): every Light check at once, then — only
+/// if none of them FAILED at a blocking severity — every Heavy check at once.
+/// A Heavy check the first wave condemned never starts: it takes no host
+/// slot, earns no stamp, and comes back `Skipped`. Results stay index-aligned
+/// with `items`, as `run_concurrently`'s do.
+///
+/// Waves, not cancellation: the check runner kills only a tool's direct child
+/// (`wait_within`), so stopping a running `cargo test` would orphan its test
+/// binaries. A wave that never starts needs no kill.
+fn in_waves<'a, F>(
+    items: &[(usize, &&'a dyn Check)],
+    run: &F,
+    died: (Outcome, u64),
+    severities: &Overrides,
+) -> Vec<(Outcome, u64)>
+where
+    F: Fn(&(usize, &&'a dyn Check)) -> (Outcome, u64) + Sync,
+{
+    let (light, heavies): (Vec<_>, Vec<_>) =
+        items.iter().copied().partition(|(_, c)| !is_heavy(**c));
+    let mut out = vec![died; items.len()];
+    let light_out = if light.is_empty() {
+        Vec::new()
+    } else {
+        run_concurrently(&light, run, died)
+    };
+    // A dead Light thread reads `Failed` and so condemns the Heavy wave: a
+    // check that died has not passed.
+    let blocked = light
+        .iter()
+        .zip(&light_out)
+        .any(|((_, c), (o, _))| *o == Outcome::Failed && severities.of(**c) == Severity::Block);
+    for ((idx, _), r) in light.iter().zip(light_out) {
+        out[*idx] = r;
+    }
+    if heavies.is_empty() {
+        return out;
+    }
+    if blocked {
+        // Only a check that would have judged something is SKIPPED; the rest
+        // would have come back `Inert` (clippy in a repository with no Rust),
+        // and naming them would list checks that never apply here. The check
+        // answers for itself (`Check::would_judge`).
+        let staged = crate::hooks::common::staged_files(&[]);
+        let tracked = crate::hooks::common::tracked_files();
+        for (idx, c) in &heavies {
+            out[*idx] = if c.would_judge(&staged, tracked.as_deref()) {
+                (Outcome::Skipped, 0)
+            } else {
+                (Outcome::Inert, 0)
+            };
+        }
+        return out;
+    }
+    for ((idx, _), r) in heavies.iter().zip(run_concurrently(&heavies, run, died)) {
+        out[*idx] = r;
+    }
+    out
 }
 
 /// What a stage concluded, before anything is printed or exited.
@@ -677,6 +834,10 @@ struct Report<'a> {
     /// Deferred to CI by the busy policy (ADR-0013). Not passed, not a gap
     /// on this machine's part either: said so, with what to do about it.
     deferred: Vec<&'a str>,
+    /// Heavy checks that never started because a Light one blocked first
+    /// (ADR-0020). Said in quiet mode too: a refused commit whose suite did
+    /// not run must never read as one whose suite passed.
+    skipped: Vec<&'a str>,
     /// How many passed outright. Only read when `amont.quiet` swallowed their
     /// individual lines — a run that says nothing at all is indistinguishable
     /// from a gate that never ran, and that is the one thing this crate will
@@ -709,6 +870,7 @@ fn classify<'a>(
             // to announce.
             Outcome::Inert => {}
             Outcome::Deferred => report.deferred.push(check.name()),
+            Outcome::Skipped => report.skipped.push(check.name()),
             Outcome::Failed => match severities.of(*check) {
                 Severity::Block => report.blocked.push(check.name()),
                 Severity::Warn => report.downgraded.push(check.name()),
@@ -754,6 +916,9 @@ fn announce(settings: &crate::config::Settings, report: &Report) {
             report.downgraded.len(),
             report.downgraded.join(", ")
         );
+    }
+    if !report.skipped.is_empty() {
+        announce_skipped(&report.skipped, &report.blocked);
     }
     if report.blocked.is_empty() {
         return;
@@ -970,7 +1135,8 @@ fn run_quiet(ctx: &Ctx, check: &dyn Check) -> Verdict {
         | Outcome::Fixed
         | Outcome::Unavailable
         | Outcome::Inert
-        | Outcome::Deferred => false,
+        | Outcome::Deferred
+        | Outcome::Skipped => false,
     };
     Verdict::blocking(blocks)
 }
@@ -998,8 +1164,8 @@ enum Skip {
     CompletedEarlier,
     /// Its commit-time twin was proved on the cluster for every tip.
     TwinOnCluster(String),
-    /// Its commit-time pair stamped every pushed commit, or (`Some`, a short
-    /// sha) a pushed tip whose own stamp key holds the pair's token.
+    /// Its commit-time pair covered the push; `coverage` says whether by every
+    /// pushed commit's stamp or by the tips' own stamp keys (ADR-0019).
     GatedAtCommit {
         name: String,
         coverage: crate::hooks::run_tests::Coverage,
@@ -1666,6 +1832,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             // Cannot occur: `Fix::Rewrite` is refused on a pre-push
             // declaration, so nothing here can repair anything.
             Outcome::Fixed => {}
+            // Cannot occur: pre-push is serial and stops at the first failure
+            // on its own; only pre-commit's waves skip (ADR-0020).
+            Outcome::Skipped => {}
             Outcome::Failed => match severities.of(*check) {
                 Severity::Warn => {
                     if stamped_push_gate(*check) {
@@ -1825,6 +1994,8 @@ fn run_outcome(outcome: Outcome) -> crate::gate_stamp::RunOutcome {
         Outcome::Unavailable => R::Unavailable,
         Outcome::Inert => R::Inert,
         Outcome::Deferred => R::Deferred,
+        // Never produced at pre-push (ADR-0020); were it, it judged nothing.
+        Outcome::Skipped => R::Inert,
     }
 }
 
@@ -1835,6 +2006,34 @@ fn deferred_or(slot: &crate::host_slots::CheckGuard, outcome: Outcome) -> Outcom
         Outcome::Deferred
     } else {
         outcome
+    }
+}
+
+/// The Heavy checks a blocking Light failure kept from starting (ADR-0020),
+/// what blocked, and how to run each one now: `amont run` takes one name, so
+/// one line per check, each short enough for an 80-column terminal.
+fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
+    let names_list = names
+        .iter()
+        .map(|n| highlight(n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match blocked_by {
+        [one] => println!(
+            "{} {} check(s) skipped because {} failed: {names_list}",
+            crate::ui::skipped_sign(),
+            names.len(),
+            highlight(one),
+        ),
+        _ => println!(
+            "{} {} check(s) skipped, a blocking check failed: {names_list}",
+            crate::ui::skipped_sign(),
+            names.len(),
+        ),
+    }
+    println!("  fix the failures above and commit again; to run one now:");
+    for n in names {
+        println!("    {}", highlight(&format!("amont run {n}")));
     }
 }
 
@@ -2444,6 +2643,24 @@ mod tests {
             classify(&[w], &[Outcome::Failed], &none()).verdict(),
             Verdict::Proceed
         );
+        // A skipped Heavy check never blocks by itself: the Light failure
+        // that skipped it does (ADR-0020). It is listed, never counted passed.
+        let skipped = classify(&[b], &[Outcome::Skipped], &none());
+        assert_eq!(skipped.verdict(), Verdict::Proceed);
+        assert_eq!(skipped.skipped, vec![b.name()]);
+        assert_eq!(skipped.passed, 0);
+    }
+
+    #[test]
+    fn the_environment_word_on_fail_fast_wins_and_a_bad_one_falls_back() {
+        let settings = crate::config::Settings::default();
+        assert!(!resolve_fail_fast(Some("false"), &settings));
+        assert!(!resolve_fail_fast(Some("0"), &settings));
+        assert!(resolve_fail_fast(Some("TRUE"), &settings));
+        // Unset or unreadable: the configured value, here the default.
+        assert!(resolve_fail_fast(None, &settings));
+        assert!(resolve_fail_fast(Some(""), &settings));
+        assert!(resolve_fail_fast(Some("sometimes"), &settings));
     }
 
     #[test]

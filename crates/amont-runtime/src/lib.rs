@@ -88,6 +88,7 @@ pub mod tree_skew;
 pub mod trust;
 pub mod ui;
 pub mod vocabulary;
+pub(crate) mod waves;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
