@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit b3efd132d1465d5c2e4e0ecd6dc4cffa27f3c427
+tree 945e9ff72873fa74c9e7851ecf237b899b4ae976
+canon c523ef6ed802f0efbad6f620f9396f6f23ef6cf0
+patch a24431a60da749e2de7b71faf2c137103b033021
+plan docs/plans/2026-11-06-a-failed-quick-check-skips-heavy.md d5c312ac9c912d20b5739e80a48d35b56f1b90f510980329ded44cf72ecd5ad6
+review reviewed ff2fbbd9f7f4f3687193520b52062a57aadf7780e85234b1c635438d762cb3db
+code-review backend carried 84e72ee702b2c7f395a5d9c98e81813f482fc019f43af6dfb98eb81b9cb15389
+code-review lang:rust carried 84e72ee702b2c7f395a5d9c98e81813f482fc019f43af6dfb98eb81b9cb15389
+code-review tui carried 7b7f6c169badffc68e3fe6b2c5dc17aa897c0f77eb9d69db2a5123fc12f8906a
+code-review unix carried 7b7f6c169badffc68e3fe6b2c5dc17aa897c0f77eb9d69db2a5123fc12f8906a
+preview not-required
+producer amont-agent 3.20.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEC/FMw5N9Roo7hLOh/t7HHYNB5UcDItvaBia6nTLGUjHCwfBV
+jGdS6sHGZiYQ6+6DUoa+elg4TD5KJjjiuI424H
+-----END SSH SIGNATURE-----
