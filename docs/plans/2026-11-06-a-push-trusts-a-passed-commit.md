@@ -102,7 +102,8 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
 - 2026-11-06 — implementation: the `attest-inputs` variant of the
   changed-input test is not written. The repository-owned gate-script case
   exercises the same fallback, and declared-input keys are `stamps_for`'s own,
-  already tested in `attest_check_inputs.rs`.
+  already tested in `attest_check_inputs.rs`. (Superseded: the test was added in
+  implementation review round 1.)
 - 2026-11-06 — the tip rule applies only to pairs without `files`,
   because a `files` gate's stamp vouches only for the files of its own commit.
 
@@ -185,9 +186,6 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
   - Revert-red, tip check off: the same 4 fail.
   - Revert-red, `!pair.files` removed:
     `a_files_pair_never_lets_its_tip_vouch_for_the_range` fails.
-- **After Phase 2:** `amont --version` prints 2.0.1, and a push of a hookless
-  commit below a stamped tip prints "gated at commit instead" with the
-  vouching commit's short SHA.
 - **Phase 2, observed 2026-11-06:**
   - v2.0.1 tagged on `b374187f` (#423) with `amont land --tag`. Release
     workflow 42261817878 concluded success: 7 platform builds, GitHub release
@@ -197,8 +195,10 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
     `/usr/local/bin/amont`, so no re-bake was needed.
   - The real-cargo probe with the installed 2.0.1 printed `cargo-test gated
     at commit instead` and `the code at tip ac8548f4 passed at commit`, with
-    no `cargo test` at push.
-  - This PR's own `amont land` of #418 printed `cargo-test gated at commit
+    no `cargo test` at push: `runs.log` held 2 test runs before the push and 2
+    after (`/tmp/claude-501/tipprobe.sh /usr/local/bin/amont`). The 2.0.0
+    comparison is the Phase 1 probe (3 runs).
+  - The `amont land` of #418 (the code PR) printed `cargo-test gated at commit
     instead`.
 - **14 days after install:** re-run the t00 audit. Expected: the pre-push
   suite minutes spent re-testing passed code fall from the baseline of ~209
@@ -221,7 +221,7 @@ re-runs, because the tip's tree is new (programme t02). Surprises:
   `stamps_for` key, not a new diff.
 - The first real-cargo probe was `NotPaired` because the commit added
   `Cargo.lock` outside the declared scope. That is the guard working.
-- The panel and code review cost about 361k plus 610k tokens, far above the
+- The panel and code review cost about 361k tokens (the plan panel, Full reviews) plus 501k (code review: 228k in round 1 and 273k in the Delta, `## Implementation review`), far above the
   programme's new budget (t10), which is not built yet.
 Open: the stale `Skip::GatedAtCommit` doc comment (deliberate, next change);
 the 14-day measure, due 2026-11-20.
