@@ -160,8 +160,9 @@ blocked. When one has, a commit that is already refused does not wait for
 its test suite:
 
 ```
-  ↷ 1 check(s) skipped, a blocking check failed: pre-commit-clippy
-  fix the failures above and commit again · run them now: amont run pre-commit-clippy
+  ↷ 1 check(s) skipped because pre-commit-cargo-fmt failed: pre-commit-clippy
+  fix the failures above and commit again; to run one now:
+    amont run pre-commit-clippy
 ```
 
 A skipped check earns no stamp, so the corrected commit runs it. A Light

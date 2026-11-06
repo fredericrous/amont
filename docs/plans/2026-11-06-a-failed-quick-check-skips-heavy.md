@@ -62,7 +62,8 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   `  fix the failures above and commit again · run them now: amont run pre-commit-clippy · amont run cargo-test` (one `amont run <name>` per skipped check, since `amont run` takes one name). It is printed in
   quiet mode too (as `could not run` and `deferred` are) and before the
   final `Error raised by:` block.
-  The live progress view closes their slots with the same outcome.
+  The live progress view does not draw them: a slot appears only once its
+  check starts (`live.rs`), so a skipped one is never shown.
 - **What does not trigger it:**
   - a Light check that fails at `warn`, or `Warned`;
   - `Unavailable`, `Inert`, `Deferred`;
@@ -86,10 +87,9 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   `docs/checks.md` next to the skip line. Live and plain output say the word `skipped`, never a
   glyph alone.
 - **The pass-path cost.** A commit that passes starts its Heavy checks once
-  the slowest Light check has finished, which was about 4 s in #394. The
-  live view shows the Heavy slots as `waiting for quick checks`, and plain
-  mode prints one line when the Heavy wave starts. The 14-day measure below
-  checks the delay.
+  the slowest Light check has finished, which was about 4 s in #394. Nothing
+  is printed for that wait (decision log). The wave ledger records it, and
+  the 14-day measure below checks it.
 - **Stamps unchanged.** Only `Passed` and `Fixed` declarations are stamped
   (`dispatch.rs:471-496`). A skipped one earns nothing, so the corrected
   commit runs it.
@@ -155,8 +155,8 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   - `AMONT_FAIL_FAST=false` with `set failFast true` in `amont.conf` and a
     blocking Light failure → the Heavy gate runs;
   - a skipped Heavy declaration earns no stamp (`gate_stamp` marker empty);
-  - a Light fixer returns `Fixed` and a Heavy gate then runs once, on the staged tree, with no stamp;
-  - `Report::verdict()` is `Proceed` for `[Skipped]`, and the live view closes skipped slots with `amont.progress` on and off;
+  - a Light fixer returns `Fixed` and a Heavy gate then runs once, on the restaged tree, and is stamped (decision log);
+  - `Report::verdict()` is `Proceed` for `[Skipped]`; with `amont.progress` on and off the stage ends without a hang and prints the skip line (stderr is not a terminal in the test, so the painted region is not exercised);
   - `amont run` (staged) with a blocking Light failure → the Heavy log is empty and the skip line is printed, as at commit;
   - revert-red: the skip tests fail with the wave split removed.
 - **Real input** (#394's shape): a scratch `cargo new` crate with
@@ -178,6 +178,20 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
     cargo ran only `fmt` (2 calls).
   - Installed 2.0.1, same commit: the same refusal, after `clippy` (2 calls)
     and `test` (1 call) ran.
+**Observed (implementation review round 1 fixes, 2026-11-06):**
+- `Waves::resolve` is called once by `pre_commit` (and `run_stage`) and
+  handed down as `enum Waves { One, LightThenHeavy }`. There is no static.
+- The skip line names the failing check when there is one, and puts each
+  `amont run <name>` on its own line within 80 columns.
+- `Check::would_judge` decides skipped against inert.
+- `Outcome::judged_or_skipped` matches every variant.
+- The ledger writes its header together with the first line, and compacts
+  by writing a temp file and renaming it, with 2 unit tests.
+- Tests: `fail_fast` 11 pass, `spawn_budget` 4 pass, and the dispatch and
+  waves unit tests 16 pass.
+- Revert-red, with `in_waves` replaced by one `run_concurrently`: 7 of 11
+  `fail_fast` tests fail, the fixer test among them, so one wave let the
+  Heavy gate judge the unfixed content. The 4 that pass expect a run.
 - **14 days after install:** from the pre-commit wave ledger on the laptop, count the
   heavy runs skipped and estimate the minutes saved. Measure the extra start
   delay on passing commits (the slowest Light check per commit). A median

@@ -88,11 +88,11 @@ fn a_blocking_light_failure_skips_the_heavy_gate_and_says_so() {
     assert_ne!(code, 0, "the Light failure still refuses the commit: {out}");
     assert_eq!(runs(&r), 0, "the Heavy gate must not start: {out}");
     assert!(
-        out.contains("1 check(s) skipped, a blocking check failed: pre-commit-gate"),
+        out.contains("1 check(s) skipped because pre-commit-light failed: pre-commit-gate"),
         "{out}"
     );
     assert!(
-        out.contains("run them now: amont run pre-commit-gate"),
+        out.contains("to run one now:") && out.contains("    amont run pre-commit-gate"),
         "the next step names the command: {out}"
     );
     // The roll-up comes before the blame list, which stays last.

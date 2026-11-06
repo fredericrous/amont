@@ -315,6 +315,22 @@ pub enum Outcome {
     Skipped,
 }
 
+impl Outcome {
+    /// Did the check judge something, or would it have but for a skip? What
+    /// the pre-commit wave ledger counts as a Heavy check that waited
+    /// (ADR-0020). Every variant named, so a new one is a compile error here.
+    pub fn judged_or_skipped(self) -> bool {
+        match self {
+            Outcome::Passed
+            | Outcome::Failed
+            | Outcome::Warned
+            | Outcome::Fixed
+            | Outcome::Skipped => true,
+            Outcome::Unavailable | Outcome::Inert | Outcome::Deferred => false,
+        }
+    }
+}
+
 /// What a HOOK concluded — the only thing git actually reads.
 ///
 /// Distinct from `Outcome`, which is what one CHECK concluded. Git has exactly
@@ -457,6 +473,16 @@ pub trait Check: Sync {
     /// are Heavy by name; a declared check answers for itself.
     fn weight(&self) -> crate::host_slots::Weight {
         crate::host_slots::weight_of(self.name())
+    }
+    /// Would this check judge something for this change, were it run? The
+    /// change touches its scope and the repository opted in: the two
+    /// questions every scoped check asks before it does anything. A Heavy
+    /// check the pre-commit waves hold back is `Skipped` when this says yes
+    /// and `Inert` when it says no (ADR-0020). `tracked: None` (git would not
+    /// list the index) answers yes: a skip is said, never hidden.
+    fn would_judge(&self, staged: &[String], tracked: Option<&[String]>) -> bool {
+        let scope = self.scope();
+        scope.touches(staged) && tracked.map_or(true, |t| scope.opted_in(t))
     }
     fn run(&self, ctx: &Ctx) -> Outcome;
 }

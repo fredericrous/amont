@@ -111,9 +111,8 @@ pub fn warning_sign() -> &'static str {
 /// A check that never started because one before it blocked (ADR-0020).
 /// The word `skipped` always follows it, so the glyph is never the only
 /// carrier of the meaning.
-pub fn skipped_sign() -> &'static str {
-    static S: OnceLock<String> = OnceLock::new();
-    S.get_or_init(|| sign("↷", YELLOW))
+pub fn skipped_sign() -> String {
+    sign("↷", YELLOW)
 }
 
 /// Emphasise a fragment inside a message, in the terminal's own accent.
