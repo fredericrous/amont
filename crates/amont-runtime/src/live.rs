@@ -158,7 +158,10 @@ impl Stage {
             // The names arrive fully qualified and the loop above has
             // already had to strip the trigger to display them, so the
             // stage can answer this without dispatch passing anything in.
-            on_push: names.iter().any(|n| n.starts_with("pre-push-")),
+            // Not inside a rehearsal snapshot (land's pre-stage included):
+            // no connection is open there, so its advice would be false.
+            on_push: names.iter().any(|n| n.starts_with("pre-push-"))
+                && !crate::rehearsal::in_snapshot(),
             quiet: quiet(settings),
             named: AtomicBool::new(false),
             log_dir: if quiet(settings) {
