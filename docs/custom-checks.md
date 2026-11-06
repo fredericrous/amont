@@ -126,6 +126,16 @@ With `files`, a commit whose matched set is empty does not run the command at
 all — most linters error on an empty argv, and a commit must not be blocked
 over nothing.
 
+A pair declared without `files` is read as judging the whole tree: when its
+commit-time side passed on the tip of a push, the push-side twin is skipped
+for the whole ref, older unstamped commits included
+([ADR-0019](../adr/0019-a-stamped-tip-covers-its-ref.md)). A command that
+judges only `$AMONT_FILES`, or picks the staged paths itself (`lint-staged`,
+`git diff --cached`, `--staged`), must carry the `files` marker if it has a
+`pre-push` twin, or a later passing commit would vouch for files it never
+looked at. On 2026-11-06 no such pair existed in the fleet: the three
+`suppressions --staged` gates (amont-agent, decisions, grh) have no twin.
+
 - **the `docs-skip` marker**, opt-in, pre-commit only: prefix the command with
   `docs-skip ` and the check does not run when the staged change only edits
   existing documentation. Documentation is a `.md`, `.mdx`, `.rst` or `.adoc`

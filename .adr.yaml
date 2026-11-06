@@ -111,6 +111,9 @@ keys:
   hooks.runner-stamps:
     description: How a runner other than the commit hook earns a gate stamp for a tree, and how a tree's stamps are queried
     scopes: [hook-binary]
+  hooks.pair-covered-by-tip:
+    description: When a pushed ref's commit-time pair stamps cover it, so the push-side twin is skipped
+    scopes: [pre-push]
 
   # Declared and deliberately undecided. `docs/hook-architecture.md` lists this
   # under "Open decisions" and it is still open there, while `docs/checks.md`

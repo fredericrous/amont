@@ -998,8 +998,9 @@ enum Skip {
     CompletedEarlier,
     /// Its commit-time twin was proved on the cluster for every tip.
     TwinOnCluster(String),
-    /// Its commit-time pair stamped every pushed commit.
-    GatedAtCommit(String),
+    /// Its commit-time pair stamped every pushed commit, or (`Some`, a short
+    /// sha) a pushed tip whose own stamp key holds the pair's token.
+    GatedAtCommit(String, Option<String>),
     /// Its commit-time pair was deferred to CI on this many pushed commits.
     DeferredAtCommit(String, usize),
 }
@@ -1361,8 +1362,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             ctx.manifest,
             ctx.push,
         ) {
-            crate::hooks::run_tests::PairVerdict::Gated => {
-                Decision::Skip(Skip::GatedAtCommit(name.to_string()))
+            crate::hooks::run_tests::PairVerdict::Gated(tip) => {
+                Decision::Skip(Skip::GatedAtCommit(name.to_string(), tip))
             }
             crate::hooks::run_tests::PairVerdict::Deferred(n) => {
                 Decision::Skip(Skip::DeferredAtCommit(name.to_string(), n))
@@ -1514,9 +1515,16 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 passed.push(check.name().to_string());
                 continue;
             }
-            Decision::Skip(Skip::GatedAtCommit(name)) => {
+            Decision::Skip(Skip::GatedAtCommit(name, tip)) => {
+                // The suffix only when the TIP vouched alone: the plain line
+                // has always meant "every pushed commit carries its stamp",
+                // and a reader who pushed an unstamped commit deserves to see
+                // which commit the skip rests on.
+                let suffix = tip
+                    .map(|sha| format!(" (tip {sha} passed on the same code)"))
+                    .unwrap_or_default();
                 crate::say!(
-                    "{} {} gated at commit instead — not repeating it here",
+                    "{} {} gated at commit instead — not repeating it here{suffix}",
                     valid_sign(),
                     highlight(&name),
                 );

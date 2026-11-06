@@ -93,7 +93,7 @@ pub(crate) fn blocking_commit_decls(
     declared
         .iter()
         .filter_map(|ext| {
-            let crate::manifest::Kind::Runnable { scope, .. } = &ext.kind else {
+            let crate::manifest::Kind::Runnable { scope, files, .. } = &ext.kind else {
                 return None;
             };
             (ext.stage == crate::check::Stage::PreCommit
@@ -103,6 +103,7 @@ pub(crate) fn blocking_commit_decls(
                 script: ext.short_name.clone(),
                 id: ext.id.clone(),
                 scope: *scope,
+                files: *files,
             })
         })
         .collect()
@@ -129,9 +130,12 @@ pub(crate) fn gate_names_declared(declared: &[crate::manifest::External]) -> Vec
 pub(crate) enum PairVerdict {
     /// No blocking commit-time pair covers this push — run normally.
     NotPaired,
-    /// Every pushed commit in the pair's scope carries its stamp — skip,
-    /// saying so.
-    Gated,
+    /// Every judged ref is covered — skip, saying so. `None` when every pushed
+    /// commit in the pair's scope carries its stamp; `Some(short sha)` when at
+    /// least one ref was covered by its TIP alone (its own stamp key holds the
+    /// pair token, older unstamped commits notwithstanding), so the line can
+    /// name the commit that vouched.
+    Gated(Option<String>),
     /// A pair exists but this many pushed commits carry no record of it —
     /// run, saying why the declaration's word was not enough.
     Unstamped(usize),
@@ -203,6 +207,8 @@ pub(crate) fn pair_verdict(
     let mut unstamped = 0usize;
     let mut deferred = 0usize;
     let mut judged_any = false;
+    // The first ref covered by its tip alone, as a short sha for the line.
+    let mut tip_vouched: Option<String> = None;
     // Under `onBusy defer`, a commit whose gate the busy policy deferred is
     // not "unstamped": its twin defers too (ADR-0013). `AMONT_ON_BUSY=wait`
     // turns this off and the twin runs.
@@ -241,6 +247,28 @@ pub(crate) fn pair_verdict(
             // out loud would read as reassurance.
             return PairVerdict::NotPaired;
         }
+        // The tip is what ships. When its OWN stamp key — the tree's note, its
+        // declared-input fingerprints, its canonical tree (ADR-0011, ADR-0012),
+        // exactly what `stamps_for` reads — holds the pair token, the code
+        // being pushed passed the commit-time gate, and an older commit that
+        // never earned a stamp (relais's hookless `commit-tree`, a deferral)
+        // changes nothing about it. A changed declared input or gate script
+        // gives the tip a different key, so it vouches for nothing and the
+        // per-commit rule below decides.
+        //
+        // Never for a `files` pair: its command saw only that commit's
+        // matched paths, so its stamp says nothing about the rest of the tree.
+        //
+        // AFTER the two guards above, never before: a ref whose changes the
+        // pair's scope does not cover is `NotPaired`, whatever its tip says.
+        if !pair.files
+            && crate::gate_stamp::stamps_for(std::slice::from_ref(&r.local_oid))
+                .get(&r.local_oid)
+                .is_some_and(|s| s.contains(&pair_token))
+        {
+            tip_vouched.get_or_insert_with(|| r.local_oid.chars().take(8).collect());
+            continue;
+        }
         let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
         let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
         let stamps = crate::gate_stamp::stamps_for(&ids);
@@ -278,7 +306,7 @@ pub(crate) fn pair_verdict(
     } else if deferred > 0 {
         PairVerdict::Deferred(deferred)
     } else {
-        PairVerdict::Gated
+        PairVerdict::Gated(tip_vouched)
     }
 }
 
@@ -308,6 +336,10 @@ pub(crate) struct GateDecl {
     /// The declaration's scope, judged per ref by
     /// [`crate::check::Scope::covers_all`].
     pub scope: crate::check::Scope,
+    /// The `files` marker: the command is handed only the commit's matched
+    /// paths, so its stamp vouches for that commit's files and never for the
+    /// tree. Such a pair cannot cover a ref by its tip ([`pair_verdict`]).
+    pub files: bool,
 }
 
 /// The extensions this check treats as "JS worth testing". Exported so

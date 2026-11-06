@@ -79,7 +79,7 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
   whole-tree reading of an unmarked gate.
 
 ## Phases
-- [ ] Phase 1 — `GateDecl` gains `files: bool`, filled from
+- [x] Phase 1 — `GateDecl` gains `files: bool`, filled from
   `Kind::Runnable { files, .. }` in `blocking_commit_decls`; `pair_verdict`
   checks the tip's tokens per ref inside `for r in push.get()`, after the
   `relevant.is_empty()` and `covers_all` guards (`run_tests.rs:229-243`) and
@@ -96,6 +96,13 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
   between a passing commit and the tip ignored declared inputs and
   repository-owned gate scripts. The rule now asks the tip's own stamp key,
   which already covers plans-only differences, instead of diffing.
+- 2026-11-06 — implementation: the decision key is `hooks.pair-covered-by-tip`
+  (registered in `.adr.yaml`, scope pre-push), not `-by-content`, since the
+  rule became the tip's own key after Codex's review.
+- 2026-11-06 — implementation: the `attest-inputs` variant of the
+  changed-input test is not written. The repository-owned gate-script case
+  exercises the same fallback, and declared-input keys are `stamps_for`'s own,
+  already tested in `attest_check_inputs.rs`.
 - 2026-11-06 — the tip rule applies only to pairs without `files`,
   because a `files` gate's stamp vouches only for the files of its own commit.
 
@@ -139,6 +146,33 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
   Expected: `cargo-test gated at commit instead`, and `runs.log` holds 1 test
   run. The installed 2.0.0 binary, on the same repository, runs it again: 2
   test runs.
+**Observed (Phase 1, 2026-11-06, branch `fix/tip-tree-verdict`):**
+- `cargo test -p amont --test it -- gate_pairs busy_defers`: 12 + 14 pass. The
+  new tests are the stamped tip over an unstamped commit (the replaced half),
+  the plans-only tip, the unstamped scoped tip, the `files` pair, the scope
+  guard (`NotPaired`), the changed gate script, the two refs, and the stamped
+  tip over a deferred commit.
+- Revert-red, with the tip check disabled: 4 fail
+  (`an_opt_in_marker_does_not_hide_an_unstamped_commit`,
+  `a_plan_only_tip_over_a_stamped_commit_is_gated_despite_an_unstamped_one`,
+  `two_refs_one_covered_one_not_runs_for_the_one`,
+  `a_stamped_tip_over_a_deferred_commit_is_gated`), and the run-expecting
+  tests pass, as stated.
+- Real input, `/tmp/claude-501/tipprobe.sh`: real cargo through a counting
+  shim, scope `*.rs,*.toml,Cargo.lock` as in relais. The sequence was a
+  hookless `commit-tree`, then a verified commit, then a plan edit.
+  - Branch binary at push: `✓ cargo-test gated at commit instead — not
+    repeating it here (tip e5d6dda4 passed on the same code)`, with no
+    `cargo test` at push.
+  - Installed 2.0.0, same history: `! cargo-test is declared at commit time,
+    but 1 pushed commit carries no record of it — running it here`, one more
+    `cargo test` (3 runs in all against 2).
+  - Both probes also ran the push gates once in the background after the
+    verified commit (clippy `--workspace`, `test`, audit), which is why the
+    commit-side count is 2 and not the planned 1. It happens on both
+    versions; it is noted for the programme, not fixed here.
+  - A first probe with scope `*.rs` stayed `NotPaired`: the commit added
+    `Cargo.lock`, which that scope does not cover. That is the guard working.
 - **After Phase 2:** `amont --version` prints 2.0.1, and a push of a hookless
   commit below a stamped tip prints "gated at commit instead" with the
   vouching commit's short SHA.

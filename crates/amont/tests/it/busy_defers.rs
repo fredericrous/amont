@@ -724,3 +724,44 @@ fn a_deferred_clippy_reports_no_warnings() {
     );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
+
+/// A deferred commit below a verified tip: the tip's gate ran on the whole
+/// tree, the deferred change included, so its stamp covers the ref and the
+/// push is gated, naming the tip, rather than deferring the twin to CI.
+#[test]
+fn a_stamped_tip_over_a_deferred_commit_is_gated() {
+    let (repo, base) = paired_repo();
+    let slots = slot_dir("tip");
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    let holder = Holder::hold(&slots.join("slot-0"));
+    commit_deferred(&repo, &slots, "a.txt", "feat: a");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    drop(holder);
+
+    repo.stage("b.txt", "two\n");
+    let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        runs(&repo, "gate.log"),
+        1,
+        "a free host runs the gate: {out}"
+    );
+    repo.commit("feat: b");
+    let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
+    assert_eq!(code, 0, "{out}");
+
+    let tip = head(&repo);
+    let line = push_line("feat/x", &base, &tip);
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("gated at commit instead"), "{out}");
+    assert!(
+        out.contains(&format!("(tip {} passed on the same code)", &tip[..8])),
+        "{out}"
+    );
+    assert!(!out.contains("deferred to CI at commit"), "{out}");
+    assert_eq!(runs(&repo, "gate.log"), 1, "the twin must not run: {out}");
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
