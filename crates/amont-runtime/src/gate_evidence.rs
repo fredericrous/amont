@@ -581,7 +581,7 @@ pub fn duration(ms: u64) -> String {
 }
 
 /// A fingerprint, shortened the way git shortens one.
-fn short(oid: &str) -> &str {
+pub(crate) fn short(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 

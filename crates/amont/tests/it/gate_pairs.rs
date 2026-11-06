@@ -143,18 +143,25 @@ fn an_opt_in_marker_does_not_hide_an_unstamped_commit() {
     assert_eq!(runs(&r), 1, "the push-side twin must run");
 
     // And the other half, so this is not passing by never pairing at all: a
-    // verified commit in the same repository IS gated.
+    // verified commit on top IS gated. Its gate ran on the whole tree, the
+    // dodged `a.txt` included, so the tip vouches for the code being pushed
+    // and the older unstamped commit changes nothing about it.
     r.stage("b.txt", "world\n");
     let out = r.git(&["commit", "-q", "-m", "feat: through the gate"]);
     assert!(out.status.success(), "verified commit failed");
     assert_eq!(runs(&r), 2, "the commit-time side ran");
-    let (code, out) = push_out(&r, &base, &head(&r));
+    let tip = head(&r);
+    let (code, out) = push_out(&r, &base, &tip);
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("no record of it — running it here"),
-        "the earlier --no-verify commit is still in the range: {out}"
+        out.contains("gated at commit instead"),
+        "a stamped tip covers its ref: {out}"
     );
-    assert_eq!(runs(&r), 3, "the range still carries an unstamped commit");
+    assert!(
+        out.contains(&format!("the code at tip {} passed at commit", &tip[..8])),
+        "the line names the tip it rests on: {out}"
+    );
+    assert_eq!(runs(&r), 2, "the push-side twin must not run again");
 }
 
 /// A WARN commit-time side vouches for nothing: no stamp, push always runs.
@@ -304,6 +311,12 @@ fn a_builtin_push_gate_is_gated_by_its_commit_time_namesake() {
         out.contains("cargo-test") && out.contains("gated at commit instead"),
         "the built-in must defer to its namesake, by name: {out}"
     );
+    // Every pushed commit is stamped: the plain line, with no tip line, keeps
+    // meaning exactly that (ADR-0019).
+    assert!(
+        !out.contains("the code at tip"),
+        "a fully stamped range names no tip: {out}"
+    );
 }
 
 /// And it is fail-closed: a `--no-verify` commit carries no stamp, so the
@@ -331,5 +344,263 @@ fn an_unstamped_commit_brings_the_builtin_back() {
     assert!(
         out.contains("carr") && out.contains("no record of it"),
         "an unstamped commit must bring the built-in back, out loud: {out}"
+    );
+}
+
+/// Run the pre-push dispatcher over several ref lines at once.
+fn push_lines(r: &Repo, lines: &str) -> (i32, String) {
+    let mut child = crate::common::amont_cmd()
+        .arg("--hooks-dir")
+        .arg(r.path(".git/hooks"))
+        .arg("pre-push")
+        .current_dir(&r.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(lines.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// A commit through the installed hooks, so the commit-time side runs and
+/// stamps the tree.
+fn hooked_commit(r: &Repo, msg: &str) {
+    let out = r.git(&["commit", "-q", "-m", msg]);
+    assert!(
+        out.status.success(),
+        "hooked commit failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The paired repository with an existing plan file in its base, for the
+/// canonical route: a tree that differs from a stamped one only in the
+/// CONTENT of an existing plan shares its canonical key (ADR-0012).
+fn paired_repo_with_plan(conf: &str) -> (Repo, String) {
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage("docs/plans/p.md", "plan\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("amont.conf", conf);
+    r.commit("chore: the pair");
+    trust_and_install(&r);
+    (r, base)
+}
+
+const PAIR: &str = "pre-commit  check  *.txt  block  node gate.js\n\
+                    pre-push    check  *.txt  block  node gate.js\n";
+
+/// relais #385's shape: a hookless commit, a verified commit, then a plan
+/// record. The tip's tree carries no note of its own, but it differs from the
+/// verified tree only in a plan's content, so its canonical key holds the
+/// pair token and the push skips the suite.
+#[test]
+fn a_plan_only_tip_over_a_stamped_commit_is_gated_despite_an_unstamped_one() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(PAIR);
+    r.stage("a.txt", "hookless\n");
+    r.commit("feat: like relais commit-tree"); // no hooks, no stamp
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    assert_eq!(runs(&r), 1, "the commit-time side ran once");
+    r.stage("docs/plans/p.md", "plan, done\n");
+    hooked_commit(&r, "docs(plan): p, done");
+    assert_eq!(runs(&r), 1, "a plan edit does not fire a *.txt gate");
+
+    let tip = head(&r);
+    let (code, out) = push_out(&r, &base, &tip);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("gated at commit instead"), "{out}");
+    assert!(
+        out.contains(&format!("the code at tip {} passed at commit", &tip[..8])),
+        "{out}"
+    );
+    assert_eq!(runs(&r), 1, "the push-side twin must not run: {out}");
+}
+
+/// The fallback: a verified commit, then an unstamped one that touches the
+/// scope at the tip. The tip vouches for nothing, so the per-commit rule runs
+/// the twin and says why.
+#[test]
+fn an_unstamped_scoped_tip_over_a_stamped_commit_runs() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(PAIR);
+    r.stage("a.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    r.stage("b.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
+}
+
+/// A `files` pair is handed only its commit's matched paths: its stamp says
+/// nothing about the rest of the tree, so a stamped tip cannot cover an
+/// unstamped commit below it.
+#[test]
+fn a_files_pair_never_lets_its_tip_vouch_for_the_range() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(
+        "pre-commit  check  *.txt  block  files node gate.js\n\
+         pre-push    check  *.txt  block  node gate.js\n",
+    );
+    r.stage("a.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    assert_eq!(runs(&r), 1, "the commit-time side ran on b.txt");
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
+}
+
+/// The tip check sits after the coverage guard: when the push side would
+/// fire on a file the pair's scope never judges, the pair vouches for
+/// nothing (`NotPaired`), however well stamped the tip is.
+#[test]
+fn a_stamped_tip_cannot_cover_files_outside_the_pairs_scope() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(
+        "pre-commit  check  *.txt  block  node gate.js\n\
+         pre-push    check  *     block  node gate.js\n",
+    );
+    r.stage("a.md", "outside the pair's scope\n");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    assert_eq!(runs(&r), 1);
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit"), "{out}");
+    assert_eq!(runs(&r), 2, "the push side ran on its own word: {out}");
+}
+
+/// Codex's case: a repository-owned gate script changed at the tip, outside
+/// the trigger scope. The tip's commit-time gate judged nothing (`Inert`), so
+/// the tip's tree carries no stamp, and its canonical key differs from the
+/// verified tree's (the script is not a plan): an unstamped tip tree vouches
+/// for nothing, and the unstamped scoped commit below brings the twin back.
+#[test]
+fn a_changed_gate_script_at_the_tip_does_not_vouch() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(PAIR);
+    r.stage("a.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    r.stage(
+        "gate.js",
+        "require('fs').appendFileSync('gate.log','x') // edited\n",
+    );
+    hooked_commit(&r, "chore: edit the gate");
+    assert_eq!(runs(&r), 1, "only the verified commit ran the gate");
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
+}
+
+/// The declared-input route (ADR-0011): with an `attest-inputs` spec, a
+/// tree's stamp travels by the fingerprint of the gate's declared inputs. A
+/// tip that changes only a declared input outside the trigger scope has a new
+/// fingerprint, so it vouches for nothing, and the unstamped scoped commit
+/// below brings the twin back.
+#[test]
+fn a_changed_declared_input_at_the_tip_does_not_vouch() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage("data.in", "one\n");
+    r.stage(
+        ".github/attest-inputs",
+        "check *.txt data.in gate.js amont.conf\n",
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("amont.conf", PAIR);
+    r.commit("chore: the pair");
+    trust_and_install(&r);
+
+    r.stage("a.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    assert_eq!(runs(&r), 1);
+    r.stage("data.in", "two\n");
+    hooked_commit(&r, "chore: change a declared input");
+    assert_eq!(runs(&r), 1, "data.in does not fire a *.txt gate");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
+}
+
+/// Two refs: one covered by its stamped tip, one whose tip dodged the gate.
+/// The covered ref adds nothing; the other is counted alone.
+#[test]
+fn two_refs_one_covered_one_not_runs_for_the_one() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = paired_repo_with_plan(PAIR);
+    // Both branches start after the pair is declared: a checkout without
+    // `amont.conf` declares no gate at all.
+    let pair = head(&r);
+    r.git(&["checkout", "-q", "-b", "feat/one"]);
+    r.stage("a.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    let one = head(&r);
+    r.git(&["checkout", "-q", "-b", "feat/two", &pair]);
+    r.stage("c.txt", "dodged too\n");
+    r.commit("feat: dodge again");
+    let two = head(&r);
+    let lines = format!(
+        "refs/heads/feat/one {one} refs/heads/feat/one {base}\n\
+         refs/heads/feat/two {two} refs/heads/feat/two {base}\n"
+    );
+    let (code, out) = push_lines(&r, &lines);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(
+        out.contains("1 pushed commit carries no record of it"),
+        "only the uncovered ref counts: {out}"
     );
 }
