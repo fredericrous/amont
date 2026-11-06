@@ -17,6 +17,7 @@ mod common;
 mod agents_md;
 mod agents_md_drift;
 mod attest_check_inputs;
+mod attest_dirty_tree;
 mod audit;
 mod ban_terms;
 mod branch_pattern;

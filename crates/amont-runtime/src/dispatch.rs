@@ -1203,11 +1203,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     //
     // Tracked modifications only. `stamp_tips` argues that gap, which is a
     // deliberate one.
-    let tree_at_start = if reuse_stamps {
-        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default()
-    } else {
-        String::new()
-    };
+    //
+    // Read whatever `reuse_stamps` says: the attestation asks it too (#289),
+    // and an empty string here would read as a clean tree.
+    let tree_at_start =
+        crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default();
     // Inside a rehearsal snapshot only the content gates make sense: the
     // unscoped checks ask about a PUSH — its branch name, its target, its
     // secrets — and no push is happening. Said once, not per check.
@@ -1775,14 +1775,26 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .iter()
             .cloned()
             .partition(|p| crate::cluster::proved_anywhere(p));
-        let mut vouched = attestable(&pre_push_checks, &local, &changed);
-        vouched.extend(tree_proven);
+        let vouched = attestable(&pre_push_checks, &local, &changed);
         let cluster_vouched = attestable(&pre_push_checks, &cluster_passed, &changed);
-        crate::attest::attest_push(
+        // Per tip, the gates whose run saw that tip's content: the working
+        // tree was the tip when they started, or they ran in a checkout of it
+        // (#289; the rule `stamp_tips` applies). A tree gate's proof is the
+        // tree's own commit-time record, so it needs no witness.
+        let witness = TipWitness::new(&tree_at_start);
+        let gates_for = |tip: &str| -> Vec<String> {
+            vouched
+                .iter()
+                .filter(|g| witness.vouches(g, tip))
+                .chain(tree_proven.iter())
+                .cloned()
+                .collect()
+        };
+        crate::attest::attest_push_per_tip(
             ctx.settings,
             &remote,
             ctx.push.get(),
-            &vouched,
+            &gates_for,
             &cluster_vouched,
         );
     }
@@ -1921,7 +1933,7 @@ fn stamp_tips(
     gates: &[String],
     tree_at_start: &str,
 ) {
-    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
+    let witness = TipWitness::new(tree_at_start);
     // TRACKED modifications only — a KNOWN gap, kept deliberately, and
     // spelled out because the comment that used to sit here argued it
     // backwards ("untracked files are not in any tree the suite could have
@@ -1949,17 +1961,8 @@ fn stamp_tips(
     // and may have written into the tree; what a stamp needs to know is what
     // the suite could READ, which is the state it was handed. See the
     // capture in `pre_push`.
-    let worktree_clean = tree_at_start.trim().is_empty();
-    let in_snapshot = crate::rehearsal::in_snapshot();
     let mut stamped: Vec<String> = Vec::new();
     for tip in tips {
-        // Inside a rehearsal the working tree IS a checkout git made of this
-        // commit, so it is the tip's content by construction — and whatever
-        // `amont.snapshotPrepare` had to add to make it runnable (a
-        // `node_modules`, a virtualenv) is not a reason to distrust it. That
-        // is the same argument a pushed-tree snapshot makes.
-        let is_head = head.as_deref() == Some(tip.as_str());
-        let tree_is_tip = is_head && (in_snapshot || worktree_clean);
         // PER GATE, from what each one actually did — not from the config.
         // `amont.testPushedTree` is a request; `pushed_tree::ran_on_tip` is
         // the record of which gates were handed a checkout of this tip. A
@@ -1970,7 +1973,7 @@ fn stamp_tips(
         // seen.
         let vouched: Vec<String> = gates
             .iter()
-            .filter(|g| tree_is_tip || crate::pushed_tree::ran_on_tip(g, tip))
+            .filter(|g| witness.vouches(g, tip))
             .cloned()
             .collect();
         if vouched.is_empty() {
@@ -2017,10 +2020,9 @@ fn record_audits(ledger: &crate::hooks::audit::Ledger, tree_at_start: &str) {
     if pending.is_empty() {
         return;
     }
-    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
-    let here_is_head = crate::rehearsal::in_snapshot() || tree_at_start.trim().is_empty();
+    let witness = TipWitness::new(tree_at_start);
     for record in pending {
-        if !(here_is_head && head.as_deref() == Some(record.tip.as_str())) {
+        if !witness.tree_is_tip(&record.tip) {
             continue;
         }
         if let Err(why) = crate::hooks::audit::write_pending(&record) {
@@ -2044,9 +2046,7 @@ fn record_completions(
     if gates.is_empty() {
         return;
     }
-    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
-    let worktree_clean = tree_at_start.trim().is_empty();
-    let in_snapshot = crate::rehearsal::in_snapshot();
+    let witness = TipWitness::new(tree_at_start);
     let mut by_kind: Vec<(crate::gate_stamp::Completion, Vec<String>)> = Vec::new();
     for (gate, how) in gates {
         let Some(token) = crate::gate_identity::token(externals, gate) else {
@@ -2058,8 +2058,7 @@ fn record_completions(
         }
     }
     for tip in tips {
-        let is_head = head.as_deref() == Some(tip.as_str());
-        if !(is_head && (in_snapshot || worktree_clean)) {
+        if !witness.tree_is_tip(tip) {
             continue;
         }
         let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]) else {
@@ -2111,6 +2110,46 @@ fn record_completions(
 /// about it. Closing it properly means an outcome that distinguishes "ran
 /// and passed" from "found nothing to do", which is a change to every gate
 /// and to `Outcome` itself — worth doing, not worth smuggling into this.
+/// Which pushed tips a gate's run in this process saw (#289): the working
+/// tree was the tip when the gates started, or the gate ran in a checkout of
+/// it (`pushed_tree::ran_on_tip`). Shared by the push stamps and the
+/// attestation, so the two never disagree about what was tested.
+struct TipWitness {
+    head: Option<String>,
+    /// The working tree held HEAD's content when the gates started: clean
+    /// of tracked changes, or a rehearsal snapshot. A snapshot is a checkout
+    /// git made of the commit, and whatever `amont.snapshotPrepare` added to
+    /// make it runnable (a `node_modules`, a virtualenv) is not a reason to
+    /// distrust it.
+    tree_is_head: bool,
+}
+
+impl TipWitness {
+    fn new(tree_at_start: &str) -> Self {
+        Self::from_parts(
+            crate::git::stdout(&["rev-parse", "HEAD"]),
+            crate::rehearsal::in_snapshot(),
+            tree_at_start,
+        )
+    }
+
+    fn from_parts(head: Option<String>, in_snapshot: bool, tree_at_start: &str) -> Self {
+        TipWitness {
+            head,
+            tree_is_head: in_snapshot || tree_at_start.trim().is_empty(),
+        }
+    }
+
+    /// The working tree was `tip` when the gates started.
+    fn tree_is_tip(&self, tip: &str) -> bool {
+        self.tree_is_head && self.head.as_deref() == Some(tip)
+    }
+
+    fn vouches(&self, gate: &str, tip: &str) -> bool {
+        self.tree_is_tip(tip) || crate::pushed_tree::ran_on_tip(gate, tip)
+    }
+}
+
 fn attestable(checks: &[&dyn Check], passed: &[String], changed: &[String]) -> Vec<String> {
     checks
         .iter()
@@ -2125,6 +2164,22 @@ mod tests {
     use super::*;
     use crate::check::{Builtin, Scope};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// #289: a dirty working tree witnesses no tip, even HEAD; a clean one,
+    /// or a snapshot, witnesses HEAD only.
+    #[test]
+    fn only_a_clean_head_or_a_snapshot_witnesses_a_tip() {
+        let head = Some("a".repeat(40));
+        let tip = "a".repeat(40);
+        let other = "b".repeat(40);
+        let dirty = TipWitness::from_parts(head.clone(), false, " M src/lib.rs\n");
+        assert!(!dirty.tree_is_tip(&tip));
+        let clean = TipWitness::from_parts(head.clone(), false, "");
+        assert!(clean.tree_is_tip(&tip));
+        assert!(!clean.tree_is_tip(&other));
+        let snapshot = TipWitness::from_parts(head, true, " M node_modules/x\n");
+        assert!(snapshot.tree_is_tip(&tip));
+    }
 
     /// ADR-0018: the refusals fit 80 columns, put each command on its own
     /// line, and name only amont's own commands (every Green Harness part is
