@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/pre-commit-fail-fast
 repos: [amont]
 adrs: [ADR-0020, ADR-0013]
@@ -8,7 +8,7 @@ adrs: [ADR-0020, ADR-0013]
 
 ## Review panel
 👉 **Decide:** none — approve if a passing commit may wait for its quick checks (~4 s in #394) before clippy and the test suite start, so that a failed quick check skips them.
-📍 amont · plan ready, nothing built · next: Phase 1 in a new worktree. Panel: backend (opus-5-5), lang:rust (opus-5-5), tui (opus-5-5), unix (opus-5-5). Codex skipped: no risk trigger (programme t03/t10).
+📍 amont · shipped in 2.2.0 (#430, #432) · next: the 14-day measure, due 2026-11-21. Panel: backend (opus-5-5), lang:rust (opus-5-5), tui (opus-5-5), unix (opus-5-5). Codex skipped: no risk trigger (programme t03/t10).
 **Changed by review:** the roll-up line in house style (sign, count, a run-now hint per check, quiet mode); `AMONT_FAIL_FAST` → git config → `amont.conf` precedence; a pre-commit ledger so the 14-day measure has data.
 📄 Full reviews: [reviews](2026-11-06-a-failed-quick-check-skips-heavy.reviews.md)
 **Verdicts:** 4 approve-with-changes in round 1; backend approve-with-changes in round 2, then approve; 2 rejected (lang:rust#6, `Warned` exists; backend#3, a duplicate); none carried.
@@ -112,7 +112,7 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   - docs: `docs/checks.md` (pre-commit) and `docs/configuration.md`;
   - the doc comment fix;
   - an ADR-0020 (`hooks.pre-commit-fail-fast`) plus `aval heads --write`.
-- [ ] Phase 2 — release amont 2.1.x or the next free version after the open-issues session's 2.1.0, coordinated with that session; install and verify.
+- [x] Phase 2 — release amont 2.1.x or the next free version after the open-issues session's 2.1.0, coordinated with that session; install and verify.
 
 ## Decision log
 - 2026-11-06 — waves by weight, not cancellation, because the check
@@ -189,7 +189,9 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   line names clippy and cargo-test. The installed 2.0.1 on the same commit
   runs `cargo test`.
 **Observed (Phase 1, 2026-11-06, branch `fix/pre-commit-fail-fast`):**
-- `cargo test -p amont --test it fail_fast`: 11 pass (the eleven cases
+- `cargo test -p amont --test it fail_fast`: 11 pass (the ten listed cases, the progress
+  case run with `amont.progress` both on and off, plus the ledger and
+  rehearsal cases
   above, the fixer and ledger cases included); the `amont-runtime` dispatch
   unit tests pass (`[Skipped]` is `Proceed`; the `AMONT_FAIL_FAST` resolver).
 - Real input, `/tmp/claude-501/ffprobe.sh`: a `cargo new` crate with
@@ -220,6 +222,21 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   skip line and one `amont run` line per check, and cargo ran only `fmt`. The
   wave ledger wrote `1153 2 pre-commit-clippy,pre-commit-cargo-test`: the
   Light wave took 1.2 s, and 2 Heavy checks were skipped.
+- **Phase 2, observed 2026-11-07:**
+  - v2.2.0 tagged on `da1dfdc7` (#432) with `amont land --tag`. Release
+    workflow 42308324797 concluded success: 7 platform builds, GitHub
+    release with 7 assets, crates.io 2.2.0, npm, homebrew tap, and "brew can
+    install what was published".
+  - `brew upgrade fredericrous/tap/amont` → `amont 2.2.0`. The hooks are
+    baked to `/usr/local/bin/amont`.
+  - Probe with the installed binary (`/tmp/claude-501/ffprobe.sh
+    /usr/local/bin/amont`, a fresh `cargo new` crate with an unformatted
+    `src/lib.rs` staged, the same input as Phase 1): `↷ 2 check(s) skipped
+    because pre-commit-cargo-fmt failed: pre-commit-clippy,
+    pre-commit-cargo-test`; cargo ran only `fmt` (2 calls).
+  - Pushes for #430, #432 and the tag ran with `hook.skip
+    pre-push-adr-lint-cli-probe` (approved by the person; amont #431). Its
+    removal from the shared config is the person's.
 - **14 days after install:** from the pre-commit wave ledger on the laptop, count the
   heavy runs skipped and estimate the minutes saved. Measure the extra start
   delay on passing commits (the slowest Light check per commit). A median
@@ -229,9 +246,23 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - implementation-review (opus): round 1 approve-with-changes (3 blocking), then Delta approve-with-changes, then round 1 on the fix approve-with-changes, then Delta, then approve on 042d2f90. Fixed: no static, reasons on the same line, `scratch_path`, ledger counting, budget 27 with in-test counts. 25/23/21 candidates ruled.
 - backend (opus): approve-with-changes, then Delta approve. Fixed: atomic compaction, header written with the first row. Deliberate: an unreadable staged list reads as empty (no failure signal in `staged_files`).
 - lang:rust (opus): approve-with-changes, then Delta approve. Fixed: `Waves` enum, `Check::would_judge`, exhaustive `Outcome::judged_or_skipped`, `is_heavy`, restored doc.
-- tui (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83. Deliberate: no waiting label (the ledger measures the wait); the first skip line may wrap past 80 columns.
-- unix (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83. Fixed: compaction by rename, accurate `append` comment. Deliberate: "the reader" is the manual 14-day read.
+- tui (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83, the last tree it read. The two later commits (f23cd7b6, the ledger count and spawn budget; 042d2f90, a test comment) were reviewed by implementation-review only; the push hook carried this profile's pass by ancestry. Deliberate: no waiting label (the ledger measures the wait); the first skip line may wrap past 80 columns.
+- unix (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83, the last tree it read. The two later commits (f23cd7b6, the ledger count and spawn budget; 042d2f90, a test comment) were reviewed by implementation-review only; the push hook carried this profile's pass by ancestry. Fixed: compaction by rename, accurate `append` comment. Deliberate: "the reader" is the manual 14-day read.
 
 ## Outcome
+Shipped in amont 2.2.0. A commit a quick check refuses no longer runs
+clippy or the test suite. The change is said, unstamped, and mirrored in
+`amont run`, and a ledger measures the cost.
+Surprises:
+- Code review took four rounds beyond the first, each costing a ~17 min
+  commit gate. Most findings were literal rule points (comment placement, a
+  placeholder name). Two were real: the ledger counted clippy on a `.txt`
+  commit, and a manual spawn count disagreed with the test's own.
+- The push hit amont #431: a warn-only Heavy gate never waits for a slot,
+  so `land` refused for missing evidence while another session held the
+  queue.
+- Mid-branch, main moved by 8 PRs (another session's 2.1.0); the rebase
+  was clean.
+Open: the 14-day measure, due 2026-11-21; #431; removing the `hook.skip`.
 
 <!-- panel: repos=amont adds= reviewers=backend,language,tui,unix body-sha=b6f5751c93dd -->
