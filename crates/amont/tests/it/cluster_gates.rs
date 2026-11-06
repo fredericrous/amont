@@ -760,7 +760,16 @@ fn concurrent_gates_each_get_their_own_job() {
     );
     let (code, text) = c.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
-    assert_eq!(c.local_runs(), 0, "both ran on the cluster: {text}");
+    // The fake's call log and Job manifests in the message: this has failed
+    // on CI only ("a runs here: amont-gate-slot-0 is not the Job this run
+    // created"), and never in 30 local runs; the next failure says why.
+    assert_eq!(
+        c.local_runs(),
+        0,
+        "both ran on the cluster: {text}\n--- kubectl calls:\n{}\n--- jobs created:\n{:#?}",
+        c.read("calls"),
+        c.created_jobs()
+    );
     let jobs = c.created_jobs();
     assert_eq!(jobs.len(), 2, "{jobs:?}");
     for (gate, script) in [

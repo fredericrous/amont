@@ -558,7 +558,11 @@ pub(in crate::cluster::detached) mod tests {
         assert!(store.try_lock().is_none(), "busy at once, never waiting");
         assert!(store.lock_within(Duration::from_millis(120)).is_none());
         drop(first);
-        assert!(store.try_lock().is_some());
+        // Waited for, briefly: a child another test thread spawned while
+        // `first` was held inherits its descriptor, and the flock lasts until
+        // that child execs (close-on-exec). An instant re-lock lost that race
+        // about 1 time in 100 under a spawning sibling.
+        assert!(store.lock_within(Duration::from_secs(5)).is_some());
         std::fs::remove_dir_all(&dir).expect("clean");
     }
 }
