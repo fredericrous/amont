@@ -475,6 +475,25 @@ fn out_of_scope_a_check_passes_and_says_nothing() {
             silent: true,
             ..ROW
         },
+        // A prettier a transitive dependency hoisted (#307) is not an opt-in:
+        // with no config and no `prettier` in package.json it never runs.
+        Row {
+            tool: "prettier",
+            hook: "pre-commit-prettier",
+            written: &[
+                (
+                    "node_modules/.bin/prettier",
+                    "#!/bin/sh\necho SHOULD-NOT-RUN\nexit 1\n",
+                ),
+                (
+                    "package.json",
+                    "{\"devDependencies\": {\"eslint-config-x\": \"1.0.0\"}}\n",
+                ),
+            ],
+            staged: &[("a.ts", "const  x   =1\n")],
+            silent: true,
+            ..ROW
+        },
         Row {
             tool: "ruff",
             hook: "pre-commit-ruff",
