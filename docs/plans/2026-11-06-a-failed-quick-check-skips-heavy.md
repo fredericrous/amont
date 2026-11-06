@@ -56,10 +56,12 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   because a check before it blocked. It is never stamped or attested, never
   blocks by itself (the light failure already blocks), and is printed once
   after the failures, in the shape of the other roll-ups, with a `ui.rs` sign
-  (so `NO_COLOR` and non-TTY fall back) and a count:
-  `<sign> 2 check(s) skipped, a blocking check failed: pre-commit-clippy, cargo-test`
-  then, as `announce_deferred` does, the next step on its own line:
-  `  fix the failures above and commit again · run them now: amont run pre-commit-clippy · amont run cargo-test` (one `amont run <name>` per skipped check, since `amont run` takes one name). It is printed in
+  (so `NO_COLOR` and non-TTY fall back) and a count, naming the failing check
+  when there is one:
+  `<sign> 2 check(s) skipped because pre-commit-cargo-fmt failed: pre-commit-clippy, pre-commit-cargo-test`
+  then `  fix the failures above and commit again; to run one now:` and one
+  indented `amont run <name>` per skipped check, since `amont run` takes one
+  name. It is printed in
   quiet mode too (as `could not run` and `deferred` are) and before the
   final `Error raised by:` block.
   The live progress view does not draw them: a slot appears only once its
@@ -143,11 +145,20 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   and the cached staged list, raise the budget to 28. The reasons are written
   in the test.
 
+- 2026-11-06 — implementation review Delta (tui, low): the first skip
+  line can pass 80 columns with long names. Deliberate: the terminal wraps it
+  after the cause, so the failing check and the count stay on the first row,
+  and the commands below are one per line.
+- 2026-11-06 — implementation review Delta: the discard reasons in
+  `waves.rs` sit on the same line (`errors.never-swallowed`), `tmp` is
+  renamed `scratch_path`, and the `append` comment says a line above the
+  header is unlikely, not impossible (unix).
+
 ## Verification
 - **Tests** (a scratch repo per test, as in `gate_pairs.rs`, with a Heavy
   declared gate that logs each run):
   - a blocking Light check fails → the commit is refused, the Heavy log is
-    empty, and the `↷ skipped … fix the failures above first` line names it;
+    empty, and the skip line names it and the failing Light check;
   - the Light checks pass → the Heavy gate runs once and is stamped;
   - a Light check fails at `warn` → the Heavy gate runs;
   - `amont.failFast false` and a blocking Light failure → the Heavy gate runs
@@ -172,10 +183,11 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - Real input, `/tmp/claude-501/ffprobe.sh`: a `cargo new` crate with
   `cargo-test` declared at pre-commit, an unformatted `src/lib.rs` staged,
   and a counting `cargo` shim.
-  - Branch binary: `✗ Unformatted Rust`, then `↷ 2 check(s) skipped, a
-    blocking check failed: pre-commit-clippy, pre-commit-cargo-test` and the
-    `run them now:` line, before `Error raised by: pre-commit-cargo-fmt`.
-    cargo ran only `fmt` (2 calls).
+  - Branch binary (re-run after the review fixes): `✗ Unformatted Rust`,
+    then `↷ 2 check(s) skipped because pre-commit-cargo-fmt failed:
+    pre-commit-clippy, pre-commit-cargo-test`, then `fix the failures above and
+    commit again; to run one now:` and one `amont run <name>` line each, before
+    `Error raised by: pre-commit-cargo-fmt`. cargo ran only `fmt` (2 calls).
   - Installed 2.0.1, same commit: the same refusal, after `clippy` (2 calls)
     and `test` (1 call) ran.
 **Observed (implementation review round 1 fixes, 2026-11-06):**

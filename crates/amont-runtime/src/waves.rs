@@ -48,8 +48,10 @@ fn ledger_path() -> Option<PathBuf> {
 }
 
 /// Append `line`. A new file gets its header and this first line in ONE
-/// write on the handle that created it, so no other writer's line can land
-/// above the header.
+/// write on the handle that created it, which makes a line above the header
+/// unlikely, not impossible: a second writer can append in the instant
+/// between another's `create_new` and its write. The reader skips any line
+/// that is not the header or a four-field row.
 fn append(path: &Path, line: &str) {
     match std::fs::OpenOptions::new()
         .write(true)
@@ -57,16 +59,16 @@ fn append(path: &Path, line: &str) {
         .open(path)
     {
         Ok(mut f) => {
-            // best-effort ledger: a bookkeeping failure must not disturb a commit
-            let _ = f.write_all(format!("{FORMAT}\n{line}").as_bytes());
+            let header_and_line = format!("{FORMAT}\n{line}");
+            let _ = f.write_all(header_and_line.as_bytes()); // best-effort ledger: never disturbs a commit
         }
         Err(_) => {
             compact_if_large(path);
-            // best-effort ledger: a bookkeeping failure must not disturb a commit
-            let _ = std::fs::OpenOptions::new()
+            let appended = std::fs::OpenOptions::new()
                 .append(true)
                 .open(path)
                 .and_then(|mut f| f.write_all(line.as_bytes()));
+            let _ = appended; // best-effort ledger: never disturbs a commit
         }
     }
 }
@@ -86,13 +88,11 @@ fn compact_if_large(path: &Path) {
         return;
     };
     let body = compacted(&text);
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, body).is_ok() {
-        // best-effort ledger: a failed rename leaves the old, whole file
-        let _ = std::fs::rename(&tmp, path);
+    let scratch_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    if std::fs::write(&scratch_path, body).is_ok() {
+        let _ = std::fs::rename(&scratch_path, path); // best-effort: a failed rename keeps the old, whole file
     }
-    // best-effort cleanup: after a rename the temp file is already gone
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&scratch_path); // best-effort cleanup: gone already after a rename
 }
 
 /// The header and the newest [`KEEP`] lines of `text`. Pure, for the tests.
