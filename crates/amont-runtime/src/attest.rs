@@ -132,7 +132,21 @@ pub fn attest_push(
     gates: &[String],
     cluster_gates: &[String],
 ) {
-    if (gates.is_empty() && cluster_gates.is_empty()) || remote.is_empty() || !enabled(settings) {
+    attest_push_per_tip(settings, remote, refs, &|_| gates.to_vec(), cluster_gates);
+}
+
+/// [`attest_push`], with the laptop's gates asked per pushed tip:
+/// `gates_for(tip)` names only the gates whose run saw THAT tip's content
+/// (#289). A gate that ran in a dirty working tree tested what was on disk,
+/// not the commit, and its pass must not be signed onto the commit's tree.
+pub fn attest_push_per_tip(
+    settings: &crate::config::Settings,
+    remote: &str,
+    refs: &[PushRef],
+    gates_for: &dyn Fn(&str) -> Vec<String>,
+    cluster_gates: &[String],
+) {
+    if remote.is_empty() || !enabled(settings) {
         return;
     }
     let Some(key) = key_path() else { return };
@@ -144,8 +158,9 @@ pub fn attest_push(
         );
         return;
     }
-    let gates_line = gates.join(" ");
     let producer = env!("CARGO_PKG_VERSION");
+    // The laptop's gates signed on at least one tip, for the summary line.
+    let mut laptop_signed: Vec<String> = Vec::new();
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut input_blocks: Vec<(String, String)> = Vec::new();
     let mut linux_signed: Vec<String> = Vec::new();
@@ -154,6 +169,11 @@ pub fn attest_push(
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
         }
+        let gates = gates_for(&r.local_oid);
+        if gates.is_empty() && cluster_gates.is_empty() {
+            continue;
+        }
+        let gates_line = gates.join(" ");
         let spec = format!("{}^{{tree}}", r.local_oid);
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
@@ -196,6 +216,13 @@ pub fn attest_push(
             }
             blocks.push((tree.clone(), body.clone()));
             blocks.push((r.local_oid.clone(), body));
+            if linux_names.is_empty() {
+                for name in &gates {
+                    if !laptop_signed.contains(name) {
+                        laptop_signed.push(name.clone());
+                    }
+                }
+            }
             for name in linux_names {
                 if !linux_signed.contains(&name) {
                     linux_signed.push(name);
@@ -215,10 +242,10 @@ pub fn attest_push(
         // Each list names its own platform, so the laptop's gates never read
         // as attested on linux.
         let mut signed_on = Vec::new();
-        if !gates_line.is_empty() {
+        if !laptop_signed.is_empty() {
             signed_on.push(format!(
                 "{} on {}",
-                crate::ui::highlight(&gates_line),
+                crate::ui::highlight(&laptop_signed.join(" ")),
                 platform()
             ));
         }
