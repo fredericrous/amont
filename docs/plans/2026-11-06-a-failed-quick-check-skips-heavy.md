@@ -216,10 +216,21 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - Revert-red, with `in_waves` replaced by one `run_concurrently`: 7 of 11
   `fail_fast` tests fail, the fixer test among them, so one wave let the
   Heavy gate judge the unfixed content. The 4 that pass expect a run.
+- **Real input on the final tree (042d2f90):** the same probe prints the
+  skip line and one `amont run` line per check, and cargo ran only `fmt`. The
+  wave ledger wrote `1153 2 pre-commit-clippy,pre-commit-cargo-test`: the
+  Light wave took 1.2 s, and 2 Heavy checks were skipped.
 - **14 days after install:** from the pre-commit wave ledger on the laptop, count the
   heavy runs skipped and estimate the minutes saved. Measure the extra start
   delay on passing commits (the slowest Light check per commit). A median
   over 30 s is a reason to revisit.
+
+## Implementation review
+- implementation-review (opus): round 1 approve-with-changes (3 blocking), then Delta approve-with-changes, then round 1 on the fix approve-with-changes, then Delta, then approve on 042d2f90. Fixed: no static, reasons on the same line, `scratch_path`, ledger counting, budget 27 with in-test counts. 25/23/21 candidates ruled.
+- backend (opus): approve-with-changes, then Delta approve. Fixed: atomic compaction, header written with the first row. Deliberate: an unreadable staged list reads as empty (no failure signal in `staged_files`).
+- lang:rust (opus): approve-with-changes, then Delta approve. Fixed: `Waves` enum, `Check::would_judge`, exhaustive `Outcome::judged_or_skipped`, `is_heavy`, restored doc.
+- tui (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83. Deliberate: no waiting label (the ledger measures the wait); the first skip line may wrap past 80 columns.
+- unix (opus): approve-with-changes, Delta approve-with-changes, approve on 87608d83. Fixed: compaction by rename, accurate `append` comment. Deliberate: "the reader" is the manual 14-day read.
 
 ## Outcome
 
