@@ -488,12 +488,54 @@ pub fn covered_in(
     require_platform: Option<&str>,
     anywhere: &[String],
 ) -> Option<String> {
+    covered_report(dir, signers, principal, require_platform, anywhere).gates
+}
+
+/// What `amont attest covered` found: the gates a valid attestation covers,
+/// and every attestation that exists for this tree but whose signature did
+/// not verify (amont#271). The two "nothing" cases, no attestation and a
+/// rejected one, are told apart by `rejected`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Covered {
+    pub gates: Option<String>,
+    pub rejected: Vec<String>,
+}
+
+/// [`covered_in`], keeping the rejections. Each one is also said on stderr,
+/// whatever the caller does with it: a bad signature is the absence worth
+/// alarming about, and stdout keeps its covered-names-only contract.
+pub fn covered_report(
+    dir: &Path,
+    signers: &Path,
+    principal: Option<&str>,
+    require_platform: Option<&str>,
+    anywhere: &[String],
+) -> Covered {
     let v =
         git_attest::verify::evaluate(dir, signers, principal, require_platform, anywhere, false);
     for line in v.loud.iter().chain(&v.warnings) {
         eprintln!("amont: {line}");
     }
-    (!v.gates.is_empty()).then(|| v.gates.join(" "))
+    let rejected = signature_rejections(&v.trail);
+    for why in &rejected {
+        eprintln!("amont: an attestation was found but did not verify: {why}");
+    }
+    Covered {
+        gates: (!v.gates.is_empty()).then(|| v.gates.join(" ")),
+        rejected,
+    }
+}
+
+/// The verifier's trail lines that say a note's signature did not verify:
+/// `note on <where>: <why>` (git-attest 1.6 `verify`). The other lines about a
+/// note (`… carries no signature block`, `… has more than N blocks`) carry no
+/// `: `, and a tree that moved is not a `note on` line at all.
+fn signature_rejections(trail: &[String]) -> Vec<String> {
+    trail
+        .iter()
+        .filter(|line| line.starts_with("note on ") && line.contains(": "))
+        .cloned()
+        .collect()
 }
 
 /// Where the repository keeps its `allowed_signers`, resolved from the
@@ -1244,6 +1286,29 @@ mod tests {
     /// clone. `covered` fetches the notes ref itself, verifies, and answers
     /// with the gates — then stops answering the moment the tree drifts or
     /// the note is replaced by something unsigned.
+    /// Only a signature that did not verify counts as a rejection (amont#271);
+    /// a note with no signature, or a tree that moved, does not.
+    #[test]
+    fn a_rejection_is_a_note_whose_signature_did_not_verify() {
+        let trail: Vec<String> = [
+            "note on abc123: signature did not verify for principal t@t.test",
+            "note on abc123 block 2: no principal matched",
+            "note on def456 carries no signature block",
+            "attested tree abc is not the checked-out tree def and neither its canonical tree nor an input fingerprint of abc123 matches",
+            "no attestation found for tree abc",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            signature_rejections(&trail),
+            vec![
+                "note on abc123: signature did not verify for principal t@t.test".to_string(),
+                "note on abc123 block 2: no principal matched".to_string(),
+            ]
+        );
+    }
+
     #[test]
     fn covered_answers_in_a_fresh_clone_and_rejects_drift_and_forgery() {
         let d = dir("covered");

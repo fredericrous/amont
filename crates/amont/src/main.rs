@@ -93,6 +93,9 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  [--platform <arch-os>|any: which leg is asking; defaults
                  to this machine's, so a matrix leg only skips work that
                  really ran on ITS platform]
+                 [--strict: exit 3 when an attestation for this tree was
+                 found but its signature did not verify, rather than 0;
+                 the rejection is named on stderr either way]
                  `attest check-inputs --require <gate>...` — prove the
                  named gates declare, in .github/attest-inputs, every file
                  the tree tracks (exit 1 uncovered, 2 no usable spec)
@@ -432,7 +435,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::AgentsMd => (&["--check"], &["--path"]),
         Sub::Enroll => (&[], &["--conventions"]),
         Sub::Attest => (
-            &["--require"],
+            &["--require", "--strict"],
             &["--signers", "--principal", "--platform", "--tree"],
         ),
         Sub::Check => (&[], &["--stdin-filename", "--format"]),
@@ -884,12 +887,25 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 Some(explicit) => Some(explicit.to_string()),
                 None => Some(amont_runtime::attest::platform()),
             };
-            if let Some(gates) =
-                amont_runtime::attest::covered(&signers, principal.as_deref(), want.as_deref(), &[])
-            {
+            let report = amont_runtime::attest::covered_report(
+                std::path::Path::new("."),
+                &signers,
+                principal.as_deref(),
+                want.as_deref(),
+                &[],
+            );
+            if let Some(gates) = &report.gates {
                 println!("{gates}");
             }
-            0
+            // Fail-open stays the default. `--strict` lets a caller that
+            // needs evidence tell a rejected attestation from a missing one
+            // (amont#271): exit 3, nothing on stdout.
+            let strict = args.iter().any(|a| a == "--strict");
+            if strict && report.gates.is_none() && !report.rejected.is_empty() {
+                3
+            } else {
+                0
+            }
         }
     }
 }
