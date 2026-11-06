@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v2.2.0
+
+### Changed
+
+- **A commit a quick check refused no longer waits for the heavy ones**
+  (ADR-0020). Pre-commit ran every check at once, so `cargo test` ran its
+  whole suite for a commit `cargo fmt` had already refused in seconds. Now
+  the Light checks run first, and the Heavy ones (clippy, go vet, pyright,
+  declared `heavy` and moved gates) start only when no Light check blocked.
+  Otherwise each Heavy check the change reaches is reported, once and in
+  every output mode, as skipped:
+
+  ```
+    ↷ 2 check(s) skipped because pre-commit-cargo-fmt failed: pre-commit-clippy, pre-commit-cargo-test
+    fix the failures above and commit again; to run one now:
+      amont run pre-commit-clippy
+      amont run pre-commit-cargo-test
+  ```
+
+  A skipped check earns no stamp, so the corrected commit runs it. A passing
+  commit starts its Heavy checks once its slowest Light check finishes.
+  `amont run` follows the same waves. `git config amont.failFast false`, a
+  trusted `set failFast false`, or `AMONT_FAIL_FAST=false` for one run
+  restores one wave. `<common-dir>/amont-waves` records the wait and what was
+  skipped, one line per commit.
+
 ## v2.1.0
 
 ### Added
