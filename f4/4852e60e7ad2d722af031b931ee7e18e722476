@@ -1,0 +1,15 @@
+amont-attest-v2
+tree b2c1a069c79baa5647efb18f16d01d89b9c70656
+gates ci-hooks-macos ci-load-macos
+platform aarch64-macos
+input ci-hooks-macos 49f2303735c56be79bcee9270ea8c5a596257b83
+input ci-load-macos 49f2303735c56be79bcee9270ea8c5a596257b83
+canon bebc43c1f52edd041612736443a4e3205650bc60
+amont attest-sign-macos
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgUpKx1QTdCdwZEjcw/MK/JGWqft
+YBCaiDmnUdMyQ1dZAAAAAMYW1vbnQtYXR0ZXN0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3Nz
+aC1lZDI1NTE5AAAAQDIbUIJfcMnqAuh/zy2V02KywXg7a1D77YKZdYB/TqAPHgvMkYz1Ku
+G9b8eRouAzGNsRHmwf0CPBDTahGetoEQU=
+-----END SSH SIGNATURE-----
