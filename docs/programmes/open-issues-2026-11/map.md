@@ -21,6 +21,9 @@ fix that has shipped in a verified release.
   `amont land --json`. A `v*` tag that owes audits takes
   `git -c amont.pushGates=inline push origin <tag>` until amont-agent#204
   ships (t09), then `amont land --tag`.
+- Ticket branches: amont's branch-pattern rule refuses `prog/<slug>/<id>`, so a
+  ticket's branch is `fix/oi-<id>` (or `docs/oi-<id>`, `refactor/oi-<id>`);
+  that branch is the in-flight signal.
 - Another session (fix/tip-tree-verdict, "A push trusts a passed commit with
   the same code") works near attestation; t02 checks with it first.
 
