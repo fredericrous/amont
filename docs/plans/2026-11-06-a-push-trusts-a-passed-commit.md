@@ -192,6 +192,13 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
   suite minutes spent re-testing passed code fall from the baseline of ~209
   of 516, with the numbers reported.
 
+## Implementation review
+- implementation-review (opus): approve-with-changes, then Delta approve-with-changes. Fixed: tip line only with an unstamped commit, `files` revert-red recorded, `attest-inputs` test. 4 candidates fine. 57k+68k tokens, 56+16 s.
+- backend (opus): approve-with-changes, then Delta approve. Fixed: `attest-inputs` test, gate-script test reason and counts, `holds-until` at the `files` guard. 54k+69k tokens, 117+21 s.
+- lang:rust (opus): approve-with-changes, then Delta approve-with-changes. Fixed: `Coverage` enum and struct variant, shared `gate_evidence::short`, one stamps read. 59k+71k tokens, 40+15 s.
+- tui (opus): approve-with-changes, then Delta approve. Fixed: the second line within 80 columns, "the code at tip", every tip named. 58k+65k tokens, 72+12 s.
+- deliberate: the stale `Skip::GatedAtCommit` doc comment (implementation-review and lang:rust Delta, low) is fixed in the next amont change, the fail-fast pre-commit (programme t01), which edits `dispatch.rs`. Re-running the 16-min gate and the review round for a comment is the cost this programme cuts.
+
 ## Outcome
 
 <!-- panel: repos=amont adds= reviewers=backend,language,tui,unix,codex body-sha=be41429325d9 -->
