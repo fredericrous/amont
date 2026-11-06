@@ -576,9 +576,15 @@ brings it back with the same warning; and the dodge lands in the bypass
 ledger under its own name. A pushed tip whose own stamp key holds the pair's
 token covers its ref even when an older commit in it never earned a stamp
 (a hookless `commit-tree`, a deferral): the tip's gate ran on the whole
-tree, so the line says which commit the skip rests on,
-`✓ test gated at commit instead — not repeating it here (tip 1a2b3c4d passed
-on the same code)` ([ADR-0019](../adr/0019-a-stamped-tip-covers-its-ref.md)).
+tree, so a second line says what the skip rests on:
+
+```
+✓ test gated at commit instead — not repeating it here
+    the code at tip 1a2b3c4d passed at commit
+```
+
+([ADR-0019](../adr/0019-a-stamped-tip-covers-its-ref.md)). A push whose
+commits are all stamped prints the first line alone.
 A pair with the `files` marker never covers by its tip. `cargo test`, `pytest`, `go test` — the contract
 is identical because the machinery never looks at the command, only at the
 name, the severity, the scope, and the stamps.

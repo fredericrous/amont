@@ -1000,7 +1000,10 @@ enum Skip {
     TwinOnCluster(String),
     /// Its commit-time pair stamped every pushed commit, or (`Some`, a short
     /// sha) a pushed tip whose own stamp key holds the pair's token.
-    GatedAtCommit(String, Option<String>),
+    GatedAtCommit {
+        name: String,
+        coverage: crate::hooks::run_tests::Coverage,
+    },
     /// Its commit-time pair was deferred to CI on this many pushed commits.
     DeferredAtCommit(String, usize),
 }
@@ -1362,8 +1365,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             ctx.manifest,
             ctx.push,
         ) {
-            crate::hooks::run_tests::PairVerdict::Gated(tip) => {
-                Decision::Skip(Skip::GatedAtCommit(name.to_string(), tip))
+            crate::hooks::run_tests::PairVerdict::Gated(coverage) => {
+                Decision::Skip(Skip::GatedAtCommit {
+                    name: name.to_string(),
+                    coverage,
+                })
             }
             crate::hooks::run_tests::PairVerdict::Deferred(n) => {
                 Decision::Skip(Skip::DeferredAtCommit(name.to_string(), n))
@@ -1515,19 +1521,21 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 passed.push(check.name().to_string());
                 continue;
             }
-            Decision::Skip(Skip::GatedAtCommit(name, tip)) => {
-                // The suffix only when the TIP vouched alone: the plain line
-                // has always meant "every pushed commit carries its stamp",
-                // and a reader who pushed an unstamped commit deserves to see
-                // which commit the skip rests on.
-                let suffix = tip
-                    .map(|sha| format!(" (tip {sha} passed on the same code)"))
-                    .unwrap_or_default();
+            Decision::Skip(Skip::GatedAtCommit { name, coverage }) => {
                 crate::say!(
-                    "{} {} gated at commit instead — not repeating it here{suffix}",
+                    "{} {} gated at commit instead — not repeating it here",
                     valid_sign(),
                     highlight(&name),
                 );
+                // A second line only when a TIP vouched alone: the plain line
+                // has always meant "every pushed commit carries its stamp",
+                // and a reader who pushed an unstamped commit deserves to see
+                // what the skip rests on. Its own line, so the first stays
+                // within 80 columns; "the code at", because a plans-only tip
+                // never ran the gate itself — its canonical tree did.
+                if let crate::hooks::run_tests::Coverage::Tips(tips) = coverage {
+                    crate::say!("    the code at tip {} passed at commit", tips.join(", "));
+                }
                 passed.push(check.name().to_string());
                 continue;
             }

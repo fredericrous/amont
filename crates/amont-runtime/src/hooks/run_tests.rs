@@ -121,21 +121,28 @@ pub(crate) fn gate_names_declared(declared: &[crate::manifest::External]) -> Vec
         .collect()
 }
 
+/// How a `Gated` push was covered, so its line can say what the skip rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Coverage {
+    /// Every pushed commit in the pair's scope carries its stamp.
+    EveryCommit,
+    /// At least one ref had a commit with no stamp, and was covered by its
+    /// TIP alone: these tips' own stamp keys hold the pair token (ADR-0019).
+    /// Short shas, one per such ref.
+    Tips(Vec<String>),
+}
+
 /// What a declared PRE-PUSH external should do about a same-named
 /// commit-time declaration — the general form of the npm gate's stamp
 /// suppression, for names the GATE list never heard of. Declaring `test`
 /// (or `lint`, or anything) at BOTH stages is the contract: the pre-commit
 /// side earns per-commit stamps, and the pre-push side runs only for pushes
-/// carrying commits with no record of it.
+/// carrying commits with no record of it, unless a ref's tip itself passed.
 pub(crate) enum PairVerdict {
     /// No blocking commit-time pair covers this push — run normally.
     NotPaired,
-    /// Every judged ref is covered — skip, saying so. `None` when every pushed
-    /// commit in the pair's scope carries its stamp; `Some(short sha)` when at
-    /// least one ref was covered by its TIP alone (its own stamp key holds the
-    /// pair token, older unstamped commits notwithstanding), so the line can
-    /// name the commit that vouched.
-    Gated(Option<String>),
+    /// Every judged ref is covered — skip, saying so, and how.
+    Gated(Coverage),
     /// A pair exists but this many pushed commits carry no record of it —
     /// run, saying why the declaration's word was not enough.
     Unstamped(usize),
@@ -207,8 +214,8 @@ pub(crate) fn pair_verdict(
     let mut unstamped = 0usize;
     let mut deferred = 0usize;
     let mut judged_any = false;
-    // The first ref covered by its tip alone, as a short sha for the line.
-    let mut tip_vouched: Option<String> = None;
+    // The refs covered by their tip alone, as short shas for the line.
+    let mut tips: Vec<String> = Vec::new();
     // Under `onBusy defer`, a commit whose gate the busy policy deferred is
     // not "unstamped": its twin defers too (ADR-0013). `AMONT_ON_BUSY=wait`
     // turns this off and the twin runs.
@@ -247,28 +254,6 @@ pub(crate) fn pair_verdict(
             // out loud would read as reassurance.
             return PairVerdict::NotPaired;
         }
-        // The tip is what ships. When its OWN stamp key — the tree's note, its
-        // declared-input fingerprints, its canonical tree (ADR-0011, ADR-0012),
-        // exactly what `stamps_for` reads — holds the pair token, the code
-        // being pushed passed the commit-time gate, and an older commit that
-        // never earned a stamp (relais's hookless `commit-tree`, a deferral)
-        // changes nothing about it. A changed declared input or gate script
-        // gives the tip a different key, so it vouches for nothing and the
-        // per-commit rule below decides.
-        //
-        // Never for a `files` pair: its command saw only that commit's
-        // matched paths, so its stamp says nothing about the rest of the tree.
-        //
-        // AFTER the two guards above, never before: a ref whose changes the
-        // pair's scope does not cover is `NotPaired`, whatever its tip says.
-        if !pair.files
-            && crate::gate_stamp::stamps_for(std::slice::from_ref(&r.local_oid))
-                .get(&r.local_oid)
-                .is_some_and(|s| s.contains(&pair_token))
-        {
-            tip_vouched.get_or_insert_with(|| r.local_oid.chars().take(8).collect());
-            continue;
-        }
         let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
         let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
         let stamps = crate::gate_stamp::stamps_for(&ids);
@@ -287,6 +272,37 @@ pub(crate) fn pair_verdict(
             .filter(|(commit, _)| !stamps.get(commit).is_some_and(|s| s.contains(&pair_token)))
             .map(|(commit, _)| commit.clone())
             .collect();
+        // The tip is what ships. When its OWN stamp key — the tree's note, its
+        // declared-input fingerprints, its canonical tree (ADR-0011, ADR-0012),
+        // exactly what `stamps_for` read above — holds the pair token, the
+        // code being pushed passed the commit-time gate, and an older commit
+        // that never earned a stamp (relais's hookless `commit-tree`, a
+        // deferral) changes nothing about it (ADR-0019). A changed declared
+        // input or gate script gives the tip a different key, so it vouches
+        // for nothing and the per-commit count stands.
+        //
+        // Asked only when some commit is missing its stamp: a fully stamped
+        // ref is covered the old way, and its line keeps meaning so.
+        //
+        // Never for a `files` pair: its command saw only that commit's
+        // matched paths, so its stamp says nothing about the rest of the tree.
+        // holds-until: every pair without `files` judges the whole tree. A
+        // command that picks the staged paths itself (`lint-staged`,
+        // `--cached`, `--staged`) and has a pre-push twin breaks that; none
+        // existed in the fleet on 2026-11-06 (docs/custom-checks.md).
+        //
+        // AFTER the coverage guards above, never before: a ref whose changes
+        // the pair's scope does not cover is `NotPaired`, whatever its tip
+        // says.
+        if !missing.is_empty()
+            && !pair.files
+            && stamps
+                .get(&r.local_oid)
+                .is_some_and(|s| s.contains(&pair_token))
+        {
+            tips.push(crate::gate_evidence::short(&r.local_oid).to_string());
+            continue;
+        }
         let excused = if defer {
             crate::gate_stamp::deferred_for(&missing, &pair.script)
         } else {
@@ -306,7 +322,11 @@ pub(crate) fn pair_verdict(
     } else if deferred > 0 {
         PairVerdict::Deferred(deferred)
     } else {
-        PairVerdict::Gated(tip_vouched)
+        PairVerdict::Gated(if tips.is_empty() {
+            Coverage::EveryCommit
+        } else {
+            Coverage::Tips(tips)
+        })
     }
 }
 

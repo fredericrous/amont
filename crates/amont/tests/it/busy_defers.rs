@@ -758,7 +758,7 @@ fn a_stamped_tip_over_a_deferred_commit_is_gated() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("gated at commit instead"), "{out}");
     assert!(
-        out.contains(&format!("(tip {} passed on the same code)", &tip[..8])),
+        out.contains(&format!("the code at tip {} passed at commit", &tip[..8])),
         "{out}"
     );
     assert!(!out.contains("deferred to CI at commit"), "{out}");

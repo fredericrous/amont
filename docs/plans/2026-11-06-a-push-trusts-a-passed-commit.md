@@ -173,6 +173,18 @@ re-testing code that had passed, and t09 traced it to `pair_verdict`.
     versions; it is noted for the programme, not fixed here.
   - A first probe with scope `*.rs` stayed `NotPaired`: the commit added
     `Cargo.lock`, which that scope does not cover. That is the guard working.
+- **After implementation review (round 1 fixes):**
+  - The tip line prints only when a ref had an unstamped commit. It is a
+    second indented line, `the code at tip <sha> passed at commit`, and names
+    every such tip. A fully stamped range prints the plain line alone
+    (asserted in `a_builtin_push_gate_is_gated_by_its_commit_time_namesake`).
+  - New test: `a_changed_declared_input_at_the_tip_does_not_vouch`, the
+    `attest-inputs` route. The decision-log entry that skipped it is
+    superseded.
+  - `gate_pairs` + `busy_defers`: 27 pass.
+  - Revert-red, tip check off: the same 4 fail.
+  - Revert-red, `!pair.files` removed:
+    `a_files_pair_never_lets_its_tip_vouch_for_the_range` fails.
 - **After Phase 2:** `amont --version` prints 2.0.1, and a push of a hookless
   commit below a stamped tip prints "gated at commit instead" with the
   vouching commit's short SHA.

@@ -4,7 +4,7 @@ status: accepted
 decisions:
   - key: hooks.pair-covered-by-tip
     scope: pre-push
-    choice: "A pushed ref of a declared pair WITHOUT the `files` marker is covered when its tip's own stamp key — the tree note, its declared-input fingerprints and its canonical tree, as `gate_stamp::stamps_for` reads them — holds the commit-time pair's token, checked after the coverage guards; a covered ref adds no unstamped or deferred commit, and the gated line names the tip. Otherwise every scoped commit in the range must carry the stamp, as before"
+    choice: "A pushed ref of a declared pair WITHOUT the `files` marker is covered when its tip's own stamp key — the tree note, its declared-input fingerprints and its canonical tree, as `gate_stamp::stamps_for` reads them — holds the commit-time pair's token, checked after the coverage guards; a covered ref adds no unstamped or deferred commit, and a second line names the tip when an older commit was unstamped. Otherwise every scoped commit in the range must carry the stamp, as before"
     first: true
     reason: "The per-commit rule ran the push suite whenever ONE commit in the range lacked a stamp, even when the tip's whole tree had passed: relais's hookless commits, rebases and busy-host deferrals re-ran 19–50 min suites on code already verified (decisions programme proportional-ship, t00 and t09: about 209 of 516 pre-push minutes over 10 PRs)"
 ---
@@ -44,8 +44,11 @@ cover stays `NotPaired`, however well stamped its tip.
 **Otherwise nothing changes.** The per-commit rule, the deferral excuse and the
 `Unstamped(n)` count apply as before.
 
-**Say what the skip rests on.** When a tip covered a ref, the gated line adds
-`(tip <short sha> passed on the same code)`; the plain line keeps meaning
+**Say what the skip rests on.** Only when a ref had an unstamped commit and
+its tip covered it, a second line follows the gated one:
+`the code at tip <short sha> passed at commit`, every such tip named. "The
+code", because a plans-only tip never ran the gate itself; its canonical tree
+did. A fully stamped push prints the plain line alone, which keeps meaning
 "every pushed commit carries its stamp".
 
 ## Consequences

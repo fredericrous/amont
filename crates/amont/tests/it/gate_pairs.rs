@@ -158,7 +158,7 @@ fn an_opt_in_marker_does_not_hide_an_unstamped_commit() {
         "a stamped tip covers its ref: {out}"
     );
     assert!(
-        out.contains(&format!("(tip {} passed on the same code)", &tip[..8])),
+        out.contains(&format!("the code at tip {} passed at commit", &tip[..8])),
         "the line names the tip it rests on: {out}"
     );
     assert_eq!(runs(&r), 2, "the push-side twin must not run again");
@@ -311,6 +311,12 @@ fn a_builtin_push_gate_is_gated_by_its_commit_time_namesake() {
         out.contains("cargo-test") && out.contains("gated at commit instead"),
         "the built-in must defer to its namesake, by name: {out}"
     );
+    // Every pushed commit is stamped: the plain line, with no tip line, keeps
+    // meaning exactly that (ADR-0019).
+    assert!(
+        !out.contains("the code at tip"),
+        "a fully stamped range names no tip: {out}"
+    );
 }
 
 /// And it is fail-closed: a `--no-verify` commit carries no stamp, so the
@@ -425,7 +431,7 @@ fn a_plan_only_tip_over_a_stamped_commit_is_gated_despite_an_unstamped_one() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("gated at commit instead"), "{out}");
     assert!(
-        out.contains(&format!("(tip {} passed on the same code)", &tip[..8])),
+        out.contains(&format!("the code at tip {} passed at commit", &tip[..8])),
         "{out}"
     );
     assert_eq!(runs(&r), 1, "the push-side twin must not run: {out}");
@@ -498,9 +504,10 @@ fn a_stamped_tip_cannot_cover_files_outside_the_pairs_scope() {
 }
 
 /// Codex's case: a repository-owned gate script changed at the tip, outside
-/// the trigger scope. The tip's key differs from the verified tree's (the
-/// script is in the tree, not a plan), so it vouches for nothing and the
-/// unstamped scoped commit below brings the twin back.
+/// the trigger scope. The tip's commit-time gate judged nothing (`Inert`), so
+/// the tip's tree carries no stamp, and its canonical key differs from the
+/// verified tree's (the script is not a plan): an unstamped tip tree vouches
+/// for nothing, and the unstamped scoped commit below brings the twin back.
 #[test]
 fn a_changed_gate_script_at_the_tip_does_not_vouch() {
     if missing("node") {
@@ -516,10 +523,52 @@ fn a_changed_gate_script_at_the_tip_does_not_vouch() {
         "require('fs').appendFileSync('gate.log','x') // edited\n",
     );
     hooked_commit(&r, "chore: edit the gate");
+    assert_eq!(runs(&r), 1, "only the verified commit ran the gate");
     let (code, out) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("gated at commit instead"), "{out}");
     assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
+}
+
+/// The declared-input route (ADR-0011): with an `attest-inputs` spec, a
+/// tree's stamp travels by the fingerprint of the gate's declared inputs. A
+/// tip that changes only a declared input outside the trigger scope has a new
+/// fingerprint, so it vouches for nothing, and the unstamped scoped commit
+/// below brings the twin back.
+#[test]
+fn a_changed_declared_input_at_the_tip_does_not_vouch() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage("data.in", "one\n");
+    r.stage(
+        ".github/attest-inputs",
+        "check *.txt data.in gate.js amont.conf\n",
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("amont.conf", PAIR);
+    r.commit("chore: the pair");
+    trust_and_install(&r);
+
+    r.stage("a.txt", "dodged\n");
+    r.commit("feat: dodge the gate");
+    r.stage("b.txt", "verified\n");
+    hooked_commit(&r, "feat: through the gate");
+    assert_eq!(runs(&r), 1);
+    r.stage("data.in", "two\n");
+    hooked_commit(&r, "chore: change a declared input");
+    assert_eq!(runs(&r), 1, "data.in does not fire a *.txt gate");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("gated at commit instead"), "{out}");
+    assert!(out.contains("no record of it"), "{out}");
+    assert_eq!(runs(&r), 2, "the twin ran: {out}");
 }
 
 /// Two refs: one covered by its stamped tip, one whose tip dodged the gate.
