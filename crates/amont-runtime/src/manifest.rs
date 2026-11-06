@@ -1066,13 +1066,9 @@ impl External {
         // index, and the repository it belongs to, in variables git never
         // reads, so a suite's fixture repositories can neither write into it
         // nor, honouring the git-dir binding, read it by mistake; a command
-        // declared `index` reads it through git, as `GIT_INDEX_FILE`.
-        //
-        // Removed first: a value this process inherited (a commit made from
-        // inside another gate) names an index that is not this one, and a
-        // push has none at all.
-        cmd.env_remove(crate::hooks::common::INDEX_ENV);
-        cmd.env_remove(crate::hooks::common::INDEX_GIT_DIR_ENV);
+        // declared `index` reads it through git, as `GIT_INDEX_FILE`. Any
+        // value this process inherited is already gone: `strip_git_env`
+        // drops it, so a push gate never sees one.
         if self.stage == Stage::PreCommit {
             // An unusable check never runs; it reads nothing.
             let runs_on = match &self.kind {

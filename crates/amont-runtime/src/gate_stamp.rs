@@ -113,6 +113,16 @@ pub const INPUTS_REF: &str = "amont-gate-inputs";
 pub const CLUSTER_REF: &str = "amont-gate-cluster";
 pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
 
+/// Where a gate that COMPLETED without passing is recorded (ADR-0018): a
+/// warn-severity failure, or a gate that could not run. The same note format,
+/// keyed by the tree, holding `gate_identity` tokens. Never `amont-gate`: a
+/// completion is not a pass, and nothing reads this ref to attest or to skip a
+/// gate in an inline push. Only the refusing push (`amont.pushGates refuse`)
+/// and land's own push read it, so that what a rehearsal or land's pre-stage
+/// already ran is not refused as "not run".
+pub const DONE_REF: &str = "amont-gate-done";
+pub const DONE_FULL_REF: &str = "refs/notes/amont-gate-done";
+
 /// The reserved first word of a provenance line: where a token came from
 /// (platform, observed imageID, Job UID). Never a token, never a run, and
 /// every reader of tokens drops it.
@@ -861,6 +871,107 @@ pub fn stamp_push(commit: &str, tree: &str, gates: &[String]) -> bool {
     written
 }
 
+/// How a gate completed without passing (ADR-0018). The kind is part of the
+/// record, so each answers only for as long as it should.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completion {
+    /// The gate reported a warning itself.
+    Warned,
+    /// The gate failed while its severity was `warn`: answers only while it
+    /// still is, since a gate set back to `block` must run again.
+    FailedUnderWarn,
+    /// The gate could not run (a tool missing): answers for an hour, then
+    /// the gate is tried again.
+    Unavailable,
+}
+
+/// How long an `Unavailable` completion answers for.
+const UNAVAILABLE_FOR_SECS: u64 = 60 * 60;
+
+/// The record word for `token` completed as `how`, at `now`.
+fn completion_word(how: Completion, token: &str, now: u64) -> String {
+    match how {
+        Completion::Warned => format!("warned:{token}"),
+        Completion::FailedUnderWarn => format!("failed-under-warn:{token}"),
+        Completion::Unavailable => format!("unavailable:{now}:{token}"),
+    }
+}
+
+/// Does record word `word` answer for `token` now, under `severity`?
+fn completion_answers(word: &str, token: &str, severity: crate::check::Severity, now: u64) -> bool {
+    if word.strip_prefix("warned:") == Some(token) {
+        return true;
+    }
+    if word.strip_prefix("failed-under-warn:") == Some(token) {
+        return severity == crate::check::Severity::Warn;
+    }
+    word.strip_prefix("unavailable:")
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(at, tok)| {
+            tok == token
+                && at
+                    .parse::<u64>()
+                    .is_ok_and(|at| now.saturating_sub(at) <= UNAVAILABLE_FOR_SECS)
+        })
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Record on `tree` that the gates behind `tokens` completed there without
+/// passing, as `how` (ADR-0018). Merged into the note; an `Unavailable`
+/// record replaces the one before it for the same gate, so a tree's note does
+/// not grow by a word per run. The error names the tree, for the caller to
+/// say: a record that was not written costs a refused push.
+pub fn record_done(tree: &str, tokens: &[String], how: Completion) -> Result<(), String> {
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    let now = now_secs();
+    let mut note = note_in(DONE_REF, tree);
+    if how == Completion::Unavailable {
+        note.tokens.retain(|word| {
+            !word
+                .strip_prefix("unavailable:")
+                .and_then(|rest| rest.split_once(':'))
+                .is_some_and(|(_, token)| tokens.iter().any(|t| t == token))
+        });
+    }
+    let words: Vec<String> = tokens
+        .iter()
+        .map(|t| completion_word(how, t, now))
+        .collect();
+    note.add_tokens(&words);
+    if write_note_in(DONE_REF, tree, &note) {
+        Ok(())
+    } else {
+        Err(format!(
+            "git refused to record the completed gates on {tree}"
+        ))
+    }
+}
+
+/// Did the gate behind `token` complete without passing on the tree of every
+/// one of `commits`, by a record that still answers under `severity`? An
+/// unreadable tree or note is "no", the direction that refuses rather than
+/// skips.
+pub fn done_on_every(commits: &[String], token: &str, severity: crate::check::Severity) -> bool {
+    let now = now_secs();
+    !commits.is_empty()
+        && commits.iter().all(|c| {
+            crate::git::stdout(&["rev-parse", &format!("{c}^{{tree}}")]).is_some_and(|tree| {
+                note_in(DONE_REF, &tree)
+                    .tokens
+                    .iter()
+                    .any(|word| completion_answers(word, token, severity, now))
+            })
+        })
+}
+
 /// pre-push: which of `commits` carry a stamp, and for which scripts.
 ///
 /// One `notes list` narrows the reads to commits that have a note at all;
@@ -1030,6 +1141,53 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// A completion answers only as long as it should (ADR-0018): a failure
+    /// under `warn` stops answering once the gate blocks again, and a gate
+    /// that could not run is tried again after an hour.
+    #[test]
+    fn a_completion_answers_only_while_it_should() {
+        use crate::check::Severity::{Block, Warn};
+        let now = 1_700_000_000;
+        let word = |how| completion_word(how, "gate-tok", now);
+        assert!(completion_answers(
+            &word(Completion::Warned),
+            "gate-tok",
+            Block,
+            now
+        ));
+        assert!(completion_answers(
+            &word(Completion::FailedUnderWarn),
+            "gate-tok",
+            Warn,
+            now
+        ));
+        assert!(!completion_answers(
+            &word(Completion::FailedUnderWarn),
+            "gate-tok",
+            Block,
+            now
+        ));
+        let unavailable = word(Completion::Unavailable);
+        assert!(completion_answers(
+            &unavailable,
+            "gate-tok",
+            Block,
+            now + 3600
+        ));
+        assert!(!completion_answers(
+            &unavailable,
+            "gate-tok",
+            Block,
+            now + 3601
+        ));
+        assert!(!completion_answers(
+            &word(Completion::Warned),
+            "other-tok",
+            Warn,
+            now
+        ));
+    }
+
     /// A real repository, because every function here is a conversation with
     /// git — hand-rolled fixtures would test the conversation we imagined.
     fn repo(name: &str) -> PathBuf {
@@ -1102,6 +1260,36 @@ mod tests {
             );
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `unavailable` record replaces the one before it for the same gate,
+    /// and leaves every other gate's record alone: a tree's note does not grow
+    /// by a word per run (ADR-0018).
+    #[test]
+    fn an_unavailable_record_replaces_its_predecessor_only() {
+        let dir = repo("done-unavailable");
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "chore: a"]);
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let one = |t: &str| vec![t.to_string()];
+            record_done(&tree, &one("suite@a"), Completion::Unavailable).expect("first");
+            record_done(&tree, &one("lint@b"), Completion::Unavailable).expect("other gate");
+            record_done(&tree, &one("lint@b"), Completion::Warned).expect("a warning");
+            record_done(&tree, &one("suite@a"), Completion::Unavailable).expect("again");
+            let words = note_in(DONE_REF, &tree).tokens;
+            let unavailable_for = |token: &str| {
+                words
+                    .iter()
+                    .filter(|w| w.starts_with("unavailable:") && w.ends_with(&format!(":{token}")))
+                    .count()
+            };
+            assert_eq!(unavailable_for("suite@a"), 1, "{words:?}");
+            assert_eq!(unavailable_for("lint@b"), 1, "{words:?}");
+            assert!(words.contains(&"warned:lint@b".to_string()), "{words:?}");
+        });
+        let _ = std::fs::remove_dir_all(&dir); // a temp fixture; `repo` clears it on the next run
     }
 
     #[test]

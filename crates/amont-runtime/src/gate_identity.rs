@@ -47,6 +47,22 @@ pub fn token(externals: &[External], name: &str) -> Option<String> {
     }
 }
 
+/// Is the gate called `name` a declared command whose program is not
+/// installed here (ADR-0018)? Such a gate has no identity, so no stamp or
+/// record can ever answer for it. Any other reason a token cannot be made (a
+/// hash git would not compute, a built-in) is not this: those gates stay owed.
+pub fn program_missing(externals: &[External], name: &str) -> bool {
+    let declared = externals.iter().find(|e| e.id == name).or_else(|| {
+        externals
+            .iter()
+            .find(|e| e.stage == Stage::PreCommit && e.short_name == name)
+    });
+    match declared.map(|ext| &ext.kind) {
+        Some(Kind::Runnable { program, .. }) => binary_identity(program).is_none(),
+        Some(Kind::Unusable { .. }) | None => false,
+    }
+}
+
 /// The token for one declared check, written under `name` (the script name at
 /// commit time, the id at push time).
 pub fn external_token(ext: &External, name: &str) -> Option<String> {
@@ -307,6 +323,20 @@ mod tests {
             before,
             "a pre-push token is unchanged"
         );
+    }
+
+    /// Only a declared command whose program cannot be found is "missing":
+    /// a built-in, or an installed program, is not, whatever its token does.
+    #[test]
+    fn only_a_declared_program_that_is_not_there_is_missing() {
+        let externals = crate::manifest::parse(
+            "pre-push gone * block definitely-not-a-program-xyz --x\n\
+             pre-push here * block sh -c true\n",
+        );
+        assert!(program_missing(&externals, "pre-push-gone"));
+        assert!(!program_missing(&externals, "pre-push-here"));
+        assert!(!program_missing(&externals, "pre-push-cargo-test"));
+        assert!(!program_missing(&externals, "no-such-gate"));
     }
 
     #[test]

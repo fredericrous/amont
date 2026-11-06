@@ -96,6 +96,9 @@ keys:
   hooks.cluster-detached:
     description: How a rehearsal's platform-independent gates run on the cluster after the laptop has left, and how their passes come back
     scopes: [hook-binary]
+  hooks.gates-before-connection:
+    description: Whether a heavy push gate may run while git holds the remote's connection open, and how amont land runs it first
+    scopes: [hook-binary]
   # --- The command line ------------------------------------------------------
   cli.all-files-semantics:
     description: What `--all-files` implies beyond widening the file set

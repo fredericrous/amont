@@ -171,6 +171,8 @@ fn commit_a(r: &Repo, content: &str, msg: &str) -> String {
 #[test]
 fn the_push_journey() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("gate.js", &gate_js(&r));
     r.stage("a.txt", "seed\n");
     r.stage("amont.conf", CONF);

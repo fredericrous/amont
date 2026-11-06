@@ -107,11 +107,15 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
                  stdin. Exits 1 if anything blocking was found.
                  [<path>…] [--stdin-filename <path>] [--format text|json]
 
-  land           push this branch, then read the remote back to prove the ref
-                 moved. Exits 0 landed, 1 refused, 3 unreachable or unverified,
-                 4 accepted but the expected tip was not observed (2 is usage)
+  land           run the push gates on a snapshot of this branch with no
+                 connection open, push it, then read the remote back to prove
+                 the ref moved. Exits 0 landed, 1 refused (a gate failed, or
+                 the push was refused), 3 unreachable or unverified, 4 accepted
+                 but the expected tip was not observed (2 is usage)
                  [--force: lease on the tip it just read] [--json: stdout]
                  [--dry-run: resolve the target only; no network, no push]
+                 [--tag <name>: land that existing tag instead, never moving
+                  one already on the remote; a v* tag gets release audits]
   slot run       run a heavy command in a host slot, queued with every other
                  one on this machine; exits 75 without running it when no
                  slot frees in time [--weight N] [--max-wait S, default 90]
@@ -381,6 +385,10 @@ fn main() {
     // only because `dispatch::pre_push` happened to ask on the main thread
     // first — an ordering nothing stated and nothing tested.
     let _ = amont_runtime::rehearsal::in_snapshot();
+    // The same, for the variable `amont land` sets on its own push.
+    amont_runtime::rehearsal::land_env();
+    amont_runtime::rehearsal::prestage();
+    amont_runtime::rehearsal::source_worktree();
     match parse(std::env::args_os().skip(1).collect()) {
         Invocation::Help => {
             print!("{USAGE}");
@@ -435,7 +443,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         ),
         Sub::TreeParity => (&[], &[]),
         Sub::Warm => (&["--worker"], &[]),
-        Sub::Land => (&["--force", "--json", "--dry-run"], &[]),
+        Sub::Land => (&["--force", "--json", "--dry-run"], &["--tag"]),
         Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),
@@ -588,7 +596,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // `amont rehearse` — the push gate on a snapshot of HEAD, in the
         // background. The verb the post-commit hook spawns (`--worker`) and
         // the one a person or agent types to start, follow or stop it.
-        Sub::Rehearse => amont_runtime::rehearsal::command(args),
+        Sub::Rehearse => {
+            amont_runtime::rehearsal::command(args, amont_runtime::rehearsal::prestage())
+        }
         // Text against text: no manifest trust needed, nothing executed.
         // Prints each problem as `file:line: what`, exits 1 if any.
         Sub::TreeParity => {
@@ -1007,6 +1017,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         }
         other => other,
     };
+    let audits = amont_runtime::hooks::audit::Ledger::default();
     let push = if named
         .as_deref()
         .is_some_and(|n| needs_synthetic_push_refs(n, &manifest))
@@ -1045,6 +1056,9 @@ fn run_mode(args: &[OsString]) -> i32 {
         manifest: &manifest,
         settings: &settings,
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
+        land: amont_runtime::rehearsal::land_env(),
+        audits: &audits,
+        source_worktree: amont_runtime::rehearsal::source_worktree(),
     };
     let verdict = match named {
         // `run_named` lives in the runtime so `registry::lookup` — and the
@@ -1266,6 +1280,7 @@ fn pointer_path(block: &std::path::Path) -> Option<PathBuf> {
 /// Dispatch a git-invoked hook. `args` is whatever git passed, verbatim.
 fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     let push = pushrefs::PushRefs::default();
+    let audits = amont_runtime::hooks::audit::Ledger::default();
     // The manifest is parsed ONCE, here, at the process boundary — the same
     // shape as the push refs above it: owned by the entrypoint, lent to
     // everything downstream through the Ctx. git invokes hooks with the
@@ -1286,6 +1301,9 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
         manifest: &manifest,
         settings: &settings,
         handed_to_cluster: amont_runtime::rehearsal::handed_to_cluster(),
+        land: amont_runtime::rehearsal::land_env(),
+        audits: &audits,
+        source_worktree: amont_runtime::rehearsal::source_worktree(),
     };
     // THE process boundary: the one place a hook result becomes a number.
     // Everything above speaks `Verdict`. An unknown name is NOT the usage

@@ -100,7 +100,10 @@ use — so `npx` and friends work on Windows, where a bare `Command::new` cannot
 start a `.cmd`. On `pre-push` it runs once per pushed ref, over that ref's
 changed files, and — with [`amont.testPushedTree`](configuration.md#amonttestpushedtree--test-what-you-are-pushing)
 — in a throwaway checkout of that ref's tip rather than your working tree,
-exactly as the built-in test suites do.
+exactly as the built-in test suites do. A scoped `pre-push` gate does not run
+while git holds the connection open: by default a bare `git push` whose gates
+have not run on its tree is refused, and `amont land` runs them first
+([`amont.pushGates`](configuration.md#amontpushgates--never-run-a-heavy-gate-on-an-open-connection)).
 
 ## Your command gets the file list
 
@@ -218,7 +221,8 @@ platform. Two things are specific to this lane. The pod gets a shallow checkout
 of the tree (depth 1), so the gate must read only the working tree and need no
 git history. And it gets the gate's command as written, in the pinned image, with
 `clusterPrepare` first when set: a gate whose tool exists only on your machine
-fails there, and runs here at the push. The machine keys, what a pass needs and
+fails there, and runs here: in `amont land` (or in the push itself under
+`amont.pushGates inline`). The machine keys, what a pass needs and
 the off switches are in
 [configuration](configuration.md#amontrehearsecluster--a-rehearsal-that-outlives-the-laptop).
 

@@ -631,6 +631,9 @@ fn run_stage_traced(
                 manifest: ctx.manifest,
                 settings: ctx.settings,
                 handed_to_cluster: ctx.handed_to_cluster,
+                land: ctx.land,
+                audits: ctx.audits,
+                source_worktree: ctx.source_worktree,
             };
             let slot = enter(**check, || severities.of(**check));
             let outcome = deferred_or(&slot, check.run(&sub));
@@ -900,6 +903,9 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
         manifest: ctx.manifest,
         settings: ctx.settings,
         handed_to_cluster: ctx.handed_to_cluster,
+        land: ctx.land,
+        audits: ctx.audits,
+        source_worktree: ctx.source_worktree,
     };
     // Under quiet, a check run by name is captured like one inside its stage
     // — one slot, its tool's output to a log, one line on a pass — whatever
@@ -979,6 +985,132 @@ pub enum Named {
     Ambiguous(Vec<String>),
 }
 
+/// Why a pre-push gate need not run in this push (ADR-0018: the refusal and
+/// the loop ask the same question, through `pre_push`'s `decide`).
+enum Skip {
+    /// The rehearsal that made this snapshot gave it to the cluster.
+    HandedToCluster,
+    /// Its stamp, or its cluster token, is on every pushed tip.
+    Stamped,
+    /// It completed without passing on every pushed tip's tree, in a
+    /// rehearsal or land's pre-stage (ADR-0018). Never a pass: it is not
+    /// attested, and only a push that would otherwise refuse honours it.
+    CompletedEarlier,
+    /// Its commit-time twin was proved on the cluster for every tip.
+    TwinOnCluster(String),
+    /// Its commit-time pair stamped every pushed commit.
+    GatedAtCommit(String),
+    /// Its commit-time pair was deferred to CI on this many pushed commits.
+    DeferredAtCommit(String, usize),
+}
+
+/// What `decide` says about one gate: skip it, for a reason, or run it —
+/// noting the commit-time pair that left this many pushed commits unstamped.
+enum Decision {
+    Skip(Skip),
+    Run {
+        unstamped_pair: Option<(String, usize)>,
+    },
+}
+
+/// `amont.pushStamps`, as the refusal needs it: whether anything run before
+/// the push can let it skip its gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StampReuse {
+    On,
+    Off,
+}
+
+/// The tag a push carries, if it pushes one: its refusal names
+/// `amont land --tag`, since `amont land` alone pushes the branch.
+fn pushed_tag(refs: &[crate::pushrefs::PushRef]) -> Option<&str> {
+    refs.iter()
+        .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+        .find_map(|r| r.remote_ref.strip_prefix("refs/tags/"))
+}
+
+/// The bare push's refusal (ADR-0018), one command per line, each line at most
+/// 80 columns, so each copies cleanly. With stamp reuse off, nothing amont can
+/// run beforehand lets this push skip its gates, so `rehearse` is not
+/// offered. A tag push is offered `amont land --tag`, never the branch
+/// remedies, whose records do not answer for a release.
+pub(crate) fn push_refusal(
+    short: &str,
+    missing: &[&str],
+    reuse: StampReuse,
+    tag: Option<&str>,
+) -> Vec<String> {
+    let mut out = vec![format!(
+        "amont: push refused: {} push gate{} {} not run on {short}:",
+        missing.len(),
+        if missing.len() == 1 { "" } else { "s" },
+        if missing.len() == 1 { "has" } else { "have" },
+    )];
+    out.extend(wrap_names(missing));
+    let land = match tag {
+        Some(tag) => format!("amont land --tag {tag}"),
+        None => "amont land".to_string(),
+    };
+    if reuse == StampReuse::Off {
+        out.push("    stamp reuse is off (amont.pushStamps false); turn it on:".to_string());
+        out.push("        git config amont.pushStamps true".to_string());
+        out.push("    then run the gates before git connects, and push:".to_string());
+        out.push(format!("        {land}"));
+    } else {
+        out.push("    run them before git connects, then push:".to_string());
+        out.push(format!("        {land}"));
+        if tag.is_none() {
+            out.push("    or stamp this tree first:".to_string());
+            out.push("        amont rehearse --wait".to_string());
+        }
+    }
+    out.push("    or run them in this push:".to_string());
+    out.push("        git config amont.pushGates inline".to_string());
+    out
+}
+
+/// The refusal inside `amont land`'s own push, led by the sentinel `land`
+/// matches. `land` is what land's pre-stage saw: a pushed range whose remote
+/// side differs is the remote moving under land; anything else is evidence
+/// the pre-stage should have left and did not.
+pub(crate) fn land_refusal(
+    land: &crate::rehearsal::LandLine,
+    refs: &[crate::pushrefs::PushRef],
+    missing: &[&str],
+) -> Vec<String> {
+    let moved = refs
+        .iter()
+        .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+        .any(|r| r.remote_oid != land.remote_tip);
+    let mut out = Vec::new();
+    if moved {
+        out.push(crate::land::LAND_REMOTE_MOVED.to_string());
+        out.push("amont: the remote moved during land; run amont land again".to_string());
+    } else {
+        out.push(crate::land::LAND_EVIDENCE_MISSING.to_string());
+        out.push("amont: land's pre-stage left no evidence for:".to_string());
+    }
+    out.extend(wrap_names(missing));
+    out
+}
+
+/// Gate names as indented lines of at most 80 columns.
+pub(crate) fn wrap_names(names: &[&str]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::from("       ");
+    for name in names {
+        if line.len() + 1 + name.len() > 80 && !line.trim().is_empty() {
+            lines.push(std::mem::replace(&mut line, String::from("       ")));
+        }
+        line.push(' ');
+        line.push_str(name);
+    }
+    if !line.trim().is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 pub fn pre_push(ctx: &Ctx) -> Verdict {
     let settings = ctx.settings;
     // `amont.treeLintWait` counts from HERE, so no earlier wait (a test
@@ -1039,8 +1171,19 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .get()
             .iter()
             .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
-            .map(|r| r.local_oid.clone())
+            // An annotated tag pushes its tag object; what was tested, stamped
+            // and recorded is the commit it points at (ADR-0018).
+            .map(|r| {
+                crate::git::stdout(&[
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    &format!("{}^{{commit}}", r.local_oid),
+                ])
+                .unwrap_or_else(|| r.local_oid.clone())
+            })
             .collect();
+        t.sort_unstable();
         t.dedup();
         t
     };
@@ -1061,6 +1204,36 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     } else {
         String::new()
     };
+    // Inside a rehearsal snapshot only the content gates make sense: the
+    // unscoped checks ask about a PUSH — its branch name, its target, its
+    // secrets — and no push is happening. Said once, not per check.
+    let rehearsing = crate::rehearsal::in_snapshot();
+    let handed_to_cluster = ctx.handed_to_cluster;
+    // The push `amont land` makes after its pre-stage ran the gates
+    // (ADR-0018), as `<sha> <remote tip>`.
+    let land = match ctx.land {
+        crate::rehearsal::LandEnv::Absent => None,
+        crate::rehearsal::LandEnv::Valid(line) => Some(line),
+        crate::rehearsal::LandEnv::Malformed(raw) => {
+            eprintln!(
+                "amont: push refused: {} is not `<sha> <remote tip>` ({raw:?})",
+                crate::rehearsal::LAND_ENV
+            );
+            eprintln!(
+                "    unset it, then push again:  unset {}",
+                crate::rehearsal::LAND_ENV
+            );
+            return Verdict::Block;
+        }
+    };
+    // ADR-0018: a heavy gate never runs while git holds the remote's
+    // connection open, unless this machine asked for that
+    // (`amont.pushGates inline`). Land's own push expects its pre-stage's
+    // evidence; a bare push under `refuse` (the default) refuses at once.
+    // Neither waits for a background rehearsal: that wait would itself hold
+    // the connection.
+    let gate_before_push =
+        !rehearsing && (land.is_some() || crate::rehearsal::refuse_push_gates(settings));
     // A background rehearsal of one of these tips may be mid-suite right
     // now. Waiting for it is strictly less work than starting over, and
     // its stamp — read AFTER the wait, below — is the hand-off.
@@ -1068,7 +1241,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // rehearsal that is only proving tree lint is waited for by the tree
     // verdict alone, under its own `amont.treeLintWait` (ADR-0024), never
     // under `amont.rehearsalWait`.
-    if reuse_stamps && !tips.is_empty() {
+    if reuse_stamps && !tips.is_empty() && !gate_before_push {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         if !scoped_push_gates(settings, ctx.manifest, &changed).is_empty() {
             crate::rehearsal::await_for(settings, &tips);
@@ -1079,11 +1252,6 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     } else {
         Default::default()
     };
-    // Inside a rehearsal snapshot only the content gates make sense: the
-    // unscoped checks ask about a PUSH — its branch name, its target, its
-    // secrets — and no push is happening. Said once, not per check.
-    let rehearsing = crate::rehearsal::in_snapshot();
-    let handed_to_cluster = ctx.handed_to_cluster;
     if rehearsing {
         crate::say!(
             "rehearsal: running the test gates only — the push-shaped checks run at push time"
@@ -1112,67 +1280,37 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .find(|e| e.id == name)
                 .is_some_and(|e| crate::cluster::vouched_on_every(settings, e, &tips))
     };
-    // What actually RAN and passed here (as opposed to being vouched for by
-    // a stamp) — the set this run may stamp in turn.
-    let mut ran_and_passed: Vec<String> = Vec::new();
-    // What each gate COST and how it ENDED, for the record `gate_evidence`
-    // reads. Every outcome, failures included: the stamp deliberately has no
-    // opinion about a gate that failed, and a dataset that kept only the
-    // passes could never say a gate is flaky.
-    let mut evidence: Vec<crate::gate_stamp::Run> = Vec::new();
-    // The question `amont list` answers with "inert here — needs go.sum":
-    // does this repository carry the marker that turns the check on? Asked
-    // of the index, once, and answered the same way here — a check the
-    // registry calls inert used to run anyway, find its tool or lockfile
-    // missing, and warn that it "could not run" on every push of a
-    // repository it was never meant to touch.
-    let tracked = crate::tracked_paths();
-    for (idx, check) in pre_push_checks.iter().enumerate() {
-        if !check.scope().opted_in(&tracked) {
-            continue;
-        }
-        let _sink = stage.as_ref().map(|s| s.enter(idx));
-        let flush = stage
-            .as_ref()
-            .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, idx));
-        // A declared pre-push external whose NAME is also declared at
-        // pre-commit (blocking) is a gate pair: the commit-time side earned
-        // per-commit stamps, and this side runs only for pushes carrying
-        // commits with no record of it — the same contract the npm gate has
-        // always had, for vocabularies npm never heard of (`cargo test`,
-        // `pytest`, anything). Messages mirror the npm gate's exactly;
-        // docs/checks.md quotes them.
-        // The push side of a pair is `(name, scope)`, from whichever of the
-        // two kinds of check this is. A declared pre-push external supplies
-        // its own; anything else is a BUILT-IN, and `pairing_name` plus the
-        // registry's scope say the same two things about it.
-        //
-        // The external is tried FIRST and its inputs are unchanged, so the
-        // declared path behaves exactly as before — that is what the
-        // untouched declared-pair tests prove.
-        if rehearsing && check.scope().is_unscoped() {
-            continue;
-        }
+    // Why a gate need not run in this push, or that it must. ONE function,
+    // asked by the loop below and by the refusal before it, so a gate the
+    // loop would skip is never refused, and one it would run never passes
+    // the refusal (ADR-0018).
+    let decide = |check: &dyn Check| -> Decision {
         // Handed to the cluster by the rehearsal that made this snapshot: not
         // repeated here, its pass comes back as a cluster token.
         if rehearsing && handed_to_cluster.iter().any(|gate| gate == check.name()) {
-            crate::say!(
-                "{} {} runs on the cluster — the next commit or push collects it",
-                valid_sign(),
-                highlight(check.name()),
-            );
-            continue;
+            return Decision::Skip(Skip::HandedToCluster);
+        }
+        // A dependency audit is never skipped: its verdict depends on the
+        // day's advisories and the push's stakes, so it replays a fresh
+        // record instead, inside the check (ADR-0018).
+        if crate::hooks::audit::is_audit(check.name()) {
+            return Decision::Run {
+                unstamped_pair: None,
+            };
         }
         if !check.scope().is_unscoped()
             && (stamped_on_every_tip(check.name()) || cluster_stamped(check.name()))
         {
-            crate::say!(
-                "{} {} passed on this exact tree earlier — not repeating it here",
-                valid_sign(),
-                highlight(check.name()),
-            );
-            passed.push(check.name().to_string());
-            continue;
+            return Decision::Skip(Skip::Stamped);
+        }
+        if gate_before_push && reuse_stamps && !check.scope().is_unscoped() {
+            let done = crate::gate_identity::token(&ctx.manifest.externals, check.name())
+                .is_some_and(|token| {
+                    crate::gate_stamp::done_on_every(&tips, &token, severities.of(check))
+                });
+            if done {
+                return Decision::Skip(Skip::CompletedEarlier);
+            }
         }
         let declared = ctx
             .manifest
@@ -1192,15 +1330,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     crate::cluster::claim_twin_cluster_pass(settings, push_gate, twin, &tips)
                 });
             if claimed_from_twin {
-                crate::say!(
-                    "{} {} gated at commit on the cluster instead — not repeating it here",
-                    valid_sign(),
-                    highlight(&push_gate.short_name),
-                );
-                passed.push(check.name().to_string());
-                continue;
+                return Decision::Skip(Skip::TwinOnCluster(push_gate.short_name.clone()));
             }
         }
+        // The push side of a pair is `(name, scope)`, from whichever of the
+        // two kinds of check this is. A declared pre-push external supplies
+        // its own; anything else is a BUILT-IN, and `pairing_name` plus the
+        // registry's scope say the same two things about it.
         let builtin_scope = check.scope();
         let pairing: Option<(&str, &crate::check::Scope)> = match declared {
             Some(ext) => match &ext.kind {
@@ -1213,75 +1349,235 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             },
             None => Some((check.pairing_name(), &builtin_scope)),
         };
-        if let Some((name, push_scope)) = pairing {
-            match crate::hooks::run_tests::pair_verdict(
-                ctx.settings,
-                name,
-                push_scope,
-                ctx.manifest,
-                ctx.push,
-            ) {
-                crate::hooks::run_tests::PairVerdict::Gated => {
-                    crate::say!(
-                        "{} {} gated at commit instead — not repeating it here",
-                        valid_sign(),
-                        highlight(name),
-                    );
-                    passed.push(check.name().to_string());
-                    continue;
+        let Some((name, push_scope)) = pairing else {
+            return Decision::Run {
+                unstamped_pair: None,
+            };
+        };
+        match crate::hooks::run_tests::pair_verdict(
+            ctx.settings,
+            name,
+            push_scope,
+            ctx.manifest,
+            ctx.push,
+        ) {
+            crate::hooks::run_tests::PairVerdict::Gated => {
+                Decision::Skip(Skip::GatedAtCommit(name.to_string()))
+            }
+            crate::hooks::run_tests::PairVerdict::Deferred(n) => {
+                Decision::Skip(Skip::DeferredAtCommit(name.to_string(), n))
+            }
+            crate::hooks::run_tests::PairVerdict::Unstamped(n) => Decision::Run {
+                unstamped_pair: Some((name.to_string(), n)),
+            },
+            crate::hooks::run_tests::PairVerdict::NotPaired => Decision::Run {
+                unstamped_pair: None,
+            },
+        }
+    };
+    // The question `amont list` answers with "inert here — needs go.sum",
+    // asked of the index once (see the loop below).
+    let tracked = crate::tracked_paths();
+    // ADR-0018: refuse before any heavy gate starts. The gates this push
+    // owes are the scoped ones its range touches (`scoped_push_gates`, the
+    // same set a rehearsal stamps); each is asked `decide`, and any it would
+    // have to RUN means the push refuses.
+    if gate_before_push && !tips.is_empty() {
+        let changed = crate::pushrefs::changed_files(ctx.push.get());
+        let owed = scoped_push_gates(settings, ctx.manifest, &changed);
+        let missing: Vec<&str> = pre_push_checks
+            .iter()
+            .filter(|c| {
+                if crate::hooks::audit::is_audit(c.name()) {
+                    // Owed on every push it is opted into, whatever the
+                    // range touches, unless a fresh record answers for it.
+                    c.scope().opted_in(&tracked)
+                        && crate::hooks::audit::owed(settings, ctx.audits, c.name(), ctx.push.get())
+                } else {
+                    // A declared command whose program is not installed can
+                    // never be stamped or recorded, so no pre-stage could
+                    // answer for it: owing it would refuse every push for
+                    // good. It runs below instead, fails to start, and warns,
+                    // as before 2.0. Only that: a gate whose token failed for
+                    // another reason stays owed.
+                    owed.iter().any(|o| o == c.name())
+                        && !crate::gate_identity::program_missing(&ctx.manifest.externals, c.name())
+                        && matches!(decide(**c), Decision::Run { .. })
                 }
-                crate::hooks::run_tests::PairVerdict::Unstamped(n) => {
-                    // `amont.unstampedPush refuse`: never run a suite with
-                    // the remote's connection held open — say how to earn
-                    // the stamp instead. Not inside a rehearsal snapshot:
-                    // running there is how the stamp is earned.
-                    if !rehearsing && crate::rehearsal::refuse_unstamped(ctx.settings) {
-                        crate::say!(
-                            "{} {} is declared at commit time, but {n} pushed \
-                             commit{} carr{} no record of it (rewritten by a \
-                             rebase or amend, or made without the hooks) — \
-                             refusing the push",
-                            warning_sign(),
-                            name,
-                            if n == 1 { "" } else { "s" },
-                            if n == 1 { "ies" } else { "y" },
-                        );
-                        crate::say!(
-                            "    Test this tree first, with no push waiting on it: {} — then push again",
-                            highlight("amont rehearse --wait"),
-                        );
-                        crate::downgrade::note(settings, &downgraded);
-                        record_evidence(&tips, &evidence);
-                        println!("\n🚨  Error raised by hook {}", highlight(check.name()));
-                        return Verdict::Block;
-                    }
+            })
+            .map(|c| c.name())
+            .collect();
+        if !missing.is_empty() {
+            let short: String = tips
+                .first()
+                .map(|t| t.chars().take(8).collect())
+                .unwrap_or_default();
+            let lines = match land {
+                Some(line) => land_refusal(line, ctx.push.get(), &missing),
+                None => push_refusal(
+                    &short,
+                    &missing,
+                    if reuse_stamps {
+                        StampReuse::On
+                    } else {
+                        StampReuse::Off
+                    },
+                    pushed_tag(ctx.push.get()),
+                ),
+            };
+            for line in lines {
+                eprintln!("{line}");
+            }
+            return Verdict::Block;
+        }
+    }
+    // What actually RAN and passed here (as opposed to being vouched for by
+    // a stamp) — the set this run may stamp in turn.
+    let mut ran_and_passed: Vec<String> = Vec::new();
+    // Scoped gates that RAN here and completed without passing — a warning,
+    // or a tool that was missing (ADR-0018): recorded beside the stamps, never
+    // as one, so a refusing push does not ask for them again.
+    let mut completed_otherwise: Vec<(String, crate::gate_stamp::Completion)> = Vec::new();
+    // What each gate COST and how it ENDED, for the record `gate_evidence`
+    // reads. Every outcome, failures included: the stamp deliberately has no
+    // opinion about a gate that failed, and a dataset that kept only the
+    // passes could never say a gate is flaky.
+    let mut evidence: Vec<crate::gate_stamp::Run> = Vec::new();
+    // The question `amont list` answers with "inert here — needs go.sum":
+    // does this repository carry the marker that turns the check on? Asked
+    // of the index, once, and answered the same way here — a check the
+    // registry calls inert used to run anyway, find its tool or lockfile
+    // missing, and warn that it "could not run" on every push of a
+    // repository it was never meant to touch.
+    for (idx, check) in pre_push_checks.iter().enumerate() {
+        if !check.scope().opted_in(&tracked) {
+            continue;
+        }
+        let _sink = stage.as_ref().map(|s| s.enter(idx));
+        let flush = stage
+            .as_ref()
+            .map(|s| crate::live::FinishOnDrop::new(ctx.settings, s, idx));
+        // A declared pre-push external whose NAME is also declared at
+        // pre-commit (blocking) is a gate pair: the commit-time side earned
+        // per-commit stamps, and this side runs only for pushes carrying
+        // commits with no record of it — the same contract the npm gate has
+        // always had, for vocabularies npm never heard of (`cargo test`,
+        // `pytest`, anything). Messages mirror the npm gate's exactly;
+        // docs/checks.md quotes them. `decide` holds the reasoning, shared
+        // with the refusal above.
+        // The dependency audits are unscoped too (opted in by a lockfile,
+        // with no file scope), but a rehearsal is exactly where their record
+        // is earned (ADR-0018), so they run here.
+        if rehearsing && check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
+        {
+            continue;
+        }
+        // A push of deletions only (or of no ref at all: git ran the hook
+        // with nothing to push) has no commit for an audit to answer for, and
+        // running one would hold the connection open for nothing (ADR-0018).
+        if gate_before_push && tips.is_empty() && crate::hooks::audit::is_audit(check.name()) {
+            continue;
+        }
+        match decide(*check) {
+            Decision::Skip(Skip::HandedToCluster) => {
+                crate::say!(
+                    "{} {} runs on the cluster — the next commit or push collects it",
+                    valid_sign(),
+                    highlight(check.name()),
+                );
+                continue;
+            }
+            Decision::Skip(Skip::Stamped) => {
+                crate::say!(
+                    "{} {} passed on this exact tree earlier — not repeating it here",
+                    valid_sign(),
+                    highlight(check.name()),
+                );
+                passed.push(check.name().to_string());
+                continue;
+            }
+            Decision::Skip(Skip::CompletedEarlier) => {
+                crate::say!(
+                    "{} {} ran on this tree earlier and did not pass cleanly (it warned or \
+                     could not run) — not repeating it here",
+                    warning_sign(),
+                    highlight(check.name()),
+                );
+                continue;
+            }
+            Decision::Skip(Skip::TwinOnCluster(short)) => {
+                crate::say!(
+                    "{} {} gated at commit on the cluster instead — not repeating it here",
+                    valid_sign(),
+                    highlight(&short),
+                );
+                passed.push(check.name().to_string());
+                continue;
+            }
+            Decision::Skip(Skip::GatedAtCommit(name)) => {
+                crate::say!(
+                    "{} {} gated at commit instead — not repeating it here",
+                    valid_sign(),
+                    highlight(&name),
+                );
+                passed.push(check.name().to_string());
+                continue;
+            }
+            Decision::Skip(Skip::DeferredAtCommit(name, n)) => {
+                crate::say!(
+                    "{} {} was deferred to CI at commit on {n} pushed commit{} \
+                     — deferring it here too",
+                    warning_sign(),
+                    highlight(&name),
+                    if n == 1 { "" } else { "s" },
+                );
+                evidence.push(crate::gate_stamp::Run {
+                    at: crate::gate_evidence::now(),
+                    gate: check.name().to_string(),
+                    outcome: crate::gate_stamp::RunOutcome::Deferred,
+                    ms: 0,
+                });
+                continue;
+            }
+            Decision::Run {
+                unstamped_pair: Some((name, n)),
+            } => {
+                // `amont.unstampedPush refuse`: never run a suite with
+                // the remote's connection held open — say how to earn
+                // the stamp instead. Not inside a rehearsal snapshot:
+                // running there is how the stamp is earned.
+                if !rehearsing && crate::rehearsal::refuse_unstamped(ctx.settings) {
                     crate::say!(
                         "{} {} is declared at commit time, but {n} pushed \
-                         commit{} carr{} no record of it — running it here",
+                         commit{} carr{} no record of it (rewritten by a \
+                         rebase or amend, or made without the hooks) — \
+                         refusing the push",
                         warning_sign(),
                         name,
                         if n == 1 { "" } else { "s" },
                         if n == 1 { "ies" } else { "y" },
                     );
-                }
-                crate::hooks::run_tests::PairVerdict::Deferred(n) => {
                     crate::say!(
-                        "{} {} was deferred to CI at commit on {n} pushed commit{} \
-                         — deferring it here too",
-                        warning_sign(),
-                        highlight(name),
-                        if n == 1 { "" } else { "s" },
+                        "    Test this tree first, with no push waiting on it: {} — then push again",
+                        highlight("amont rehearse --wait"),
                     );
-                    evidence.push(crate::gate_stamp::Run {
-                        at: crate::gate_evidence::now(),
-                        gate: check.name().to_string(),
-                        outcome: crate::gate_stamp::RunOutcome::Deferred,
-                        ms: 0,
-                    });
-                    continue;
+                    crate::downgrade::note(settings, &downgraded);
+                    record_evidence(&tips, &evidence);
+                    println!("\n🚨  Error raised by hook {}", highlight(check.name()));
+                    return Verdict::Block;
                 }
-                crate::hooks::run_tests::PairVerdict::NotPaired => {}
+                crate::say!(
+                    "{} {} is declared at commit time, but {n} pushed \
+                     commit{} carr{} no record of it — running it here",
+                    warning_sign(),
+                    name,
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "ies" } else { "y" },
+                );
             }
+            Decision::Run {
+                unstamped_pair: None,
+            } => {}
         }
         let sub = Ctx {
             name: check.name(),
@@ -1291,6 +1587,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             manifest: ctx.manifest,
             settings: ctx.settings,
             handed_to_cluster: ctx.handed_to_cluster,
+            land: ctx.land,
+            audits: ctx.audits,
+            source_worktree: ctx.source_worktree,
         };
         // Wall clock around the check itself, not around the hook: the number
         // that catches a suite which stopped finding tests is how long THAT
@@ -1314,20 +1613,34 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         match outcome {
             Outcome::Passed => {
                 passed.push(check.name().to_string());
-                if !check.scope().is_unscoped() {
+                // An audit's pass is a record of its report, never a stamp.
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
                     ran_and_passed.push(check.name().to_string());
                 }
             }
             // Announced, never fatal: a check that could not run has not
             // invalidated anything, and neither has a warning.
             Outcome::Unavailable => {
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                    completed_otherwise.push((
+                        check.name().to_string(),
+                        crate::gate_stamp::Completion::Unavailable,
+                    ));
+                }
                 println!(
                     "{} {} could not run",
                     warning_sign(),
                     highlight(check.name())
                 )
             }
-            Outcome::Warned => {}
+            Outcome::Warned => {
+                if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name()) {
+                    completed_otherwise.push((
+                        check.name().to_string(),
+                        crate::gate_stamp::Completion::Warned,
+                    ));
+                }
+            }
             // Not run, never fatal, never passed: CI runs it (ADR-0013).
             Outcome::Deferred => announce_deferred(&[check.name()]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
@@ -1339,6 +1652,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             Outcome::Fixed => {}
             Outcome::Failed => match severities.of(*check) {
                 Severity::Warn => {
+                    if !check.scope().is_unscoped() && !crate::hooks::audit::is_audit(check.name())
+                    {
+                        completed_otherwise.push((
+                            check.name().to_string(),
+                            crate::gate_stamp::Completion::FailedUnderWarn,
+                        ));
+                    }
                     downgraded.push((
                         check.name().to_string(),
                         downgrade_origin(*check, &severities),
@@ -1390,6 +1710,19 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             .map(|c| c.name().to_string())
             .collect();
         stamp_tips(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
+    }
+    record_audits(ctx.audits, &tree_at_start);
+    if reuse_stamps && !completed_otherwise.is_empty() {
+        let changed = crate::pushrefs::changed_files(ctx.push.get());
+        let really_ran: Vec<(String, crate::gate_stamp::Completion)> = completed_otherwise
+            .into_iter()
+            .filter(|(name, _)| {
+                pre_push_checks
+                    .iter()
+                    .any(|c| c.name() == name && c.scope().touches(&changed))
+            })
+            .collect();
+        record_completions(&ctx.manifest.externals, &tips, &really_ran, &tree_at_start);
     }
     // …and say so to CI, if this repository opted in.
     // Gated behind `enabled()` HERE, not just inside `attest_push`: reading
@@ -1541,6 +1874,26 @@ pub fn scoped_push_gates(
         .collect()
 }
 
+/// The dependency audits a push of `refs` owes (ADR-0018): opted in, and
+/// with no fresh record for the pushed commits in the push's mode. Owed
+/// whatever the range touches, unlike `scoped_push_gates`.
+pub fn owed_audits(
+    settings: &crate::config::Settings,
+    manifest: &crate::manifest::Manifest,
+    ledger: &crate::hooks::audit::Ledger,
+    refs: &[crate::pushrefs::PushRef],
+) -> Vec<String> {
+    let in_progress = crate::git_states_in_progress();
+    let tracked = crate::tracked_paths();
+    selected_during(settings, Stage::PrePush, &in_progress, manifest)
+        .into_iter()
+        .filter(|c| crate::hooks::audit::is_audit(c.name()))
+        .filter(|c| c.scope().opted_in(&tracked))
+        .filter(|c| crate::hooks::audit::owed(settings, ledger, c.name(), refs))
+        .map(|c| c.name().to_string())
+        .collect()
+}
+
 /// Push-stamp every tip whose content is what the gates actually tested.
 ///
 /// See the comment at the call site for the two cases. Silent when nothing
@@ -1640,6 +1993,72 @@ fn stamp_tips(
     }
 }
 
+/// Write the audit records this push produced (ADR-0018), only for a commit
+/// the working tree IS: HEAD, inside a rehearsal snapshot or with a clean
+/// worktree — the tools read the working tree, not the commit.
+fn record_audits(ledger: &crate::hooks::audit::Ledger, tree_at_start: &str) {
+    let pending = ledger.take_pending();
+    if pending.is_empty() {
+        return;
+    }
+    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
+    let here_is_head = crate::rehearsal::in_snapshot() || tree_at_start.trim().is_empty();
+    for record in pending {
+        if !(here_is_head && head.as_deref() == Some(record.tip.as_str())) {
+            continue;
+        }
+        if let Err(why) = crate::hooks::audit::write_pending(&record) {
+            crate::hooks::common::warn(&format!(
+                "{why} — the next push of this tree owes the audit again"
+            ));
+        }
+    }
+}
+
+/// Record the gates that completed without passing (ADR-0018), on exactly the
+/// tips `stamp_tips` would stamp: a tip whose content is what the gates ran
+/// on — HEAD, inside a rehearsal snapshot or with a clean worktree. One note
+/// write per tree and kind of completion.
+fn record_completions(
+    externals: &[crate::manifest::External],
+    tips: &[String],
+    gates: &[(String, crate::gate_stamp::Completion)],
+    tree_at_start: &str,
+) {
+    if gates.is_empty() {
+        return;
+    }
+    let head = crate::git::stdout(&["rev-parse", "HEAD"]);
+    let worktree_clean = tree_at_start.trim().is_empty();
+    let in_snapshot = crate::rehearsal::in_snapshot();
+    let mut by_kind: Vec<(crate::gate_stamp::Completion, Vec<String>)> = Vec::new();
+    for (gate, how) in gates {
+        let Some(token) = crate::gate_identity::token(externals, gate) else {
+            continue;
+        };
+        match by_kind.iter_mut().find(|(kind, _)| kind == how) {
+            Some((_, tokens)) => tokens.push(token),
+            None => by_kind.push((*how, vec![token])),
+        }
+    }
+    for tip in tips {
+        let is_head = head.as_deref() == Some(tip.as_str());
+        if !(is_head && (in_snapshot || worktree_clean)) {
+            continue;
+        }
+        let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{tip}^{{tree}}")]) else {
+            continue;
+        };
+        for (how, tokens) in &by_kind {
+            if let Err(why) = crate::gate_stamp::record_done(&tree, tokens, *how) {
+                crate::hooks::common::warn(&format!(
+                    "{why} — the next push of this tree owes those gates again"
+                ));
+            }
+        }
+    }
+}
+
 /// Of the checks that passed, the ones an attestation may actually VOUCH for.
 ///
 /// A language gate whose scope the push never touched returns `Passed` having
@@ -1690,6 +2109,86 @@ mod tests {
     use super::*;
     use crate::check::{Builtin, Scope};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// ADR-0018: the refusals fit 80 columns, put each command on its own
+    /// line, and name only amont's own commands (every Green Harness part is
+    /// optional: amont runs without relais, the skills or amont-agent).
+    #[test]
+    fn the_push_refusals_fit_and_name_only_amont() {
+        let many: Vec<String> = (0..12)
+            .map(|i| format!("pre-push-gate-number-{i}"))
+            .collect();
+        let names: Vec<&str> = many.iter().map(String::as_str).collect();
+        let refs = vec![crate::pushrefs::PushRef {
+            local_ref: "refs/heads/x".into(),
+            local_oid: "a".repeat(40),
+            remote_ref: "refs/heads/x".into(),
+            remote_oid: "b".repeat(40),
+        }];
+        let sets = [
+            push_refusal("abcdef12", &names, StampReuse::On, None),
+            push_refusal("abcdef12", &names, StampReuse::Off, None),
+            land_refusal(
+                &crate::rehearsal::LandLine {
+                    sha: "a".repeat(40),
+                    remote_tip: "b".repeat(40),
+                },
+                &refs,
+                &names,
+            ),
+            land_refusal(
+                &crate::rehearsal::LandLine {
+                    sha: "a".repeat(40),
+                    remote_tip: "c".repeat(40),
+                },
+                &refs,
+                &names,
+            ),
+            push_refusal(
+                "abcdef12",
+                &names,
+                StampReuse::On,
+                Some("v12.345.6789-rc.1+build.2026-11-05"),
+            ),
+        ];
+        for lines in &sets {
+            for line in lines {
+                assert!(line.chars().count() <= 80, "{line:?}");
+                for foreign in ["relais", "skill", "amont-agent"] {
+                    assert!(!line.contains(foreign), "{line:?}");
+                }
+            }
+            let joined = lines.join("\n");
+            for name in &names {
+                assert!(joined.contains(name), "every gate is named: {joined}");
+            }
+        }
+        assert!(sets[0].iter().any(|l| l.ends_with("amont land")));
+        assert!(sets[0].iter().any(|l| l.ends_with("amont rehearse --wait")));
+        assert!(
+            !sets[1].iter().any(|l| l.contains("rehearse")),
+            "{:?}",
+            sets[1]
+        );
+        assert!(sets[1].iter().any(|l| l.contains("amont.pushStamps true")));
+        assert!(sets[1].iter().any(|l| l.ends_with("amont land")));
+        assert_eq!(sets[2][0], crate::land::LAND_EVIDENCE_MISSING);
+        assert_eq!(sets[3][0], crate::land::LAND_REMOTE_MOVED);
+        assert!(sets[0][0].starts_with("amont: push refused:"));
+        // A tag push is offered the tag's own land, never the branch remedies.
+        assert!(
+            sets[4]
+                .iter()
+                .any(|l| l.ends_with("amont land --tag v12.345.6789-rc.1+build.2026-11-05")),
+            "{:?}",
+            sets[4]
+        );
+        assert!(
+            !sets[4].iter().any(|l| l.contains("rehearse")),
+            "{:?}",
+            sets[4]
+        );
+    }
 
     /// A check whose only job is to carry a name and a severity into `report`.
     /// Its `run` is never called — `report` is fed outcomes directly, which is
@@ -1924,6 +2423,9 @@ mod tests {
             manifest: &manifest,
             settings: &settings,
             handed_to_cluster: &[],
+            land: &crate::rehearsal::LandEnv::Absent,
+            audits: &Default::default(),
+            source_worktree: None,
         };
         let verdict = run_stage(&[&DIES], &ctx, &none());
         std::panic::set_hook(hook);

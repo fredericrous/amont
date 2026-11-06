@@ -910,6 +910,8 @@ fn pre_push_stdin_is_intact_after_a_cluster_gate() {
     let c = Cluster::trusted(
         "set executor cluster\npre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
     );
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     c.r.stage("a.txt", "hello\n");
     c.r.commit("feat: a");
@@ -1142,6 +1144,8 @@ fn a_cluster_pass_is_attested_on_linux_and_not_in_the_laptop_block() {
         return;
     }
     let c = Cluster::attesting(ATTEST_CONF);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
     let (code, text) = c.pre_push(&base, &tip);
@@ -1177,6 +1181,8 @@ fn a_linux_block_is_signed_only_for_the_tree_the_cluster_judged() {
         return;
     }
     let c = Cluster::attesting(ATTEST_CONF);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (judged, judged_tree) = c.commit_on(&base, "feat/a", "a.txt");
     // `*.md` is outside the gate's `*.txt` scope: the cluster is never asked.
@@ -1206,6 +1212,8 @@ fn repeated_pushes_of_one_tree_do_not_grow_its_note() {
         return;
     }
     let c = Cluster::attesting(ATTEST_CONF);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
     for round in 0..20 {
@@ -1245,6 +1253,8 @@ fn stamps_reads_a_linux_only_attestation_and_attest_covered_does_not() {
         return;
     }
     let c = Cluster::attesting(ATTEST_CONF);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, _) = c.commit_on(&base, "feat/x", "a.txt");
     let (code, text) = c.pre_push(&base, &tip);
@@ -1351,6 +1361,8 @@ fn a_push_twin_with_another_command_runs_itself() {
          pre-commit  lint  *.txt  block  platform=any scripts/gate.sh\n\
          pre-push  lint  *.txt  block  platform=any scripts/gate.sh --full\n",
     );
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    c.r.git(&["config", "amont.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     c.r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     c.r.stage("a.txt", "hello\n");

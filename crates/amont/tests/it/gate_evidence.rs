@@ -120,6 +120,8 @@ fn evidence_ordering_attempts_the_failing_gate_first() {
         .map(|d| d.as_secs())
         .unwrap_or(0)
         - 86_400;
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let body = format!(
         "amont-gate-v1\n\
          run {} pre-push-alpha pass 100\n\
@@ -166,6 +168,8 @@ fn without_the_key_the_declared_order_is_kept() {
         return;
     }
     let (r, base) = two_gates();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.write("BETA_FAILS", "");
     let (code, _) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 1);

@@ -28,7 +28,7 @@ use crate::pushrefs::PushRef;
 use super::common;
 
 /// What an audit's output said, before the push's stakes are applied.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Report {
     Clean,
     /// Warning-class advisories (unmaintained/unsound) — named, never
@@ -552,11 +552,29 @@ fn read_pip_audit(exit_ok: bool, out: &str) -> Report {
 /// Layout differs by platform: `lib/python3.13/site-packages` everywhere
 /// except Windows, which uses `Lib/site-packages`, so the python-version
 /// directory is discovered rather than guessed.
-fn venv_site_packages(root: &str) -> Option<String> {
+fn venv_site_packages(root: &str, source: Option<&std::path::Path>) -> Option<String> {
+    // A rehearsal snapshot installs no virtualenv; the working tree it was
+    // taken from (`source`) holds one, but it answers for THIS commit only
+    // when that tree is this commit with its Python manifests unmodified: a
+    // `.venv` synced to a newer HEAD would vouch for a tag it never held
+    // (ADR-0018).
+    let source_venv = source
+        .filter(|src| {
+            let answers = source_is_this_commit(src);
+            if !answers {
+                common::warn(
+                    "audit-python: the source worktree's virtualenv is not this commit's \
+                     (another HEAD, or modified Python manifests) — not auditing it",
+                );
+            }
+            answers
+        })
+        .map(|src| src.join(".venv"));
     let candidates = std::env::var_os("VIRTUAL_ENV")
         .map(std::path::PathBuf::from)
         .into_iter()
-        .chain(std::iter::once(std::path::Path::new(root).join(".venv")));
+        .chain(std::iter::once(std::path::Path::new(root).join(".venv")))
+        .chain(source_venv);
     for venv in candidates {
         let windows = venv.join("Lib").join("site-packages");
         if windows.is_dir() {
@@ -717,16 +735,17 @@ fn audit_each_dir(
     })
 }
 
-pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn rust_run(ctx: &crate::registry::Ctx) -> Ran {
+    let (settings, refs) = (ctx.settings, ctx.push.get());
     if !has_lockfile("Cargo.lock") {
-        return Outcome::Inert;
+        return Ran::Inert;
     }
     if common::which("cargo-audit").is_none() {
         common::warn(
             "audit-rust: cargo-audit is not installed (cargo install cargo-audit) — \
              the audit did NOT run",
         );
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     }
     let argv = vec![
         common::program("cargo"),
@@ -760,16 +779,14 @@ pub fn rust(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             })
         },
     ) else {
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     };
-    conclude_waivable(
-        settings,
-        "audit-rust",
-        merged.report,
-        release,
-        &merged.full,
-        merged.waivable,
-    )
+    Ran::Concluded(Concluded {
+        tool: "audit-rust".to_string(),
+        report: merged.report,
+        full: merged.full,
+        waivable: merged.waivable,
+    })
 }
 
 /// `cargo tree -i <crate>` over the edges a RELEASE ships: normal and build
@@ -1044,13 +1061,14 @@ const JS_AUDITORS: [JsAuditor; 2] = [
 /// is named but does not refuse the tag. Nobody who installs the package
 /// installs it. A finding whose production re-audit cannot answer still
 /// blocks: an unknown is not a pass.
-pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn js_run(ctx: &crate::registry::Ctx) -> Ran {
+    let (settings, refs) = (ctx.settings, ctx.push.get());
     let projects: Vec<(&JsAuditor, String)> = JS_AUDITORS
         .iter()
         .flat_map(|a| lockfile_dirs(a.lockfile).into_iter().map(move |d| (a, d)))
         .collect();
     if projects.is_empty() {
-        return Outcome::Inert;
+        return Ran::Inert;
     }
     let root = std::path::PathBuf::from(common::repo_root());
     let release = releasing(refs);
@@ -1071,7 +1089,7 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
                 "audit-js: {} could not run in {label} — the audit did NOT run",
                 auditor.tool
             ));
-            return Outcome::Unavailable;
+            return Ran::Unavailable;
         };
         match (auditor.read)(exit_ok, &out) {
             Report::Vulnerabilities(what) if release => {
@@ -1119,22 +1137,28 @@ pub fn js(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
     } else {
         Report::Clean
     };
-    conclude_waivable(settings, "audit-js", report, release, &full, waivable)
+    Ran::Concluded(Concluded {
+        tool: "audit-js".to_string(),
+        report,
+        full,
+        waivable,
+    })
 }
 
 /// Go needs no production filter: modules have no dev-dependency set, and
 /// `govulncheck ./...` without `-test` reports only vulnerabilities the
 /// module's non-test code can reach — what ships, already.
-pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn go_run(ctx: &crate::registry::Ctx) -> Ran {
+    let settings = ctx.settings;
     if !has_lockfile("go.sum") {
-        return Outcome::Inert;
+        return Ran::Inert;
     }
     if common::which("govulncheck").is_none() {
         common::warn(
             "audit-go: govulncheck is not installed \
              (go install golang.org/x/vuln/cmd/govulncheck@latest) — the audit did NOT run",
         );
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     }
     let argv = vec![common::program("govulncheck"), "./...".into()];
     let Some(merged) = audit_each_dir(
@@ -1145,28 +1169,27 @@ pub fn go(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
         read_govulncheck,
         |_, report, _| report,
     ) else {
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     };
-    conclude_waivable(
-        settings,
-        "audit-go",
-        merged.report,
-        releasing(refs),
-        &merged.full,
-        merged.waivable,
-    )
+    Ran::Concluded(Concluded {
+        tool: "audit-go".to_string(),
+        report: merged.report,
+        full: merged.full,
+        waivable: merged.waivable,
+    })
 }
 
-pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
+fn python_run(ctx: &crate::registry::Ctx) -> Ran {
+    let (settings, refs) = (ctx.settings, ctx.push.get());
     if !has_lockfile("requirements.txt") && !has_lockfile("pyproject.toml") {
-        return Outcome::Inert;
+        return Ran::Inert;
     }
     if common::which("pip-audit").is_none() {
         common::warn(
             "audit-python: pip-audit is not installed (pip install pip-audit) — \
              the audit did NOT run",
         );
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     }
     let root = common::repo_root();
     // A requirements.txt is the production list by convention, audited in
@@ -1185,21 +1208,19 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             read_pip_audit,
             |_, report, _| report,
         ) else {
-            return Outcome::Unavailable;
+            return Ran::Unavailable;
         };
         // A row whose advisory id is not one a waiver can name makes the
         // whole report unwaivable.
         let waivable = merged.waivable && pip_rows_all_named(&merged.full);
-        return conclude_waivable(
-            settings,
-            "audit-python",
-            merged.report,
-            releasing(refs),
-            &merged.full,
+        return Ran::Concluded(Concluded {
+            tool: "audit-python".to_string(),
+            report: merged.report,
+            full: merged.full,
             waivable,
-        );
+        });
     }
-    let argv = if let Some(site_packages) = venv_site_packages(&root) {
+    let argv = if let Some(site_packages) = venv_site_packages(&root, ctx.source_worktree) {
         // A uv/PEP-621 project has no requirements.txt, and EXPORTING one
         // does not work either: `uv export` emits the workspace's own
         // members and any private-index dependency, and pip-audit resolves
@@ -1220,10 +1241,10 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             "audit-python: no requirements.txt, and no virtualenv to audit \
              (looked at $VIRTUAL_ENV and .venv) — the audit did NOT run",
         );
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     };
     let Some((exit_ok, out)) = audited(settings, &argv) else {
-        return Outcome::Unavailable;
+        return Ran::Unavailable;
     };
     let release = releasing(refs);
     let mut report = read_pip_audit(exit_ok, &out);
@@ -1258,7 +1279,34 @@ pub fn python(settings: &crate::config::Settings, refs: &[PushRef]) -> Outcome {
             };
         }
     }
-    conclude_waivable(settings, "audit-python", report, release, &out, waivable)
+    Ran::Concluded(Concluded {
+        tool: "audit-python".to_string(),
+        report,
+        full: out,
+        waivable,
+    })
+}
+
+/// Is `source`'s working tree exactly the commit checked out here, with its
+/// Python manifests unmodified? Then its installed environment is this
+/// commit's (as far as the hook in `source` would have known).
+fn source_is_this_commit(source: &std::path::Path) -> bool {
+    let src = source.to_string_lossy();
+    let here = crate::git::stdout(&["rev-parse", "HEAD^{tree}"]);
+    let there = crate::git::stdout(&["-C", &src, "rev-parse", "HEAD^{tree}"]);
+    let unmodified = crate::git::stdout(&[
+        "-C",
+        &src,
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        "--",
+        "*pyproject.toml",
+        "*uv.lock",
+        "*requirements*.txt",
+    ])
+    .is_some_and(|out| out.trim().is_empty());
+    here.is_some() && here == there && unmodified
 }
 
 /// PEP 503 normalised: `Foo_Bar.baz` and `foo-bar-baz` are one package.
@@ -1342,6 +1390,426 @@ fn uv_production_names(
     )
 }
 
+/// The notes ref of audit records: local, never pushed, never a stamp.
+pub const AUDIT_REF: &str = "amont-audit";
+const AUDIT_FORMAT: &str = "amont-audit-v1";
+/// How long a record answers for its lockfiles, in hours.
+const AUDIT_MAX_AGE: &str = "amont.auditMaxAge";
+/// A report that could not check anything answers for an hour only: an
+/// offline push is never blocked, and the audit is tried again soon.
+const UNCHECKED_MAX_AGE_SECS: i64 = 60 * 60;
+
+/// Is `check` one of the dependency audits?
+pub fn is_audit(check: &str) -> bool {
+    check.starts_with("pre-push-audit-")
+}
+
+/// The files (by name) whose content an audit's branch-mode report depends
+/// on. A release reads the manifests too (its dev-only split), so a release
+/// record is keyed by the whole tree instead.
+fn inputs_of(check: &str) -> &'static [&'static str] {
+    match check {
+        "pre-push-audit-rust" => &["Cargo.lock"],
+        "pre-push-audit-js" => &["package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+        "pre-push-audit-go" => &["go.sum", "go.mod"],
+        "pre-push-audit-python" => &["requirements.txt", "pyproject.toml", "uv.lock"],
+        _ => &[],
+    }
+}
+
+/// The stakes a push's audit is judged and recorded under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditMode {
+    /// A branch push: findings warn.
+    Branch,
+    /// A push carrying a `v*` tag: shipped vulnerabilities block.
+    Release,
+}
+
+impl AuditMode {
+    fn of(refs: &[PushRef]) -> AuditMode {
+        if releasing(refs) {
+            AuditMode::Release
+        } else {
+            AuditMode::Branch
+        }
+    }
+}
+
+/// What an audit concluded before the push's stakes were applied: what
+/// `conclude_waivable` judges, and what a record keeps so a later push can
+/// judge it again against that day's waivers and that push (ADR-0018).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Concluded {
+    tool: String,
+    report: Report,
+    full: String,
+    waivable: bool,
+}
+
+/// How one ecosystem's audit ended: with a report to judge, or before it had
+/// one.
+enum Ran {
+    Concluded(Concluded),
+    /// Nothing to audit here (no lockfile).
+    Inert,
+    /// It could not run: no tool, or a tool that would not start.
+    Unavailable,
+}
+
+/// A record waiting for the hook to decide it may be written: only where the
+/// working tree is the keyed tip (the tools read the working tree).
+#[derive(Debug, Clone)]
+pub struct Pending {
+    pub tip: String,
+    material: String,
+    body: String,
+}
+
+/// One push's audit bookkeeping, owned by the hook and lent to each audit on
+/// `Ctx`: the records the audits produced, and the reads both the refusal and
+/// the replay ask for (each costs a git spawn while git holds the
+/// connection open).
+#[derive(Default)]
+pub struct Ledger {
+    pending: std::sync::Mutex<Vec<Pending>>,
+    peeled: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    fresh: std::sync::Mutex<std::collections::HashMap<String, Option<Concluded>>>,
+}
+
+impl Ledger {
+    /// The records this push's audits produced, handed to the hook.
+    pub fn take_pending(&self) -> Vec<Pending> {
+        std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// `oid` peeled to its commit, asked of git once per push.
+    fn peel(&self, oid: &str) -> Option<String> {
+        if let Some(known) = self
+            .peeled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(oid)
+        {
+            return known.clone();
+        }
+        let commit =
+            crate::git::stdout(&["rev-parse", "--verify", "-q", &format!("{oid}^{{commit}}")]);
+        self.peeled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(oid.to_string(), commit.clone());
+        commit
+    }
+
+    /// The pushed commits: every non-deleting ref's tip, peeled to its commit.
+    fn pushed_commits(&self, refs: &[PushRef]) -> Vec<String> {
+        let mut commits: Vec<String> = refs
+            .iter()
+            .filter(|r| !r.local_oid.chars().all(|c| c == '0'))
+            .filter_map(|r| self.peel(&r.local_oid))
+            .collect();
+        commits.sort();
+        commits.dedup();
+        commits
+    }
+}
+
+/// Write `pending` as a note on the blob of its key text. A failure is named
+/// for the caller to report: the next push then owes the audit again.
+pub fn write_pending(pending: &Pending) -> Result<(), String> {
+    // `stdout_piped` keeps git's trailing newline; a key with one names no
+    // object, and `notes add` would refuse it.
+    let key = crate::git::stdout_piped(&["hash-object", "-w", "--stdin"], &pending.material)
+        .map(|k| k.trim().to_string())
+        .ok_or_else(|| format!("could not store the audit key for {}", pending.tip))?;
+    let written = crate::git::succeeds(&[
+        "notes",
+        "--ref",
+        AUDIT_REF,
+        "add",
+        "-f",
+        "-m",
+        &pending.body,
+        &key,
+    ]);
+    if written {
+        Ok(())
+    } else {
+        Err(format!("git refused to write the audit record {key}"))
+    }
+}
+
+/// The text a record is keyed by (the key is its blob's oid).
+fn key_material(check: &str, mode: AuditMode, commit: &str) -> Option<String> {
+    match mode {
+        AuditMode::Release => {
+            let tree = crate::git::stdout(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+            Some(format!("{AUDIT_FORMAT}\n{check}\nrelease\n{tree}\n"))
+        }
+        AuditMode::Branch => {
+            let names = inputs_of(check);
+            let listing = crate::git::stdout(&["ls-tree", "-r", "--full-tree", commit])?;
+            let mut lines: Vec<String> = listing
+                .lines()
+                .filter_map(|entry| {
+                    let (meta, path) = entry.split_once('\t')?;
+                    let blob = meta.split_whitespace().nth(2)?;
+                    let base = path.rsplit('/').next().unwrap_or(path);
+                    names.contains(&base).then(|| format!("{path} {blob}"))
+                })
+                .collect();
+            lines.sort();
+            Some(format!(
+                "{AUDIT_FORMAT}\n{check}\nbranch\n{}\n",
+                lines.join("\n")
+            ))
+        }
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn class_of(report: &Report) -> &'static str {
+    match report {
+        Report::Clean => "clean",
+        Report::Advisories(_) => "advisories",
+        Report::Vulnerabilities(_) => "vulnerabilities",
+        Report::CouldNotCheck => "unchecked",
+    }
+}
+
+fn render(concluded: &Concluded, at: i64) -> String {
+    let items: &[String] = match &concluded.report {
+        Report::Advisories(v) | Report::Vulnerabilities(v) => v,
+        Report::Clean | Report::CouldNotCheck => &[],
+    };
+    let mut body = format!(
+        "{AUDIT_FORMAT} {at} {} {} {}",
+        class_of(&concluded.report),
+        u8::from(concluded.waivable),
+        concluded.tool
+    );
+    for item in items {
+        body.push_str("\nitem ");
+        body.push_str(item);
+    }
+    body.push_str("\n---\n");
+    body.push_str(&concluded.full);
+    body
+}
+
+fn parse(body: &str) -> Option<(i64, Concluded)> {
+    let (head, rest) = body.split_once('\n').unwrap_or((body, ""));
+    let mut fields = head.split_whitespace();
+    if fields.next()? != AUDIT_FORMAT {
+        return None;
+    }
+    let at: i64 = fields.next()?.parse().ok()?;
+    let class = fields.next()?;
+    let waivable = fields.next()? == "1";
+    let tool = fields.next()?.to_string();
+    let (items_part, full) = match rest.split_once("---\n") {
+        Some((i, full)) => (i, full.to_string()),
+        None => (rest.strip_suffix("---").unwrap_or(rest), String::new()),
+    };
+    let items: Vec<String> = items_part
+        .lines()
+        .filter_map(|l| l.strip_prefix("item ").map(str::to_string))
+        .collect();
+    let report = match class {
+        "clean" => Report::Clean,
+        "advisories" => Report::Advisories(items),
+        "vulnerabilities" => Report::Vulnerabilities(items),
+        "unchecked" => Report::CouldNotCheck,
+        _ => return None,
+    };
+    Some((
+        at,
+        Concluded {
+            tool,
+            report,
+            full,
+            waivable,
+        },
+    ))
+}
+
+/// The fresh record of `check` for `commit` in this mode, if any.
+fn fresh_record(
+    settings: &crate::config::Settings,
+    check: &str,
+    mode: AuditMode,
+    commit: &str,
+) -> Option<Concluded> {
+    let material = key_material(check, mode, commit)?;
+    let key = crate::git::stdout_piped(&["hash-object", "--stdin"], &material)?
+        .trim()
+        .to_string();
+    let body = crate::git::stdout(&["notes", "--ref", AUDIT_REF, "show", &key])?;
+    let (at, concluded) = parse(&body)?;
+    let max_age = if matches!(concluded.report, Report::CouldNotCheck) {
+        UNCHECKED_MAX_AGE_SECS
+    } else {
+        crate::config::integer_or(settings, AUDIT_MAX_AGE, 24, 1..=24 * 30) * 3600
+    };
+    let age = now_secs() - at;
+    (0..=max_age).contains(&age).then_some(concluded)
+}
+
+/// Does every commit `refs` pushes carry a fresh record of `check`, all the
+/// same, in this push's mode? The one the push would replay, or None. Asked
+/// by the refusal and again by the replay, so answered once per push:
+/// nothing in one hook run writes a record before both have asked.
+fn fresh_for_refs(
+    settings: &crate::config::Settings,
+    ledger: &Ledger,
+    check: &str,
+    refs: &[PushRef],
+) -> Option<Concluded> {
+    if !crate::gate_stamp::push_stamps_enabled(settings) {
+        return None;
+    }
+    let memo_key = format!(
+        "{check} {}",
+        refs.iter()
+            .map(|r| format!("{} {}", r.local_oid, r.remote_ref))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if let Some(known) = ledger
+        .fresh
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&memo_key)
+    {
+        return known.clone();
+    }
+    let mode = AuditMode::of(refs);
+    let mut found: Option<Concluded> = None;
+    for commit in ledger.pushed_commits(refs) {
+        let Some(record) = fresh_record(settings, check, mode, &commit) else {
+            found = None;
+            break;
+        };
+        if found.as_ref().is_some_and(|prev| *prev != record) {
+            found = None;
+            break;
+        }
+        found = Some(record);
+    }
+    ledger
+        .fresh
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(memo_key, found.clone());
+    found
+}
+
+/// Is `check` owed by a push of `refs`: opted in, and with no fresh record?
+pub fn owed(
+    settings: &crate::config::Settings,
+    ledger: &Ledger,
+    check: &str,
+    refs: &[PushRef],
+) -> bool {
+    !ledger.pushed_commits(refs).is_empty()
+        && fresh_for_refs(settings, ledger, check, refs).is_none()
+}
+
+/// Run an audit through its record: replay a fresh one, or run the tool and
+/// keep what it concluded on the ledger (a tool that never got to a report
+/// counts as "could not check").
+fn recorded(
+    check: &str,
+    tool: &str,
+    ctx: &crate::registry::Ctx,
+    run: fn(&crate::registry::Ctx) -> Ran,
+) -> Outcome {
+    let (settings, refs) = (ctx.settings, ctx.push.get());
+    let mode = AuditMode::of(refs);
+    let releasing = mode == AuditMode::Release;
+    if let Some(record) = fresh_for_refs(settings, ctx.audits, check, refs) {
+        common::ok(
+            settings,
+            &format!("{tool}: replaying the audit recorded for this push"),
+        );
+        return conclude_waivable(
+            settings,
+            &record.tool,
+            record.report,
+            releasing,
+            &record.full,
+            record.waivable,
+        );
+    }
+    let (outcome, concluded) = match run(ctx) {
+        Ran::Concluded(concluded) => (
+            conclude_waivable(
+                settings,
+                &concluded.tool,
+                concluded.report.clone(),
+                releasing,
+                &concluded.full,
+                concluded.waivable,
+            ),
+            Some(concluded),
+        ),
+        Ran::Unavailable => (
+            Outcome::Unavailable,
+            Some(Concluded {
+                tool: tool.to_string(),
+                report: Report::CouldNotCheck,
+                full: String::new(),
+                waivable: false,
+            }),
+        ),
+        Ran::Inert => (Outcome::Inert, None),
+    };
+    if let (Some(concluded), true) = (concluded, crate::gate_stamp::push_stamps_enabled(settings)) {
+        let body = render(&concluded, now_secs());
+        let records: Vec<Pending> = ctx
+            .audits
+            .pushed_commits(refs)
+            .into_iter()
+            .filter_map(|commit| {
+                key_material(check, mode, &commit).map(|material| Pending {
+                    tip: commit,
+                    material,
+                    body: body.clone(),
+                })
+            })
+            .collect();
+        ctx.audits
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(records);
+    }
+    outcome
+}
+
+pub fn rust(ctx: &crate::registry::Ctx) -> Outcome {
+    recorded("pre-push-audit-rust", "audit-rust", ctx, rust_run)
+}
+
+pub fn js(ctx: &crate::registry::Ctx) -> Outcome {
+    recorded("pre-push-audit-js", "audit-js", ctx, js_run)
+}
+
+pub fn go(ctx: &crate::registry::Ctx) -> Outcome {
+    recorded("pre-push-audit-go", "audit-go", ctx, go_run)
+}
+
+pub fn python(ctx: &crate::registry::Ctx) -> Outcome {
+    recorded("pre-push-audit-python", "audit-python", ctx, python_run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1359,7 +1827,7 @@ mod tests {
         // Nothing on disk: nothing to audit, and we say so rather than
         // inventing a target.
         std::fs::create_dir_all(&root).unwrap();
-        assert_eq!(venv_site_packages(root.to_str().unwrap()), None);
+        assert_eq!(venv_site_packages(root.to_str().unwrap(), None), None);
 
         // The posix layout, with the python version DISCOVERED — hard-coding
         // `python3.13` would silently stop finding it after an upgrade.
@@ -1374,7 +1842,7 @@ mod tests {
             .join("site-packages");
         std::fs::create_dir_all(&sp).unwrap();
         assert_eq!(
-            venv_site_packages(root.to_str().unwrap()),
+            venv_site_packages(root.to_str().unwrap(), None),
             Some(sp.to_string_lossy().into_owned())
         );
 
@@ -1384,7 +1852,7 @@ mod tests {
         let wsp = win.join(".venv").join("Lib").join("site-packages");
         std::fs::create_dir_all(&wsp).unwrap();
         assert_eq!(
-            venv_site_packages(win.to_str().unwrap()),
+            venv_site_packages(win.to_str().unwrap(), None),
             Some(wsp.to_string_lossy().into_owned())
         );
 

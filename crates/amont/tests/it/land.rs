@@ -88,7 +88,7 @@ pub(crate) fn head(fx: &Fx) -> String {
     plain_git(&fx.r.dir, &["rev-parse", "HEAD"])
 }
 
-fn land_with(fx: &Fx, args: &[&str], path_prefix: Option<&std::path::Path>) -> Ran {
+pub(crate) fn land_with(fx: &Fx, args: &[&str], path_prefix: Option<&std::path::Path>) -> Ran {
     let mut cmd = crate::common::amont_cmd();
     cmd.arg("land")
         .args(args)

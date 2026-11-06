@@ -357,6 +357,9 @@ fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
     }
     let (r, base) =
         gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);");
+    // ADR-0018: waiting for a running rehearsal is the inline path; a
+    // refusing push never waits.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
     wait_state(&r, "the worker to start", |s| s.contains("phase=running"));
@@ -571,6 +574,8 @@ fn a_push_gives_up_waiting_and_runs_the_gate_itself() {
     }
     let (r, base) = gated_repo("");
     let tip = head(&r);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
         .trim()
         .to_string();

@@ -182,6 +182,8 @@ fn a_declared_pre_push_check_runs_after_the_built_ins() {
 #[test]
 fn a_pre_push_scope_is_judged_against_the_pushed_range() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");
@@ -224,6 +226,8 @@ fn a_pre_push_scope_is_judged_against_the_pushed_range() {
 #[test]
 fn a_reverted_change_within_the_pushed_range_still_counts() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");
@@ -258,6 +262,8 @@ fn a_reverted_change_within_the_pushed_range_still_counts() {
 #[test]
 fn a_file_touched_only_by_a_merge_resolution_still_counts() {
     let r = Repo::new();
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");

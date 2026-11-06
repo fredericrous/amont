@@ -253,6 +253,9 @@ fn js_repo(layout: impl FnOnce(&Repo)) -> (Repo, String) {
     );
     r.commit("chore: the gate");
     trust_and_install(&r);
+    // A rehearsal now runs the dependency audits too (ADR-0018); these tests
+    // read every command the stub saw, and are about preparing a snapshot.
+    r.git(&["config", "hook.skip", "pre-push-audit-js"]);
     r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     r.git(&["update-ref", "refs/remotes/origin/main", &base]);
     r.stage("a.txt", "hello\n");
@@ -480,6 +483,8 @@ fn a_push_whose_snapshot_cannot_be_prepared_falls_back_and_stamps_nothing() {
     let (r, base) = js_repo(npm_root);
     installed(&r, "");
     r.git(&["config", "amont.testPushedTree", "true"]);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     set(&r, "install.exit", "1");
     // Dirty, so the working tree is NOT the tip: a clean one legitimately
     // vouches for it, which is `stamp_tips`' existing rule.
@@ -1041,6 +1046,8 @@ fn units_come_from_the_pushed_tip_not_head() {
     let (r, base) = js_repo(npm_root);
     installed(&r, "");
     let older = head(&r);
+    // ADR-0018: this test covers the inline path, where the gate runs in the push.
+    r.git(&["config", "amont.pushGates", "inline"]);
     r.stage("tools/package.json", "{\"name\":\"tools\"}\n");
     r.stage("tools/package-lock.json", "tools lock\n");
     r.stage("a.txt", "newer\n");
@@ -1208,6 +1215,8 @@ fn a_rehearsal_is_registered_while_it_prepares() {
 
     // A push meanwhile waits rather than starting over — within its budget.
     r.git(&["config", "amont.rehearsalWait", "2"]);
+    // ADR-0018: the wait is the inline path; a refusing push never waits.
+    r.git(&["config", "amont.pushGates", "inline"]);
     let (_, out) = push_out(&r, &base, &head(&r));
     assert!(out.contains("still running — waiting up to"), "{out}");
 
