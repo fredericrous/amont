@@ -345,6 +345,10 @@ fn a_gate_whose_program_is_missing_never_blocks_a_land() {
     // A bare push does not refuse over it.
     let (code, out, err) = hook(&fx.r, &push_line(&base, &tip), &[]);
     assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        format!("{out}{err}").contains("pre-push-lint could not run"),
+        "it ran in the push and said it could not: {out}{err}"
+    );
     // And land lands, every time.
     for attempt in 0..2 {
         let ran = crate::land::land(&fx, &[]);

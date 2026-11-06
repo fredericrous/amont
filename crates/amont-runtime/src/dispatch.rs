@@ -1394,14 +1394,14 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     c.scope().opted_in(&tracked)
                         && crate::hooks::audit::owed(settings, ctx.audits, c.name(), ctx.push.get())
                 } else {
-                    // A gate with no identity (a declared command whose
-                    // program is not installed) can never be stamped or
-                    // recorded, so no pre-stage could ever answer for it:
-                    // owing it would refuse every push for good. It runs
-                    // below instead, fails to start, and warns, as it did
-                    // before 2.0.
+                    // A declared command whose program is not installed can
+                    // never be stamped or recorded, so no pre-stage could
+                    // answer for it: owing it would refuse every push for
+                    // good. It runs below instead, fails to start, and warns,
+                    // as before 2.0. Only that: a gate whose token failed for
+                    // another reason stays owed.
                     owed.iter().any(|o| o == c.name())
-                        && crate::gate_identity::token(&ctx.manifest.externals, c.name()).is_some()
+                        && !crate::gate_identity::program_missing(&ctx.manifest.externals, c.name())
                         && matches!(decide(**c), Decision::Run { .. })
                 }
             })
