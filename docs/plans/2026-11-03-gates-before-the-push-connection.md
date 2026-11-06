@@ -211,7 +211,7 @@ second, naming `amont land`, instead of running them on the open connection.
 ## Phases
 - [x] Phase 1 — amont: land pre-stage, `AMONT_LAND` mode, `amont.pushGates` (default refuse), ADR-0018, agents-md text, docs; measure the unscoped checks' wall time (bar: p95 < 3 s on homelab; over it, the plan is revised) and the pre-stage time, with every gate stamped and with none
 - [x] Phase 1b — amont: audits off the connection (the seam, `refs/notes/amont-audit`, `amont.auditMaxAge`, hook replay, owed in the pre-stage) and `amont land --tag`; then measure the hook again on homelab (bar: p95 < 5 s with fresh audit records)
-- [ ] Phase 2 — greenharness-skills: relais-verified-push, worktree-task F6, tag-release, each with the absent and older amont fallbacks; grh release
+- [x] Phase 2 — greenharness-skills: relais-verified-push, worktree-task F6, tag-release, each with the absent and older amont fallbacks; grh release
 - [ ] Phase 3 — release amont (major: the default changes), install, the live checks, then reinstall the skills and check an agent push end to end
 
 ## Rollback
@@ -256,6 +256,7 @@ second, naming `amont land`, instead of running them on the open connection.
   - A declared push gate whose program is not installed has no token, so no record could ever answer for it, and land refused forever (backend, high). Such a gate is no longer owed: it runs in the push, fails to start, and warns (tested, red without the fix). The delta review (lang:rust, backend, unix) narrowed the exemption to `gate_identity::program_missing`, a declared command whose program cannot be found, so a token that failed for another reason (a hash git would not compute) stays owed and refuses rather than run on the connection; a unit test pins it, and the integration test asserts the warning.
   - `strip_git_env` and the rehearsal's `strip_repo_env` drop the 1.70.0 index hints too, so no child of the audit, the snapshot prepare or the rehearsal inherits them (unix, low).
   - CHANGELOG `## Unreleased` names the breaking default, the opt-out, and the first refused push after an upgrade from before 1.70.0; three doc passages that still had gates running in the push now say where they run (tui).
+- 2026-11-06 — Released: amont 2.0.0 (#412 merged as `e1bb1e97`, release #413, tag at `62546881`). Every release job succeeded; GitHub, crates.io (amont, amont-runtime, amont-quiet, amont-slots) and npm were verified directly. npm lagged about a minute behind the job. The release had to move the inter-crate `amont-runtime` floor from 1.24.0 to 2.0.0: it is a caret requirement, so a major release must move it. Installed here (Homebrew), so every hook on this machine runs 2.0.0. The skills went out as greenharness/skills#11 (v0.3.7), pinned by grh 0.1.13 (greenharness/grh#18). Follow-ups: fredericrous/amont#414 (a heavy `*`-scoped declared gate still runs on the connection; the connection advice is printed inside a rehearsal snapshot; the review lows) and fredericrous/amont-agent#204 (the guard does not read `amont land --tag`).
 - 2026-11-05 — Declined at review, with reasons:
   - `gates.failed` in the JSON: the failing gate names itself in the hook output above land's verdict; land's `next` names `amont rehearse --status` and `amont land`.
   - Hiding the `amont-land:` sentinel lines: land streams the push's output as it comes, and a line filter would hold it back.
@@ -298,11 +299,15 @@ second, naming `amont land`, instead of running them on the open connection.
   - A dirty lockfile, or a push of a non-HEAD branch: no record is written (`git notes --ref amont-audit list`) → the dirty lockfile is tested; the non-HEAD branch takes the same condition (HEAD equal to the tip).
   - A crate moved from dev-dependencies to dependencies with the lockfile unchanged: a `v*` tag push re-runs the audit and blocks → NOT TESTED (it needs a cargo-audit fixture). A release record is keyed by the whole tree, so any manifest change is a new key.
   - Homelab, branch binary (attest off): hook wall time with fresh audit records, 5 runs, p95 < 5 s → 3.02–3.74 s against a 2.38–2.49 s baseline without the audits, alternated, at load 14–18 (~6 s before per-process memoization; ~35 s before Phase 1b). The pre-stage that recorded the audits took 83 s once.
-- Phase 2: for each skill and each of {new amont, 1.68 amont, no amont}, the command it issues and the remote tip observed. Each changed skill takes the right path with the new amont, an older amont, and no amont (each shown by its own run or check) → <result>
+- Phase 2: for each skill and each of {new amont, 1.68 amont, no amont}, the command it issues and the remote tip observed. Each changed skill takes the right path with the new amont, an older amont, and no amont (each shown by its own run or check) → with the new amont, run live:
+  - **relais-verified-push / worktree-task F6:** `amont land --json` landed greenharness/skills#11 (`3e0dd69`, `"prestage":"stamped"`) and greenharness/grh#18 (`97f3733`, `"prestage":"ran"`, then `stamped` after a branch rename). Each remote tip was read back.
+  - **tag-release:** `amont land --tag v0.1.13` was held by the amont-agent push guard, which reads only `amont land [--json] [--force]` (fredericrous/amont-agent#204). A bare `git push origin v0.1.13` was refused as designed: it named `amont land --tag` and offered no rehearse. The tag was pushed with the refusal's own `git -c amont.pushGates=inline` remedy, and the tag read back on the remote.
+  - **Older amont and no amont:** NOT RUN as live pushes. Those paths are unchanged from before 2.0 in all three skills. The implementation review (three rounds) checked each skill's version test and fallback order.
+  - grh 0.1.13 (greenharness/grh#18) pins skills 0.3.7, whose tarball hash was checked against its `SHA256SUMS`. It is installed here: `grh install gate workflow`, and the three installed skills carry the 2.0 text.
 - Phase 3, after install:
-  - In a scratch clone, a bare push → refused in < 2 s, origin ref unchanged → <result>
-  - On a real homelab branch, `amont land` → gates run first, then the push, with the push's hook time < 5 s → <result>
-  - A relais run's push lands → <result>
+  - In a scratch clone, a bare push → refused in < 2 s, origin ref unchanged → 0.7 s with the installed 2.0.0 hook on an unstamped range whose gate sleeps 30 s (so none ran); it named the gate and the three remedies, each line under 80 columns. Measured on the hook directly: the guards rightly refused a probe `git push` with `--no-verify` and a variable `cd`.
+  - On a real homelab branch, `amont land` → gates run first, then the push, with the push's hook time < 5 s → OPEN: taken from the next real homelab push. The branch binary measured 3.0–3.7 s in Phase 1b.
+  - A relais run's push lands → OPEN: taken from the next relais run's push.
 
 ## Outcome
 
