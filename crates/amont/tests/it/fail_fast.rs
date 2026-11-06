@@ -250,14 +250,14 @@ fn the_hook_records_the_wave_and_a_rehearsal_does_not() {
     let r = repo("block", 1, "");
     r.stage("a.txt", "one\n");
     let ledger = r.path(".git/amont-waves");
-    let _ = common::amont_cmd()
+    let _rehearsal = common::amont_cmd() // its exit code is not under test
         .arg("run")
         .current_dir(&r.dir)
         .stdin(Stdio::null())
         .output()
         .expect("amont run");
     assert!(!ledger.exists(), "a rehearsal is not a commit");
-    let _ = pre_commit(&r, &[]);
+    let _ = pre_commit(&r, &[]); // its exit code is not under test
     let text = std::fs::read_to_string(&ledger).expect("ledger");
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("amont-waves-v1"), "{text}");

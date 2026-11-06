@@ -84,8 +84,8 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
 - **Off switch.** `git config amont.failFast false` runs one wave, as
   before. Precedence, stated once: `AMONT_FAIL_FAST` (one run), then git
   config (any scope), then `set failFast` in `amont.conf`, then the default
-  `true`; a malformed value is reported through `complain` and the default
-  applies. Documented in `docs/configuration.md`, and named in the ADR and in
+  `true`; a malformed value is reported through `complain` and the
+  configured value applies. Documented in `docs/configuration.md`, and named in the ADR and in
   `docs/checks.md` next to the skip line. Live and plain output say the word `skipped`, never a
   glyph alone.
 - **The pass-path cost.** A commit that passes starts its Heavy checks once
@@ -153,6 +153,16 @@ full 13 minutes anyway. Then the corrected commit ran it again (programme
   `waves.rs` sit on the same line (`errors.never-swallowed`), `tmp` is
   renamed `scratch_path`, and the `append` comment says a line above the
   header is unlikely, not impossible (unix).
+
+- 2026-11-06 — implementation review (fresh round on 87608d83): the
+  budget comment named a spawn that was not there. Re-measured with a
+  counting git shim, the waves add one spawn (the `amont.failFast` read), so
+  the budget is 27, not 28. The measure also found that the ledger counted
+  clippy, go vet and pyright on a `.txt`-only commit, where they return
+  `Passed` having judged nothing. It now counts only Heavy checks the change
+  reaches, and reads the tracked list only for those.
+- 2026-11-06 — unix (low, deliberate): the `append` comment's "the reader
+  skips" describes the manual 14-day read, which is the only reader.
 
 ## Verification
 - **Tests** (a scratch repo per test, as in `gate_pairs.rs`, with a Heavy

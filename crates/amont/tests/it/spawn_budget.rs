@@ -79,14 +79,14 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
     // of a session that captured it. One config read for a documented key is
     // the intended shape of this budget growing; a check that grew a git habit
     // of its own is not.
-    // 26 -> 28 (ADR-0020, the pre-commit waves): one `git config --get
-    // amont.failFast`, read once per process, and the staged list the wave
-    // ledger asks for to tell a Heavy check that judged this change from one
-    // that did not (cached; free whenever a check listed the staged files
-    // first, as most commits' checks do — this one-file `.txt` commit has
-    // none that does). Two documented reads for a documented feature.
+    // 26 -> 27 (ADR-0020, the pre-commit waves): one `git config --get
+    // amont.failFast`, read once per stage by `Waves::resolve`. Measured on
+    // this commit with a counting git shim against `AMONT_FAIL_FAST=false`,
+    // which skips that read: 29 against 28, the one extra line being the
+    // config read. The wave ledger writes nothing here (no Heavy check reaches
+    // a `.txt` change) and so asks git for nothing.
     assert!(
-        spawns <= 28,
+        spawns <= 27,
         "a one-file commit spawned git {spawns} times — the per-stage snapshot \
          (staged_files/repo_root caching) has regressed, or a check grew its \
          own git habit; raise this budget only with a reason written here"

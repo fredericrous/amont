@@ -472,14 +472,23 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
             .filter(|(_, o)| **o == Outcome::Skipped)
             .map(|(c, _)| c.name())
             .collect();
-        // Heavy checks that judged something, or would have: one that came
-        // back `Inert` (clippy with no Rust here), `Unavailable` or `Deferred`
-        // waited for nothing, and a commit with none of the others writes no
-        // line — and spends no git spawn on the ledger's path.
+        // Heavy checks this change reached that judged something, or would
+        // have: clippy on a `.txt`-only commit returns `Passed` having judged
+        // nothing, and one that came back `Inert`, `Unavailable` or `Deferred`
+        // waited for nothing either. A commit with none writes no line, and
+        // spends no git spawn on the ledger's path (`spawn_budget.rs`). The
+        // staged list is the stage's own, cached; the tracked list is read
+        // only for a Heavy check this change touched (`would_judge` asks it
+        // only then), so an ordinary commit pays nothing here.
+        let staged = crate::hooks::common::staged_files(&[]);
         let heavy_checks = checks
             .iter()
             .zip(&outcomes)
             .filter(|(c, o)| is_heavy(**c) && o.judged_or_skipped())
+            .filter(|(c, _)| c.scope().touches(&staged))
+            .filter(|(c, _)| {
+                c.would_judge(&staged, crate::hooks::common::tracked_files().as_deref())
+            })
             .count();
         crate::waves::note(light_ms, heavy_checks, &skipped);
     }

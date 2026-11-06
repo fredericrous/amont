@@ -49,4 +49,5 @@ still rewriting.
   and what was skipped, for the 14-day measure.
 - `amont.failFast false`, or `AMONT_FAIL_FAST=false` for one run, restores
   one wave.
-- A Light check whose thread died reads `Failed` and skips the Heavy wave.
+- A Light check whose thread died reads `Failed` and, at a blocking
+  severity, skips the Heavy wave.
