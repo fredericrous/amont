@@ -294,7 +294,9 @@ impl Drop for CheckGuard {
 /// renamed so no waiter's line names the gate that finished.
 fn park(lease: amont_slots::Lease, jobs: Option<u32>) {
     if let Err(error) = lease.rename(&between_gates()) {
-        crate::hooks::common::say(&format!("  host slot record not renamed: {error}"));
+        crate::hooks::common::say(&format!(
+            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+        ));
     }
     let earlier = parked().replace(Parked { lease, jobs });
     drop(earlier);
@@ -496,7 +498,9 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
 fn take_handed(handed: Parked, name: &str) -> bool {
     let Parked { lease, jobs } = handed;
     if let Err(error) = lease.rename(&holder_for(name)) {
-        crate::hooks::common::say(&format!("  host slot record not renamed: {error}"));
+        crate::hooks::common::say(&format!(
+            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+        ));
     }
     record_acquisition(name, jobs, Duration::ZERO, "handed");
     CURRENT.with(|current| {
@@ -607,7 +611,7 @@ fn note(reason: &Reason, cap: u64, warn_wait: Option<Duration>) {
             crate::ui::highlight(DIR_ENV)
         )),
         Reason::TimedOut(waited) if warn_wait.is_some() => crate::hooks::common::warn(&format!(
-            "no host slot freed in {} (land's pre-stage waits at most {}={}s); running it anyway",
+            "no host slot in {} (land: {}={}s); running it anyway",
             crate::hooks::common::human_secs(waited.as_secs()),
             crate::ui::highlight("amont.warnSlotWait"),
             warn_wait.map_or(0, |limit| limit.as_secs())

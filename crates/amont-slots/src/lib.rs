@@ -1481,16 +1481,18 @@ mod tests {
     }
 
     #[test]
-    fn rename_on_an_unwritable_holders_directory_names_the_path() {
-        use std::os::unix::fs::PermissionsExt;
+    fn rename_that_cannot_write_a_record_names_the_path() {
         let dir = scratch("rename-unwritable");
         let mut waiter = Waiter::new_in(&dir, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
         let lease = granted(waiter.poll_with(idle(0)).unwrap());
         let holders = dir.join("holders");
-        fs::set_permissions(&holders, fs::Permissions::from_mode(0o500)).unwrap();
+        // A directory where the temp record goes makes the write fail for
+        // any user, root included, which a permission mode would not.
+        let temp = holders.join(format!(".slot-0.who.{}.tmp", std::process::id()));
+        fs::create_dir(&temp).unwrap();
         let outcome = lease.rename(&Holder::here("t", "b"));
-        fs::set_permissions(&holders, fs::Permissions::from_mode(0o700)).unwrap();
-        let error = outcome.expect_err("a read-only holders directory cannot be written");
+        fs::remove_dir(&temp).unwrap();
+        let error = outcome.expect_err("a record whose temp path is a directory cannot be written");
         assert!(
             error.to_string().contains(&holders.display().to_string()),
             "{error}"
