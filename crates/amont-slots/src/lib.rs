@@ -203,7 +203,8 @@ pub struct Holder {
     pub pid: u32,
     /// `amont`, `relais`, `amont slot run`, …
     pub tool: String,
-    /// The repository or directory the job runs in.
+    /// The repository or directory the job runs in; for a push rehearsal,
+    /// the worktree its snapshot was taken from.
     pub repo: String,
     /// What it runs, short: `cargo test`, `pre-commit-clippy`.
     pub command: String,
@@ -225,9 +226,19 @@ impl Holder {
                 .map(|d| d.display().to_string())
                 .unwrap_or_default(),
             command: command.to_string(),
-            session: std::env::var("CLAUDE_SESSION_ID").unwrap_or_default(),
+            session: session_id(),
             started_ms: now_ms(),
             jobs: None,
+        }
+    }
+
+    /// The session, cut to its first 8 characters: enough to tell sessions
+    /// apart and to find the transcript; `-` when none is known.
+    pub fn short_session(&self) -> &str {
+        match self.session.char_indices().nth(8) {
+            _ if self.session.is_empty() => "-",
+            Some((i, _)) => &self.session[..i],
+            None => &self.session,
         }
     }
 
@@ -269,6 +280,26 @@ impl Holder {
             jobs: raw(s, "jobs").and_then(|j| j.parse().ok()),
         })
     }
+}
+
+/// The agent session this process runs for: Claude Code's
+/// `CLAUDE_CODE_SESSION_ID`, else relais's `RELAIS_SESSION_ID`, else the
+/// older `CLAUDE_SESSION_ID`; empty when none is set.
+pub fn session_id() -> String {
+    session_from(|k| std::env::var(k).ok())
+}
+
+const SESSION_ENVS: [&str; 3] = [
+    "CLAUDE_CODE_SESSION_ID",
+    "RELAIS_SESSION_ID",
+    "CLAUDE_SESSION_ID",
+];
+
+fn session_from(get: impl Fn(&str) -> Option<String>) -> String {
+    SESSION_ENVS
+        .iter()
+        .find_map(|k| get(k).filter(|v| !v.is_empty()))
+        .unwrap_or_default()
 }
 
 /// Held slots: released when dropped, and by the kernel if the process dies.
@@ -1087,6 +1118,49 @@ mod tests {
         let old = Holder { jobs: None, ..h };
         assert!(!old.to_json().contains("jobs"));
         assert_eq!(Holder::from_json(&old.to_json()), Some(old));
+    }
+
+    /// Claude Code's session wins, then relais's, then the old name; an
+    /// empty value counts as unset.
+    #[test]
+    fn the_session_comes_from_the_first_set_variable() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(
+            session_from(env(&[
+                ("CLAUDE_SESSION_ID", "old"),
+                ("RELAIS_SESSION_ID", "r"),
+                ("CLAUDE_CODE_SESSION_ID", "cc")
+            ])),
+            "cc"
+        );
+        assert_eq!(
+            session_from(env(&[
+                ("CLAUDE_CODE_SESSION_ID", ""),
+                ("RELAIS_SESSION_ID", "r")
+            ])),
+            "r"
+        );
+        assert_eq!(session_from(env(&[("CLAUDE_SESSION_ID", "old")])), "old");
+        assert_eq!(session_from(env(&[])), "");
+    }
+
+    /// The listing shows a session's first 8 characters, `-` for none.
+    #[test]
+    fn a_short_session_is_eight_characters() {
+        let h = |s: &str| Holder {
+            session: s.into(),
+            ..Holder::default()
+        };
+        assert_eq!(h("94649c5c-bf8a-4ec0").short_session(), "94649c5c");
+        assert_eq!(h("abc").short_session(), "abc");
+        assert_eq!(h("").short_session(), "-");
     }
 
     /// The width a weight buys: relais's formula, never below one job.
