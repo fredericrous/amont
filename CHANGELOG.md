@@ -16,7 +16,10 @@ missing here.
   gate waits at most `amont.warnSlotWait` (default 600 s, 1 to 3600) and then
   runs unqueued, never deferred. `waits.jsonl` lines gain `pid`, and those
   written by amont's checks `name`, `session`, `rehearsal` and `prestage`;
-  a handoff is the outcome `handed`. An older amont binary under a newer
+  a handoff is a new value of the `outcome` field, `handed`. A parked slot
+  is released before a gate runs on the cluster executor, which takes no
+  host slot (ADR-0016). A grant also removes the hidden `holders/` temp
+  files of dead processes. An older amont binary under a newer
   `rehearse` reads the new `prestage;detached=…` marker as no detached
   gates.
 

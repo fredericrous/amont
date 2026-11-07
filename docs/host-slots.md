@@ -21,7 +21,7 @@ why.
 | `admission` | the one admission lock. Every admission decision is made under it, taken with `LOCK_NB` and retried inside the caller's own deadline, so a stopped holder of it never holds a hook past its own deadline. |
 | `admitted-at` | the time of the last admission, in ms since the epoch, for the ramp. |
 | `queue/<nanos>-<pid>-<n>` | a waiter's ticket, flocked for as long as it waits. It is created hidden (`.new-…`), locked, then renamed into place, so a visible ticket is never unlocked. A visible ticket whose lock is free belongs to a waiter that died, and is removed. |
-| `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`, and `jobs` when the writer knows it). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
+| `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`, and `jobs` when the writer knows it). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. A hidden `.slot-N.who.<pid>.tmp` beside it is a rename in flight; when a slot is granted, those whose `pid` is dead are removed, as dead queue tickets are. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
 | `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`, `handed`), `pid`, and `jobs` when the writer knows it. Lines written by amont's checks also carry `name` (the check), `session` when one is known, and `"rehearsal":true` / `"prestage":true` inside a rehearsal snapshot / land's pre-stage. |
 
 ## Admission
@@ -54,10 +54,10 @@ slot, and an amont or wrapper started under it does not queue again.
 
 Inside a rehearsal snapshot a pre-push keeps its slot from one heavy gate to
 the next. The finished gate parks its lease and renames the holder record to
-`pre-push (between gates)`; the next heavy gate takes it with a `handed` line
+`pre-push, between checks`; the next heavy gate takes it with a `handed` line
 in `waits.jsonl` (a wait of 0, the same `pid`). The pre-push releases a parked
 slot when it ends, however it ends. While a slot is parked, a light check's
-tools run under it, width-bound, and a child `amont slot run` does not queue.
+tools run under it, width-bound, and a child `amont slot run` does not queue. A gate that runs on the cluster executor releases the parked slot first.
 A plain push and a commit release their slot after each check.
 
 ## The ceiling in land's pre-stage

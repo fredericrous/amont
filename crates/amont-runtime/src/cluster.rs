@@ -809,6 +809,9 @@ fn run(
         argv: &argv,
         run_label: &scratch.run_label(),
     };
+    // The gate runs on the cluster and takes no host slot (ADR-0016): a slot
+    // parked for the next local gate would sit idle for the whole run.
+    crate::host_slots::release_parked();
     let job = claim_slot(&kube, &spec, &scratch, deadline)?;
     let outcome = run_in(&kube, config, &job, &scratch, &commit, &tree, deadline);
     job.delete(&kube, &ext.id, deadline);

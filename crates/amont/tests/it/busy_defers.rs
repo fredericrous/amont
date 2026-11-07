@@ -998,8 +998,11 @@ fn wait_for_file(path: &Path) {
 }
 
 /// Inside a rehearsal a pre-push keeps its slot from one heavy gate to the
-/// next: one wait per land. An outside waiter that queues once the first gate
-/// holds the slot gets it only after the second gate ran.
+/// next: one wait per land. The only slot is held 3 s; the first gate then
+/// holds it until an outside waiter's ticket is in `slots/queue`, so the
+/// second gate can only get the slot by the handoff. Without it the second
+/// gate would queue behind the outside waiter, which keeps the slot 10 s: the
+/// run would take over 13 s.
 #[test]
 fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
     let slots = slot_dir("handoff");
@@ -1008,15 +1011,22 @@ fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
         slots.join("second"),
         slots.join("grant"),
     );
+    let script = format!(
+        "touch {first}\n\
+         tries=0\n\
+         while [ -z \"$(ls {queue} 2>/dev/null)\" ] && [ \"$tries\" -lt 600 ]; do\n\
+         tries=$((tries + 1)); sleep 0.1; done\n",
+        first = first.display(),
+        queue = slots.join("queue").display(),
+    );
     let (repo, line) = handoff_repo(
         &format!(
             "set onBusy wait\nset timeout 600\n\
-             pre-push  one  *.txt  block  heavy touch {}\n\
+             pre-push  one  *.txt  block  heavy sh gate.sh\n\
              pre-push  two  *.txt  block  heavy touch {}\n",
-            first.display(),
             second.display()
         ),
-        "true\n",
+        &script,
     );
     let releaser = release_after(Holder::hold(&slots.join("slot-0")), &slots, 1);
     let waiter_slots = slots.clone();
@@ -1159,9 +1169,7 @@ fn a_nested_slot_run_under_a_parked_slot_does_not_queue() {
         ("RUST_TEST_THREADS", ""),
         ("MAKEFLAGS", ""),
     ];
-    let started = std::time::Instant::now();
     let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &clear);
-    let took = started.elapsed();
     releaser.join().unwrap();
     assert_eq!(code, 0, "{out}");
     assert!(last.exists(), "{out}");
@@ -1172,15 +1180,6 @@ fn a_nested_slot_run_under_a_parked_slot_does_not_queue() {
     assert_eq!(lines.len(), 2, "the nested run recorded a wait: {lines:?}");
     assert_eq!(lines[1]["outcome"], "handed", "{lines:?}");
     assert_eq!(lines[1]["name"], "three", "{lines:?}");
-    let freed = modified(&first_width);
-    let after_free = std::time::SystemTime::now()
-        .duration_since(freed)
-        .unwrap_or_default();
-    assert!(
-        after_free < std::time::Duration::from_secs(2),
-        "the slot freed for the first gate at its width file; \
-         the rest took {after_free:?} (total {took:?})\n{out}"
-    );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
 

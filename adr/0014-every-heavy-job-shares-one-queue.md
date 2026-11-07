@@ -94,7 +94,7 @@ alike), a pre-push keeps its slot from one heavy gate to the next. Pre-push
 runs its gates one at a time, and each heavy gate used to drop its slot, so
 the next one rejoined the back of the queue: a land paid the queue's tail
 more than once. Now the finished gate parks its lease, renames the holder
-record to `pre-push (between gates)`, and the next heavy gate takes it,
+record to `pre-push, between checks`, and the next heavy gate takes it,
 recorded in `waits.jsonl` as `handed` with a wait of 0. One wait per land.
 
 - **Cost:** the slot is held through the pre-push's own light checks too.
@@ -104,6 +104,9 @@ recorded in `waits.jsonl` as `handed` with a wait of 0. One wait per land.
 - **Release:** the pre-push's scope releases a parked slot on every exit,
   early block and unwind included. A plain push and a commit release after
   each check, as before.
+- **Cluster gates:** a gate that runs on the cluster executor takes no host
+  slot (ADR-0016), so the cluster path releases the parked slot where it
+  claims its Job; a cluster gate after a heavy gate never keeps a slot idle.
 - **Ceiling:** only land's pre-stage bounds the wait of a heavy `warn` gate
   (`amont.warnSlotWait`, ADR-0013). A land that follows an already-running
   background rehearsal is not under the ceiling.

@@ -832,17 +832,21 @@ impl Plan {
     }
 }
 
+/// Who asked for a rehearsal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// A push's own pre-push.
+    Push,
+    /// Land's pre-stage.
+    Prestage,
+}
+
 /// The value of [`ENV`] for a run that gave `on_cluster` to the cluster.
-/// Land's pre-stage (`prestage` is its push line) marks it with a leading
-/// `prestage;`.
-fn snapshot_env_value(
-    on_cluster: &[String],
-    prestage: Option<&crate::pushrefs::PushRef>,
-) -> String {
-    let marker = if prestage.is_some() {
-        PRESTAGE_PREFIX
-    } else {
-        ""
+/// Land's pre-stage marks it with a leading `prestage;`.
+fn snapshot_env_value(on_cluster: &[String], origin: Origin) -> String {
+    let marker = match origin {
+        Origin::Push => "",
+        Origin::Prestage => PRESTAGE_PREFIX,
     };
     if on_cluster.is_empty() {
         format!("{marker}1")
@@ -1050,7 +1054,17 @@ pub fn worker(
         .arg(&hooks_dir)
         .arg("pre-push")
         .current_dir(snapshot.path())
-        .env(ENV, snapshot_env_value(&on_cluster, prestage))
+        .env(
+            ENV,
+            snapshot_env_value(
+                &on_cluster,
+                if prestage.is_some() {
+                    Origin::Prestage
+                } else {
+                    Origin::Push
+                },
+            ),
+        )
         // A rehearsal is how a gate runs with no push waiting on it, so it
         // waits for a slot rather than defer: a rehearsal whose gates all
         // deferred would report "passed" having run nothing (ADR-0013).

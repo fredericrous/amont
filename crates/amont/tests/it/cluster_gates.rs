@@ -58,6 +58,10 @@ case "$1" in
       down) echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1 ;;
     esac
     k=$(grep -o '"name":"amont-gate-slot-[0-9]*"' "$3" | head -1 | sed 's/.*-//; s/"//')
+    if [ -n "$PROBE_AMONT" ]; then
+      ls "$AMONT_SLOT_DIR/holders" > "$D/holders-at-create" 2>/dev/null
+      "$PROBE_AMONT" slots --json > "$D/slots-at-create" 2>/dev/null
+    fi
     mkdir "$D/slot-$k" 2>/dev/null || { echo 'Error from server (AlreadyExists): jobs.batch already exists' >&2; exit 1; }
     cp "$3" "$D/job-$k.json"; cp "$3" "$D/job.json"
     mkdir -p "$D/created"; cp "$3" "$(mktemp "$D/created/job.XXXXXX")"
@@ -1317,6 +1321,80 @@ fn a_push_after_a_rehearsal_does_not_repeat_a_cluster_gate() {
     assert!(text.contains("not repeating it here"), "{text}");
     assert!(!c.kubectl_calls().contains(" create "), "{text}");
     assert_eq!(c.local_runs(), 0, "{text}");
+}
+
+/// A heavy gate parks its host slot in a rehearsal's pre-push; the cluster
+/// gate that follows takes no host slot (ADR-0016), so the parked one is
+/// released before the Job is claimed: while the fake kubectl runs, the slot
+/// directory has no `who` file and `amont slots` shows nothing held.
+#[test]
+fn a_cluster_gate_after_a_heavy_gate_holds_no_host_slot() {
+    let slots = crate::busy_defers::slot_dir("cluster-after-heavy");
+    let marker = slots.join("heavy-ran");
+    let cluster = Cluster::trusted(&format!(
+        "set executor cluster\nset onBusy wait\n\
+         pre-push  heavy  *.txt  block  heavy touch {}\n\
+         pre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
+        marker.display()
+    ));
+    let base = out(&cluster.r, &["rev-parse", "HEAD"]);
+    cluster
+        .r
+        .git(&["update-ref", "refs/remotes/origin/main", &base]);
+    let (tip, _) = cluster.commit_on(&base, "feat/x", "a.txt");
+    let line = format!("refs/heads/feat/x {tip} refs/heads/feat/x {base}\n");
+    let mut cmd = cluster.command(
+        &[
+            "--hooks-dir",
+            &cluster.r.dir.join(".git/hooks").to_string_lossy(),
+            "pre-push",
+        ],
+        &[
+            ("AMONT_REHEARSAL", "1"),
+            ("AMONT_ON_BUSY", "wait"),
+            ("AMONT_HOST_SLOTS", "1"),
+            ("PROBE_AMONT", env!("CARGO_BIN_EXE_amont")),
+        ],
+    );
+    cmd.env_remove("AMONT_HOST_SLOT")
+        .env("AMONT_SLOT_DIR", &slots)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn amont");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(line.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().expect("wait");
+    let text = plain(&format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ));
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(marker.exists(), "the heavy gate ran: {text}");
+    assert!(cluster.kubectl_calls().contains(" create "), "{text}");
+    let at_create = cluster.read("holders-at-create");
+    assert!(
+        at_create.trim().is_empty(),
+        "a who file stayed while the cluster gate ran: {at_create:?}\n{text}"
+    );
+    let json = cluster.read("slots-at-create");
+    assert!(json.contains("\"held\":0"), "{json}\n{text}");
+    // Without this, an empty holders listing would also pass when no slot
+    // was ever granted: the heavy gate must have taken one first.
+    let waits = std::fs::read_to_string(slots.join("waits.jsonl")).unwrap_or_default();
+    assert!(
+        waits
+            .lines()
+            .any(|line| line.contains("\"name\":\"heavy\"")
+                && line.contains("\"outcome\":\"admitted\"")),
+        "the heavy gate was granted a slot before the cluster gate: {waits}\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
 
 /// Both twins are `platform=any`; the commit twin ran on the cluster. The
