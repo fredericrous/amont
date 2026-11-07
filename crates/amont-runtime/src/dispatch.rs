@@ -833,7 +833,7 @@ struct Report<'a> {
     unavailable: Vec<&'a str>,
     /// Deferred to CI by the busy policy (ADR-0013). Not passed, not a gap
     /// on this machine's part either: said so, with what to do about it.
-    deferred: Vec<&'a str>,
+    deferred: Vec<(&'a str, Severity)>,
     /// Heavy checks that never started because a Light one blocked first
     /// (ADR-0020). Said in quiet mode too: a refused commit whose suite did
     /// not run must never read as one whose suite passed.
@@ -869,7 +869,7 @@ fn classify<'a>(
             // Judged nothing, said nothing: not a pass to count, not a gap
             // to announce.
             Outcome::Inert => {}
-            Outcome::Deferred => report.deferred.push(check.name()),
+            Outcome::Deferred => report.deferred.push((check.name(), severities.of(*check))),
             Outcome::Skipped => report.skipped.push(check.name()),
             Outcome::Failed => match severities.of(*check) {
                 Severity::Block => report.blocked.push(check.name()),
@@ -1100,13 +1100,19 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 /// One check by name, in a one-slot stage. The verdict is the one
 /// `registry::lookup` gives a check: blocking only a failed `block` check.
 /// Enter `check` for the host-slot bookkeeping: a heavy check whose severity
-/// is `warn` never waits for a slot (`host_slots::never_waits`). Only a heavy
-/// check can wait, so only it asks `severity`, which the caller answers from
-/// its stage's severity fold when it has one: a git-config read per check
-/// broke the commit's git-spawn budget.
+/// is `warn` never waits for a slot (`host_slots::never_waits`), except inside
+/// a rehearsal snapshot, where no push connection is open, no commit waits,
+/// and land's pre-stage needs the check's evidence: there it follows the
+/// busy policy the rehearsal sets. Only a heavy check can wait, so only it
+/// asks `severity`, which the caller answers from its stage's severity fold
+/// when it has one: a git-config read per check broke the commit's git-spawn
+/// budget.
 fn enter(check: &dyn Check, severity: impl FnOnce() -> Severity) -> crate::host_slots::CheckGuard {
     let guard = crate::host_slots::enter_check(check.name(), check.weight());
-    if check.weight() == crate::host_slots::Weight::Heavy && matches!(severity(), Severity::Warn) {
+    if check.weight() == crate::host_slots::Weight::Heavy
+        && !crate::rehearsal::in_snapshot()
+        && matches!(severity(), Severity::Warn)
+    {
         crate::host_slots::never_waits();
     }
     guard
@@ -1777,8 +1783,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
+        let mut severity_read: Option<Severity> = None;
         let slot = enter(*check, || {
-            crate::registry::severity_of(ctx.settings, *check)
+            let severity = crate::registry::severity_of(ctx.settings, *check);
+            severity_read = Some(severity);
+            severity
         });
         let outcome = deferred_or(&slot, check.run(&sub));
         if let Some(f) = &flush {
@@ -1824,7 +1833,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 }
             }
             // Not run, never fatal, never passed: CI runs it (ADR-0013).
-            Outcome::Deferred => announce_deferred(&[check.name()]),
+            Outcome::Deferred => announce_deferred(&[(
+                check.name(),
+                severity_read.unwrap_or_else(|| crate::registry::severity_of(ctx.settings, *check)),
+            )]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
             // a gap (nothing is missing). The dispatcher asked the registry's
             // opt-in question above; this is a check answering it for itself.
@@ -2037,23 +2049,49 @@ fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
     }
 }
 
-/// The deferral roll-up: which checks, then how to run one now and how to
+/// The deferral roll-up: which checks, then how to run each now and how to
 /// stop deferring. Printed in quiet mode too, like `could not run`: a gate
-/// skipped without a word looks exactly like a pass.
-fn announce_deferred(names: &[&str]) {
-    println!(
+/// skipped without a word looks exactly like a pass. Each deferred check is
+/// advised the command that waits for its slot; the `onBusy wait` hint is
+/// offered only for `block` checks, since a `warn` check never waits on a
+/// commit or a push and the hint cannot stop it deferring there.
+fn announce_deferred(deferred: &[(&str, Severity)]) {
+    for line in deferral_advice(deferred) {
+        println!("{line}");
+    }
+}
+
+/// The lines [`announce_deferred`] prints: the roll-up, then one `run now:`
+/// command per deferred check (`amont run` takes one check by name, and a
+/// `--raw` run waits for its slot under `AMONT_ON_BUSY=wait`, warn or block),
+/// then the `onBusy wait` hint only when a `block` check is in the list,
+/// since only a `block` check stops deferring under it.
+fn deferral_advice(deferred: &[(&str, Severity)]) -> Vec<String> {
+    let names: Vec<&str> = deferred.iter().map(|(name, _)| *name).collect();
+    let mut lines = vec![format!(
         "{} {} check(s) deferred to CI, no host slot freed: {}",
         warning_sign(),
         names.len(),
         names.join(", ")
-    );
-    if let Some(first) = names.first() {
-        println!(
-            "  run now: {} · stop deferring: {}",
-            highlight(&format!("AMONT_ON_BUSY=wait amont run {first}")),
-            highlight("set onBusy wait"),
-        );
+    )];
+    let mut any_block = false;
+    for (name, severity) in deferred {
+        match severity {
+            Severity::Block => any_block = true,
+            Severity::Warn => {}
+        }
+        lines.push(format!(
+            "  run now: {}",
+            highlight(&format!("AMONT_ON_BUSY=wait amont run --raw {name}"))
+        ));
     }
+    if any_block {
+        lines.push(format!(
+            "  stop deferring the block checks: {}",
+            highlight("set onBusy wait")
+        ));
+    }
+    lines
 }
 
 /// File this push's runs under the content they judged.
@@ -2875,5 +2913,48 @@ mod tests {
                 "must not vouch for the Rust gate on {changed:?}"
             );
         }
+    }
+
+    /// amont #431: `onBusy wait` cannot stop a `warn` gate deferring, so a
+    /// list of warn gates is advised only the command that waits, once per
+    /// gate, and the hint is never offered.
+    #[test]
+    fn deferred_warn_gates_are_each_advised_the_command_that_waits() {
+        let lines = deferral_advice(&[
+            ("pre-push-probe", Severity::Warn),
+            ("pre-push-lint", Severity::Warn),
+        ]);
+        let said = lines.join("\n");
+        assert!(said.contains("2 check(s) deferred to CI"), "{said}");
+        for gate in ["pre-push-probe", "pre-push-lint"] {
+            assert!(
+                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                "{said}"
+            );
+        }
+        assert!(!said.contains("set onBusy wait"), "{said}");
+    }
+
+    /// A list mixing a `block` and a `warn` gate: both get their command,
+    /// and the `onBusy wait` hint says it stops only the block checks.
+    #[test]
+    fn a_mixed_deferral_names_every_gate_and_scopes_the_hint() {
+        let lines = deferral_advice(&[
+            ("pre-push-probe", Severity::Warn),
+            ("pre-push-cargo-test", Severity::Block),
+        ]);
+        let said = lines.join("\n");
+        for gate in ["pre-push-probe", "pre-push-cargo-test"] {
+            assert!(
+                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                "{said}"
+            );
+        }
+        let hint = lines
+            .iter()
+            .find(|l| l.contains("set onBusy wait"))
+            .expect("the hint, for the block gate");
+        assert!(hint.contains("block checks"), "{hint}");
+        assert_eq!(lines.len(), 4, "roll-up, two commands, one hint: {said}");
     }
 }

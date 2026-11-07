@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Fixed
+
+- amont #431: `amont land` no longer refuses with `evidence-missing` over a
+  heavy `warn` gate on a busy host. Inside a rehearsal, land's pre-stage
+  included, the gate waits for a host slot (up to `amont.timeout`) and runs;
+  plain pushes and commits are unchanged and still defer a `warn` gate at
+  once. The deferral advice now gives every deferred gate, `warn` or
+  `block`, its own command that waits (`AMONT_ON_BUSY=wait amont run --raw
+  <gate>`), and offers `set onBusy wait` only for the `block` checks, since
+  it cannot stop a `warn` gate deferring.
+
 ## v2.2.0
 
 ### Changed

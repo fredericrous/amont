@@ -577,3 +577,102 @@ fn a_retry_with_a_locked_tracking_ref_still_lands_and_the_receipt_names_the_retr
     assert_eq!(receipt_field(retried, "status"), "landed");
     assert_eq!(tip(&fx, "feat"), head(&fx));
 }
+
+/// `amont land` on a host whose only slot is busy: no inherited
+/// `AMONT_HOST_SLOT`, one slot in a directory of the test's own. Unix only,
+/// like `busy_defers`, whose slot helpers it shares.
+#[cfg(unix)]
+fn land_on_a_busy_host(fx: &Fx, slots: &std::path::Path) -> Ran {
+    let mut cmd = crate::common::amont_cmd();
+    cmd.arg("land")
+        .current_dir(&fx.r.dir)
+        .stdin(Stdio::null())
+        .env_remove("AMONT_HOST_SLOT")
+        .env_remove("AMONT_ON_BUSY")
+        .env("AMONT_IDLE_LOAD_SCALE", "1")
+        .env("AMONT_SLOT_DIR", slots)
+        .env("AMONT_HOST_SLOTS", "1");
+    let out = cmd.output().expect("run amont land");
+    Ran {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+/// amont #431: a `warn heavy` push gate on a busy host used to defer inside
+/// land's pre-stage, leave no evidence, and refuse the land with
+/// `evidence-missing`. The pre-stage is a rehearsal snapshot, where the gate
+/// waits for the slot and runs.
+#[cfg(unix)]
+fn land_with_a_warn_gate_on_a_busy_host(gate_exit: i32) {
+    use crate::busy_defers::{slot_dir, Holder};
+    let fx = fixture("feat/warn");
+    let log = fx.r.path(".git/gate.log");
+    fx.r.stage(
+        "gate.sh",
+        &format!(
+            "printf x >> '{}'\nexit {gate_exit}\n",
+            log.to_str().expect("utf8")
+        ),
+    );
+    fx.r.stage(
+        "amont.conf",
+        "set timeout 600\npre-push  gate  *.txt  warn  heavy sh gate.sh\n",
+    );
+    fx.r.commit("chore: the gate");
+    crate::tree_gates::trust_and_install(&fx.r);
+    let pushed = head(&fx);
+
+    let slots = slot_dir("land-warn");
+    let holder = Holder::hold(&slots.join("slot-0"));
+    let releaser = crate::busy_defers::release_after(holder, &slots, 1);
+    let ran = land_on_a_busy_host(&fx, &slots);
+    releaser.join().expect("releaser");
+    let said = format!("{}{}", ran.stdout, ran.stderr);
+
+    assert_eq!(ran.code, 0, "{said}");
+    assert_eq!(tip(&fx, "feat/warn"), pushed, "{said}");
+    assert!(!said.contains("evidence-missing"), "{said}");
+    assert!(
+        said.contains("for a host slot"),
+        "no contention seen: {said}"
+    );
+    let marker = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(marker.len(), 1, "the gate ran exactly once: {said}");
+
+    let tree = plain_git(&fx.r.dir, &["rev-parse", "HEAD^{tree}"]);
+    let stamp = fx.r.git(&["notes", "--ref", "amont-gate", "show", &tree]);
+    let stamp = String::from_utf8_lossy(&stamp.stdout).into_owned();
+    let tokens = stamp.lines().next().unwrap_or("");
+    if gate_exit == 0 {
+        assert!(
+            tokens.contains("pre-push-gate"),
+            "no stamp: {stamp}\n{said}"
+        );
+    } else {
+        assert!(
+            !tokens.contains("pre-push-gate"),
+            "a failed warn gate is never stamped as passed: {stamp}"
+        );
+        let done =
+            fx.r.git(&["notes", "--ref", "amont-gate-done", "show", &tree]);
+        assert!(
+            String::from_utf8_lossy(&done.stdout).contains("pre-push-gate"),
+            "no completion evidence: {said}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+#[test]
+#[cfg(unix)]
+fn land_waits_for_a_passing_warn_gate_on_a_busy_host() {
+    land_with_a_warn_gate_on_a_busy_host(0);
+}
+
+#[test]
+#[cfg(unix)]
+fn land_waits_for_a_failing_warn_gate_on_a_busy_host() {
+    land_with_a_warn_gate_on_a_busy_host(1);
+}

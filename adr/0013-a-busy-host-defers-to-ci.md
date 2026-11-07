@@ -80,3 +80,13 @@ more, never less.
 - An amont older than this record reads `heavy` as part of the command, so a
   repository adds the flag only once every amont that reads its file is at
   this release.
+
+## Amendment, 2026-11-07 (amont #431)
+
+A heavy `warn` check never waits for a slot on a commit or a push (from
+#395): its verdict stops nothing, and waiting would hold the commit, or the
+push and its open connection to the remote. Every gate, `warn` included,
+waits for a slot inside a rehearsal snapshot, bounded by `amont.timeout`:
+no connection is open there and no commit waits, and `amont land`'s
+pre-stage must leave the evidence it owes, or land refuses with
+`evidence-missing` over a gate that could never have blocked the push.
