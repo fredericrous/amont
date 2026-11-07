@@ -579,7 +579,9 @@ fn a_retry_with_a_locked_tracking_ref_still_lands_and_the_receipt_names_the_retr
 }
 
 /// `amont land` on a host whose only slot is busy: no inherited
-/// `AMONT_HOST_SLOT`, one slot in a directory of the test's own.
+/// `AMONT_HOST_SLOT`, one slot in a directory of the test's own. Unix only,
+/// like `busy_defers`, whose slot helpers it shares.
+#[cfg(unix)]
 fn land_on_a_busy_host(fx: &Fx, slots: &std::path::Path) -> Ran {
     let mut cmd = crate::common::amont_cmd();
     cmd.arg("land")
@@ -602,6 +604,7 @@ fn land_on_a_busy_host(fx: &Fx, slots: &std::path::Path) -> Ran {
 /// land's pre-stage, leave no evidence, and refuse the land with
 /// `evidence-missing`. The pre-stage is a rehearsal snapshot, where the gate
 /// waits for the slot and runs.
+#[cfg(unix)]
 fn land_with_a_warn_gate_on_a_busy_host(gate_exit: i32) {
     use crate::busy_defers::{slot_dir, Holder};
     let fx = fixture("feat/warn");

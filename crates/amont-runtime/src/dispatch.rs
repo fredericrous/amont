@@ -1783,10 +1783,10 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
-        let severity_read = std::cell::Cell::new(None);
+        let mut severity_read: Option<Severity> = None;
         let slot = enter(*check, || {
             let severity = crate::registry::severity_of(ctx.settings, *check);
-            severity_read.set(Some(severity));
+            severity_read = Some(severity);
             severity
         });
         let outcome = deferred_or(&slot, check.run(&sub));
@@ -1835,9 +1835,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             // Not run, never fatal, never passed: CI runs it (ADR-0013).
             Outcome::Deferred => announce_deferred(&[(
                 check.name(),
-                severity_read
-                    .get()
-                    .unwrap_or_else(|| crate::registry::severity_of(ctx.settings, *check)),
+                severity_read.unwrap_or_else(|| crate::registry::severity_of(ctx.settings, *check)),
             )]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
             // a gap (nothing is missing). The dispatcher asked the registry's
@@ -2058,35 +2056,42 @@ fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
 /// there; when every deferred check is `warn`, only the command that waits
 /// is advised.
 fn announce_deferred(deferred: &[(&str, Severity)]) {
+    for line in deferral_advice(deferred) {
+        println!("{line}");
+    }
+}
+
+/// The lines [`announce_deferred`] prints: the roll-up, then one `run now:`
+/// command per deferred check (`amont run` takes one check by name, and a
+/// `--raw` run waits for its slot under `AMONT_ON_BUSY=wait`, warn or block),
+/// then the `onBusy wait` hint only when a `block` check is in the list,
+/// since only a `block` check stops deferring under it.
+fn deferral_advice(deferred: &[(&str, Severity)]) -> Vec<String> {
     let names: Vec<&str> = deferred.iter().map(|(name, _)| *name).collect();
-    println!(
+    let mut lines = vec![format!(
         "{} {} check(s) deferred to CI, no host slot freed: {}",
         warning_sign(),
         names.len(),
         names.join(", ")
-    );
-    let all_warn = deferred
-        .iter()
-        .all(|(_, severity)| matches!(severity, Severity::Warn));
-    if all_warn {
-        if let Some(first) = names.first() {
-            println!(
-                "  run now: {}",
-                highlight(&format!("AMONT_ON_BUSY=wait amont run --raw {first}")),
-            );
+    )];
+    let mut any_block = false;
+    for (name, severity) in deferred {
+        match severity {
+            Severity::Block => any_block = true,
+            Severity::Warn => {}
         }
-    } else if let Some((blocking, _)) = deferred
-        .iter()
-        .find(|(_, severity)| matches!(severity, Severity::Block))
-    {
-        // A `block` check waits under `onBusy wait` on any run; a `warn`
-        // one would not, so the advice names the blocking one.
-        println!(
-            "  run now: {} · stop deferring: {}",
-            highlight(&format!("AMONT_ON_BUSY=wait amont run {blocking}")),
-            highlight("set onBusy wait"),
-        );
+        lines.push(format!(
+            "  run now: {}",
+            highlight(&format!("AMONT_ON_BUSY=wait amont run --raw {name}"))
+        ));
     }
+    if any_block {
+        lines.push(format!(
+            "  stop deferring the block checks: {}",
+            highlight("set onBusy wait")
+        ));
+    }
+    lines
 }
 
 /// File this push's runs under the content they judged.
@@ -2908,5 +2913,48 @@ mod tests {
                 "must not vouch for the Rust gate on {changed:?}"
             );
         }
+    }
+
+    /// amont #431: `onBusy wait` cannot stop a `warn` gate deferring, so a
+    /// list of warn gates is advised only the command that waits, once per
+    /// gate, and the hint is never offered.
+    #[test]
+    fn deferred_warn_gates_are_each_advised_the_command_that_waits() {
+        let lines = deferral_advice(&[
+            ("pre-push-probe", Severity::Warn),
+            ("pre-push-lint", Severity::Warn),
+        ]);
+        let said = lines.join("\n");
+        assert!(said.contains("2 check(s) deferred to CI"), "{said}");
+        for gate in ["pre-push-probe", "pre-push-lint"] {
+            assert!(
+                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                "{said}"
+            );
+        }
+        assert!(!said.contains("set onBusy wait"), "{said}");
+    }
+
+    /// A list mixing a `block` and a `warn` gate: both get their command,
+    /// and the `onBusy wait` hint says it stops only the block checks.
+    #[test]
+    fn a_mixed_deferral_names_every_gate_and_scopes_the_hint() {
+        let lines = deferral_advice(&[
+            ("pre-push-probe", Severity::Warn),
+            ("pre-push-cargo-test", Severity::Block),
+        ]);
+        let said = lines.join("\n");
+        for gate in ["pre-push-probe", "pre-push-cargo-test"] {
+            assert!(
+                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                "{said}"
+            );
+        }
+        let hint = lines
+            .iter()
+            .find(|l| l.contains("set onBusy wait"))
+            .expect("the hint, for the block gate");
+        assert!(hint.contains("block checks"), "{hint}");
+        assert_eq!(lines.len(), 4, "roll-up, two commands, one hint: {said}");
     }
 }

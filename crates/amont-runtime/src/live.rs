@@ -158,10 +158,7 @@ impl Stage {
             // The names arrive fully qualified and the loop above has
             // already had to strip the trigger to display them, so the
             // stage can answer this without dispatch passing anything in.
-            // Not inside a rehearsal snapshot (land's pre-stage included):
-            // no connection is open there, so its advice would be false.
-            on_push: names.iter().any(|n| n.starts_with("pre-push-"))
-                && !crate::rehearsal::in_snapshot(),
+            on_push: holds_a_push_connection(names, crate::rehearsal::in_snapshot()),
             quiet: quiet(settings),
             named: AtomicBool::new(false),
             log_dir: if quiet(settings) {
@@ -981,6 +978,14 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
     line
 }
 
+/// Whether a stage of these checks runs while git holds a connection to the
+/// remote open: a push stage, unless it runs inside a rehearsal snapshot
+/// (land's pre-stage included), where nothing is connected, so the beat's
+/// connection note would be false. The names arrive fully qualified.
+fn holds_a_push_connection(names: &[&str], in_snapshot: bool) -> bool {
+    names.iter().any(|n| n.starts_with("pre-push-")) && !in_snapshot
+}
+
 /// `$COLUMNS` when it is exported and sane, else a conservative 80 — the
 /// region's lines are short and an ioctl is not worth its portability. 80,
 /// not wider: shells rarely export `COLUMNS`, and a region line longer than
@@ -1647,19 +1652,16 @@ mod tests {
         assert!(!committing.contains("close it first"), "{committing:?}");
     }
 
-    /// Inside a rehearsal snapshot `Stage::begin` sets `on_push` false, so
-    /// the beat never says git opened a connection there: none is open, and
-    /// a check queued for a slot is not holding one.
+    /// amont #431: inside a rehearsal snapshot a push gate may now queue past
+    /// its first beat, and the stage must not believe git holds a
+    /// connection there (none is open), else the beat warns of a reset that
+    /// cannot happen.
     #[test]
-    fn the_connection_note_follows_on_push_only() {
-        let r = row("pre-push-probe", 60.0);
-        let without = flat(&beat_line(&r, true, B, false));
-        assert!(
-            !without.contains("git opened its connection"),
-            "{without:?}"
-        );
-        let with = flat(&beat_line(&r, true, B, true));
-        assert!(with.contains("git opened its connection"), "{with:?}");
+    fn a_push_stage_in_a_snapshot_holds_no_connection() {
+        let push = ["pre-push-adr-lint-cli-probe"];
+        assert!(holds_a_push_connection(&push, false));
+        assert!(!holds_a_push_connection(&push, true));
+        assert!(!holds_a_push_connection(&["pre-commit-clippy"], false));
     }
 
     /// The advice that does NOT appear, and must not come back.
