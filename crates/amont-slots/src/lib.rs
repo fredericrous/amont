@@ -1551,10 +1551,10 @@ mod tests {
 
     #[test]
     fn record_wait_keeps_its_old_fields_and_gains_the_pid() {
-        let d = scratch("plain");
-        fs::create_dir_all(&d).unwrap();
-        record_wait(&d, "relais", 1, 12, "admitted");
-        let line = fs::read_to_string(d.join("waits.jsonl")).unwrap();
+        let dir = scratch("plain");
+        fs::create_dir_all(&dir).unwrap();
+        record_wait(&dir, "relais", 1, 12, "admitted");
+        let line = fs::read_to_string(dir.join("waits.jsonl")).unwrap();
         assert!(line.contains("\"tool\":\"relais\""));
         assert!(line.contains("\"waited_ms\":12"));
         assert!(line.contains("\"outcome\":\"admitted\""));
