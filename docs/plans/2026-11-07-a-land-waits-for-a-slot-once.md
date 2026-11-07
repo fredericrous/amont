@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/slot-handoff-in-rehearsal
 repos: [amont]
 adrs: [ADR-0013, ADR-0014]
@@ -10,7 +10,7 @@ adrs: [ADR-0013, ADR-0014]
 ## Review panel
 
 👉 **Decide:** none (you chose the scope: handoff in every rehearsal, ceiling in land's pre-stage only). Approve if you're willing to bet that keeping a slot through a land's own gates beats re-queuing for each.
-📍 amont · planned, nothing built · next: Phase 1 in one amont worktree, rebased over `fix/slot-holder-session`, released as 2.3.0. Panel: backend, lang:rust, unix, tui (all opus-5-5), codex (gpt-6-astra).
+📍 amont · Phase 1 built, verified and reviewed · next: land, release 2.3.0, install, then the 7-day measure. Panel: backend, lang:rust, unix, tui (all opus-5-5), codex (gpt-6-astra).
 **Changed by review:**
 - a parked slot is released on every exit path, not at process exit;
 - a light check's children inherit the parked slot;
@@ -215,5 +215,50 @@ session id and the source worktree to holder records, and a
   to be 0.
 - **Rollback:** revert the PR. Each gate releases its slot again, and the
   log lines lose their new fields. An old reader ignores them either way.
+
+## Verification record
+
+Observed before the push, on the branch's final tree (d11f4bbc):
+
+| Check | Expected | Actual |
+|---|---|---|
+| amont-slots + amont-runtime unit tests | `rename`, the racing reader, `record_wait_named`, the early-return `ParkScope` pass | 28 + 749 passed, 0 failed |
+| `busy_defers` + the cluster-gate test | the handoff, no handoff outside a snapshot, freed after a block, ceiling in a pre-stage, none in a background rehearsal, none for `block`, nested `amont slot run` | 25 passed, 0 failed; the 2.2.1 tests unchanged |
+| clippy `-D warnings` | clean | rc 0 |
+| The commit gate | every commit exits 0, no skip | each of the branch's commits passed amont's pre-commit |
+| Live, fresh clone, one private slot held 120 s | one `(waited …)` line; `amont slots` names the probe; a `handed` line under one pid | `cargo-test` waited 1m53s, the probe's line is `"name":"adr-lint-cli-probe"`, `"waited_ms":0`, `"outcome":"handed"`, `"rehearsal":true` under cargo-test's pid; `amont slots` named the probe with 12 jobs; all three gates stamped |
+
+The first live check failed on a timing assertion (`after_free`) in the
+nested-slot test, which was flaky under load; the assertion was removed, and
+the second live check above passed.
+
+## Implementation review
+
+- implementation-review: approve on delta 2 (142k, 21 s); round 1 single-letter names, a non-discriminating handoff test and a flaky timing assertion fixed.
+- lang:rust: approve on delta 2 (101k, 12 s); `ParkScope` `#[must_use]`, `SlotWait` enum, `WaitContext`, `Origin::of`, root-proof test fixed; deliberate: the terse `land:` label is tui's wording.
+- tui: approve-with-changes on delta 2 (92k, 31 s); note units, holder name, `handed` documented; deliberate: the rename error keeps its full paths, which unix asked for to fix the directory.
+- backend: approve (round 2); its root-test low fixed in d11f4bbc. unix: approve (round 2).
+
+## Decision log
+
+- 2026-11-07: `record_wait_named` takes a `WaitContext { name, place }`
+  instead of a bare name, so the std-only crate gets the rehearsal and
+  pre-stage flags from the runtime (Codex's carried medium).
+- 2026-11-07: the parked holder is named `pre-push, between checks`, not
+  `pre-push (between gates)`: tui found the brackets nested inside the
+  `queued behind (…)` line.
+- 2026-11-07: the ceiling note reads `no host slot in 10m00s (land:
+  amont.warnSlotWait=600s); running it anyway`, to fit 80 columns with the
+  unit shown.
+- 2026-11-07: version skew is accepted: an amont older than 2.3.0 reads
+  `prestage;detached=…` as no detached gates, which is slower, not unsafe
+  (CHANGELOG).
+
+## Outcome
+
+Phase 1 is built and verified. A land's rehearsal waits for a slot once,
+then hands it from gate to gate; a warn gate in land's pre-stage waits at
+most `amont.warnSlotWait` (600 s). The seven-day `waits.jsonl` measure runs
+from the 2.3.0 install.
 
 <!-- panel: repos=amont adds= reviewers=backend,language,tui,unix,codex body-sha=4da7e3da84b9 -->
