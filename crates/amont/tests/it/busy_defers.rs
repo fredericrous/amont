@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// One slot file held by another process until dropped: the busy host.
-struct Holder(Child);
+pub(crate) struct Holder(Child);
 
 impl Holder {
-    fn hold(slot: &Path) -> Holder {
+    pub(crate) fn hold(slot: &Path) -> Holder {
         let mut child = Command::new("perl")
             .args([
                 "-MFcntl=:flock",
@@ -46,7 +46,7 @@ impl Drop for Holder {
 }
 
 /// A private slot directory with mode 0700, as amont requires.
-fn slot_dir(tag: &str) -> PathBuf {
+pub(crate) fn slot_dir(tag: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -692,6 +692,180 @@ fn a_warn_gate_never_waits_for_a_slot() {
     assert!(
         took < std::time::Duration::from_secs(20),
         "a warn gate must not wait for the slot: took {took:?}\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// The repository the warn-gate tests share: a `warn heavy` pre-push gate
+/// that leaves `marker` (the manifest splits a command on whitespace, so
+/// the gate is `touch` itself, not `sh -c '…'`), a commit to push, and the push line for it.
+fn warn_gate_repo(marker: &Path, busy_policy: &str) -> (Repo, String) {
+    let repo = Repo::new();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage(
+        "amont.conf",
+        &format!(
+            "{busy_policy}\nset timeout 600\n\
+             pre-push  probe  *.txt  warn  heavy touch {}\n",
+            marker.display()
+        ),
+    );
+    repo.commit("chore: base");
+    trust(&repo);
+    let base = head(&repo);
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.stage("a.txt", "one\n");
+    repo.commit("feat: a");
+    let line = push_line("feat/x", &base, &head(&repo));
+    (repo, line)
+}
+
+/// Drop `holder` from another thread once `tickets` waiters are queued in
+/// `slots` (contention observed, so the run under test really is behind
+/// something), then three seconds later: the host frees up. The wait for the
+/// queue is bounded at a minute; past it the holder is dropped anyway and the
+/// test's own assertions report what happened.
+pub(crate) fn release_after(
+    holder: Holder,
+    slots: &Path,
+    tickets: usize,
+) -> std::thread::JoinHandle<()> {
+    let queue = slots.join("queue");
+    std::thread::spawn(move || {
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < give_up {
+            let queued = std::fs::read_dir(&queue)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                        .count()
+                })
+                .unwrap_or(0);
+            if queued >= tickets {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        drop(holder);
+    })
+}
+
+/// What a rehearsal asks of the pre-push it spawns: it is a snapshot, and
+/// every gate waits.
+const REHEARSAL: [(&str, &str); 2] = [("AMONT_REHEARSAL", "1"), ("AMONT_ON_BUSY", "wait")];
+
+fn assert_snapshot_gate_waited_and_ran(
+    code: i32,
+    out: &str,
+    took: std::time::Duration,
+    marker: &Path,
+) {
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        took >= std::time::Duration::from_secs(3),
+        "the gate did not wait for the slot: took {took:?}\n{out}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(60),
+        "the gate did not run when the slot freed: took {took:?}\n{out}"
+    );
+    assert!(out.contains("waited "), "took {took:?}: {out}");
+    assert!(out.contains("for a host slot"), "{out}");
+    assert!(!out.contains("deferred to CI"), "{out}");
+    assert!(marker.exists(), "the gate left no trace: {out}");
+}
+
+/// Inside a rehearsal snapshot no push connection is open and no commit
+/// waits, so a `warn` gate waits for a slot like any other and leaves its
+/// evidence (amont #431).
+#[test]
+fn a_warn_gate_waits_for_a_slot_in_a_rehearsal() {
+    let slots = slot_dir("warn-rehearsal");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = warn_gate_repo(&marker, "set onBusy wait");
+    let releaser = release_after(Holder::hold(&slots.join("slot-0")), &slots, 1);
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &REHEARSAL);
+    let took = started.elapsed();
+    releaser.join().unwrap();
+    assert_snapshot_gate_waited_and_ran(code, &out, took, &marker);
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// The same with the slot free but another process queued ahead for it: the
+/// snapshot gate waits its turn instead of deferring.
+#[test]
+fn a_warn_gate_waits_behind_a_queued_waiter_in_a_rehearsal() {
+    let slots = slot_dir("warn-queued");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = warn_gate_repo(&marker, "set onBusy wait");
+    std::fs::create_dir_all(slots.join("queue")).unwrap();
+    let waiter = Holder::hold(&slots.join("queue/000000000000000000000001-1-0"));
+    let releaser = release_after(waiter, &slots, 2);
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &REHEARSAL);
+    let took = started.elapsed();
+    releaser.join().unwrap();
+    assert_snapshot_gate_waited_and_ran(code, &out, took, &marker);
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// The `run now:` command printed for a deferred `warn` gate waits for the
+/// held slot and runs the gate, and no `stop deferring` hint is printed
+/// (`set onBusy wait` cannot stop a warn gate deferring on a push).
+#[test]
+fn the_run_now_advice_for_a_deferred_warn_gate_waits() {
+    let slots = slot_dir("warn-advice");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = warn_gate_repo(&marker, "set onBusy defer\nset slotWait 1");
+    let holder = Holder::hold(&slots.join("slot-0"));
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("deferred to CI"), "{out}");
+    assert!(!out.contains("stop deferring"), "{out}");
+    assert!(!marker.exists(), "{out}");
+    let advice = out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("run now: "))
+        .unwrap_or_else(|| panic!("no run now line: {out}"))
+        .to_string();
+    let mut words = advice.split_whitespace();
+    let (key, value) = words
+        .next()
+        .and_then(|w| w.split_once('='))
+        .unwrap_or_else(|| panic!("advice starts with no VAR=value: {advice}"));
+    assert_eq!(words.next(), Some("amont"), "{advice}");
+    let releaser = release_after(holder, &slots, 1);
+    let started = std::time::Instant::now();
+    let mut advised = crate::common::amont_cmd();
+    advised.args(words);
+    let ran = advised
+        .current_dir(&repo.dir)
+        .env(key, value)
+        .env_remove("AMONT_HOST_SLOT")
+        .env("AMONT_IDLE_LOAD_SCALE", "1")
+        .env("AMONT_SLOT_DIR", &slots)
+        .env("AMONT_HOST_SLOTS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run the advice");
+    let took = started.elapsed();
+    releaser.join().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert!(ran.status.success(), "{advice}: {text}");
+    assert!(
+        took >= std::time::Duration::from_secs(3),
+        "the advised command did not wait: took {took:?}\n{text}"
+    );
+    assert!(
+        marker.exists(),
+        "the advised command did not run the gate: {text}"
     );
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }

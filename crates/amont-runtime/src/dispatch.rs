@@ -833,7 +833,7 @@ struct Report<'a> {
     unavailable: Vec<&'a str>,
     /// Deferred to CI by the busy policy (ADR-0013). Not passed, not a gap
     /// on this machine's part either: said so, with what to do about it.
-    deferred: Vec<&'a str>,
+    deferred: Vec<(&'a str, Severity)>,
     /// Heavy checks that never started because a Light one blocked first
     /// (ADR-0020). Said in quiet mode too: a refused commit whose suite did
     /// not run must never read as one whose suite passed.
@@ -869,7 +869,7 @@ fn classify<'a>(
             // Judged nothing, said nothing: not a pass to count, not a gap
             // to announce.
             Outcome::Inert => {}
-            Outcome::Deferred => report.deferred.push(check.name()),
+            Outcome::Deferred => report.deferred.push((check.name(), severities.of(*check))),
             Outcome::Skipped => report.skipped.push(check.name()),
             Outcome::Failed => match severities.of(*check) {
                 Severity::Block => report.blocked.push(check.name()),
@@ -1100,13 +1100,19 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 /// One check by name, in a one-slot stage. The verdict is the one
 /// `registry::lookup` gives a check: blocking only a failed `block` check.
 /// Enter `check` for the host-slot bookkeeping: a heavy check whose severity
-/// is `warn` never waits for a slot (`host_slots::never_waits`). Only a heavy
-/// check can wait, so only it asks `severity`, which the caller answers from
-/// its stage's severity fold when it has one: a git-config read per check
-/// broke the commit's git-spawn budget.
+/// is `warn` never waits for a slot (`host_slots::never_waits`), except inside
+/// a rehearsal snapshot, where no push connection is open, no commit waits,
+/// and land's pre-stage needs the check's evidence: there it follows the
+/// busy policy the rehearsal sets. Only a heavy check can wait, so only it
+/// asks `severity`, which the caller answers from its stage's severity fold
+/// when it has one: a git-config read per check broke the commit's git-spawn
+/// budget.
 fn enter(check: &dyn Check, severity: impl FnOnce() -> Severity) -> crate::host_slots::CheckGuard {
     let guard = crate::host_slots::enter_check(check.name(), check.weight());
-    if check.weight() == crate::host_slots::Weight::Heavy && matches!(severity(), Severity::Warn) {
+    if check.weight() == crate::host_slots::Weight::Heavy
+        && !crate::rehearsal::in_snapshot()
+        && matches!(severity(), Severity::Warn)
+    {
         crate::host_slots::never_waits();
     }
     guard
@@ -1777,8 +1783,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         // that catches a suite which stopped finding tests is how long THAT
         // gate took, and everything outside this call is bookkeeping.
         let started = std::time::Instant::now();
+        let severity_read = std::cell::Cell::new(None);
         let slot = enter(*check, || {
-            crate::registry::severity_of(ctx.settings, *check)
+            let severity = crate::registry::severity_of(ctx.settings, *check);
+            severity_read.set(Some(severity));
+            severity
         });
         let outcome = deferred_or(&slot, check.run(&sub));
         if let Some(f) = &flush {
@@ -1824,7 +1833,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 }
             }
             // Not run, never fatal, never passed: CI runs it (ADR-0013).
-            Outcome::Deferred => announce_deferred(&[check.name()]),
+            Outcome::Deferred => announce_deferred(&[(
+                check.name(),
+                severity_read
+                    .get()
+                    .unwrap_or_else(|| crate::registry::severity_of(ctx.settings, *check)),
+            )]),
             // Nothing to judge: not passed (nothing to stamp or attest), not
             // a gap (nothing is missing). The dispatcher asked the registry's
             // opt-in question above; this is a check answering it for itself.
@@ -2039,18 +2053,37 @@ fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
 
 /// The deferral roll-up: which checks, then how to run one now and how to
 /// stop deferring. Printed in quiet mode too, like `could not run`: a gate
-/// skipped without a word looks exactly like a pass.
-fn announce_deferred(names: &[&str]) {
+/// skipped without a word looks exactly like a pass. A `warn` check never
+/// waits on a commit or a push, so `onBusy wait` cannot stop it deferring
+/// there; when every deferred check is `warn`, only the command that waits
+/// is advised.
+fn announce_deferred(deferred: &[(&str, Severity)]) {
+    let names: Vec<&str> = deferred.iter().map(|(name, _)| *name).collect();
     println!(
         "{} {} check(s) deferred to CI, no host slot freed: {}",
         warning_sign(),
         names.len(),
         names.join(", ")
     );
-    if let Some(first) = names.first() {
+    let all_warn = deferred
+        .iter()
+        .all(|(_, severity)| matches!(severity, Severity::Warn));
+    if all_warn {
+        if let Some(first) = names.first() {
+            println!(
+                "  run now: {}",
+                highlight(&format!("AMONT_ON_BUSY=wait amont run --raw {first}")),
+            );
+        }
+    } else if let Some((blocking, _)) = deferred
+        .iter()
+        .find(|(_, severity)| matches!(severity, Severity::Block))
+    {
+        // A `block` check waits under `onBusy wait` on any run; a `warn`
+        // one would not, so the advice names the blocking one.
         println!(
             "  run now: {} · stop deferring: {}",
-            highlight(&format!("AMONT_ON_BUSY=wait amont run {first}")),
+            highlight(&format!("AMONT_ON_BUSY=wait amont run {blocking}")),
             highlight("set onBusy wait"),
         );
     }

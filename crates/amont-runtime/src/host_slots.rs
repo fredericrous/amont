@@ -146,7 +146,9 @@ struct Current {
     jobs: Option<u32>,
     /// The check's severity cannot block the commit or push (`warn`): a
     /// finding it might make never stops anything, so it never waits for a
-    /// slot. Set by [`never_waits`].
+    /// slot, except inside a rehearsal snapshot (no open push connection, no
+    /// waiting commit, and land's pre-stage needs the evidence). Set by
+    /// [`never_waits`].
     cannot_block: bool,
 }
 
@@ -207,7 +209,9 @@ pub fn enter_check(name: &str, weight: Weight) -> CheckGuard {
 /// on a busy host it takes a free slot or defers to CI at once, under either
 /// busy policy, instead of holding the commit, or the push and its open
 /// connection to the remote, while it queues for a verdict that stops
-/// nothing.
+/// nothing. Not called inside a rehearsal snapshot: there nothing is held
+/// open and land's pre-stage needs the gate's evidence, so the check follows
+/// the busy policy the rehearsal sets.
 pub fn never_waits() {
     CURRENT.with(|c| c.borrow_mut().cannot_block = true);
 }

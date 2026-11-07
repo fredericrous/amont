@@ -1647,6 +1647,21 @@ mod tests {
         assert!(!committing.contains("close it first"), "{committing:?}");
     }
 
+    /// Inside a rehearsal snapshot `Stage::begin` sets `on_push` false, so
+    /// the beat never says git opened a connection there: none is open, and
+    /// a check queued for a slot is not holding one.
+    #[test]
+    fn the_connection_note_follows_on_push_only() {
+        let r = row("pre-push-probe", 60.0);
+        let without = flat(&beat_line(&r, true, B, false));
+        assert!(
+            !without.contains("git opened its connection"),
+            "{without:?}"
+        );
+        let with = flat(&beat_line(&r, true, B, true));
+        assert!(with.contains("git opened its connection"), "{with:?}");
+    }
+
     /// The advice that does NOT appear, and must not come back.
     ///
     /// `ServerAliveInterval 60` is the obvious suggestion and it is wrong:
