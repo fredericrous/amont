@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/warn-gate-waits-in-rehearsal
 repos: [amont]
 adrs: [ADR-0013]
@@ -171,5 +171,39 @@ does not cover Rust gates (t23). It is out of scope here.
   pre-stages in the same transcripts, with the median and the maximum.
 - Rollback: revert the PR; the behaviour returns to #395's, and the
   `hook.skip` workaround can be set again.
+
+## Verification record
+
+Input → expected → actual, observed before the push.
+
+- **Tests on the branch**, through `amont slot run`:
+  - `busy_defers` and `land` integration tests (31, then the 19 they cover after the review fixes) → pass → pass.
+  - `amont-runtime` unit tests on `deferral_advice`, `holds_a_push_connection` and `live::` (27) → pass → pass.
+  - `cargo check -p amont --tests --target x86_64-pc-windows-msvc` → exit 0 → exit 0 (the blocking review finding).
+  - The commit gate passed on every commit (27 checks).
+- **Live, first attempt** (a fresh clone, `amont trust`, a private one-slot directory, a 20 s holder): the probe ran and stamped, with no `deferred to CI`. No `waited` line appeared, because the gate takes its slot at its first tool spawn and the snapshot setup outlasted the holder, so this attempt proved the run but not the wait.
+- **Live, second attempt** (the same with a 180 s holder) → waits, then runs and stamps → `(waited 2m48s for a host slot, amont.hostSlots 1)`, then `✓ stamped pre-push-adr-lint-cli-probe`. `git notes --ref amont-gate show HEAD` lists the probe, and the slot was released afterwards. The heartbeats at 1 and 2 minutes read `queued … for a host slot`, with no "git opened its connection" note, and the silence budget did not kill the queued gate.
+- **Ctrl-C** (SIGINT to the rehearsal's process group while its warn gate queued):
+  - The rehearsal stopped at once.
+  - The dead waiter's ticket stayed in the queue, and `amont slots` counted it as `waiting: 1`. That count is read-only and existed before this change.
+  - The next waiter queued only behind the live holder, ran, and removed the dead ticket (`live_tickets`, `crates/amont-slots/src/lib.rs:586-610`). The queue was left empty.
+- **After the release:** the end-to-end land with `hook.skip` removed, and the 7-day `evidence-missing` count.
+
+## Implementation review
+
+- implementation-review: approve-with-changes, then approve (49k, 30 s; 52k, 11 s). Fixed: the vacuous heartbeat test, an untested mixed advice. Candidates ruled fine (the roll-up `println!`, `in_snapshot` as data, the real waits in `release_after`); one `r` naming violation, removed with its test.
+- backend: approve-with-changes, then approve (65k, 105 s; 74k, 22 s). Fixed: one `--raw` command per deferred gate, the hint scoped to block checks.
+- lang:rust: approve-with-changes, then approve (68k, 79 s; 72k, 11 s). Fixed: the Windows test build (blocking), a test that reaches `holds_a_push_connection`, an `Option` in place of the `Cell`, an exhaustive `match`. Deliberate: the shared test helpers stay in `busy_defers`, now behind `cfg(unix)`.
+- unix: approve twice (67k, 63 s; 74k, 19 s). Deliberate: the roll-up stays on stdout, a pre-existing follow-up for another PR.
+- tui: approve-with-changes, then approve (66k, 71 s; 72k, 12 s). Fixed: mixed-list advice, `--raw` for block gates, the hint on its own line, and the doc comment and CHANGELOG wording.
+
+## Decision log
+
+- 2026-11-07: another session (`fail-fast-precommit-checks`) had staged the other #431 fix, where land accepts a `deferred-under-warn` completion, in `amont-wt-warn-deferral`. The person chose this plan ("Mine goes ahead, theirs stops"). That session stopped, pushed nothing, and left one local commit for the person to discard.
+- Departures from the plan, all reviewed:
+  - The test gate is declared `touch <absolute path>`, not `sh -c 'touch …'`, because the manifest splits a command on whitespace.
+  - The heartbeat is pinned through the extracted `holds_a_push_connection(names, in_snapshot)`, not a `beat_line` call with a constant.
+  - Every deferred gate, `block` too, is advised `AMONT_ON_BUSY=wait amont run --raw <gate>`. The `onBusy wait` hint is shown only for block checks, on its own line.
+- From the panel, still open after the release: the 7-day measure. A pre-stage with several heavy warn gates waits up to `amont.timeout` for each of them, and on-commit rehearsals now wait too. Both go into the measure.
 
 <!-- panel: repos=amont adds= reviewers=backend,language,tui,unix,codex body-sha=262e2cad37b5 -->
