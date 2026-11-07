@@ -6,6 +6,20 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Added
+
+- A land waits for a host slot once. Inside a rehearsal, land's pre-stage
+  included, a pre-push keeps its slot from one heavy gate to the next
+  instead of queuing again, and in land's pre-stage only, a heavy `warn`
+  gate waits at most `amont.warnSlotWait` (default 600 s, 1 to 3600) and then
+  runs unqueued, never deferred. `waits.jsonl` lines gain `pid`, and those
+  written by amont's checks `name`, `session`, `rehearsal` and `prestage`;
+  a handoff is the outcome `handed`. An older amont binary under a newer
+  `rehearse` reads the new `prestage;detached=…` marker as no detached
+  gates.
+
 ## v2.2.2
 
 ### Fixed

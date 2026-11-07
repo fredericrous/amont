@@ -22,7 +22,7 @@ why.
 | `admitted-at` | the time of the last admission, in ms since the epoch, for the ramp. |
 | `queue/<nanos>-<pid>-<n>` | a waiter's ticket, flocked for as long as it waits. It is created hidden (`.new-…`), locked, then renamed into place, so a visible ticket is never unlocked. A visible ticket whose lock is free belongs to a waiter that died, and is removed. |
 | `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`, and `jobs` when the writer knows it). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
-| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`), and `jobs` when the writer knows it. |
+| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`, `handed`), `pid`, and `jobs` when the writer knows it. Lines written by amont's checks also carry `name` (the check), `session` when one is known, and `"rehearsal":true` / `"prestage":true` inside a rehearsal snapshot / land's pre-stage. |
 
 ## Admission
 
@@ -49,6 +49,24 @@ close-on-exec, so a command's children, and any daemon it leaves behind,
 never hold it. `amont slot run` frees the slot when its command exits.
 `AMONT_HOST_SLOT=held` in a command's environment means its parent holds a
 slot, and an amont or wrapper started under it does not queue again.
+
+## Handoff inside a rehearsal
+
+Inside a rehearsal snapshot a pre-push keeps its slot from one heavy gate to
+the next. The finished gate parks its lease and renames the holder record to
+`pre-push (between gates)`; the next heavy gate takes it with a `handed` line
+in `waits.jsonl` (a wait of 0, the same `pid`). The pre-push releases a parked
+slot when it ends, however it ends. While a slot is parked, a light check's
+tools run under it, width-bound, and a child `amont slot run` does not queue.
+A plain push and a commit release their slot after each check.
+
+## The ceiling in land's pre-stage
+
+Only in land's pre-stage, a heavy `warn` check waits at most
+`amont.warnSlotWait` seconds (default 600, range 1 to 3600, never above
+`amont.timeout`), then runs unqueued. Precedence: git config, then
+`set warnSlotWait <s>` in a trusted `amont.conf`, then the default. A `block`
+gate and a background rehearsal wait as before.
 
 ## Width
 

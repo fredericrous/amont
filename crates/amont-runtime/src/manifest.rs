@@ -82,8 +82,9 @@ pub enum ParseError {
     /// tolerant reading that matches only exactly `set planExempt off`, so any
     /// other shape would silently mean "on" to them: it is loud here instead.
     BadPlanExempt(String),
-    /// `set onBusy` other than `wait`/`defer`, `set slotWait` other than a
-    /// whole number of seconds in 1..=3600, or either one set twice. Strict
+    /// `set onBusy` other than `wait`/`defer`, `set slotWait` or
+    /// `set warnSlotWait` other than a whole number of seconds in 1..=3600, or
+    /// any of them set twice. Strict
     /// like `planExempt`: a busy policy that silently meant something else
     /// would move a gate to CI, or keep it here, without saying so.
     BadBusyPolicy {
@@ -504,6 +505,9 @@ pub const SETTABLE: &[&str] = &[
     // whole number of seconds for `slotWait`, each once.
     "onBusy",
     "slotWait",
+    // How long a heavy `warn` gate of land's pre-stage waits for a slot
+    // before it runs unqueued (ADR-0013): a whole number of seconds, once.
+    "warnSlotWait",
     // Whether pre-commit's Heavy checks wait for its Light ones and are
     // skipped when one blocks (ADR-0020). On by default; `false` runs every
     // check at once, as before 2.1. A local `git config` outranks it, and
@@ -1528,7 +1532,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                             }
                         }
                     }
-                    Some(canonical) if *canonical == "onBusy" || *canonical == "slotWait" => {
+                    Some(canonical)
+                        if *canonical == "onBusy"
+                            || *canonical == "slotWait"
+                            || *canonical == "warnSlotWait" =>
+                    {
                         let canonical: &'static str = canonical;
                         let bad = if canonical == "onBusy" {
                             (!(value.eq_ignore_ascii_case("wait")
@@ -3072,18 +3080,25 @@ mod tests {
             };
             Some((key.clone(), value.clone()))
         };
-        let lines = parse_lines("set onBusy DEFER\nset slotWait 90\n");
+        let lines = parse_lines("set onBusy DEFER\nset slotWait 90\nset warnSlotWait 120\n");
         assert_eq!(
             set(&lines[0]),
             Some(("amont.onBusy".into(), "defer".into()))
         );
         assert_eq!(set(&lines[1]), Some(("amont.slotWait".into(), "90".into())));
+        assert_eq!(
+            set(&lines[2]),
+            Some(("amont.warnSlotWait".into(), "120".into()))
+        );
         for bad in [
             "set onBusy later",
             "set onBusy defer # busy",
             "set slotWait 0",
             "set slotWait 3601",
             "set slotWait 1m",
+            "set warnSlotWait 0",
+            "set warnSlotWait 3601",
+            "set warnSlotWait 10m",
         ] {
             let lines = parse_lines(bad);
             assert!(set(&lines[0]).is_none(), "{bad:?} must not be a policy");
@@ -3097,6 +3112,15 @@ mod tests {
         assert!(matches!(
             why(&lines[1]),
             ParseError::BadBusyPolicy { key: "onBusy", .. }
+        ));
+        let lines = parse_lines("set warnSlotWait 5\nset warnSlotWait 6\n");
+        assert!(set(&lines[0]).is_some());
+        assert!(matches!(
+            why(&lines[1]),
+            ParseError::BadBusyPolicy {
+                key: "warnSlotWait",
+                ..
+            }
         ));
     }
 

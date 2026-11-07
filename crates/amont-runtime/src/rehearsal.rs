@@ -151,6 +151,28 @@ const DETACHED_PREFIX: &str = "detached=";
 /// rehearsal that made this snapshot handed to the cluster.
 struct SnapshotEnv {
     detached: Vec<String>,
+    /// The rehearsal was started by land's pre-stage: someone is waiting on
+    /// it, so a warn gate's slot wait has a ceiling (ADR-0013).
+    prestage: bool,
+}
+
+/// The leading marker of the variable's value for land's pre-stage:
+/// `prestage;1` or `prestage;detached=a,b`. An older amont reads the whole
+/// value as no detached gates.
+const PRESTAGE_PREFIX: &str = "prestage;";
+
+/// What the variable's value says: whether land's pre-stage made the
+/// snapshot, and the gates it handed to the cluster.
+fn parse_snapshot_env(raw: &str) -> SnapshotEnv {
+    let (prestage, rest) = match raw.strip_prefix(PRESTAGE_PREFIX) {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    let detached = rest
+        .strip_prefix(DETACHED_PREFIX)
+        .map(|ids| ids.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+    SnapshotEnv { detached, prestage }
 }
 
 /// The variable, settled and parsed once for the same reason [`in_snapshot`]
@@ -160,12 +182,14 @@ fn snapshot_env() -> &'static Option<SnapshotEnv> {
     IN.get_or_init(|| {
         let raw = std::env::var_os(ENV).map(|v| v.to_string_lossy().into_owned())?;
         std::env::remove_var(ENV);
-        let detached = raw
-            .strip_prefix(DETACHED_PREFIX)
-            .map(|ids| ids.split(',').map(str::to_string).collect())
-            .unwrap_or_default();
-        Some(SnapshotEnv { detached })
+        Some(parse_snapshot_env(&raw))
     })
+}
+
+/// Is this snapshot the one land's pre-stage made? Settled with
+/// [`in_snapshot`], never read from the variable.
+pub fn in_prestage() -> bool {
+    snapshot_env().as_ref().is_some_and(|env| env.prestage)
 }
 
 /// The gates the rehearsal that started this snapshot handed to the cluster:
@@ -809,11 +833,21 @@ impl Plan {
 }
 
 /// The value of [`ENV`] for a run that gave `on_cluster` to the cluster.
-fn snapshot_env_value(on_cluster: &[String]) -> String {
-    if on_cluster.is_empty() {
-        "1".to_string()
+/// Land's pre-stage (`prestage` is its push line) marks it with a leading
+/// `prestage;`.
+fn snapshot_env_value(
+    on_cluster: &[String],
+    prestage: Option<&crate::pushrefs::PushRef>,
+) -> String {
+    let marker = if prestage.is_some() {
+        PRESTAGE_PREFIX
     } else {
-        format!("{DETACHED_PREFIX}{}", on_cluster.join(","))
+        ""
+    };
+    if on_cluster.is_empty() {
+        format!("{marker}1")
+    } else {
+        format!("{marker}{DETACHED_PREFIX}{}", on_cluster.join(","))
     }
 }
 
@@ -1016,7 +1050,7 @@ pub fn worker(
         .arg(&hooks_dir)
         .arg("pre-push")
         .current_dir(snapshot.path())
-        .env(ENV, snapshot_env_value(&on_cluster))
+        .env(ENV, snapshot_env_value(&on_cluster, prestage))
         // A rehearsal is how a gate runs with no push waiting on it, so it
         // waits for a slot rather than defer: a rehearsal whose gates all
         // deferred would report "passed" having run nothing (ADR-0013).
@@ -1466,6 +1500,22 @@ mod tests {
             prestage: false,
             signal: None,
         }
+    }
+
+    #[test]
+    fn the_prestage_marker_leaves_the_detached_gates_intact() {
+        let marked = parse_snapshot_env("prestage;detached=a,b");
+        assert!(marked.prestage);
+        assert_eq!(marked.detached, ["a", "b"]);
+        let plain = parse_snapshot_env("detached=a,b");
+        assert!(!plain.prestage);
+        assert_eq!(plain.detached, ["a", "b"]);
+        let bare = parse_snapshot_env("1");
+        assert!(!bare.prestage);
+        assert!(bare.detached.is_empty());
+        let marked_bare = parse_snapshot_env("prestage;1");
+        assert!(marked_bare.prestage);
+        assert!(marked_bare.detached.is_empty());
     }
 
     /// A pre-stage is recorded as one, so a rehearsal that meets it waits

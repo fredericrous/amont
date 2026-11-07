@@ -314,6 +314,39 @@ impl Lease {
     pub fn weight(&self) -> usize {
         self.files.len()
     }
+
+    /// Rewrite the holder record of each slot of this lease as `holder`, with
+    /// its start time reset to now, so the age shown is the new holder's. The
+    /// record is written to a hidden file in `holders/` and renamed over
+    /// `slot-N.who`, so a concurrent reader sees the old record or the new
+    /// one, never a truncated one. A `holder` with no `jobs` keeps the width
+    /// the record already carries: the lease's width does not change with
+    /// its holder. Best-effort: a record that cannot be written stays as it
+    /// was.
+    pub fn rename(&self, holder: &Holder) {
+        let mut renamed = holder.clone();
+        renamed.started_ms = now_ms();
+        for path in &self.who {
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let mut record = renamed.clone();
+            if record.jobs.is_none() {
+                record.jobs = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| Holder::from_json(&text))
+                    .and_then(|old| old.jobs);
+            }
+            let json = record.to_json();
+            let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+            if fs::write(&temp, &json).is_err() {
+                continue; // best-effort: the old record stays
+            }
+            if fs::rename(&temp, path).is_err() {
+                let _ = fs::remove_file(&temp); // best-effort: cleanup of our own temp file
+            }
+        }
+    }
 }
 
 impl Drop for Lease {
@@ -580,12 +613,66 @@ pub fn record_wait_jobs(
     waited_ms: u128,
     outcome: &str,
 ) {
+    record_wait_named(
+        dir,
+        tool,
+        WaitContext::default(),
+        weight,
+        jobs,
+        waited_ms,
+        outcome,
+    );
+}
+
+/// What the runtime knows about where an acquisition happened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WaitContext<'a> {
+    /// The check that waited, when the caller knows it.
+    pub name: Option<&'a str>,
+    /// Inside a rehearsal snapshot.
+    pub rehearsal: bool,
+    /// Inside land's pre-stage.
+    pub prestage: bool,
+}
+
+/// [`record_wait_jobs`] naming the check that waited: the line gains `"name"`
+/// (when `context` has one), `"pid"`, `"session"` (when known), and `"rehearsal"` and
+/// `"prestage"` when `context` sets them.
+pub fn record_wait_named(
+    dir: &Path,
+    tool: &str,
+    context: WaitContext,
+    weight: u32,
+    jobs: Option<u32>,
+    waited_ms: u128,
+    outcome: &str,
+) {
     let load = load1().map_or("null".to_string(), |l| format!("{l:.2}"));
     let jobs = jobs.map_or(String::new(), |j| format!(",\"jobs\":{j}"));
+    let name = context
+        .name
+        .map_or(String::new(), |n| format!(",\"name\":\"{}\"", escape(n)));
+    let session = session_id();
+    let session = if session.is_empty() {
+        String::new()
+    } else {
+        format!(",\"session\":\"{}\"", escape(&session))
+    };
+    let rehearsal = if context.rehearsal {
+        ",\"rehearsal\":true"
+    } else {
+        ""
+    };
+    let prestage = if context.prestage {
+        ",\"prestage\":true"
+    } else {
+        ""
+    };
     let line = format!(
-        "{{\"at_ms\":{},\"tool\":\"{}\",\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"}}\n",
+        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
         now_ms(),
         escape(tool),
+        std::process::id(),
         escape(outcome)
     );
     if let Ok(mut f) = OpenOptions::new()
@@ -1293,5 +1380,103 @@ mod tests {
         assert!(!d.join("holders/slot-0.who").exists());
         let mut again = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "b")).unwrap();
         let _l = granted(again.poll_with(idle(0)).unwrap());
+    }
+
+    #[test]
+    fn rename_rewrites_every_who_file_and_resets_the_start() {
+        let d = scratch("rename");
+        let mut w = Waiter::new_in(&d, Sizing::Fixed(2), 2, Holder::here("t", "a")).unwrap();
+        let lease = granted(w.poll_with(idle(0)).unwrap());
+        let record = |index: usize| {
+            let text = fs::read_to_string(d.join(format!("holders/slot-{index}.who"))).unwrap();
+            Holder::from_json(&text).unwrap()
+        };
+        let granted_jobs: Vec<Option<u32>> = (0..2).map(|index| record(index).jobs).collect();
+        let mut next = Holder::here("t", "b");
+        next.repo = "/some/repo".into();
+        next.session = "sess".into();
+        next.started_ms = 1;
+        lease.rename(&next);
+        for (index, jobs_at_grant) in granted_jobs.iter().enumerate() {
+            let got = record(index);
+            assert_eq!(got.command, "b");
+            assert_eq!(got.repo, "/some/repo");
+            assert_eq!(got.session, "sess");
+            assert!(got.started_ms > 1);
+            // The width written at the grant survives the rename.
+            assert_eq!(got.jobs, *jobs_at_grant);
+        }
+        let hidden: Vec<_> = fs::read_dir(d.join("holders"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn a_reader_never_sees_an_unknown_record_while_rename_runs() {
+        let d = scratch("rename-race");
+        let mut w = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let lease = granted(w.poll_with(idle(0)).unwrap());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = stop.clone();
+        let dir = d.clone();
+        let reader = std::thread::spawn(move || {
+            let mut unknown = 0;
+            while !reader_stop.load(Ordering::SeqCst) {
+                let (_, bad) = read_holders(&dir, &[0]);
+                unknown += bad;
+            }
+            unknown
+        });
+        for round in 0..2000 {
+            lease.rename(&Holder::here("t", &format!("gate-{round}")));
+        }
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(reader.join().unwrap(), 0);
+    }
+
+    #[test]
+    fn record_wait_named_writes_name_pid_session_and_context() {
+        let d = scratch("named");
+        fs::create_dir_all(&d).unwrap();
+        record_wait_named(
+            &d,
+            "amont",
+            WaitContext {
+                name: Some("cargo-test"),
+                rehearsal: true,
+                prestage: true,
+            },
+            1,
+            Some(3),
+            0,
+            "handed",
+        );
+        let line = fs::read_to_string(d.join("waits.jsonl")).unwrap();
+        assert_eq!(raw(&line, "name").as_deref(), Some("cargo-test"));
+        assert_eq!(raw(&line, "pid"), Some(std::process::id().to_string()));
+        assert!(line.contains("\"rehearsal\":true"));
+        assert!(line.contains("\"prestage\":true"));
+        assert_eq!(raw(&line, "outcome").as_deref(), Some("handed"));
+        if !session_id().is_empty() {
+            assert_eq!(raw(&line, "session"), Some(session_id()));
+        }
+    }
+
+    #[test]
+    fn record_wait_keeps_its_old_fields_and_gains_the_pid() {
+        let d = scratch("plain");
+        fs::create_dir_all(&d).unwrap();
+        record_wait(&d, "relais", 1, 12, "admitted");
+        let line = fs::read_to_string(d.join("waits.jsonl")).unwrap();
+        assert!(line.contains("\"tool\":\"relais\""));
+        assert!(line.contains("\"waited_ms\":12"));
+        assert!(line.contains("\"outcome\":\"admitted\""));
+        assert_eq!(raw(&line, "pid"), Some(std::process::id().to_string()));
+        assert!(!line.contains("\"name\""));
+        assert!(!line.contains("\"rehearsal\""));
+        assert!(!line.contains("\"prestage\""));
     }
 }

@@ -1103,17 +1103,22 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 /// is `warn` never waits for a slot (`host_slots::never_waits`), except inside
 /// a rehearsal snapshot, where no push connection is open, no commit waits,
 /// and land's pre-stage needs the check's evidence: there it follows the
-/// busy policy the rehearsal sets. Only a heavy check can wait, so only it
+/// busy policy the rehearsal sets, except in land's pre-stage, where a `warn`
+/// check waits at most `amont.warnSlotWait` and then runs unqueued
+/// (`host_slots::wait_bounded_for_warn`). Only a heavy check can wait, so only it
 /// asks `severity`, which the caller answers from its stage's severity fold
 /// when it has one: a git-config read per check broke the commit's git-spawn
 /// budget.
 fn enter(check: &dyn Check, severity: impl FnOnce() -> Severity) -> crate::host_slots::CheckGuard {
     let guard = crate::host_slots::enter_check(check.name(), check.weight());
-    if check.weight() == crate::host_slots::Weight::Heavy
-        && !crate::rehearsal::in_snapshot()
-        && matches!(severity(), Severity::Warn)
-    {
-        crate::host_slots::never_waits();
+    if check.weight() == crate::host_slots::Weight::Heavy {
+        if !crate::rehearsal::in_snapshot() {
+            if matches!(severity(), Severity::Warn) {
+                crate::host_slots::never_waits();
+            }
+        } else if crate::rehearsal::in_prestage() && matches!(severity(), Severity::Warn) {
+            crate::host_slots::wait_bounded_for_warn();
+        }
     }
     guard
 }
@@ -1628,6 +1633,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // registry calls inert used to run anyway, find its tool or lockfile
     // missing, and warn that it "could not run" on every push of a
     // repository it was never meant to touch.
+    // Inside a rehearsal a heavy gate hands its slot to the next one; the
+    // scope releases what is parked on every way out of this function.
+    let park = crate::host_slots::ParkScope::begin();
     for (idx, check) in pre_push_checks.iter().enumerate() {
         if !check.scope().opted_in(&tracked) {
             continue;
@@ -1884,6 +1892,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             },
         }
     }
+    drop(park);
     // Every block gate passed — stamp the tips with the scoped gates that
     // RAN here, so the next push of this content (a retry after a dropped
     // connection, or the real push after an `amont run pre-push` rehearsal)
