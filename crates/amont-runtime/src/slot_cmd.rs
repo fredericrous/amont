@@ -313,7 +313,12 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     println!("host slots: {held} of {} held ({mode})", status.cap);
     for h in &status.holders {
         let jobs = h.jobs.map_or("-".to_string(), |j| j.to_string());
-        println!("  {}  pid {}  jobs {jobs}", h.describe(now), h.pid);
+        println!(
+            "  {}  pid {}  jobs {jobs}  session {}",
+            h.describe(now),
+            h.pid,
+            h.short_session()
+        );
     }
     if status.unknown > 0 {
         println!("  {} unknown (old client)", status.unknown);

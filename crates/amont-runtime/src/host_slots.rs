@@ -288,7 +288,12 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             stage.queue(*idx, Some((Instant::now(), cap)));
         }
         let started = Instant::now();
-        let holder = amont_slots::Holder::here("amont", &name);
+        let mut holder = amont_slots::Holder::here("amont", &name);
+        // A push rehearsal runs in a temporary snapshot: name the worktree
+        // it was taken from, which is what a reader of `amont slots` knows.
+        if let Some(src) = crate::rehearsal::source_worktree() {
+            holder.repo = src.display().to_string();
+        }
         let mut got = wait_for_slot(sizing, holder.clone(), budget);
         if let (BusyPolicy::Defer { .. }, Err(Reason::TimedOut(_))) = (policy, &got) {
             // A sibling check of this process holds a slot: the host is busy
