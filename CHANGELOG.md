@@ -6,6 +6,17 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v2.2.2
+
+### Fixed
+
+- amont #436: `amont slots` names the session holding each slot. A holder
+  read `CLAUDE_SESSION_ID`, which Claude Code never sets, so its session was
+  always empty; it now reads `CLAUDE_CODE_SESSION_ID`, then
+  `RELAIS_SESSION_ID`, then the old name, and each line ends `session <first
+  8 characters>` (`--json` keeps the full id). A push rehearsal's holder
+  names the worktree it was taken from, not its temporary snapshot.
+
 ## v2.2.1
 
 ### Fixed
