@@ -2049,12 +2049,12 @@ fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
     }
 }
 
-/// The deferral roll-up: which checks, then how to run one now and how to
+/// The deferral roll-up: which checks, then how to run each now and how to
 /// stop deferring. Printed in quiet mode too, like `could not run`: a gate
-/// skipped without a word looks exactly like a pass. A `warn` check never
-/// waits on a commit or a push, so `onBusy wait` cannot stop it deferring
-/// there; when every deferred check is `warn`, only the command that waits
-/// is advised.
+/// skipped without a word looks exactly like a pass. Each deferred check is
+/// advised the command that waits for its slot; the `onBusy wait` hint is
+/// offered only for `block` checks, since a `warn` check never waits on a
+/// commit or a push and the hint cannot stop it deferring there.
 fn announce_deferred(deferred: &[(&str, Severity)]) {
     for line in deferral_advice(deferred) {
         println!("{line}");

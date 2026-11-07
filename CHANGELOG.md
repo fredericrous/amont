@@ -14,9 +14,10 @@ missing here.
   heavy `warn` gate on a busy host. Inside a rehearsal, land's pre-stage
   included, the gate waits for a host slot (up to `amont.timeout`) and runs;
   plain pushes and commits are unchanged and still defer a `warn` gate at
-  once. The deferral advice for a `warn` gate now names a command that
-  waits (`AMONT_ON_BUSY=wait amont run --raw <gate>`) and no longer suggests
-  `set onBusy wait`, which cannot stop a `warn` gate deferring.
+  once. The deferral advice now gives every deferred gate, `warn` or
+  `block`, its own command that waits (`AMONT_ON_BUSY=wait amont run --raw
+  <gate>`), and offers `set onBusy wait` only for the `block` checks, since
+  it cannot stop a `warn` gate deferring.
 
 ## v2.2.0
 
