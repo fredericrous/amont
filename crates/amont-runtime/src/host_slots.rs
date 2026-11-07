@@ -14,7 +14,8 @@
 //! must not wait behind somebody else's suite to do nothing.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub use amont_slots::{DIR_ENV, HELD_ENV};
@@ -144,12 +145,105 @@ struct Current {
     /// (`amont_slots::parallelism`), held or unqueued; `None` when slots are
     /// off, unsupported, or nested under a holder whose bounds it inherits.
     jobs: Option<u32>,
+    /// How this check waits for a slot.
+    slot_wait: SlotWait,
+}
+
+/// How a heavy check waits for a slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SlotWait {
+    /// The busy policy in force.
+    #[default]
+    Policy,
     /// The check's severity cannot block the commit or push (`warn`): a
     /// finding it might make never stops anything, so it never waits for a
     /// slot, except inside a rehearsal snapshot (no open push connection, no
     /// waiting commit, and land's pre-stage needs the evidence). Set by
     /// [`never_waits`].
-    cannot_block: bool,
+    NeverWaits,
+    /// A heavy `warn` check of land's pre-stage: it waits at most
+    /// `amont.warnSlotWait`, then runs unqueued (ADR-0013). Set by
+    /// [`wait_bounded_for_warn`].
+    BoundedForWarn,
+}
+
+/// A slot kept between two heavy gates of one rehearsal pre-push (ADR-0014):
+/// the lease and the width its tools were given.
+struct Parked {
+    lease: amont_slots::Lease,
+    jobs: Option<u32>,
+}
+
+/// The slot parked between gates. Process-wide, because the next gate may
+/// run on another thread than the one that finished; a `static` is never
+/// dropped, so [`ParkScope`] releases it.
+static PARKED: Mutex<Option<Parked>> = Mutex::new(None);
+
+/// How many [`ParkScope`]s are alive: an inner scope's drop never stops
+/// parking for an outer one.
+static PARK_SCOPE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+fn parked() -> std::sync::MutexGuard<'static, Option<Parked>> {
+    PARKED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether a finished heavy check parks its slot rather than release it: a
+/// pre-push in a rehearsal snapshot, inside its [`ParkScope`]. The other
+/// callers of [`enter_check`] release as they always did.
+fn parking() -> bool {
+    PARK_SCOPE_DEPTH.load(Ordering::SeqCst) > 0 && crate::rehearsal::in_snapshot()
+}
+
+/// Held by `dispatch::pre_push` around its gate loop. While it lives, a slot
+/// a heavy gate held is handed to the next heavy gate instead of released;
+/// when the outermost one drops, on any exit, the parked slot is released.
+#[must_use = "the scope releases the parked slot when dropped"]
+pub struct ParkScope {
+    _private: (),
+}
+
+impl ParkScope {
+    #[must_use = "the scope releases the parked slot when dropped"]
+    pub fn begin() -> ParkScope {
+        PARK_SCOPE_DEPTH.fetch_add(1, Ordering::SeqCst);
+        ParkScope { _private: () }
+    }
+}
+
+impl Drop for ParkScope {
+    fn drop(&mut self) {
+        if PARK_SCOPE_DEPTH.fetch_sub(1, Ordering::SeqCst) == 1 {
+            release_parked();
+        }
+    }
+}
+
+/// Release the slot parked between gates, if any. A gate that runs on the
+/// cluster executor takes no host slot (ADR-0016), so it calls this where it
+/// claims its Job: a slot parked for the next local gate would sit idle for
+/// the whole cluster run.
+pub fn release_parked() {
+    let leftover = parked().take();
+    drop(leftover);
+}
+
+/// The holder record of a slot parked between gates.
+fn between_gates() -> amont_slots::Holder {
+    holder_for("pre-push, between checks")
+}
+
+/// amont's holder record for `command`. A push rehearsal runs in a temporary
+/// snapshot: the record names the worktree it was taken from, which is what a
+/// reader of `amont slots` knows, whether the slot was granted, parked or
+/// handed on.
+fn holder_for(command: &str) -> amont_slots::Holder {
+    let mut holder = amont_slots::Holder::here("amont", command);
+    if let Some(src) = crate::rehearsal::source_worktree() {
+        holder.repo = src.display().to_string();
+    }
+    holder
 }
 
 thread_local! {
@@ -187,8 +281,25 @@ fn refusal() -> std::io::Error {
 
 impl Drop for CheckGuard {
     fn drop(&mut self) {
-        CURRENT.with(|c| *c.borrow_mut() = Current::default());
+        let finished = CURRENT.with(RefCell::take);
+        if let Some(lease) = finished.held {
+            if parking() {
+                park(lease, finished.jobs);
+            }
+        }
     }
+}
+
+/// Keep `lease` for the next heavy check of this pre-push, its record
+/// renamed so no waiter's line names the gate that finished.
+fn park(lease: amont_slots::Lease, jobs: Option<u32>) {
+    if let Err(error) = lease.rename(&between_gates()) {
+        crate::hooks::common::say(&format!(
+            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+        ));
+    }
+    let earlier = parked().replace(Parked { lease, jobs });
+    drop(earlier);
 }
 
 /// The dispatcher is about to run `name`, of `weight`, on this thread. The
@@ -213,7 +324,23 @@ pub fn enter_check(name: &str, weight: Weight) -> CheckGuard {
 /// open and land's pre-stage needs the gate's evidence, so the check follows
 /// the busy policy the rehearsal sets.
 pub fn never_waits() {
-    CURRENT.with(|c| c.borrow_mut().cannot_block = true);
+    CURRENT.with(|current| current.borrow_mut().slot_wait = SlotWait::NeverWaits);
+}
+
+/// The check running on this thread is a heavy `warn` check of land's
+/// pre-stage, where somebody waits for its evidence: it waits for a slot at
+/// most `amont.warnSlotWait` (and never longer than `amont.timeout`), under
+/// either busy policy, then runs unqueued, never deferred.
+pub fn wait_bounded_for_warn() {
+    CURRENT.with(|current| current.borrow_mut().slot_wait = SlotWait::BoundedForWarn);
+}
+
+/// `amont.warnSlotWait`: how long a heavy `warn` check of land's pre-stage
+/// waits for a slot. Git config, then a trusted `amont.conf`, then 600 s.
+fn warn_slot_wait(settings: &crate::config::Settings) -> Duration {
+    Duration::from_secs(
+        crate::config::integer_or(settings, "amont.warnSlotWait", 600, 1..=3600) as u64,
+    )
 }
 
 /// The name of the check running on this thread, without its stage
@@ -235,13 +362,13 @@ fn nested() -> bool {
 /// this thread holds a slot, so the caller exports [`HELD_ENV`]; an `Err`
 /// when the busy policy deferred the check, so the caller does not spawn.
 pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool> {
-    let (pending, deferred, name, cannot_block) = CURRENT.with(|c| {
-        let c = c.borrow();
+    let (pending, deferred, name, slot_wait) = CURRENT.with(|current| {
+        let current = current.borrow();
         (
-            c.heavy && !c.settled,
-            c.deferred.is_some(),
-            c.name.clone(),
-            c.cannot_block,
+            current.heavy && !current.settled,
+            current.deferred.is_some(),
+            current.name.clone(),
+            current.slot_wait,
         )
     });
     // A check that caught the first refusal and tries another tool is
@@ -250,6 +377,9 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         return Err(refusal());
     }
     if pending {
+        if let Some(handed) = parking().then(|| parked().take()).flatten() {
+            return Ok(take_handed(handed, &name));
+        }
         // Nested first: a nested amont must not pay the host-key scan for a
         // slot count it is about to ignore. Neither answer queues, so neither
         // can defer.
@@ -262,18 +392,24 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             CURRENT.with(|c| c.borrow_mut().settled = true);
             return Ok(false);
         }
-        let policy = if cannot_block {
-            BusyPolicy::Defer {
+        let policy = match slot_wait {
+            SlotWait::NeverWaits => BusyPolicy::Defer {
                 slot_wait: Duration::ZERO,
-            }
-        } else {
-            busy_policy(settings)
+            },
+            SlotWait::BoundedForWarn => BusyPolicy::Wait,
+            SlotWait::Policy => busy_policy(settings),
         };
         let ceiling = Duration::from_secs(match crate::hooks::common::check_timeout(settings) {
             0 => 3600,
             s => s,
         });
+        let warn_wait = warn_slot_wait(settings);
+        let cut_by_warn_wait =
+            matches!(slot_wait, SlotWait::BoundedForWarn) && warn_wait <= ceiling;
         let budget = match policy {
+            BusyPolicy::Wait if matches!(slot_wait, SlotWait::BoundedForWarn) => {
+                warn_wait.min(ceiling)
+            }
             BusyPolicy::Wait => ceiling,
             // The host was already measured busy by this run: defer now.
             BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
@@ -288,19 +424,16 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             stage.queue(*idx, Some((Instant::now(), cap)));
         }
         let started = Instant::now();
-        let mut holder = amont_slots::Holder::here("amont", &name);
-        // A push rehearsal runs in a temporary snapshot: name the worktree
-        // it was taken from, which is what a reader of `amont slots` knows.
-        if let Some(src) = crate::rehearsal::source_worktree() {
-            holder.repo = src.display().to_string();
-        }
+        let holder = holder_for(&name);
         let mut got = wait_for_slot(sizing, holder.clone(), budget);
         if let (BusyPolicy::Defer { .. }, Err(Reason::TimedOut(_))) = (policy, &got) {
             // A sibling check of this process holds a slot: the host is busy
             // with this commit's own work, which is not a reason to defer.
             // Wait as `wait` does, up to the ceiling; else one more pass, as a
             // sibling may have released between the last poll and now.
-            let rest = if amont_slots::held_in_process() > 0 && !cannot_block {
+            let rest = if amont_slots::held_in_process() > 0
+                && !matches!(slot_wait, SlotWait::NeverWaits)
+            {
                 ceiling.saturating_sub(started.elapsed())
             } else {
                 Duration::ZERO
@@ -328,20 +461,13 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        amont_slots::record_wait_jobs(
-            &amont_slots::dir(),
-            "amont",
-            1,
-            Some(jobs),
-            waited.as_millis(),
-            outcome,
-        );
+        record_acquisition(&name, Some(jobs), waited, outcome);
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
             Err(_) if defer => None,
             Err(reason) => {
-                note(&reason, cap);
+                note(&reason, cap, cut_by_warn_wait.then_some(warn_wait));
                 None
             }
         };
@@ -361,14 +487,65 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             return Err(refusal());
         }
     }
-    Ok(CURRENT.with(|c| c.borrow().held.is_some()))
+    // A light check run while a slot is parked between two heavy gates: its
+    // tools run under that slot (a child `amont slot run` must not queue for
+    // its parent's slot).
+    Ok(CURRENT.with(|c| c.borrow().held.is_some()) || (parking() && parked().is_some()))
+}
+
+/// The next heavy check takes the slot the previous one parked: renamed to
+/// itself, recorded as a wait of nothing, its width applied as a grant's is.
+fn take_handed(handed: Parked, name: &str) -> bool {
+    let Parked { lease, jobs } = handed;
+    if let Err(error) = lease.rename(&holder_for(name)) {
+        crate::hooks::common::say(&format!(
+            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+        ));
+    }
+    record_acquisition(name, jobs, Duration::ZERO, "handed");
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        current.held = Some(lease);
+        current.settled = true;
+        current.jobs = jobs;
+    });
+    true
+}
+
+/// One line of `waits.jsonl` for the check `name`, with where it ran.
+fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: &str) {
+    let short = crate::short_name(name);
+    amont_slots::record_wait_named(
+        &amont_slots::dir(),
+        "amont",
+        amont_slots::WaitContext {
+            name: Some(short),
+            place: if crate::rehearsal::in_prestage() {
+                amont_slots::WaitPlace::Prestage
+            } else if crate::rehearsal::in_snapshot() {
+                amont_slots::WaitPlace::Rehearsal
+            } else {
+                amont_slots::WaitPlace::Push
+            },
+        },
+        1,
+        jobs,
+        waited.as_millis(),
+        outcome,
+    );
 }
 
 /// Bound `cmd` to the width this thread's heavy check was given (see
 /// `Current::jobs`); a light check, or slots off, sets nothing. Called by
 /// every runner after [`before_spawn`].
 pub fn bound(cmd: &mut std::process::Command) {
-    if let Some(jobs) = CURRENT.with(|c| c.borrow().jobs) {
+    let own = CURRENT.with(|c| c.borrow().jobs);
+    // A light check between two heavy gates runs under the parked slot.
+    if let Some(jobs) = own.or_else(|| {
+        parking()
+            .then(|| parked().as_ref().and_then(|p| p.jobs))
+            .flatten()
+    }) {
         amont_slots::bound_width(cmd, jobs);
     }
 }
@@ -423,12 +600,21 @@ pub fn behind(queue: &amont_slots::Queue) -> String {
 
 /// One line for the reasons a person can act on; nothing for the normal
 /// case (the platform).
-fn note(reason: &Reason, cap: u64) {
+///
+/// `warn_wait` is set when `amont.warnSlotWait` cut the wait: the note names
+/// that key rather than `amont.hostSlots`.
+fn note(reason: &Reason, cap: u64, warn_wait: Option<Duration>) {
     match reason {
         Reason::DirUnsafe(why) => crate::hooks::common::warn(&format!(
             "host slots are off for this check: {why}. Remove it, or set {} to a directory \
              only you own",
             crate::ui::highlight(DIR_ENV)
+        )),
+        Reason::TimedOut(waited) if warn_wait.is_some() => crate::hooks::common::warn(&format!(
+            "no host slot in {} (land: {}={}s); running it anyway",
+            crate::hooks::common::human_secs(waited.as_secs()),
+            crate::ui::highlight("amont.warnSlotWait"),
+            warn_wait.map_or(0, |limit| limit.as_secs())
         )),
         Reason::TimedOut(waited) => crate::hooks::common::warn(&format!(
             "no host slot freed in {} ({} {cap}); running it anyway",
@@ -528,6 +714,33 @@ mod tests {
         let mut cmd = std::process::Command::new("true");
         bound(&mut cmd);
         assert_eq!(cmd.get_envs().count(), 0);
+    }
+
+    /// A scope dropped on an early return releases the parked slot: nothing
+    /// stays held, and no holder record stays on disk.
+    #[test]
+    fn a_park_scope_dropped_early_releases_the_parked_slot() {
+        let dir = std::env::temp_dir().join(format!("amont-park-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: a fresh scratch dir
+        let early = || {
+            let _scope = ParkScope::begin();
+            let mut waiter = amont_slots::Waiter::new_in(
+                &dir,
+                amont_slots::Sizing::Fixed(1),
+                1,
+                amont_slots::Holder::here("amont", "gate"),
+            )
+            .unwrap();
+            let amont_slots::Poll::Granted(lease) = waiter.poll().unwrap() else {
+                panic!("the empty directory grants the slot");
+            };
+            assert!(dir.join("holders/slot-0.who").exists());
+            park(lease, Some(2));
+            assert!(dir.join("holders/slot-0.who").exists());
+        };
+        early();
+        assert!(!dir.join("holders/slot-0.who").exists());
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: scratch
     }
 
     #[test]

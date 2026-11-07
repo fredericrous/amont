@@ -939,3 +939,332 @@ fn a_stamped_tip_over_a_deferred_commit_is_gated() {
     assert_eq!(runs(&repo, "gate.log"), 1, "the twin must not run: {out}");
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
 }
+
+/// A repository whose `amont.conf` is `conf`, trusted, with a commit to push
+/// on `feat/x`, `gate.sh` beside it, and the push line for it.
+fn handoff_repo(conf: &str, gate_script: &str) -> (Repo, String) {
+    let repo = Repo::new();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage("gate.sh", gate_script);
+    repo.stage("amont.conf", conf);
+    repo.commit("chore: base");
+    trust(&repo);
+    let base = head(&repo);
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.stage("a.txt", "one\n");
+    repo.commit("feat: a");
+    let line = push_line("feat/x", &base, &head(&repo));
+    (repo, line)
+}
+
+/// The parsed lines of `waits.jsonl`, in order.
+fn waits(slots: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(slots.join("waits.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a waits.jsonl line is JSON"))
+        .collect()
+}
+
+/// `amont slot run` as an outside waiter on `slots`, running `script`.
+fn outside_waiter(slots: &Path, script: &str) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_amont"))
+        .args(["slot", "run", "--", "sh", "-c", script])
+        .env_remove("AMONT_HOST_SLOT")
+        .env("AMONT_SLOT_DIR", slots)
+        .env("AMONT_HOST_SLOTS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the outside waiter")
+}
+
+fn modified(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+fn wait_for_file(path: &Path) {
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < give_up,
+            "{} never appeared",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Inside a rehearsal a pre-push keeps its slot from one heavy gate to the
+/// next: one wait per land. The only slot is held 3 s; the first gate then
+/// holds it until an outside waiter's ticket is in `slots/queue`, so the
+/// second gate can only get the slot by the handoff. Without it the second
+/// gate would queue behind the outside waiter, which keeps the slot 10 s: the
+/// run would take over 13 s.
+#[test]
+fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
+    let slots = slot_dir("handoff");
+    let (first, second, grant) = (
+        slots.join("first"),
+        slots.join("second"),
+        slots.join("grant"),
+    );
+    let script = format!(
+        "touch {first}\n\
+         tries=0\n\
+         while [ -z \"$(ls {queue} 2>/dev/null)\" ] && [ \"$tries\" -lt 600 ]; do\n\
+         tries=$((tries + 1)); sleep 0.1; done\n",
+        first = first.display(),
+        queue = slots.join("queue").display(),
+    );
+    let (repo, line) = handoff_repo(
+        &format!(
+            "set onBusy wait\nset timeout 600\n\
+             pre-push  one  *.txt  block  heavy sh gate.sh\n\
+             pre-push  two  *.txt  block  heavy touch {}\n",
+            second.display()
+        ),
+        &script,
+    );
+    let releaser = release_after(Holder::hold(&slots.join("slot-0")), &slots, 1);
+    let waiter_slots = slots.clone();
+    let (waiter_first, waiter_grant) = (first.clone(), grant.clone());
+    let waiter = std::thread::spawn(move || {
+        wait_for_file(&waiter_first);
+        let script = format!("touch {}; sleep 10", waiter_grant.display());
+        outside_waiter(&waiter_slots, &script)
+    });
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &REHEARSAL);
+    let took = started.elapsed();
+    releaser.join().unwrap();
+    let mut outside = waiter.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(first.exists() && second.exists(), "both gates run: {out}");
+    assert!(
+        took < std::time::Duration::from_secs(6),
+        "without the handoff this takes over 13 s: took {took:?}\n{out}"
+    );
+    wait_for_file(&grant);
+    assert!(
+        modified(&grant) >= modified(&second),
+        "the outside waiter was granted before the second gate ran"
+    );
+    let lines = waits(&slots);
+    let handed: Vec<_> = lines.iter().filter(|l| l["outcome"] == "handed").collect();
+    assert_eq!(handed.len(), 1, "{lines:?}");
+    assert_eq!(handed[0]["name"], "two", "{lines:?}");
+    assert_eq!(handed[0]["rehearsal"], true, "{lines:?}");
+    let admitted = lines
+        .iter()
+        .find(|l| l["name"] == "one")
+        .expect("the first gate's own line");
+    assert_eq!(admitted["pid"], handed[0]["pid"], "{lines:?}");
+    let _ = outside.kill(); // best-effort: it sleeps for 10 s
+    let _ = outside.wait(); // best-effort: reap
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A plain push releases its slot after each gate, as before.
+#[test]
+fn a_plain_push_does_not_hand_its_slot_over() {
+    let slots = slot_dir("no-handoff");
+    let (first, second) = (slots.join("first"), slots.join("second"));
+    let (repo, line) = handoff_repo(
+        &format!(
+            "set onBusy wait\nset timeout 600\n\
+             pre-push  one  *.txt  block  heavy touch {}\n\
+             pre-push  two  *.txt  block  heavy touch {}\n",
+            first.display(),
+            second.display()
+        ),
+        "true\n",
+    );
+    let (code, out) = hook(
+        &repo,
+        "pre-push",
+        &[],
+        &slots,
+        &line,
+        &[("AMONT_ON_BUSY", "wait")],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(first.exists() && second.exists(), "{out}");
+    let lines = waits(&slots);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|l| l["outcome"] != "handed"), "{lines:?}");
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A gate that fails right after a handoff leaves no slot behind.
+#[test]
+fn a_failing_gate_after_a_handoff_frees_the_slot() {
+    let slots = slot_dir("park-block");
+    let first = slots.join("first");
+    let (repo, line) = handoff_repo(
+        &format!(
+            "set onBusy wait\nset timeout 600\n\
+             pre-push  one  *.txt  block  heavy touch {}\n\
+             pre-push  two  *.txt  block  heavy false\n",
+            first.display()
+        ),
+        "true\n",
+    );
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &REHEARSAL);
+    assert_ne!(code, 0, "{out}");
+    assert!(first.exists(), "{out}");
+    let leftovers: Vec<_> = std::fs::read_dir(slots.join("holders"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".who"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(leftovers.is_empty(), "a who file stayed: {leftovers:?}");
+    let status = Command::new(env!("CARGO_BIN_EXE_amont"))
+        .args(["slots", "--json"])
+        .env_remove("AMONT_HOST_SLOT")
+        .env("AMONT_SLOT_DIR", &slots)
+        .env("AMONT_HOST_SLOTS", "1")
+        .output()
+        .expect("amont slots");
+    let json = String::from_utf8_lossy(&status.stdout);
+    assert!(json.contains("\"held\":0"), "{json}");
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A light gate between two heavy ones runs under the parked slot: a child
+/// `amont slot run` does not queue for it and inherits the first gate's
+/// width, and the last gate still gets the handoff.
+#[test]
+fn a_nested_slot_run_under_a_parked_slot_does_not_queue() {
+    let slots = slot_dir("park-nested");
+    let (first_width, nested_width) = (slots.join("first-width"), slots.join("nested-width"));
+    let last = slots.join("last");
+    let script = format!(
+        "case \"$1\" in first) printf '%s\\n' \"$CARGO_BUILD_JOBS\" > {first}; ;; \
+         nested) {amont} slot run -- sh -c 'printf \"%s\\n\" \"$CARGO_BUILD_JOBS\" > {nested}' ;; esac\n",
+        first = first_width.display(),
+        amont = env!("CARGO_BIN_EXE_amont"),
+        nested = nested_width.display(),
+    );
+    let (repo, line) = handoff_repo(
+        &format!(
+            "set onBusy wait\nset timeout 600\n\
+             pre-push  one     *.txt  block  heavy sh gate.sh first\n\
+             pre-push  middle  *.txt  block  sh gate.sh nested\n\
+             pre-push  three   *.txt  block  heavy touch {}\n",
+            last.display()
+        ),
+        &script,
+    );
+    let releaser = release_after(Holder::hold(&slots.join("slot-0")), &slots, 1);
+    let clear = [
+        ("AMONT_REHEARSAL", "1"),
+        ("AMONT_ON_BUSY", "wait"),
+        ("CARGO_BUILD_JOBS", ""),
+        ("RUST_TEST_THREADS", ""),
+        ("MAKEFLAGS", ""),
+    ];
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &clear);
+    releaser.join().unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(last.exists(), "{out}");
+    let width = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+    assert!(!width(&first_width).trim().is_empty(), "{out}");
+    assert_eq!(width(&nested_width), width(&first_width), "{out}");
+    let lines = waits(&slots);
+    assert_eq!(lines.len(), 2, "the nested run recorded a wait: {lines:?}");
+    assert_eq!(lines[1]["outcome"], "handed", "{lines:?}");
+    assert_eq!(lines[1]["name"], "three", "{lines:?}");
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// Drop `holder` after `secs`, from another thread: a host busy for as long
+/// as the test needs.
+fn hold_for(holder: Holder, secs: u64) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+        drop(holder);
+    })
+}
+
+/// What land's pre-stage asks of the pre-push it spawns.
+const PRESTAGE: [(&str, &str); 2] = [("AMONT_REHEARSAL", "prestage;1"), ("AMONT_ON_BUSY", "wait")];
+
+/// In land's pre-stage a warn gate waits at most `amont.warnSlotWait`, then
+/// runs unqueued and says which key cut the wait.
+#[test]
+fn a_prestage_warn_gate_stops_waiting_at_warn_slot_wait() {
+    let slots = slot_dir("ceiling");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = warn_gate_repo(&marker, "set onBusy wait\nset warnSlotWait 2");
+    let holder = hold_for(Holder::hold(&slots.join("slot-0")), 30);
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &PRESTAGE);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("running it anyway"), "{out}");
+    assert!(out.contains("amont.warnSlotWait"), "{out}");
+    assert!(!out.contains("deferred to CI"), "{out}");
+    assert!(marker.exists(), "{out}");
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "took {took:?}\n{out}"
+    );
+    holder.join().unwrap();
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A rehearsal nobody marked as land's pre-stage keeps waiting for the slot.
+#[test]
+fn an_unmarked_rehearsal_has_no_ceiling() {
+    let slots = slot_dir("no-ceiling");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = warn_gate_repo(&marker, "set onBusy wait\nset warnSlotWait 2");
+    let holder = hold_for(Holder::hold(&slots.join("slot-0")), 30);
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &REHEARSAL);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("running it anyway"), "{out}");
+    assert!(marker.exists(), "{out}");
+    assert!(
+        took >= std::time::Duration::from_secs(28),
+        "took {took:?}\n{out}"
+    );
+    holder.join().unwrap();
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
+/// A `block` gate of land's pre-stage is not cut short: its verdict can stop
+/// the push.
+#[test]
+fn a_prestage_block_gate_has_no_ceiling() {
+    let slots = slot_dir("block-ceiling");
+    let marker = slots.join("gate-ran");
+    let (repo, line) = handoff_repo(
+        &format!(
+            "set onBusy wait\nset timeout 600\nset warnSlotWait 2\n\
+             pre-push  probe  *.txt  block  heavy touch {}\n",
+            marker.display()
+        ),
+        "true\n",
+    );
+    let holder = hold_for(Holder::hold(&slots.join("slot-0")), 30);
+    let started = std::time::Instant::now();
+    let (code, out) = hook(&repo, "pre-push", &[], &slots, &line, &PRESTAGE);
+    let took = started.elapsed();
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("running it anyway"), "{out}");
+    assert!(marker.exists(), "{out}");
+    assert!(
+        took >= std::time::Duration::from_secs(28),
+        "took {took:?}\n{out}"
+    );
+    holder.join().unwrap();
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}

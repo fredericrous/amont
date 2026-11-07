@@ -90,3 +90,13 @@ waits for a slot inside a rehearsal snapshot, bounded by `amont.timeout`:
 no connection is open there and no commit waits, and `amont land`'s
 pre-stage must leave the evidence it owes, or land refuses with
 `evidence-missing` over a gate that could never have blocked the push.
+
+## Amendment, 2026-11-07: `amont.warnSlotWait`
+
+In land's pre-stage only, a heavy `warn` check waits for a slot at most
+`amont.warnSlotWait` seconds (default 600, range 1 to 3600, never more than
+`amont.timeout`), whatever `amont.onBusy` says, and then runs unqueued with a
+note naming the key. It is never deferred: land needs its evidence. A `block`
+gate, and any gate in a background rehearsal, keeps today's budget. Git
+config wins over `set warnSlotWait <s>` in a trusted `amont.conf`, which wins
+over the default.

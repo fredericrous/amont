@@ -314,6 +314,59 @@ impl Lease {
     pub fn weight(&self) -> usize {
         self.files.len()
     }
+
+    /// Rewrite the holder record of each slot of this lease as `holder`, with
+    /// its start time reset to now, so the age shown is the new holder's. The
+    /// record is written to a hidden file in `holders/` and renamed over
+    /// `slot-N.who`, so a concurrent reader sees the old record or the new
+    /// one, never a truncated one. A `holder` with no `jobs` keeps the width
+    /// the record already carries: the lease's width does not change with
+    /// its holder. A record that cannot be written stays as it was, and the
+    /// error names the path.
+    pub fn rename(&self, holder: &Holder) -> io::Result<()> {
+        let mut renamed = holder.clone();
+        renamed.started_ms = now_ms();
+        // Every record is attempted: one that cannot be written must not
+        // leave the lease's other records naming the old holder.
+        let mut first_error: Option<io::Error> = None;
+        for path in &self.who {
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let mut record = renamed.clone();
+            if record.jobs.is_none() {
+                record.jobs = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| Holder::from_json(&text))
+                    .and_then(|old| old.jobs);
+            }
+            let json = record.to_json();
+            let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+            let written = fs::write(&temp, &json).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("cannot write {}: {error}", temp.display()),
+                )
+            });
+            let renamed_over = written.and_then(|()| {
+                fs::rename(&temp, path).map_err(|error| {
+                    let _ = fs::remove_file(&temp); // best-effort: cleanup of our own temp file
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot rename {} over {}: {error}",
+                            temp.display(),
+                            path.display()
+                        ),
+                    )
+                })
+            });
+            if let Err(error) = renamed_over {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
 }
 
 impl Drop for Lease {
@@ -482,6 +535,7 @@ impl Waiter {
         HELD.fetch_add(files.len(), Ordering::SeqCst);
         let _ = fs::write(self.dir.join("admitted-at"), probe.now_ms.to_string()); // best-effort: a lost stamp only shortens one ramp
         self.leave();
+        remove_dead_holder_temps(&self.dir);
         Ok(Poll::Granted(Lease { files, who }))
     }
 
@@ -580,12 +634,69 @@ pub fn record_wait_jobs(
     waited_ms: u128,
     outcome: &str,
 ) {
+    record_wait_named(
+        dir,
+        tool,
+        WaitContext::default(),
+        weight,
+        jobs,
+        waited_ms,
+        outcome,
+    );
+}
+
+/// What the runtime knows about where an acquisition happened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WaitContext<'a> {
+    /// The check that waited, when the caller knows it.
+    pub name: Option<&'a str>,
+    /// Where the acquisition happened.
+    pub place: WaitPlace,
+}
+
+/// Where an acquisition happened: a plain push, a push rehearsal in a
+/// snapshot, or land's pre-stage rehearsal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WaitPlace {
+    #[default]
+    Push,
+    Rehearsal,
+    Prestage,
+}
+
+/// [`record_wait_jobs`] naming the check that waited: the line gains `"name"`
+/// (when `context` has one), `"pid"`, `"session"` (when known), and `"rehearsal"` and
+/// `"prestage"` when `context` sets them.
+pub fn record_wait_named(
+    dir: &Path,
+    tool: &str,
+    context: WaitContext,
+    weight: u32,
+    jobs: Option<u32>,
+    waited_ms: u128,
+    outcome: &str,
+) {
     let load = load1().map_or("null".to_string(), |l| format!("{l:.2}"));
     let jobs = jobs.map_or(String::new(), |j| format!(",\"jobs\":{j}"));
+    let name = context
+        .name
+        .map_or(String::new(), |n| format!(",\"name\":\"{}\"", escape(n)));
+    let session = session_id();
+    let session = if session.is_empty() {
+        String::new()
+    } else {
+        format!(",\"session\":\"{}\"", escape(&session))
+    };
+    let (rehearsal, prestage) = match context.place {
+        WaitPlace::Push => ("", ""),
+        WaitPlace::Rehearsal => (",\"rehearsal\":true", ""),
+        WaitPlace::Prestage => (",\"rehearsal\":true", ",\"prestage\":true"),
+    };
     let line = format!(
-        "{{\"at_ms\":{},\"tool\":\"{}\",\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"}}\n",
+        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
         now_ms(),
         escape(tool),
+        std::process::id(),
         escape(outcome)
     );
     if let Ok(mut f) = OpenOptions::new()
@@ -638,6 +749,33 @@ fn live_tickets(dir: &Path, mine: Option<&Path>) -> io::Result<Vec<PathBuf>> {
     }
     live.sort();
     Ok(live)
+}
+
+/// Remove the hidden `holders/.slot-N.who.<pid>.tmp` files [`Lease::rename`]
+/// leaves when its process dies between the write and the rename: those whose
+/// pid is dead, as dead queue tickets are.
+fn remove_dead_holder_temps(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir.join("holders")) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name
+            .strip_prefix('.')
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let Some(pid) = stem
+            .rsplit_once('.')
+            .and_then(|(_, pid)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !platform::alive(pid) {
+            let _ = fs::remove_file(entry.path()); // best-effort: a dead process's temp record
+        }
+    }
 }
 
 /// How many visible tickets there are, without touching any.
@@ -1293,5 +1431,138 @@ mod tests {
         assert!(!d.join("holders/slot-0.who").exists());
         let mut again = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "b")).unwrap();
         let _l = granted(again.poll_with(idle(0)).unwrap());
+    }
+
+    #[test]
+    fn rename_rewrites_every_who_file_and_resets_the_start() {
+        let dir = scratch("rename");
+        let mut waiter = Waiter::new_in(&dir, Sizing::Fixed(2), 2, Holder::here("t", "a")).unwrap();
+        let lease = granted(waiter.poll_with(idle(0)).unwrap());
+        let record = |index: usize| {
+            let text = fs::read_to_string(dir.join(format!("holders/slot-{index}.who"))).unwrap();
+            Holder::from_json(&text).unwrap()
+        };
+        let granted_jobs: Vec<Option<u32>> = (0..2).map(|index| record(index).jobs).collect();
+        let mut next = Holder::here("t", "b");
+        next.repo = "/some/repo".into();
+        next.session = "sess".into();
+        next.started_ms = 1;
+        lease.rename(&next).unwrap();
+        for (index, jobs_at_grant) in granted_jobs.iter().enumerate() {
+            let got = record(index);
+            assert_eq!(got.command, "b");
+            assert_eq!(got.repo, "/some/repo");
+            assert_eq!(got.session, "sess");
+            assert!(got.started_ms > 1);
+            // The width written at the grant survives the rename.
+            assert_eq!(got.jobs, *jobs_at_grant);
+        }
+        let hidden: Vec<_> = fs::read_dir(dir.join("holders"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn a_dead_pids_hidden_holder_temp_is_removed_at_the_next_grant() {
+        let dir = scratch("dead-temp");
+        let mut first = Waiter::new_in(&dir, Sizing::Fixed(2), 1, Holder::here("t", "a")).unwrap();
+        let _held = granted(first.poll_with(idle(0)).unwrap());
+        let dead = dir.join(format!("holders/.slot-0.who.{}.tmp", i32::MAX));
+        let live = dir.join(format!("holders/.slot-1.who.{}.tmp", std::process::id()));
+        fs::write(&dead, "{}").unwrap();
+        fs::write(&live, "{}").unwrap();
+        let mut second = Waiter::new_in(&dir, Sizing::Fixed(2), 1, Holder::here("t", "b")).unwrap();
+        let _also = granted(second.poll_with(idle(0)).unwrap());
+        assert!(!dead.exists());
+        assert!(live.exists());
+    }
+
+    #[test]
+    fn rename_that_cannot_write_a_record_names_the_path() {
+        let dir = scratch("rename-unwritable");
+        let mut waiter = Waiter::new_in(&dir, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let lease = granted(waiter.poll_with(idle(0)).unwrap());
+        let holders = dir.join("holders");
+        // A directory where the temp record goes makes the write fail for
+        // any user, root included, which a permission mode would not.
+        let temp = holders.join(format!(".slot-0.who.{}.tmp", std::process::id()));
+        fs::create_dir(&temp).unwrap();
+        let outcome = lease.rename(&Holder::here("t", "b"));
+        fs::remove_dir(&temp).unwrap();
+        let error = outcome.expect_err("a record whose temp path is a directory cannot be written");
+        assert!(
+            error.to_string().contains(&holders.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_reader_never_sees_an_unknown_record_while_rename_runs() {
+        let dir = scratch("rename-race");
+        let mut waiter = Waiter::new_in(&dir, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let lease = granted(waiter.poll_with(idle(0)).unwrap());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = stop.clone();
+        let dir = dir.clone();
+        let reader = std::thread::spawn(move || {
+            let mut unknown = 0;
+            while !reader_stop.load(Ordering::SeqCst) {
+                let (_, bad) = read_holders(&dir, &[0]);
+                unknown += bad;
+            }
+            unknown
+        });
+        for round in 0..2000 {
+            lease
+                .rename(&Holder::here("t", &format!("gate-{round}")))
+                .unwrap();
+        }
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(reader.join().unwrap(), 0);
+    }
+
+    #[test]
+    fn record_wait_named_writes_name_pid_session_and_context() {
+        let dir = scratch("named");
+        fs::create_dir_all(&dir).unwrap();
+        record_wait_named(
+            &dir,
+            "amont",
+            WaitContext {
+                name: Some("cargo-test"),
+                place: WaitPlace::Prestage,
+            },
+            1,
+            Some(3),
+            0,
+            "handed",
+        );
+        let line = fs::read_to_string(dir.join("waits.jsonl")).unwrap();
+        assert_eq!(raw(&line, "name").as_deref(), Some("cargo-test"));
+        assert_eq!(raw(&line, "pid"), Some(std::process::id().to_string()));
+        assert!(line.contains("\"rehearsal\":true"));
+        assert!(line.contains("\"prestage\":true"));
+        assert_eq!(raw(&line, "outcome").as_deref(), Some("handed"));
+        if !session_id().is_empty() {
+            assert_eq!(raw(&line, "session"), Some(session_id()));
+        }
+    }
+
+    #[test]
+    fn record_wait_keeps_its_old_fields_and_gains_the_pid() {
+        let dir = scratch("plain");
+        fs::create_dir_all(&dir).unwrap();
+        record_wait(&dir, "relais", 1, 12, "admitted");
+        let line = fs::read_to_string(dir.join("waits.jsonl")).unwrap();
+        assert!(line.contains("\"tool\":\"relais\""));
+        assert!(line.contains("\"waited_ms\":12"));
+        assert!(line.contains("\"outcome\":\"admitted\""));
+        assert_eq!(raw(&line, "pid"), Some(std::process::id().to_string()));
+        assert!(!line.contains("\"name\""));
+        assert!(!line.contains("\"rehearsal\""));
+        assert!(!line.contains("\"prestage\""));
     }
 }
