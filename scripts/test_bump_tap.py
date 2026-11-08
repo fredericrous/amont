@@ -67,14 +67,14 @@ class BumpTap(unittest.TestCase):
 
     def test_an_old_owner_formula_moves_to_the_new_home(self) -> None:
         self.formula.write_text(formula("fredericrous/amont"))
-        result = self.bump()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        bump_run = self.bump()
+        self.assertEqual(bump_run.returncode, 0, bump_run.stderr)
         self.assert_on_new_home(self.formula.read_text())
 
     def test_a_new_owner_formula_stays_on_the_new_home(self) -> None:
         self.formula.write_text(formula("greenharness/greengate"))
-        result = self.bump()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        bump_run = self.bump()
+        self.assertEqual(bump_run.returncode, 0, bump_run.stderr)
         self.assert_on_new_home(self.formula.read_text())
 
     def test_a_second_run_changes_nothing(self) -> None:
@@ -90,9 +90,9 @@ class BumpTap(unittest.TestCase):
                 '  homepage "https://github.com/fredericrous/amont"\n', ""
             )
         )
-        result = self.bump()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no homepage line", result.stderr)
+        bump_run = self.bump()
+        self.assertNotEqual(bump_run.returncode, 0)
+        self.assertIn("no homepage line", bump_run.stderr)
 
 
 if __name__ == "__main__":

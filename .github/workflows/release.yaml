@@ -744,8 +744,8 @@ jobs:
   #     Errno::ENOENT: No such file or directory - amont-agent
   #
   # Every one of those releases was green. The checksums matched, the syntax
-  # was valid, and `bump-tap.py` rewrites only the version and the four
-  # url/sha pairs, so nothing it touched would ever notice a stale install
+  # was valid, and `bump-tap.py` rewrote only the version and the four
+  # url/sha pairs (it now also rewrites the homepage), so nothing it touched would ever notice a stale install
   # line. It was found by a human running `brew upgrade` by hand.
   #
   # This job FAILS the run rather than warning. The release is already

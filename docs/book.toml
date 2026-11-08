@@ -31,7 +31,7 @@ default-theme = "rust"
 preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/greenharness/greengate"
 edit-url-template = "https://github.com/greenharness/greengate/edit/main/docs/{path}"
-site-url = "/amont/"
+site-url = "/greengate/"
 
 [output.html.fold]
 enable = true
