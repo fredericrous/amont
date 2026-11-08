@@ -90,7 +90,7 @@ pulled case. Downgrade it like any check:
 ## Why `git hash-object --no-filters`
 
 `amont` links no external crates ([and CI enforces
-that](https://github.com/fredericrous/amont/blob/main/scripts/check-no-deps.sh)),
+that](https://github.com/greenharness/greengate/blob/main/scripts/check-no-deps.sh)),
 and the only hash in `std` is `DefaultHasher` — SipHash with a fixed key, not
 collision-resistant, so a crafted manifest could be made to match a trusted
 one's fingerprint. Hand-writing SHA-256 is a hundred lines nobody would review
@@ -173,4 +173,4 @@ a marketing claim:
   See above for why that trade was taken.
 
 To report something this model gets wrong, see
-[SECURITY.md](https://github.com/fredericrous/amont/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/greenharness/greengate/blob/main/SECURITY.md).

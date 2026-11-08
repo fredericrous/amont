@@ -2,9 +2,9 @@
 
 **Catch the bad commit before it exists — and take the whole thing back out in one command.**
 
-[![CI](https://github.com/fredericrous/amont/actions/workflows/ci.yaml/badge.svg)](https://github.com/fredericrous/amont/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/github/v/release/fredericrous/amont?label=release)](https://github.com/fredericrous/amont/releases/latest)
-[![License](https://img.shields.io/github/license/fredericrous/amont)](LICENSE)
+[![CI](https://github.com/greenharness/greengate/actions/workflows/ci.yaml/badge.svg)](https://github.com/greenharness/greengate/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/greenharness/greengate?label=release)](https://github.com/greenharness/greengate/releases/latest)
+[![License](https://img.shields.io/github/license/greenharness/greengate)](LICENSE)
 
 A single Rust binary that checks `git commit` and `git push`. It ships
 thirty-nine built-in checks — commit-message conventions, conflict markers,
@@ -37,12 +37,12 @@ pre-push
 
 ```sh
 # Linux and macOS
-curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/fredericrous/amont/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
 Either one downloads a release binary, checks it against the published
@@ -78,7 +78,7 @@ git config hook.skip clippy             # does not run at all
 ## Documentation
 
 Versioned with the code in [`docs/`](docs/) and published as a
-[book](https://fredericrous.github.io/amont/):
+[book](https://greenharness.github.io/greengate/):
 
 - [Installing and activating](docs/install.md) ·
   [Rolling out to a team](docs/team-rollout.md) · [The CI backstop](docs/ci.md)
@@ -94,8 +94,8 @@ Versioned with the code in [`docs/`](docs/) and published as a
 
 `make check` is the CI-parity target; setup, the zero-dependency rule and the
 house style are in [CONTRIBUTING.md](CONTRIBUTING.md). Questions in
-[Discussions](https://github.com/fredericrous/amont/discussions), bugs in
-[issues](https://github.com/fredericrous/amont/issues). By participating you
+[Discussions](https://github.com/greenharness/greengate/discussions), bugs in
+[issues](https://github.com/greenharness/greengate/issues). By participating you
 agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

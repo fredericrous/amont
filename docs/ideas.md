@@ -56,4 +56,4 @@ inert in the rest.
 
 Everything in the commit path also has to be paid for in dependencies, which is
 to say: in nothing. See
-[CONTRIBUTING.md](https://github.com/fredericrous/amont/blob/main/CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/greenharness/greengate/blob/main/CONTRIBUTING.md).

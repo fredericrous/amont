@@ -1,7 +1,7 @@
 # The CI backstop for a Rust repository, Forgejo Actions edition — the same
 # tools amont runs locally, called directly, in a language container so no
 # setup actions are needed. Copy into .forgejo/workflows/ and prune what you
-# don't use. See https://fredericrous.github.io/amont/ci.html
+# don't use. See https://greenharness.github.io/greengate/ci.html
 name: checks
 
 on:

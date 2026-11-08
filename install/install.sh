@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the amont binary. Nothing else.
 #
-#   curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 #
 # This script deliberately does NOT turn any hooks on. It downloads a verified
 # binary, puts it somewhere your shims can find it, and tells you what to run
@@ -14,7 +14,7 @@
 # this has to run wherever git does.
 set -eu
 
-REPO="fredericrous/amont"
+REPO="greenharness/greengate"
 # `$HOME/.local/bin` by default, and not arbitrarily: it is candidate 3 in the
 # shim's own resolution order, so a binary here is found even by a shim whose
 # path was never baked.

@@ -139,7 +139,7 @@ jobs:
       # here is what stops it being a build-from-source-only feature.
       #
       # `amont-agent` used to be a third. It is its own project now —
-      # github.com/fredericrous/amont-agent — with its own release.
+      # github.com/greenharness/greenpiste — with its own release.
       - run: cargo build --release --target ${{ matrix.target }} --bin amont --bin amont-fleet
 
       - name: Archive
@@ -352,7 +352,7 @@ jobs:
       #
       # Attestations go to GitHub's API, not into `dist`, so the `dist/*`
       # release glob below needs no change. Verify with:
-      #   gh attestation verify <file> --repo fredericrous/amont
+      #   gh attestation verify <file> --repo greenharness/greengate
       - name: Attest
         if: needs.guard.outputs.dry_run == 'false'
         uses: actions/attest-build-provenance@v4
@@ -744,8 +744,8 @@ jobs:
   #     Errno::ENOENT: No such file or directory - amont-agent
   #
   # Every one of those releases was green. The checksums matched, the syntax
-  # was valid, and `bump-tap.py` rewrites only the version and the four
-  # url/sha pairs, so nothing it touched would ever notice a stale install
+  # was valid, and `bump-tap.py` rewrote only the version and the four
+  # url/sha pairs (it now also rewrites the homepage), so nothing it touched would ever notice a stale install
   # line. It was found by a human running `brew upgrade` by hand.
   #
   # This job FAILS the run rather than warning. The release is already

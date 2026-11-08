@@ -3,7 +3,7 @@
     Install the amont binary on Windows. Nothing else.
 
 .DESCRIPTION
-    irm https://raw.githubusercontent.com/fredericrous/amont/main/install/install.ps1 | iex
+    irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 
     The counterpart to install/install.sh, which is POSIX sh and therefore
     reaches Windows only through Git Bash. This one runs in the PowerShell
@@ -34,7 +34,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Repo = 'fredericrous/amont'
+$Repo = 'greenharness/greengate'
 if (-not $BinDir)  { $BinDir  = Join-Path $HOME '.local\bin' }
 if (-not $Version) { $Version = 'latest' }
 

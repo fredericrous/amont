@@ -2,10 +2,10 @@
   "name": "__PKG__",
   "version": "__VERSION__",
   "description": "The amont binary for __OS__/__CPU__",
-  "homepage": "https://github.com/fredericrous/amont#readme",
+  "homepage": "https://github.com/greenharness/greengate#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fredericrous/amont.git"
+    "url": "git+https://github.com/greenharness/greengate.git"
   },
   "license": "MIT",
   "author": "Frederic Rousseau",

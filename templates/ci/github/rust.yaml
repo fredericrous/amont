@@ -1,6 +1,6 @@
 # The CI backstop for a Rust repository — the same tools amont runs locally,
 # called directly. amont itself deliberately does not run in CI; see
-# https://fredericrous.github.io/amont/ci.html for the reasoning and the
+# https://greenharness.github.io/greengate/ci.html for the reasoning and the
 # mapping. Copy this file into .github/workflows/ and prune what you don't use.
 name: checks
 

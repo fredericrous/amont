@@ -6,8 +6,8 @@ body:
     attributes:
       value: |
         **If this is a security issue — a repository running code without `amont trust`, or anything that destroyed uncommitted work — stop and use
-        [private vulnerability reporting](https://github.com/fredericrous/amont/security/advisories/new) instead.**
-        See [SECURITY.md](https://github.com/fredericrous/amont/blob/main/SECURITY.md).
+        [private vulnerability reporting](https://github.com/greenharness/greengate/security/advisories/new) instead.**
+        See [SECURITY.md](https://github.com/greenharness/greengate/blob/main/SECURITY.md).
 
         In the meantime, the escape hatches: `git commit --no-verify` bypasses a stage for one run,
         `git -c hook.skip=<check> commit` skips one check, and `amont uninstall` removes the hooks

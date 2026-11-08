@@ -29,9 +29,9 @@ create-missing = false
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-git-repository-url = "https://github.com/fredericrous/amont"
-edit-url-template = "https://github.com/fredericrous/amont/edit/main/docs/{path}"
-site-url = "/amont/"
+git-repository-url = "https://github.com/greenharness/greengate"
+edit-url-template = "https://github.com/greenharness/greengate/edit/main/docs/{path}"
+site-url = "/greengate/"
 
 [output.html.fold]
 enable = true

@@ -7,7 +7,7 @@ One commit, start to finish, with every place a hook steps in.
 ## You hit `git commit`
 
 If you set `commit.template`, the
-[footer scaffold](https://github.com/fredericrous/amont/blob/main/message)
+[footer scaffold](https://github.com/greenharness/greengate/blob/main/message)
 opens in your editor to help you write something meaningful. Or you are in a
 hurry and write `git commit -m "Add to Cart"`, which is the interesting case,
 because that is the one that gets stopped.

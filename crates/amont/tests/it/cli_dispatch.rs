@@ -237,6 +237,12 @@ fn help_exits_zero_and_describes_the_program() {
         }
         assert!(out.contains("--hooks-dir"), "{out}");
         assert!(out.contains("--stage"), "{out}");
+        // The repository moved to greenharness/greengate (2026-11-08); the old
+        // fredericrous.github.io manual does not redirect.
+        assert!(
+            out.contains("https://greenharness.github.io/greengate/"),
+            "{flag} does not name the manual's new home:\n{out}"
+        );
     }
 }
 

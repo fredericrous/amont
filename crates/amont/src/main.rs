@@ -147,7 +147,7 @@ usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
   --help         this text        --version   the binary's version
 
 Hook mode (what the shims call): amont --hooks-dir <dir> <hook-name> [args…]
-The full manual: https://fredericrous.github.io/amont/
+The full manual: https://greenharness.github.io/greengate/
 ";
 
 /// The verbs. Named as a type so the dispatch cannot grow an eighth spelling
