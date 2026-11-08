@@ -57,11 +57,25 @@ jobs:
       # download against a three-minute compile, and this job has no other
       # reason to have a Rust toolchain.
       - name: install mdbook
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          asset="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
+          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
+          for attempt in 1 2 3; do
+            rc=0
+            timeout 120 gh release download "v${MDBOOK_VERSION}" --repo rust-lang/mdBook \
+              --pattern "$asset" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
+            [ "$rc" = 0 ] && break
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not download $asset from rust-lang/mdBook v${MDBOOK_VERSION} (exit $rc; 124 = timed out after 120 s)"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: build

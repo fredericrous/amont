@@ -63,14 +63,24 @@ jobs:
       # A fetch that fails fails the step: a cross-check that could not look
       # has checked nothing.
       - name: Compare MANIFEST.sha256 with amont-agent's
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          url=https://raw.githubusercontent.com/fredericrous/amont-agent/main/tests/fixtures/excerpt/MANIFEST.sha256
+          # Through the API, not raw.githubusercontent.com, which throttles
+          # anonymous reads like the release web route (504s on 2026-11-08).
+          path=repos/fredericrous/amont-agent/contents/tests/fixtures/excerpt/MANIFEST.sha256
           ours=crates/amont/tests/fixtures/excerpt/MANIFEST.sha256
-          if ! curl -fsSL --retry 3 --max-time 30 "$url" -o /tmp/theirs.sha256; then
-            echo "::error::could not fetch amont-agent's MANIFEST.sha256 from $url"
-            exit 1
-          fi
+          for attempt in 1 2 3; do
+            rc=0
+            timeout 30 gh api "$path?ref=main" -H 'Accept: application/vnd.github.raw' > /tmp/theirs.sha256 || rc=$?
+            [ "$rc" = 0 ] && break
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not fetch amont-agent's MANIFEST.sha256 ($path, exit $rc; 124 = timed out after 30 s)"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           if ! diff -u /tmp/theirs.sha256 "$ours"; then
             echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/it/excerpt_golden.rs"
             exit 1
@@ -91,6 +101,7 @@ jobs:
       - name: Ensure aval
         env:
           AVAL_VERSION: 1.11.0
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # The baked binary is an optimisation, not the pin. Accepting whatever
@@ -107,10 +118,23 @@ jobs:
           fi
           echo "::warning::runner image carries aval ${have:-none}, and this repository pins ${AVAL_VERSION} — downloading it"
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
-            "https://github.com/fredericrous/aval/releases/download/v${AVAL_VERSION}/aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar xz -C "$RUNNER_TEMP/bin" --strip-components=1 \
-                "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
+          # Through the API (`gh release download`), not the public download URL:
+          # that route throttles anonymous downloads, and it returned 504 for hours
+          # on 2026-11-08 while the API served the same files.
+          asset="aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          for attempt in 1 2 3; do
+            rc=0
+            timeout 120 gh release download "v${AVAL_VERSION}" --repo fredericrous/aval \
+              --pattern "$asset" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
+            [ "$rc" = 0 ] && break
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not download $asset from fredericrous/aval v${AVAL_VERSION} (exit $rc; 124 = timed out after 120 s)"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          tar xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" --strip-components=1 \
+            "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
           chmod +x "$RUNNER_TEMP/bin/aval"
           # GITHUB_PATH applies to LATER steps only.
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -565,16 +589,24 @@ jobs:
       # Skipped until a release exists, since there is nothing to install from.
       - name: install.ps1 installs a real release
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $latest = $null
+          # Authenticated: the anonymous API limit is 60 requests an hour per IP.
+          # Only a 404 means "no release yet"; a 401 or 403 is a broken token and
+          # must fail the step, not read as a skip.
           try {
             $latest = Invoke-RestMethod `
               -Uri 'https://api.github.com/repos/${{ github.repository }}/releases/latest' `
-              -Headers @{ 'User-Agent' = 'ci' }
+              -Headers @{ 'User-Agent' = 'ci'; 'Authorization' = "Bearer $env:GH_TOKEN" }
           } catch {
-            Write-Host '::notice::no published release yet - skipping the installer test'
-            exit 0
+            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
+              Write-Host '::notice::no published release yet - skipping the installer test'
+              exit 0
+            }
+            throw
           }
 
           # Same skip for a latest release that predates the rename to amont:
@@ -837,6 +869,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           HADOLINT_VERSION: v2.12.0
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$(uname -m)" in
@@ -844,8 +877,18 @@ jobs:
             aarch64|arm64) arch=arm64 ;;
             *) echo "::error::no hadolint build mapped for $(uname -m)"; exit 1 ;;
           esac
-          url="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-${arch}"
-          curl -fsSL --retry 3 -o /tmp/hadolint "$url"
+          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
+          for attempt in 1 2 3; do
+            rc=0
+            timeout 120 gh release download "${HADOLINT_VERSION}" --repo hadolint/hadolint \
+              --pattern "hadolint-Linux-${arch}" -O "/tmp/hadolint" --clobber || rc=$?
+            [ "$rc" = 0 ] && break
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not download hadolint-Linux-${arch} from hadolint/hadolint ${HADOLINT_VERSION} (exit $rc; 124 = timed out after 120 s)"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           sudo install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
           hadolint --version
 
@@ -871,6 +914,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           YQ_VERSION: v4.44.6
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$(uname -m)" in
@@ -878,8 +922,18 @@ jobs:
             aarch64|arm64)   arch=arm64 ;;
             *) echo "::error::no yq build mapped for $(uname -m)"; exit 1 ;;
           esac
-          url="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${arch}"
-          curl -fsSL --retry 3 -o /tmp/yq "$url"
+          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
+          for attempt in 1 2 3; do
+            rc=0
+            timeout 120 gh release download "${YQ_VERSION}" --repo mikefarah/yq \
+              --pattern "yq_linux_${arch}" -O "/tmp/yq" --clobber || rc=$?
+            [ "$rc" = 0 ] && break
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not download yq_linux_${arch} from mikefarah/yq ${YQ_VERSION} (exit $rc; 124 = timed out after 120 s)"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           # Prove it is the RIGHT yq before any test depends on it. The version
           # banner names the repository, so this cannot be satisfied by the
@@ -960,15 +1014,34 @@ jobs:
 
       - name: Install the k8s tools (Linux)
         if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
-          curl -sSfL https://github.com/stackrox/kube-linter/releases/download/v0.7.2/kube-linter-linux.tar.gz \
-            | tar xz -C "$HOME/.local/bin" kube-linter
-          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-            | tar xz -C "$HOME/.local/bin" kubeconform
-          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
-            | tar xz -C "$HOME/.local/bin" kustomize
+          # Through the API, not the web route, which throttles anonymous
+          # downloads (504s on 2026-11-08). gh_dl <tag> <owner/repo> <asset>:
+          # three attempts of 120 s each, into $RUNNER_TEMP/<asset>.
+          gh_dl() {
+            local attempt rc
+            for attempt in 1 2 3; do
+              rc=0
+              timeout 120 gh release download "$1" --repo "$2" \
+                --pattern "$3" -O "$RUNNER_TEMP/$3" --clobber || rc=$?
+              [ "$rc" = 0 ] && return 0
+              if [ "$attempt" = 3 ]; then
+                echo "::error::could not download $3 from $2 $1 (exit $rc; 124 = timed out after 120 s)"
+                return 1
+              fi
+              sleep $((attempt * 5))
+            done
+          }
+          gh_dl v0.7.2 stackrox/kube-linter kube-linter-linux.tar.gz
+          tar xzf "$RUNNER_TEMP/kube-linter-linux.tar.gz" -C "$HOME/.local/bin" kube-linter
+          gh_dl v0.6.7 yannh/kubeconform kubeconform-linux-amd64.tar.gz
+          tar xzf "$RUNNER_TEMP/kubeconform-linux-amd64.tar.gz" -C "$HOME/.local/bin" kubeconform
+          gh_dl kustomize/v5.4.3 kubernetes-sigs/kustomize kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf "$RUNNER_TEMP/kustomize_v5.4.3_linux_amd64.tar.gz" -C "$HOME/.local/bin" kustomize
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Every test does real commits in a throwaway repo. Only two set a local
