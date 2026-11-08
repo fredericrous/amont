@@ -116,7 +116,7 @@ authoring. `-m`, `-t`, a merge, a squash and `--amend` all pass a source in
 `$2` and are left alone.
 
 The footer scaffold lives in
-[`message`](https://github.com/fredericrous/amont/blob/main/message):
+[`message`](https://github.com/greenharness/greengate/blob/main/message):
 
 ```sh
 git config --global commit.template ~/.config/git/git-templates/message

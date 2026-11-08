@@ -10,13 +10,13 @@ body:
         - **A check that is right for your repository does not need to be in everybody's binary.**
           Declare it in a committed `amont.conf` and your whole team gets it, with the same
           `hook.skip` and `amont.severity` controls as any built-in. See
-          [custom checks](https://github.com/fredericrous/amont/blob/main/docs/custom-checks.md).
+          [custom checks](https://github.com/greenharness/greengate/blob/main/docs/custom-checks.md).
         - **The commit path links no external crates**, enforced in CI. A built-in that needs a
           dependency belongs in `amont-fleet`, which is installed separately. See
-          [CONTRIBUTING.md](https://github.com/fredericrous/amont/blob/main/CONTRIBUTING.md).
+          [CONTRIBUTING.md](https://github.com/greenharness/greengate/blob/main/CONTRIBUTING.md).
 
         There is also a page of
-        [ideas already thrown around](https://github.com/fredericrous/amont/blob/main/docs/ideas.md),
+        [ideas already thrown around](https://github.com/greenharness/greengate/blob/main/docs/ideas.md),
         some with a reason they have not been built.
 
   - type: textarea

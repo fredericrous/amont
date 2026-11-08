@@ -744,7 +744,7 @@ attests `tree-<name>`, and CI skips its step
 A check is a module plus one registry entry in
 `crates/amont-runtime/src/registry.rs`; see
 [hook architecture](hook-architecture.md) and
-[CONTRIBUTING.md](https://github.com/fredericrous/amont/blob/main/CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/greenharness/greengate/blob/main/CONTRIBUTING.md).
 
 If the check belongs to your repository rather than to everybody's, declare it
 in [`amont.conf`](custom-checks.md) instead — no fork required.

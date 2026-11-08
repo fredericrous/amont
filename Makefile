@@ -93,6 +93,7 @@ test-load:
 lint:
 	@cargo fmt --check
 	@cargo clippy --all-targets -- -D warnings
+	@python3 scripts/test_bump_tap.py
 
 # Clippy for the platforms this machine does not build: the CPU sampler
 # (src/proctree.rs) has a Linux module, a macOS module and a stub for the

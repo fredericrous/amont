@@ -1,7 +1,7 @@
 # The CI backstop for a Go repository, Forgejo Actions edition — the same
 # tools amont runs locally, called directly, in a golang container. Copy into
 # .forgejo/workflows/ and prune what you don't use.
-# See https://fredericrous.github.io/amont/ci.html
+# See https://greenharness.github.io/greengate/ci.html
 name: checks
 
 on:

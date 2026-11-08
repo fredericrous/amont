@@ -21,6 +21,10 @@ import pathlib
 import re
 import sys
 
+# Where the release assets live. The formula may still name the old owner
+# (`fredericrous/amont`); the patterns below accept either and write this one.
+REPO = "greenharness/greengate"
+
 
 def main() -> None:
     version, sums_path, formula_path = sys.argv[1:4]
@@ -55,18 +59,28 @@ def main() -> None:
         )
         sha, name = sums[target]
         return (
-            f'url "https://github.com/fredericrous/amont/releases/'
+            f'url "https://github.com/{REPO}/releases/'
             f'download/v{version}/{name}"'
             f'{m.group("mid")}sha256 "{sha}"'
         )
 
     pair = re.compile(
-        r'url "https://github\.com/fredericrous/amont/releases/'
+        r'url "https://github\.com/(?:fredericrous/amont|greenharness/greengate)/releases/'
         r'download/v[0-9.]+/amont-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
     assert n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}"
+
+    # The repository moved (2026-11-08); a formula still on the old owner's
+    # homepage is pointed at the new one, and a current one is left as it is.
+    text, n_home = re.subn(
+        r'homepage "https://github\.com/(?:fredericrous/amont|greenharness/greengate)"',
+        f'homepage "https://github.com/{REPO}"',
+        text,
+        count=1,
+    )
+    assert n_home == 1, "the formula carries no homepage line"
 
     stale = set(re.findall(r"amont-([0-9.]+)-", text)) - {version}
     assert not stale, f"stale release versions survived the rewrite: {stale}"
@@ -75,4 +89,5 @@ def main() -> None:
     print(f"formula -> {version} ({n} targets)")
 
 
-main()
+if __name__ == "__main__":
+    main()

@@ -1,17 +1,17 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions and ideas
-    url: https://github.com/fredericrous/amont/discussions
+    url: https://github.com/greenharness/greengate/discussions
     about: >-
       "Does this work with X", "why does it behave like Y", or a check you think
       belongs here — Discussions, so the issue tracker stays a record of defects.
   - name: Security vulnerability
-    url: https://github.com/fredericrous/amont/security/advisories/new
+    url: https://github.com/greenharness/greengate/security/advisories/new
     about: >-
       Report privately, never as an issue. Especially anything letting a cloned repository run
       code without `amont trust`, or anything that destroyed uncommitted work.
   - name: Documentation
-    url: https://github.com/fredericrous/amont/tree/main/docs
+    url: https://github.com/greenharness/greengate/tree/main/docs
     about: >-
       Installing, the full list of checks, configuration, opting out, and the trust model.
       `amont list` answers "what runs in my repository" better than any of it.

@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           # Through the API, not raw.githubusercontent.com, which throttles
           # anonymous reads like the release web route (504s on 2026-11-08).
-          path=repos/fredericrous/amont-agent/contents/tests/fixtures/excerpt/MANIFEST.sha256
+          path=repos/greenharness/greenpiste/contents/tests/fixtures/excerpt/MANIFEST.sha256
           ours=crates/amont/tests/fixtures/excerpt/MANIFEST.sha256
           for attempt in 1 2 3; do
             rc=0
@@ -280,14 +280,15 @@ jobs:
             target
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
       # The behavioural coverage lives in the integration tests under tests/;
-      # these two just keep the source honest.
+      # these three just keep the source and the tap rewrite honest.
       #
-      # `make lint` runs EXACTLY these two, so a contributor can reproduce a red
+      # `make lint` runs EXACTLY these three, so a contributor can reproduce a red
       # `rust` job without pushing. If you change a flag here, change it there —
       # and read the warning in that target about the THIRD, stricter clippy the
       # repo's own pre-commit hook runs.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: python3 scripts/test_bump_tap.py
       # The CPU sampler's macOS and Windows code never compiles on this runner;
       # `make lint-cross` lints it anyway (std only, no linker). The Linux
       # target is this runner's own and costs one more pass.

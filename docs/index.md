@@ -67,14 +67,14 @@ has to earn is not "delightful", it is "harmless".
   manifest, because no behavioural test could catch that regression.
 
 Threat model and private reporting:
-[SECURITY.md](https://github.com/fredericrous/amont/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/greenharness/greengate/blob/main/SECURITY.md).
 
 ## The repositories around it
 
 Three companions, each its own repository because it runs somewhere amont
 deliberately does not:
 
-- [**amont-agent**](https://github.com/fredericrous/amont-agent) — a Claude
+- [**amont-agent**](https://github.com/greenharness/greenpiste) — a Claude
   Code `PreToolUse` hook for the mistake no git hook can reach, because it
   lives in the command string itself: `git push … | tail -5` reports tail's
   exit status, so a rejected push reads as success. The guard judges the

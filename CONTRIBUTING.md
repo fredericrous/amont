@@ -7,12 +7,12 @@ convention this repository enforces on itself.
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). To
 report a vulnerability, do **not** open an issue: see [SECURITY.md](SECURITY.md).
 For questions and ideas that are not yet defects, use
-[Discussions](https://github.com/fredericrous/amont/discussions).
+[Discussions](https://github.com/greenharness/greengate/discussions).
 
 ## Setup
 
 ```sh
-git clone https://github.com/fredericrous/amont.git
+git clone https://github.com/greenharness/greengate.git
 cd amont
 make check
 ```

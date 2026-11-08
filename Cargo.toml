@@ -24,7 +24,7 @@ rust-version = "1.74"
 # a release where the two disagree is a release nobody can install.
 version = "2.3.0"
 license = "MIT"
-repository = "https://github.com/fredericrous/amont"
+repository = "https://github.com/greenharness/greengate"
 authors = ["Frederic Rousseau"]
 edition = "2021"
 

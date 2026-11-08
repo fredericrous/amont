@@ -8,7 +8,7 @@ document is longer than a contact address.
 ## Reporting a vulnerability
 
 **Use GitHub's private vulnerability reporting:**
-<https://github.com/fredericrous/amont/security/advisories/new>
+<https://github.com/greenharness/greengate/security/advisories/new>
 
 That opens a private advisory visible only to the maintainer. Please do not
 open a public issue, a discussion, or a pull request that demonstrates the
@@ -145,13 +145,13 @@ the question read as "no external dependencies".
 
 ```sh
 # what the installer checks for you
-curl -fsSLO https://github.com/fredericrous/amont/releases/latest/download/SHA256SUMS
+curl -fsSLO https://github.com/greenharness/greengate/releases/latest/download/SHA256SUMS
 sha256sum amont-<version>-<target>.tar.gz
 
 # that the archive — and SHA256SUMS itself — were built by this repository's
 # release workflow at that tag, not somewhere else
-gh attestation verify amont-<version>-<target>.tar.gz --repo fredericrous/amont
-gh attestation verify SHA256SUMS --repo fredericrous/amont
+gh attestation verify amont-<version>-<target>.tar.gz --repo greenharness/greengate
+gh attestation verify SHA256SUMS --repo greenharness/greengate
 
 # what you trusted in a given repository
 git hash-object --no-filters amont.conf

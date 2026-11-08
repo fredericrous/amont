@@ -11,11 +11,11 @@
     "lint",
     "husky"
   ],
-  "homepage": "https://github.com/fredericrous/amont#readme",
-  "bugs": "https://github.com/fredericrous/amont/issues",
+  "homepage": "https://github.com/greenharness/greengate#readme",
+  "bugs": "https://github.com/greenharness/greengate/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fredericrous/amont.git"
+    "url": "git+https://github.com/greenharness/greengate.git"
   },
   "license": "MIT",
   "author": "Frederic Rousseau",

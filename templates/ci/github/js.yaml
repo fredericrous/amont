@@ -1,6 +1,6 @@
 # The CI backstop for a JS/TS repository — the same tools amont runs locally,
 # called directly. amont itself deliberately does not run in CI; see
-# https://fredericrous.github.io/amont/ci.html. Copy into .github/workflows/
+# https://greenharness.github.io/greengate/ci.html. Copy into .github/workflows/
 # and prune what you don't use.
 name: checks
 

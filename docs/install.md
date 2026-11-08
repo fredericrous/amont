@@ -9,14 +9,14 @@ repository. Nothing about the first does the second.
 Linux and macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 ```
 
 Windows, in PowerShell — the line above is POSIX `sh`, so on Windows it runs
 only under Git Bash:
 
 ```powershell
-irm https://raw.githubusercontent.com/fredericrous/amont/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
 The installer resolves the latest release, downloads the archive for your
@@ -39,7 +39,7 @@ the check the installer does *not* run for you, because it needs the `gh`
 CLI or a Sigstore client:
 
 ```sh
-gh attestation verify amont-<version>-<target>.tar.gz --repo fredericrous/amont
+gh attestation verify amont-<version>-<target>.tar.gz --repo greenharness/greengate
 ```
 
 See [SECURITY.md](../SECURITY.md#verifying-what-you-installed) for what each
@@ -91,13 +91,13 @@ Pin a version, or install elsewhere:
 
 ```sh
 AMONT_VERSION=v1.0.0 AMONT_BIN_DIR=~/bin \
-  curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 ```
 
 ### Without the installer
 
 Download an archive and its checksum from
-[Releases](https://github.com/fredericrous/amont/releases/latest). Prebuilt
+[Releases](https://github.com/greenharness/greengate/releases/latest). Prebuilt
 targets: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
 `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`,
 `x86_64-pc-windows-msvc`.
@@ -105,7 +105,7 @@ targets: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`,
 Or build it:
 
 ```sh
-git clone https://github.com/fredericrous/amont.git
+git clone https://github.com/greenharness/greengate.git
 cd amont && cargo build --release
 ./target/release/amont install
 ```
@@ -343,7 +343,7 @@ spelling, for anyone who prefers to see every write:
 
 ```sh
 mkdir -p ~/.config/git
-git clone https://github.com/fredericrous/amont.git ~/.config/git/git-templates
+git clone https://github.com/greenharness/greengate.git ~/.config/git/git-templates
 git config --global init.templateDir ~/.config/git/git-templates/templates
 git config --global commit.template ~/.config/git/git-templates/message
 ```
@@ -425,7 +425,7 @@ Ordinary binary updates need nothing per repository: every shim points at the
 one binary, so replacing the binary reaches every repo at once.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 ```
 
 Re-installing is only needed when the shim **set** changes — a hook added,
@@ -447,7 +447,7 @@ unstaged changes before dying, both same as unix.)
 The one-liner for this platform is PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/fredericrous/amont/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
 It writes `amont.exe` and `amont-fleet.exe` into

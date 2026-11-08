@@ -48,15 +48,15 @@ local and CI stories stay legible against each other.
 
 | stack | GitHub Actions | Forgejo Actions |
 |---|---|---|
-| Rust | [`templates/ci/github/rust.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/github/rust.yaml) | [`templates/ci/forgejo/rust.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/forgejo/rust.yaml) |
-| JS/TS | [`templates/ci/github/js.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/github/js.yaml) | [`templates/ci/forgejo/js.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/forgejo/js.yaml) |
-| Python | [`templates/ci/github/python.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/github/python.yaml) | [`templates/ci/forgejo/python.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/forgejo/python.yaml) |
-| Go | [`templates/ci/github/go.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/github/go.yaml) | [`templates/ci/forgejo/go.yaml`](https://github.com/fredericrous/amont/blob/main/templates/ci/forgejo/go.yaml) |
+| Rust | [`templates/ci/github/rust.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/github/rust.yaml) | [`templates/ci/forgejo/rust.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/forgejo/rust.yaml) |
+| JS/TS | [`templates/ci/github/js.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/github/js.yaml) | [`templates/ci/forgejo/js.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/forgejo/js.yaml) |
+| Python | [`templates/ci/github/python.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/github/python.yaml) | [`templates/ci/forgejo/python.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/forgejo/python.yaml) |
+| Go | [`templates/ci/github/go.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/github/go.yaml) | [`templates/ci/forgejo/go.yaml`](https://github.com/greenharness/greengate/blob/main/templates/ci/forgejo/go.yaml) |
 
 Or fetch one directly:
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/templates/ci/github/rust.yaml \
+$ curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/templates/ci/github/rust.yaml \
     -o .github/workflows/checks.yaml
 ```
 

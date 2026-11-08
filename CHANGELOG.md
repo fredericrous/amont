@@ -1,10 +1,29 @@
 # Changelog
 
 What an upgrader gets, in sentences. Each [GitHub
-release](https://github.com/fredericrous/amont/releases) carries the
+release](https://github.com/greenharness/greengate/releases) carries the
 mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
+
+## Unreleased
+
+### Changed
+
+- The repository moved to [greenharness/greengate](https://github.com/greenharness/greengate),
+  the first step of its rename to greengate (Green Harness ADR-0064). Old
+  `fredericrous/amont` URLs redirect: git remotes, the web pages, the API,
+  release downloads and the raw `install.sh`. The manual moved to
+  <https://greenharness.github.io/greengate/>; its old address does not
+  redirect. The installers, `amont --help`, the CI templates, the issue
+  templates, the crate and npm `repository` fields and the docs name the new
+  home. The binary, the crates, the npm package and the formula keep the
+  name `amont` for now. Installed hooks keep the old install-hint URL until
+  the rename re-installs them; it redirects.
+- The tap rewrite (`scripts/bump-tap.py`) writes the new owner into the
+  formula's four `url` lines and its `homepage`, and accepts a formula still
+  on the old owner. `scripts/test_bump_tap.py` checks it, in `make lint`
+  and CI's `rust` job.
 
 ## v2.3.0
 
