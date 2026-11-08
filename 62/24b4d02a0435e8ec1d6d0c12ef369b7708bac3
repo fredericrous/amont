@@ -1,0 +1,18 @@
+amont-provenance-v1
+commit 65f415c53bea278dff622e31034f37172ed1c039
+tree 6224b4d02a0435e8ec1d6d0c12ef369b7708bac3
+canon 04ff0349be7368f1758722a400c4f26588327be7
+patch 111ec16f551bb05466b882f0d9d00fd8db2beb3c
+plan docs/plans/2026-11-08-amont-moves-to-greenharness.md d0c5792b75739c026f9c40c21deeed77f87934a8bd9d68c6037e32c71ae43c9a
+review reviewed d349c6edfa97d117c76ea89c7cb98a008dccc230227157b5c6c19126576bfa32
+code-review backend reviewed d349c6edfa97d117c76ea89c7cb98a008dccc230227157b5c6c19126576bfa32
+code-review unix reviewed d349c6edfa97d117c76ea89c7cb98a008dccc230227157b5c6c19126576bfa32
+preview not-required
+producer amont-agent 3.23.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBUIq3TWTmcbxe7h1KKwUtZrC10hBfVdqIsQ8zPs/QGCY4ZG0
+MAsTIOORj6xNVweLWGkwyLRbcqcb0hqijjFZsI
+-----END SSH SIGNATURE-----
