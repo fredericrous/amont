@@ -6,6 +6,19 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- npm publishing uses npm's trusted publishing (OIDC) instead of a stored
+  token. v2.3.1 never reached npm: its `NPM_TOKEN` hit npm's 90-day limit
+  that day (`E401` at `npm whoami`), so `npm i -D amont` goes from 2.3.0
+  to 2.3.2. The GitHub release, crates.io and the Homebrew formula carry
+  2.3.1. The release workflow holds no npm secret; each package names
+  `greenharness/greengate`'s `release.yaml` as its trusted publisher on
+  npmjs.com, and the job upgrades npm to 11.6.2, which trusted publishing
+  needs.
+
 ## v2.3.1
 
 ### Changed
