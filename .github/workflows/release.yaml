@@ -430,9 +430,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # `contents: read` narrows the workflow-level `write` — this job publishes
-    # nothing to the repository. `id-token: write` is what `npm publish
-    # --provenance` signs with, so npm can attest these bytes came from this
-    # workflow at this tag rather than from somebody's laptop.
+    # nothing to the repository. `id-token: write` is the whole credential:
+    # npm's trusted publishing trades this workflow's OIDC token for a
+    # short-lived publish token, and `--provenance` signs with the same grant.
+    # There is no NPM_TOKEN. The long-lived one expired on 2026-11-08 (npm caps
+    # write tokens at 90 days) and failed v2.3.1's publish. Each package names
+    # greenharness/greengate's `release.yaml` as its trusted publisher on
+    # npmjs.com; a package that does not is refused with a 403 or 404.
     permissions:
       contents: read
       id-token: write
@@ -441,7 +445,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
+      # No `registry-url`: it writes an .npmrc that reads NODE_AUTH_TOKEN and
+      # fills it with a placeholder, a stray credential beside the OIDC one.
+      # npm's default registry is registry.npmjs.org already.
+      # Trusted publishing needs npm 11.5.1 or later; node 22 ships npm 10.
+      - run: npm install -g npm@11.6.2 && npm --version
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -489,28 +497,8 @@ jobs:
           echo "the amont tarball carries both wrappers"
 
       - name: Publish platform packages, then amont
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is not set for this environment."
-            exit 1
-          fi
-
-          # Say WHO the token is before using it. A publish that 403s tells you
-          # nothing about whether the token was rejected outright or accepted
-          # and then refused a particular action — and those have completely
-          # different fixes. One call separates them, before anything is
-          # written.
-          if who=$(npm whoami 2>&1); then
-            echo "authenticated as $who"
-          else
-            echo "::error::the token does not authenticate: $who"
-            echo "::error::Create a new one and re-run: gh secret set NPM_TOKEN --repo ${GITHUB_REPOSITORY}"
-            exit 1
-          fi
 
           # ORDER IS LOAD-BEARING. `amont` declares each platform package at this
           # exact version, and npm validates that a dependency version exists at
@@ -547,17 +535,15 @@ jobs:
                   echo "::error::Release the next patch version; its tarballs are new entries."
                   exit 1
                 fi
-              elif printf '%s' "$out" | grep -q "E403"; then
-                # Every one of these packages is created by its FIRST publish,
-                # and creating a package is a different permission from updating
-                # one. npm says only "You may not perform that action with these
-                # credentials", which sends people to check the secret is set —
-                # it is, or `npm whoami` above would have failed.
-                echo "::error::403 creating $(basename "$dir"). The token authenticates but may not CREATE packages."
-                echo "::error::These are all first publishes, so that is the permission being refused:"
-                echo "::error::  · granular token — 'Packages and scopes' must be Read and write on ALL packages."
-                echo "::error::    Selecting individual packages cannot work here: they do not exist yet."
-                echo "::error::  · classic token — must be Automation (Read-only cannot publish; Publish prompts for 2FA)."
+              elif printf '%s' "$out" | grep -qE "E403|E404|ENEEDAUTH"; then
+                # With trusted publishing there is no token to check: npm refuses
+                # a package whose trusted publisher is not this workflow, and it
+                # words that as a 403, a 404 or "need auth" depending on the
+                # step that failed. A brand-new package cannot be published this
+                # way at all: its first version needs a person's token.
+                echo "::error::npm refused $(basename "$dir") (no trusted publisher matches this workflow)."
+                echo "::error::On npmjs.com, open the package's Settings, Trusted publisher, GitHub Actions:"
+                echo "::error::  organization ${GITHUB_REPOSITORY_OWNER}, repository ${GITHUB_REPOSITORY#*/}, workflow release.yaml, no environment."
                 echo "::error::Then re-run without a new tag: gh workflow run release.yaml --ref ${GITHUB_REF_NAME}"
                 exit 1
               else
