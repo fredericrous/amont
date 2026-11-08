@@ -10,14 +10,14 @@ missing here.
 
 ### Changed
 
-- npm publishing uses npm's trusted publishing (OIDC) instead of a stored
-  token. v2.3.1 never reached npm: its `NPM_TOKEN` hit npm's 90-day limit
-  that day (`E401` at `npm whoami`), so `npm i -D amont` goes from 2.3.0
-  to 2.3.2. The GitHub release, crates.io and the Homebrew formula carry
-  2.3.1. The release workflow holds no npm secret; each package names
-  `greenharness/greengate`'s `release.yaml` as its trusted publisher on
-  npmjs.com, and the job upgrades npm to 11.6.2, which trusted publishing
-  needs.
+- npm stays at 2.3.0 until the rename to greengate. v2.3.1's npm publish
+  failed (`NPM_TOKEN` hit npm's 90-day limit that day, `E401`), and the
+  release workflow's npm job is now off: the rename publishes
+  `@greenharness/greengate`, sets up npm's trusted publishing once on it, and
+  deprecates `amont` towards it. `npm i -D amont` keeps installing 2.3.0,
+  which works. The GitHub release, crates.io and the Homebrew formula carry
+  every version. The job itself already publishes by trusted publishing
+  (OIDC, npm 11.6.2) and holds no npm secret, ready for the new packages.
 
 ## v2.3.1
 

@@ -426,7 +426,15 @@ jobs:
     # Keyed on the ref being a TAG rather than on dry_run, exactly as
     # publish-crates is, so a workflow_dispatch against an existing tag can
     # resume a publish that failed for a reason outside this repository.
-    if: github.ref_type == 'tag'
+    #
+    # OFF until the rename to greengate (Green Harness ADR-0064, build step
+    # 3), the person's decision of 2026-11-08: npm's `amont` stays at 2.3.0,
+    # which keeps working because the binary is still `amont`. The rename
+    # publishes `@greenharness/greengate` and its platform packages, sets up
+    # trusted publishing once on those, and deprecates `amont` towards it.
+    # Configuring trusted publishing on the seven `amont` packages first
+    # would be the same setup done twice. Turn this back on, renamed, then.
+    if: false && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # `contents: read` narrows the workflow-level `write` — this job publishes
