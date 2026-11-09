@@ -176,7 +176,7 @@ is a later ticket.
 
 ## Phases
 
-- [ ] Phase 0 — prerequisite in greenpiste: its land and push guards treat
+- [x] Phase 0 — prerequisite in greenpiste: its land and push guards treat
   `greengate` and `greengate-fleet` as `amont`, released and installed
   before the 3.0.0 tag:
   `amont-agent/crates/amont-agent-guard/src/land.rs`,
@@ -262,6 +262,17 @@ is a later ticket.
 - 2026-11-09 — greenpiste's guards learn `greengate` first (Phase 0): a
   `greengate land` hint must not walk around them (panel: backend,
   blocking).
+
+- 2026-11-09 — Phase 0 shipped: greenpiste 3.27.0 (greenpiste#231, #232)
+  released and installed here (`amont-agent 3.27.0`); a land's dry-run asks
+  the binary the clause names.
+- 2026-11-09 — the AGENTS.md generated block stays byte-stable in 3a-1 (it
+  keeps `amont list`, `amont land`, …, which run through the aliases): a new
+  body would make `agents-md --check` report every repository stale, the
+  same reason the fleet keeps the 2.3.1 shim template. It moves with the
+  step-4 sweep. `--json` outputs keep their shape; `--version` prints
+  `greengate <v>` (greenpiste, relais and grh read it as an opaque string
+  or its first version token).
 
 ## Verification
 

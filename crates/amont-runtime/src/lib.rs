@@ -68,6 +68,7 @@ pub mod land;
 pub mod live;
 pub mod load;
 pub mod manifest;
+pub mod names;
 pub mod pack;
 pub mod policy;
 pub mod proctree;
