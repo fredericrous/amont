@@ -490,7 +490,11 @@ fn the_push_journey() {
     let (ok, out) = git(&r, &["push"]);
     step!("refuse", !ok, "{out}");
     step!("refuse", out.contains("refusing the push"), "{out}");
-    step!("refuse", out.contains("amont rehearse --wait"), "{out}");
+    step!(
+        "refuse",
+        out.contains(&format!("{} rehearse --wait", amont_runtime::names::BIN)),
+        "{out}"
+    );
     step_eq!("refuse", runs(&r, "check"), checks, "nothing ran: {out}");
     // `run` keeps the old behaviour.
     r.git(&["config", "amont.unstampedPush", "run"]);

@@ -92,7 +92,11 @@ fn a_blocking_light_failure_skips_the_heavy_gate_and_says_so() {
         "{out}"
     );
     assert!(
-        out.contains("to run one now:") && out.contains("    amont run pre-commit-gate"),
+        out.contains("to run one now:")
+            && out.contains(&format!(
+                "    {} run pre-commit-gate",
+                amont_runtime::names::BIN
+            )),
         "the next step names the command: {out}"
     );
     // The roll-up comes before the blame list, which stays last.

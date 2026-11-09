@@ -108,9 +108,18 @@ fn a_bare_push_refuses_an_unstamped_heavy_gate_and_runs_none() {
     assert_eq!(runs(&log), 0, "no heavy gate starts in a refused push");
     assert!(err.contains("push gate has not run on"), "{err}");
     assert!(err.contains("pre-push-suite"), "{err}");
-    assert!(err.contains("amont land"), "{err}");
-    assert!(err.contains("amont rehearse --wait"), "{err}");
-    for line in err.lines().filter(|l| l.contains("amont land")) {
+    assert!(
+        err.contains(&format!("{} land", amont_runtime::names::BIN)),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("{} rehearse --wait", amont_runtime::names::BIN)),
+        "{err}"
+    );
+    for line in err
+        .lines()
+        .filter(|l| l.contains(&format!("{} land", amont_runtime::names::BIN)))
+    {
         assert!(line.chars().count() <= 80, "{line:?}");
     }
 }
@@ -163,7 +172,10 @@ fn stamp_reuse_off_names_the_setting_and_never_offers_a_rehearsal() {
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
     assert!(err.contains("amont.pushStamps"), "{err}");
-    assert!(!err.contains("amont rehearse --wait"), "{err}");
+    assert!(
+        !err.contains(&format!("{} rehearse --wait", amont_runtime::names::BIN)),
+        "{err}"
+    );
 }
 
 #[test]
@@ -411,8 +423,14 @@ fn a_tag_push_of_an_unstamped_commit_refuses_until_run_stamp_stamps_it() {
     assert!(err.contains("pre-push-suite"), "{err}");
     // The tag's own land, never the branch remedies, whose records do not
     // answer for a release.
-    assert!(err.contains("amont land --tag v1.0.0"), "{err}");
-    assert!(!err.contains("amont rehearse --wait"), "{err}");
+    assert!(
+        err.contains(&format!("{} land --tag v1.0.0", amont_runtime::names::BIN)),
+        "{err}"
+    );
+    assert!(
+        !err.contains(&format!("{} rehearse --wait", amont_runtime::names::BIN)),
+        "{err}"
+    );
     let stamped = common::amont_cmd()
         .args(["run", "--stamp"])
         .current_dir(&r.dir)

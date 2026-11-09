@@ -268,7 +268,10 @@ fn an_unknown_check_is_an_error_not_a_pass() {
     let r = Repo::new();
     let (code, out) = run(&r, &["pre-commit-not-a-thing"]);
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("amont list"), "should point somewhere:\n{out}");
+    assert!(
+        out.contains(&format!("{} list", amont_runtime::names::BIN)),
+        "should point somewhere:\n{out}"
+    );
 }
 
 /// A pre-push check run standalone has no real push to read refs from. With

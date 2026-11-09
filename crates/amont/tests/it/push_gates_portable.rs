@@ -107,7 +107,10 @@ fn a_bare_push_refuses_an_unstamped_scoped_gate_on_every_platform() {
     assert_ne!(code, 0, "{out}");
     assert_eq!(runs(&log), 0, "no heavy gate starts in a refused push");
     assert!(out.contains("pre-push-suite"), "{out}");
-    assert!(out.contains("amont land"), "{out}");
+    assert!(
+        out.contains(&format!("{} land", amont_runtime::names::BIN)),
+        "{out}"
+    );
 }
 
 #[test]

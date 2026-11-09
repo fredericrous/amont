@@ -30,6 +30,7 @@ use std::sync::Mutex;
 
 use crate::check::{Check, Outcome, Severity, Stage, Verdict};
 use crate::configured_skips;
+use crate::names::BIN;
 use crate::registry::{all_stage_checks, Ctx, Overrides};
 use crate::ui::{highlight, valid_sign, warning_sign};
 
@@ -1222,15 +1223,15 @@ pub(crate) fn push_refusal(
     tag: Option<&str>,
 ) -> Vec<String> {
     let mut out = vec![format!(
-        "amont: push refused: {} push gate{} {} not run on {short}:",
+        "{BIN}: push refused: {} push gate{} {} not run on {short}:",
         missing.len(),
         if missing.len() == 1 { "" } else { "s" },
         if missing.len() == 1 { "has" } else { "have" },
     )];
     out.extend(wrap_names(missing));
     let land = match tag {
-        Some(tag) => format!("amont land --tag {tag}"),
-        None => "amont land".to_string(),
+        Some(tag) => format!("{BIN} land --tag {tag}"),
+        None => format!("{BIN} land"),
     };
     if reuse == StampReuse::Off {
         out.push("    stamp reuse is off (amont.pushStamps false); turn it on:".to_string());
@@ -1242,7 +1243,7 @@ pub(crate) fn push_refusal(
         out.push(format!("        {land}"));
         if tag.is_none() {
             out.push("    or stamp this tree first:".to_string());
-            out.push("        amont rehearse --wait".to_string());
+            out.push(format!("        {BIN} rehearse --wait"));
         }
     }
     out.push("    or run them in this push:".to_string());
@@ -1266,10 +1267,12 @@ pub(crate) fn land_refusal(
     let mut out = Vec::new();
     if moved {
         out.push(crate::land::LAND_REMOTE_MOVED.to_string());
-        out.push("amont: the remote moved during land; run amont land again".to_string());
+        out.push(format!(
+            "{BIN}: the remote moved during land; run {BIN} land again"
+        ));
     } else {
         out.push(crate::land::LAND_EVIDENCE_MISSING.to_string());
-        out.push("amont: land's pre-stage left no evidence for:".to_string());
+        out.push(format!("{BIN}: land's pre-stage left no evidence for:"));
     }
     out.extend(wrap_names(missing));
     out
@@ -1397,7 +1400,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         crate::rehearsal::LandEnv::Valid(line) => Some(line),
         crate::rehearsal::LandEnv::Malformed(raw) => {
             eprintln!(
-                "amont: push refused: {} is not `<sha> <remote tip>` ({raw:?})",
+                "{BIN}: push refused: {} is not `<sha> <remote tip>` ({raw:?})",
                 crate::rehearsal::LAND_ENV
             );
             eprintln!(
@@ -1755,7 +1758,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     );
                     crate::say!(
                         "    Test this tree first, with no push waiting on it: {} — then push again",
-                        highlight("amont rehearse --wait"),
+                        highlight(&format!("{BIN} rehearse --wait")),
                     );
                     crate::downgrade::note(settings, &downgraded);
                     record_evidence(&tips, &evidence);
@@ -2054,7 +2057,7 @@ fn announce_skipped(names: &[&str], blocked_by: &[&str]) {
     }
     println!("  fix the failures above and commit again; to run one now:");
     for n in names {
-        println!("    {}", highlight(&format!("amont run {n}")));
+        println!("    {}", highlight(&format!("{BIN} run {n}")));
     }
 }
 
@@ -2091,7 +2094,7 @@ fn deferral_advice(deferred: &[(&str, Severity)]) -> Vec<String> {
         }
         lines.push(format!(
             "  run now: {}",
-            highlight(&format!("AMONT_ON_BUSY=wait amont run --raw {name}"))
+            highlight(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {name}"))
         ));
     }
     if any_block {
@@ -2492,23 +2495,25 @@ mod tests {
                 assert!(joined.contains(name), "every gate is named: {joined}");
             }
         }
-        assert!(sets[0].iter().any(|l| l.ends_with("amont land")));
-        assert!(sets[0].iter().any(|l| l.ends_with("amont rehearse --wait")));
+        assert!(sets[0].iter().any(|l| l.ends_with(&format!("{BIN} land"))));
+        assert!(sets[0]
+            .iter()
+            .any(|l| l.ends_with(&format!("{BIN} rehearse --wait"))));
         assert!(
             !sets[1].iter().any(|l| l.contains("rehearse")),
             "{:?}",
             sets[1]
         );
         assert!(sets[1].iter().any(|l| l.contains("amont.pushStamps true")));
-        assert!(sets[1].iter().any(|l| l.ends_with("amont land")));
+        assert!(sets[1].iter().any(|l| l.ends_with(&format!("{BIN} land"))));
         assert_eq!(sets[2][0], crate::land::LAND_EVIDENCE_MISSING);
         assert_eq!(sets[3][0], crate::land::LAND_REMOTE_MOVED);
-        assert!(sets[0][0].starts_with("amont: push refused:"));
+        assert!(sets[0][0].starts_with(&format!("{BIN}: push refused:")));
         // A tag push is offered the tag's own land, never the branch remedies.
         assert!(
-            sets[4]
-                .iter()
-                .any(|l| l.ends_with("amont land --tag v12.345.6789-rc.1+build.2026-11-05")),
+            sets[4].iter().any(|l| l.ends_with(&format!(
+                "{BIN} land --tag v12.345.6789-rc.1+build.2026-11-05"
+            ))),
             "{:?}",
             sets[4]
         );
@@ -2937,7 +2942,7 @@ mod tests {
         assert!(said.contains("2 check(s) deferred to CI"), "{said}");
         for gate in ["pre-push-probe", "pre-push-lint"] {
             assert!(
-                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                said.contains(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {gate}")),
                 "{said}"
             );
         }
@@ -2955,7 +2960,7 @@ mod tests {
         let said = lines.join("\n");
         for gate in ["pre-push-probe", "pre-push-cargo-test"] {
             assert!(
-                said.contains(&format!("AMONT_ON_BUSY=wait amont run --raw {gate}")),
+                said.contains(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {gate}")),
                 "{said}"
             );
         }

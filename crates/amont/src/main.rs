@@ -33,6 +33,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use amont_runtime::check::Stage;
+use amont_runtime::names::BIN;
 use amont_runtime::{pushrefs, registry, ListOptions};
 
 /// What `--help` prints, and what a usage error prints after saying why.
@@ -41,114 +42,122 @@ use amont_runtime::{pushrefs, registry, ListOptions};
 /// binary's actual `--help` was one line naming `--hooks-dir` and none of the
 /// eight subcommands, printed to stderr, exiting 2. A user asking a program
 /// what it does should not be told they used it wrong.
-const USAGE: &str = "\
-usage: amont <subcommand> | amont --hooks-dir <dir> <hook-name> [args…]
-
-  list           what would run in this repository, and why not
-                 [--json] [--stage pre-commit|pre-push] [--pushed]
-                 [--all: the inert checks too, one row each]
-  install        turn hooks on here: copy the binary if needed, bake the shims
-                 [--force] replaces a hook that is not ours
-  init           wire up THIS repository only — the verb a package manager
-                 calls from `prepare`; never copies a binary, never prompts,
-                 never re-bakes from inside a push snapshot
-  uninstall      remove OUR six shims and nothing else [--binary: the binary too]
-                 [--repo: this repository only; the template dir is left as is;
-                  it forgets attestations and revokes amont.conf trust]
-  setup          the commit-style questions, current values as defaults
-                 [--local|--global] [--dry-run]
-  trust          show what amont.conf declares, and accept it
-                 [--show: what is trusted] [--revoke: forget it]
-  run            rehearse checks without committing: the pre-commit stage,
-                 `run pre-push` for the push gate, or one check by name
-                 [--all-files] [--hooks-dir <dir>]
-                 `run --stamp [<gate>…]` — run the gates on HEAD of a clean
-                 worktree and stamp the tree, as the commit and push hooks
-                 do, so a later commit or push of that tree skips them
-                 (default: every gate the hooks honour a stamp for). Exits 0
-                 stamped, 1 a gate failed, 2 refused (dirty tree, unknown
-                 gate), 4 a gate was deferred or could not be judged
-                 [--quiet | --raw: a captured check's output to a log, one
-                 line on a pass (the default when not at a terminal), or
-                 the tool's own output as it comes]
-  rehearse       run the push gate on a snapshot of HEAD in the background
-                 and stamp the tree, so `git push` skips the suite
-                 (`git config amont.rehearseOnCommit true` does this after
-                 every commit) [--wait: follow it, or run it here if none]
-                 [--status] [--stop] [--cluster: send the gates the cluster
-                 may run to an Argo Workflow that outlives this machine;
-                 the next commit or push collects them]
-  cluster collect  turn the finished detached Workflows of this repository
-                 into cluster tokens now (every commit and push does it)
-  restore        bring back unstaged changes a killed pre-commit left parked
-  agents-md      write the agent-guidance block into AGENTS.md, plus the
-                 CLAUDE.md signpost pointing at it (both generated, both
-                 checked) [--check: report drift only] [--path <file>]
-  enroll         the machine-level standing grant: every future clone gets
-                 the hooks [--conventions declared|everywhere]
-  attest         `attest covered` — print the gate names a VALID signed
-                 attestation covers for the tree checked out here (CI's
-                 one-liner; prints nothing and exits 0 on any failure)
-                 [--signers <file>] [--principal <id>]
-                 [--platform <arch-os>|any: which leg is asking; defaults
-                 to this machine's, so a matrix leg only skips work that
-                 really ran on ITS platform]
-                 [--strict: exit 3 when an attestation for this tree was
-                 found but its signature did not verify, rather than 0;
-                 the rejection is named on stderr either way]
-                 `attest check-inputs --require <gate>...` — prove the
-                 named gates declare, in .github/attest-inputs, every file
-                 the tree tracks (exit 1 uncovered, 2 no usable spec)
-                 [--tree <rev>, default HEAD]
-
-  check          what is wrong with these FILES — no index, no staging, no
-                 commit. The content checks only (ban-terms, secrets,
-                 merge-conflict, large-files), reported as
-                 `file:line:col: severity: message [check]`, which every
-                 editor's error parser and every modern terminal already
-                 understand. Reads a path list, or one unsaved buffer on
-                 stdin. Exits 1 if anything blocking was found.
-                 [<path>…] [--stdin-filename <path>] [--format text|json]
-
-  land           run the push gates on a snapshot of this branch with no
-                 connection open, push it, then read the remote back to prove
-                 the ref moved. Exits 0 landed, 1 refused (a gate failed, or
-                 the push was refused), 3 unreachable or unverified, 4 accepted
-                 but the expected tip was not observed (2 is usage)
-                 [--force: lease on the tip it just read] [--json: stdout]
-                 [--dry-run: resolve the target only; no network, no push]
-                 [--tag <name>: land that existing tag instead, never moving
-                  one already on the remote; a v* tag gets release audits]
-  slot run       run a heavy command in a host slot, queued with every other
-                 one on this machine; exits 75 without running it when no
-                 slot frees in time [--weight N] [--max-wait S, default 90]
-                 [--on-timeout run|exit] -- <command…>
-  slots          who holds the host slots, and how many wait [--json]
-  stamps         which gates the tree carries a verdict for: stamped (a local
-                 token for the gate as it is declared now), attested (a signed
-                 note for this platform), deferred, or absent
-                 [--json] [--tree <rev>, default HEAD] [<gate>…]
-  warm           fill the cache of every cold `tree` gate, so the next commit
-                 can prove it within its slack (after a cold commit this
-                 runs in the background by itself) [--worker]
-  tree-parity    compare each `tree` gate in amont.conf with the workflow
-                 steps skipped on it; exits 1 on any drift (CI runs it,
-                 never skipped)
-
-  add            vendor a pack's declarations into amont.conf — a pack is a
-                 git repository carrying an `amont.pack` of amont.conf rows.
-                 Resolves the revision to a commit id, refuses anything that
-                 is not a check, and records the id beside the lines. Nothing
-                 is trusted by adding it: the manifest changes, so `amont
-                 trust` must read the commands before any of them can run.
-                 <source>[@<rev>]… [--dry-run]
-                   github:owner/repo   forgejo:host/owner/repo   <git-url>
-
-  --help         this text        --version   the binary's version
-
-Hook mode (what the shims call): amont --hooks-dir <dir> <hook-name> [args…]
-The full manual: https://greenharness.github.io/greengate/
-";
+const USAGE: &str = concat!(
+    "usage: ",
+    amont_runtime::bin!(),
+    " <subcommand> | ",
+    amont_runtime::bin!(),
+    " --hooks-dir <dir> <hook-name> [args…]\n",
+    "\n",
+    "  list           what would run in this repository, and why not\n",
+    "                 [--json] [--stage pre-commit|pre-push] [--pushed]\n",
+    "                 [--all: the inert checks too, one row each]\n",
+    "  install        turn hooks on here: copy the binary if needed, bake the shims\n",
+    "                 [--force] replaces a hook that is not ours\n",
+    "  init           wire up THIS repository only — the verb a package manager\n",
+    "                 calls from `prepare`; never copies a binary, never prompts,\n",
+    "                 never re-bakes from inside a push snapshot\n",
+    "  uninstall      remove OUR six shims and nothing else [--binary: the binary too]\n",
+    "                 [--repo: this repository only; the template dir is left as is;\n",
+    "                  it forgets attestations and revokes amont.conf trust]\n",
+    "  setup          the commit-style questions, current values as defaults\n",
+    "                 [--local|--global] [--dry-run]\n",
+    "  trust          show what amont.conf declares, and accept it\n",
+    "                 [--show: what is trusted] [--revoke: forget it]\n",
+    "  run            rehearse checks without committing: the pre-commit stage,\n",
+    "                 `run pre-push` for the push gate, or one check by name\n",
+    "                 [--all-files] [--hooks-dir <dir>]\n",
+    "                 `run --stamp [<gate>…]` — run the gates on HEAD of a clean\n",
+    "                 worktree and stamp the tree, as the commit and push hooks\n",
+    "                 do, so a later commit or push of that tree skips them\n",
+    "                 (default: every gate the hooks honour a stamp for). Exits 0\n",
+    "                 stamped, 1 a gate failed, 2 refused (dirty tree, unknown\n",
+    "                 gate), 4 a gate was deferred or could not be judged\n",
+    "                 [--quiet | --raw: a captured check's output to a log, one\n",
+    "                 line on a pass (the default when not at a terminal), or\n",
+    "                 the tool's own output as it comes]\n",
+    "  rehearse       run the push gate on a snapshot of HEAD in the background\n",
+    "                 and stamp the tree, so `git push` skips the suite\n",
+    "                 (`git config amont.rehearseOnCommit true` does this after\n",
+    "                 every commit) [--wait: follow it, or run it here if none]\n",
+    "                 [--status] [--stop] [--cluster: send the gates the cluster\n",
+    "                 may run to an Argo Workflow that outlives this machine;\n",
+    "                 the next commit or push collects them]\n",
+    "  cluster collect  turn the finished detached Workflows of this repository\n",
+    "                 into cluster tokens now (every commit and push does it)\n",
+    "  restore        bring back unstaged changes a killed pre-commit left parked\n",
+    "  agents-md      write the agent-guidance block into AGENTS.md, plus the\n",
+    "                 CLAUDE.md signpost pointing at it (both generated, both\n",
+    "                 checked) [--check: report drift only] [--path <file>]\n",
+    "  enroll         the machine-level standing grant: every future clone gets\n",
+    "                 the hooks [--conventions declared|everywhere]\n",
+    "  attest         `attest covered` — print the gate names a VALID signed\n",
+    "                 attestation covers for the tree checked out here (CI's\n",
+    "                 one-liner; prints nothing and exits 0 on any failure)\n",
+    "                 [--signers <file>] [--principal <id>]\n",
+    "                 [--platform <arch-os>|any: which leg is asking; defaults\n",
+    "                 to this machine's, so a matrix leg only skips work that\n",
+    "                 really ran on ITS platform]\n",
+    "                 [--strict: exit 3 when an attestation for this tree was\n",
+    "                 found but its signature did not verify, rather than 0;\n",
+    "                 the rejection is named on stderr either way]\n",
+    "                 `attest check-inputs --require <gate>...` — prove the\n",
+    "                 named gates declare, in .github/attest-inputs, every file\n",
+    "                 the tree tracks (exit 1 uncovered, 2 no usable spec)\n",
+    "                 [--tree <rev>, default HEAD]\n",
+    "\n",
+    "  check          what is wrong with these FILES — no index, no staging, no\n",
+    "                 commit. The content checks only (ban-terms, secrets,\n",
+    "                 merge-conflict, large-files), reported as\n",
+    "                 `file:line:col: severity: message [check]`, which every\n",
+    "                 editor's error parser and every modern terminal already\n",
+    "                 understand. Reads a path list, or one unsaved buffer on\n",
+    "                 stdin. Exits 1 if anything blocking was found.\n",
+    "                 [<path>…] [--stdin-filename <path>] [--format text|json]\n",
+    "\n",
+    "  land           run the push gates on a snapshot of this branch with no\n",
+    "                 connection open, push it, then read the remote back to prove\n",
+    "                 the ref moved. Exits 0 landed, 1 refused (a gate failed, or\n",
+    "                 the push was refused), 3 unreachable or unverified, 4 accepted\n",
+    "                 but the expected tip was not observed (2 is usage)\n",
+    "                 [--force: lease on the tip it just read] [--json: stdout]\n",
+    "                 [--dry-run: resolve the target only; no network, no push]\n",
+    "                 [--tag <name>: land that existing tag instead, never moving\n",
+    "                  one already on the remote; a v* tag gets release audits]\n",
+    "  slot run       run a heavy command in a host slot, queued with every other\n",
+    "                 one on this machine; exits 75 without running it when no\n",
+    "                 slot frees in time [--weight N] [--max-wait S, default 90]\n",
+    "                 [--on-timeout run|exit] -- <command…>\n",
+    "  slots          who holds the host slots, and how many wait [--json]\n",
+    "  stamps         which gates the tree carries a verdict for: stamped (a local\n",
+    "                 token for the gate as it is declared now), attested (a signed\n",
+    "                 note for this platform), deferred, or absent\n",
+    "                 [--json] [--tree <rev>, default HEAD] [<gate>…]\n",
+    "  warm           fill the cache of every cold `tree` gate, so the next commit\n",
+    "                 can prove it within its slack (after a cold commit this\n",
+    "                 runs in the background by itself) [--worker]\n",
+    "  tree-parity    compare each `tree` gate in amont.conf with the workflow\n",
+    "                 steps skipped on it; exits 1 on any drift (CI runs it,\n",
+    "                 never skipped)\n",
+    "\n",
+    "  add            vendor a pack's declarations into amont.conf — a pack is a\n",
+    "                 git repository carrying an `amont.pack` of amont.conf rows.\n",
+    "                 Resolves the revision to a commit id, refuses anything that\n",
+    "                 is not a check, and records the id beside the lines. Nothing\n",
+    "                 is trusted by adding it: the manifest changes, so `",
+    amont_runtime::bin!(),
+    " trust`\n",
+    "                 must read the commands before any of them can run.\n",
+    "                 <source>[@<rev>]… [--dry-run]\n",
+    "                   github:owner/repo   forgejo:host/owner/repo   <git-url>\n",
+    "\n",
+    "  --help         this text        --version   the binary's version\n",
+    "\n",
+    "Hook mode (what the shims call): ",
+    amont_runtime::bin!(),
+    " --hooks-dir <dir> <hook-name> [args…]\n",
+    "The full manual: https://greenharness.github.io/greengate/\n",
+);
 
 /// The verbs. Named as a type so the dispatch cannot grow an eighth spelling
 /// that only exists inside an `if`.
@@ -398,11 +407,11 @@ fn main() {
             std::process::exit(0);
         }
         Invocation::Version => {
-            println!("amont {}", env!("CARGO_PKG_VERSION"));
+            println!("{BIN} {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         }
         Invocation::Usage(why) => {
-            eprintln!("amont: {why}");
+            eprintln!("{BIN}: {why}");
             eprint!("{USAGE}");
             std::process::exit(2);
         }
@@ -520,12 +529,12 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         return 0;
     }
     if own.iter().any(|a| a == "--version" || a == "-V") {
-        println!("amont {}", env!("CARGO_PKG_VERSION"));
+        println!("{BIN} {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     let (flags, valued) = known_flags(sub);
     if let Some(bad) = unknown_flag(own, flags, valued) {
-        eprintln!("amont: unknown flag {bad:?} for `{}`", verb_name(sub));
+        eprintln!("{BIN}: unknown flag {bad:?} for `{}`", verb_name(sub));
         eprint!("{USAGE}");
         // A script that parses stdout under `--json` gets a document for the
         // usage error too, so exit 2 needs no special case on its side.
@@ -543,13 +552,13 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let stage = match stage_flag(args) {
                 Ok(s) => s,
                 Err(msg) => {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                     return 2;
                 }
             };
             // On stderr, so `--json` stays one document on stdout.
             if let Some(line) = amont_runtime::attest_inputs::deprecated_opt_out() {
-                eprintln!("amont: {line}");
+                eprintln!("{BIN}: {line}");
             }
             amont_runtime::list_checks(ListOptions {
                 json: args.iter().any(|a| a == "--json"),
@@ -578,7 +587,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let binary = args.iter().any(|a| a == "--binary");
             if args.iter().any(|a| a == "--repo") {
                 if binary {
-                    eprintln!("amont: uninstall --repo and --binary are mutually exclusive");
+                    eprintln!("{BIN}: uninstall --repo and --binary are mutually exclusive");
                     return 2;
                 }
                 report(amont_runtime::install::uninstall_repo())
@@ -642,7 +651,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let conventions = match flag_value(args, "--conventions") {
                 Ok(v) => v,
                 Err(msg) => {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                     return 2;
                 }
             };
@@ -679,7 +688,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 .filter(|a| !a.starts_with("--"))
                 .collect();
             if specs.is_empty() {
-                eprintln!("amont: add needs a source (github:owner/repo, forgejo:host/owner/repo, or a git URL)");
+                eprintln!("{BIN}: add needs a source (github:owner/repo, forgejo:host/owner/repo, or a git URL)");
                 eprint!("{USAGE}");
                 return 2;
             }
@@ -701,7 +710,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                     Ok(got) => fetched.push(got),
                     Err(msg) => {
                         let _ = std::fs::remove_dir_all(&scratch);
-                        eprintln!("amont: {msg}");
+                        eprintln!("{BIN}: {msg}");
                         return 1;
                     }
                 }
@@ -731,7 +740,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 match pack::splice(&after, label, id, rows) {
                     Ok(next) => after = next,
                     Err(msg) => {
-                        eprintln!("amont: {msg}");
+                        eprintln!("{BIN}: {msg}");
                         return 1;
                     }
                 }
@@ -751,7 +760,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             // which would make `add` unusable from a script or a test for no
             // safety gained. `--dry-run` is there for looking first.
             if let Err(e) = std::fs::write(&path, &after) {
-                eprintln!("amont: cannot write {}: {e}", path.display());
+                eprintln!("{BIN}: cannot write {}: {e}", path.display());
                 return 1;
             }
 
@@ -761,7 +770,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             // verb that appears to install checks and silently installs
             // nothing is worse than one that refuses.
             println!(
-                "\n{} changed — these commands cannot run until you review them:\n    amont trust",
+                "\n{} changed — these commands cannot run until you review them:\n    {BIN} trust",
                 amont_runtime::manifest::MANIFEST
             );
             0
@@ -770,7 +779,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let format = match flag_value(args, "--format") {
                 Ok(f) => f,
                 Err(msg) => {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                     return 2;
                 }
             };
@@ -778,14 +787,14 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 None | Some("text") => false,
                 Some("json") => true,
                 Some(other) => {
-                    eprintln!("amont: unknown --format {other:?} (text or json)");
+                    eprintln!("{BIN}: unknown --format {other:?} (text or json)");
                     return 2;
                 }
             };
             let stdin_name = match flag_value(args, "--stdin-filename") {
                 Ok(n) => n,
                 Err(msg) => {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                     return 2;
                 }
             };
@@ -813,12 +822,12 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 use std::io::Read;
                 let mut buf = Vec::new();
                 if std::io::stdin().read_to_end(&mut buf).is_err() {
-                    eprintln!("amont: could not read stdin");
+                    eprintln!("{BIN}: could not read stdin");
                     return 2;
                 }
                 findings.extend(amont_runtime::content::scan(&settings, name, &buf));
             } else if paths.is_empty() {
-                eprintln!("amont: check needs a path, or --stdin-filename <path>");
+                eprintln!("{BIN}: check needs a path, or --stdin-filename <path>");
                 eprint!("{USAGE}");
                 return 2;
             }
@@ -830,7 +839,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                     // Named but unreadable is the caller's mistake, not a
                     // finding about the file — say so on stderr and keep
                     // going, so one bad path does not hide the other results.
-                    Err(e) => eprintln!("amont: {p}: {e}"),
+                    Err(e) => eprintln!("{BIN}: {p}: {e}"),
                 }
             }
 
@@ -856,7 +865,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 Some("covered") => {}
                 Some("check-inputs") => return attest_check_inputs(&args[1..]),
                 _ => {
-                    eprintln!("amont: attest takes the subactions `covered` and `check-inputs`");
+                    eprintln!("{BIN}: attest takes the subactions `covered` and `check-inputs`");
                     eprint!("{USAGE}");
                     return 2;
                 }
@@ -868,7 +877,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             ) {
                 (Ok(s), Ok(p), Ok(pl)) => (s, p, pl),
                 (Err(msg), _, _) | (_, Err(msg), _) | (_, _, Err(msg)) => {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                     return 2;
                 }
             };
@@ -923,7 +932,7 @@ fn attest_check_inputs(rest: &[OsString]) -> i32 {
     let tree = match flag_value(rest, "--tree") {
         Ok(t) => t.unwrap_or_else(|| "HEAD".to_string()),
         Err(msg) => {
-            eprintln!("amont: {msg}");
+            eprintln!("{BIN}: {msg}");
             return 2;
         }
     };
@@ -935,7 +944,7 @@ fn attest_check_inputs(rest: &[OsString]) -> i32 {
         .map(String::from)
         .collect();
     if required.is_empty() {
-        eprintln!("amont: attest check-inputs needs --require <gate>...");
+        eprintln!("{BIN}: attest check-inputs needs --require <gate>...");
         return 2;
     }
     match amont_runtime::attest_inputs::check(&tree, &required) {
@@ -1024,12 +1033,12 @@ fn run_mode(args: &[OsString]) -> i32 {
             match amont_runtime::dispatch::resolve_check_name(&n, &manifest) {
                 amont_runtime::dispatch::Named2::Resolved(id) => Some(id),
                 amont_runtime::dispatch::Named2::Unknown => {
-                    eprintln!("amont: unknown check {n:?} — try `amont list`");
+                    eprintln!("{BIN}: unknown check {n:?} — try `{BIN} list`");
                     return 2;
                 }
                 amont_runtime::dispatch::Named2::Ambiguous(ids) => {
                     eprintln!(
-                        "amont: {n:?} names more than one check — pick one: {}",
+                        "{BIN}: {n:?} names more than one check — pick one: {}",
                         ids.join(", ")
                     );
                     return 2;
@@ -1053,7 +1062,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         match pushrefs::synthetic_from_upstream() {
             Ok(r) => pushrefs::PushRefs::preloaded(vec![r]),
             Err(e) => {
-                eprintln!("amont: {e}");
+                eprintln!("{BIN}: {e}");
                 return 2;
             }
         }
@@ -1064,7 +1073,7 @@ fn run_mode(args: &[OsString]) -> i32 {
         Ok(Some(d)) => d,
         Ok(None) => PathBuf::from(".git/hooks"),
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             return 2;
         }
     };
@@ -1088,12 +1097,12 @@ fn run_mode(args: &[OsString]) -> i32 {
         Some(check) => match amont_runtime::dispatch::run_named(&ctx, &check, all_files) {
             amont_runtime::dispatch::Named::Ran(v) => v,
             amont_runtime::dispatch::Named::Unknown => {
-                eprintln!("amont: unknown check {check:?} — try `amont list`");
+                eprintln!("{BIN}: unknown check {check:?} — try `{BIN} list`");
                 return 2;
             }
             amont_runtime::dispatch::Named::Ambiguous(ids) => {
                 eprintln!(
-                    "amont: {check:?} names more than one check — pick one: {}",
+                    "{BIN}: {check:?} names more than one check — pick one: {}",
                     ids.join(", ")
                 );
                 return 2;
@@ -1147,7 +1156,7 @@ fn stamp_mode(args: &[OsString]) -> i32 {
         ("--raw", "--stamp prints its own report"),
     ] {
         if args.iter().any(|a| a == flag) {
-            eprintln!("amont: {why}; drop {flag}");
+            eprintln!("{BIN}: {why}; drop {flag}");
             return 2;
         }
     }
@@ -1156,7 +1165,7 @@ fn stamp_mode(args: &[OsString]) -> i32 {
         .filter_map(|a| a.to_str())
         .any(|a| a == "--hooks-dir" || a.starts_with("--hooks-dir="))
     {
-        eprintln!("amont: --stamp runs the gates itself, not through hooks; drop --hooks-dir");
+        eprintln!("{BIN}: --stamp runs the gates itself, not through hooks; drop --hooks-dir");
         return 2;
     }
     let (manifest, settings) = load_here();
@@ -1169,7 +1178,7 @@ fn stamps_mode(args: &[OsString]) -> i32 {
     let tree = match flag_value(args, "--tree") {
         Ok(v) => v,
         Err(msg) => {
-            eprintln!("amont: {msg}");
+            eprintln!("{BIN}: {msg}");
             return 2;
         }
     };
@@ -1203,12 +1212,12 @@ fn agents_md(args: &[OsString]) -> i32 {
         Ok(None) => match amont_runtime::hooks::common::repo_root_checked() {
             Ok(root) => PathBuf::from(root).join("AGENTS.md"),
             Err(e) => {
-                eprintln!("amont: {e}");
+                eprintln!("{BIN}: {e}");
                 return 2;
             }
         },
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             return 2;
         }
     };
@@ -1220,7 +1229,7 @@ fn agents_md(args: &[OsString]) -> i32 {
             match amont_runtime::agents_md::check_pointer(&p) {
                 Ok(amont_runtime::agents_md::CheckResult::Drifted) => {
                     eprintln!(
-                        "{}: signpost drifted from the generated one — run `amont agents-md`",
+                        "{}: signpost drifted from the generated one — run `{BIN} agents-md`",
                         p.display()
                     );
                     1
@@ -1248,7 +1257,7 @@ fn agents_md(args: &[OsString]) -> i32 {
             }
             Ok(amont_runtime::agents_md::CheckResult::Drifted) => {
                 eprintln!(
-                    "{}: drifted from the generated block — run `amont agents-md`",
+                    "{}: drifted from the generated block — run `{BIN} agents-md`",
                     path.display()
                 );
                 1

@@ -289,7 +289,7 @@ fn version_prints_the_crate_version() {
         let (code, out) = s.run(&repo, args);
         assert_eq!(code, 0, "{args:?}:\n{out}");
         assert!(
-            out.trim().starts_with("amont ") && out.contains(env!("CARGO_PKG_VERSION")),
+            out.trim() == format!("greengate {}", env!("CARGO_PKG_VERSION")),
             "{args:?} must name the version:\n{out}"
         );
     }
@@ -389,4 +389,16 @@ fn uninstall_forgets_the_skew_marker() {
         !repo.join(".git/amont-skew").exists(),
         "the marker is OUR bookkeeping — gone with the hooks"
     );
+}
+
+/// Every message names the program by the name it ships under.
+#[test]
+fn an_unknown_subcommand_error_starts_with_the_shipped_name() {
+    let s = Sandbox::new("unknown-subcommand");
+    let repo = s.path("repo");
+    std::fs::create_dir_all(&repo).expect("mkdir");
+    let (code, out) = s.run(&repo, &["frobnicate"]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.starts_with("greengate: "), "{out}");
+    s.assert_nothing_was_installed(&repo, "after an unknown subcommand");
 }

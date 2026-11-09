@@ -27,6 +27,8 @@ mod tui;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use amont_runtime::names::{BIN, FLEET_BIN};
+
 /// A path, safe to print.
 ///
 /// Every path this tool shows was found by walking directories somebody else
@@ -38,8 +40,10 @@ fn shown(p: &Path) -> String {
     amont_runtime::ui::sanitize_path(p)
 }
 
-const USAGE: &str = "\
-usage: amont-fleet [scan|gates|tui|fix|install|uninstall] [--root <dir>] [--depth <n>] [--json]
+const USAGE: &str = concat!(
+    "usage: ",
+    amont_runtime::fleet_bin!(),
+    " [scan|gates|tui|fix|install|uninstall] [--root <dir>] [--depth <n>] [--json]
 
   scan           report the fleet (default)
   gates          what each repository's own record says about its gates:
@@ -78,7 +82,8 @@ usage: amont-fleet [scan|gates|tui|fix|install|uninstall] [--root <dir>] [--dept
 install and fix --apply never delete a hook they did not write: a
 pre-commit-* or pre-push-* file without our marker is reported and left
 exactly where it is.
-";
+"
+);
 
 #[derive(PartialEq)]
 enum Mode {
@@ -319,14 +324,14 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if argv.iter().any(|a| a == "--version" || a == "-V") {
-        println!("amont-fleet {}", env!("CARGO_PKG_VERSION"));
+        println!("{FLEET_BIN} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let args = match parse(&argv, home().as_deref()) {
         Ok(a) => a,
         Err(e) => {
             if !e.is_empty() {
-                eprintln!("amont-fleet: {e}");
+                eprintln!("{FLEET_BIN}: {e}");
             }
             eprint!("{USAGE}");
             return ExitCode::from(2);
@@ -335,7 +340,7 @@ fn main() -> ExitCode {
 
     if !args.root.is_dir() {
         eprintln!(
-            "amont-fleet: --root {} is not a directory",
+            "{FLEET_BIN}: --root {} is not a directory",
             args.root.display()
         );
         return ExitCode::from(2);
@@ -350,7 +355,7 @@ fn main() -> ExitCode {
         Some(b) => b,
         None => {
             eprintln!(
-                "amont-fleet: no --binary given and $HOME is not set — \
+                "{FLEET_BIN}: no --binary given and $HOME is not set — \
                  refusing to guess which binary the shims should point at"
             );
             return ExitCode::from(2);
@@ -361,7 +366,7 @@ fn main() -> ExitCode {
         return match tui::run(args.root.clone(), args.depth, installed.clone()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("amont-fleet: {e}");
+                eprintln!("{FLEET_BIN}: {e}");
                 ExitCode::from(1)
             }
         };
@@ -399,7 +404,7 @@ fn main() -> ExitCode {
             match serde_json::to_string_pretty(&doc) {
                 Ok(s) => println!("{s}"),
                 Err(e) => {
-                    eprintln!("amont-fleet: cannot serialise the gate report: {e}");
+                    eprintln!("{FLEET_BIN}: cannot serialise the gate report: {e}");
                     return ExitCode::from(1);
                 }
             }
@@ -460,7 +465,7 @@ fn main() -> ExitCode {
             // Named, not silent: revoking trust and deleting a stamp ref are
             // real changes to a repository, and the fleet does them 200 times.
             println!(
-                "amont's own bookkeeping (stamps, ledgers, trust) forgotten in \
+                "{BIN}'s own bookkeeping (stamps, ledgers, trust) forgotten in \
                  {forgotten} repositories"
             );
         }
@@ -600,7 +605,7 @@ fn main() -> ExitCode {
         match serde_json::to_string_pretty(&scan) {
             Ok(s) => println!("{s}"),
             Err(e) => {
-                eprintln!("amont-fleet: cannot serialise scan: {e}");
+                eprintln!("{FLEET_BIN}: cannot serialise scan: {e}");
                 return ExitCode::from(1);
             }
         }
@@ -928,7 +933,7 @@ fn report_warnings(plans: &[fix::FixPlan]) {
                     let owner =
                         amont_runtime::install::redirect_culprit(path).unwrap_or("another tool");
                     lines.push(format!(
-                        "  {}  ({}: core.hooksPath — {owner} owns the hooks, amont is not running)",
+                        "  {}  ({}: core.hooksPath — {owner} owns the hooks, {BIN} is not running)",
                         shown(path),
                         shown(&p.repo)
                     ));

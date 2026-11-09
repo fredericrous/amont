@@ -257,7 +257,8 @@ fn an_unchanged_old_tip_after_an_accepted_push_is_exit_4() {
         "re-reads are bounded"
     );
     assert!(
-        !ran.stderr.contains("amont land\n"),
+        !ran.stderr
+            .contains(&format!("{} land\n", amont_runtime::names::BIN)),
         "no unconditional retry advice:\n{}",
         ran.stderr
     );

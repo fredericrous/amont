@@ -195,7 +195,13 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
     let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
     assert_eq!(code, 0, "a deferred block gate must not block: {out}");
     assert!(out.contains("deferred to CI"), "{out}");
-    assert!(out.contains("AMONT_ON_BUSY=wait amont run"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "AMONT_ON_BUSY=wait {} run",
+            amont_runtime::names::BIN
+        )),
+        "{out}"
+    );
     assert_eq!(
         runs(&repo, "gate.log"),
         0,
@@ -836,7 +842,7 @@ fn the_run_now_advice_for_a_deferred_warn_gate_waits() {
         .next()
         .and_then(|w| w.split_once('='))
         .unwrap_or_else(|| panic!("advice starts with no VAR=value: {advice}"));
-    assert_eq!(words.next(), Some("amont"), "{advice}");
+    assert_eq!(words.next(), Some(amont_runtime::names::BIN), "{advice}");
     let releaser = release_after(holder, &slots, 1);
     let started = std::time::Instant::now();
     let mut advised = crate::common::amont_cmd();
