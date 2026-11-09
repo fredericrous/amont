@@ -28,7 +28,7 @@ fn the_defaults_are_shown_and_so_is_the_way_to_change_them() {
     let out = r.run(&["list"]).output();
     assert!(out.contains("none"), "the default placement: {out}");
     assert!(out.contains("72"), "the default subject limit: {out}");
-    assert!(out.contains("amont setup"), "no pointer at all: {out}");
+    assert!(out.contains("greengate setup"), "no pointer at all: {out}");
 }
 
 /// A configured value shows what set it and where it came from, the same

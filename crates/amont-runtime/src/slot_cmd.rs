@@ -9,6 +9,7 @@
 //! `--max-wait` (default 90 s, under Claude Code's 120 s Bash timeout) exits
 //! 75 without running anything, unless `--on-timeout run` says otherwise.
 
+use crate::names::BIN;
 use std::ffi::OsString;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -26,7 +27,7 @@ pub fn slot_command(args: &[OsString]) -> i32 {
     match own.first().and_then(|a| a.to_str()) {
         Some("run") => run(&own[1..], cmd),
         _ => {
-            eprintln!("amont: usage: amont slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <command…>");
+            eprintln!("{BIN}: usage: {BIN} slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <command…>");
             2
         }
     }
@@ -90,20 +91,20 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let own = match parse(own) {
         Ok(flags) => flags,
         Err(why) => {
-            eprintln!("amont: slot run: {why}");
+            eprintln!("{BIN}: slot run: {why}");
             return 2;
         }
     };
     let own = own.as_slice();
     let Some((program, rest)) = cmd.split_first() else {
-        eprintln!("amont: `amont slot run` needs a command after `--`");
+        eprintln!("{BIN}: `{BIN} slot run` needs a command after `--`");
         return 2;
     };
     let weight = match value(own, "--weight").map(str::parse::<u32>) {
         None => 1,
         Some(Ok(n)) if n >= 1 => n,
         Some(_) => {
-            eprintln!("amont: --weight is a whole number from 1");
+            eprintln!("{BIN}: --weight is a whole number from 1");
             return 2;
         }
     };
@@ -111,7 +112,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         None => DEFAULT_MAX_WAIT,
         Some(Ok(s)) => Duration::from_secs(s),
         Some(Err(_)) => {
-            eprintln!("amont: --max-wait is a whole number of seconds");
+            eprintln!("{BIN}: --max-wait is a whole number of seconds");
             return 2;
         }
     };
@@ -119,7 +120,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         None | Some("exit") => false,
         Some("run") => true,
         Some(other) => {
-            eprintln!("amont: --on-timeout is `run` or `exit`, not {other:?}");
+            eprintln!("{BIN}: --on-timeout is `run` or `exit`, not {other:?}");
             return 2;
         }
     };
@@ -159,7 +160,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     ) {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("amont: host slots unavailable ({e}); running unqueued");
+            eprintln!("{BIN}: host slots unavailable ({e}); running unqueued");
             return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
     };
@@ -170,12 +171,12 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             Ok(amont_slots::Poll::Waiting(queue)) => {
                 let due = last_said.map_or(true, |t| t.elapsed() >= Duration::from_secs(30));
                 if due && (!queue.holders.is_empty() || queue.unknown > 0) {
-                    eprintln!("amont: {}", crate::host_slots::behind(&queue));
+                    eprintln!("{BIN}: {}", crate::host_slots::behind(&queue));
                     last_said = Some(Instant::now());
                 }
             }
             Err(e) => {
-                eprintln!("amont: host slots unavailable ({e}); running unqueued");
+                eprintln!("{BIN}: host slots unavailable ({e}); running unqueued");
                 return spawn(program, rest, Launch::Unqueued, Some(jobs));
             }
         }
@@ -197,14 +198,14 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
                 "unqueued",
             );
             eprintln!(
-                "amont: no host slot freed in {}s; running unqueued (--on-timeout run)",
+                "{BIN}: no host slot freed in {}s; running unqueued (--on-timeout run)",
                 max_wait.as_secs()
             );
             return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
         amont_slots::record_wait(&dir, "amont slot run", weight, waited, "timeout");
         eprintln!(
-            "amont: no host slot freed in {}s; `{label}` did not run (exit {BUSY_EXIT}). \
+            "{BIN}: no host slot freed in {}s; `{label}` did not run (exit {BUSY_EXIT}). \
              Retry the same command later, or let CI run it.",
             max_wait.as_secs()
         );
@@ -242,7 +243,7 @@ fn spawn(program: &OsString, rest: &[OsString], launch: Launch, jobs: Option<u32
     match cmd.status() {
         Ok(status) => exit_code(status),
         Err(e) => {
-            eprintln!("amont: cannot run {}: {e}", program.to_string_lossy());
+            eprintln!("{BIN}: cannot run {}: {e}", program.to_string_lossy());
             127
         }
     }
@@ -265,7 +266,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// `amont slots [--json]`.
 pub fn slots_command(args: &[OsString]) -> i32 {
     if let Some(bad) = args.iter().find(|a| *a != "--json") {
-        eprintln!("amont: slots: unknown argument {:?}", bad.to_string_lossy());
+        eprintln!("{BIN}: slots: unknown argument {:?}", bad.to_string_lossy());
         return 2;
     }
     let json = !args.is_empty();
@@ -281,7 +282,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     let status = match amont_slots::status(sizing) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("amont: cannot read the host slots: {e}");
+            eprintln!("{BIN}: cannot read the host slots: {e}");
             return 1;
         }
     };

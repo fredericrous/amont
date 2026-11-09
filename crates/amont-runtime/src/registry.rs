@@ -959,6 +959,7 @@ pub fn one_named<'a>(name: &str, manifest: &'a crate::manifest::Manifest) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{lookup, Overrides, Reach, Severity, Stage, CHECKS, ENTRYPOINTS};
+    use crate::names::BIN;
     use std::collections::BTreeSet;
 
     /// The batch reader must land on the same answer as the authority.
@@ -1269,7 +1270,7 @@ mod tests {
                 assert!(
                     consumed.contains(ext),
                     "{} declares {ext:?} in its scope but never asks for it — \
-                     `amont list` would report a coverage the check does not have",
+                     `{BIN} list` would report a coverage the check does not have",
                     check.name
                 );
             }
@@ -1372,7 +1373,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared, implemented,
-            "a check declaring Fix::Rewrite with no fixer lies to `amont list --json`, \
+            "a check declaring Fix::Rewrite with no fixer lies to `{BIN} list --json`, \
              and a check with a fixer that does not declare it can never be reached"
         );
 

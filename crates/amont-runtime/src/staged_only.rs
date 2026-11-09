@@ -38,6 +38,7 @@
 //! with — and did, deleting a tracked file and planting a symlink outside the
 //! worktree. See [`Held`].
 
+use crate::names::BIN;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 // Only the unix signal path keeps integer statics (the self-pipe fd and the
@@ -381,7 +382,7 @@ impl StagedOnly {
         if has_contents(&store) {
             return Err(format!(
                 "{} a previous stash was left behind at {} — recover it with \
-                 `amont restore`, then retry",
+                 `{BIN} restore`, then retry",
                 error_sign(),
                 store.display()
             ));
@@ -537,7 +538,7 @@ impl StagedOnly {
                     error_sign()
                 );
                 eprintln!("    They are safe, in: {}", store.display());
-                eprintln!("    Recover them with: amont restore");
+                eprintln!("    Recover them with: {BIN} restore");
             }
         }
     }

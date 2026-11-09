@@ -25,6 +25,7 @@
 //! `amont uninstall`, harmlessly stale after an upgrade (a NEW version that
 //! still does not know some hook warns afresh, which is correct).
 
+use crate::names::BIN;
 use std::path::PathBuf;
 
 /// First line of the marker. Bump on shape change; an old marker then reads
@@ -41,8 +42,8 @@ pub fn absorb_newer_hook(hook: &str) -> i32 {
     let version = env!("CARGO_PKG_VERSION");
     if !already_warned(version) {
         eprintln!(
-            "amont: the {hook} shim is newer than this binary ({version}) — the hook did nothing.\n\
-             Upgrade amont to match the shims (said once per binary version)."
+            "{BIN}: the {hook} shim is newer than this binary ({version}) — the hook did nothing.\n\
+             Upgrade {BIN} to match the shims (said once per binary version)."
         );
         remember(version);
     }
@@ -101,7 +102,7 @@ pub fn announce_minimum(settings: &crate::config::Settings) {
     let running = parse_version(have).expect("own version parses");
     if running < min {
         println!(
-            "{} this repository asks for amont {} or newer — this binary is {have}. Upgrade amont.",
+            "{} this repository asks for {BIN} {} or newer — this binary is {have}. Upgrade {BIN}.",
             crate::ui::warning_sign(),
             crate::ui::highlight(want.trim()),
         );

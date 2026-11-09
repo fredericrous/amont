@@ -789,7 +789,7 @@ fn the_declared_journey() {
     step!("floor", ok, "warn-only, never a gate:\n{out}");
     step!(
         "floor",
-        out.contains("asks for amont") && out.contains("99.0.0"),
+        out.contains("asks for greengate") && out.contains("99.0.0"),
         "the floor is announced:\n{out}"
     );
     config(&r, "amont.minVersion", "0.1.0");

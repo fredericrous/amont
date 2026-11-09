@@ -35,6 +35,7 @@
 //! taken through, and two manifests this parser reads differently can be given
 //! the same id. Consent is bound to the bytes we PARSE.
 
+use crate::names::BIN;
 use std::path::Path;
 
 use crate::ui::valid_sign;
@@ -176,7 +177,7 @@ pub fn record_verified(repo: &Path, fp: &str) -> Result<(), String> {
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
     if now != fp {
         return Err(format!(
-            "{} changed since it was shown — nothing was trusted; run `amont trust` again to review it",
+            "{} changed since it was shown — nothing was trusted; run `{BIN} trust` again to review it",
             crate::manifest::MANIFEST
         ));
     }
@@ -231,6 +232,8 @@ fn prune(repo: &Path) {
 pub fn why(state: State) -> Option<&'static str> {
     match state {
         State::NoManifest | State::Trusted => None,
+        // Kept as written: this text is the `reason` value of `list --json`,
+        // and a --json value does not change with the rename.
         State::Untrusted => {
             Some("declared in an untrusted amont.conf — review it, then `amont trust`")
         }

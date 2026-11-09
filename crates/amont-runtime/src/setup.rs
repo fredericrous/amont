@@ -24,6 +24,7 @@ use crate::commit_style::{
     self, Gitmoji, Style, KEY_BODY_WRAP, KEY_DESCRIPTION_MAX, KEY_GITMOJI, KEY_SUBJECT_MAX,
 };
 use crate::git;
+use crate::names::BIN;
 use crate::ui::highlight;
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -76,7 +77,9 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     let asked_local = args.iter().any(|a| a == "--local");
     let asked_global = args.iter().any(|a| a == "--global");
     if asked_local && asked_global {
-        return Err("amont setup: --local and --global contradict each other".to_string());
+        return Err(format!(
+            "{BIN} setup: --local and --global contradict each other"
+        ));
     }
     if let Some(bad) = args.iter().find(|a| {
         !matches!(
@@ -85,7 +88,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
         )
     }) {
         return Err(format!(
-            "amont setup: unknown argument {:?}\nusage: amont setup [--local|--global] [--dry-run]",
+            "{BIN} setup: unknown argument {:?}\nusage: {BIN} setup [--local|--global] [--dry-run]",
             bad.to_string_lossy()
         ));
     }
@@ -94,7 +97,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     // the same reasoning `trust::command` records: a fallback would write a
     // setting into whatever directory somebody happened to be standing in.
     if asked_local && git::stdout(&["rev-parse", "--show-toplevel"]).is_none() {
-        return Err("amont setup --local: not inside a git repository".to_string());
+        return Err(format!("{BIN} setup --local: not inside a git repository"));
     }
 
     let (style, _) = commit_style::describe(&settings);
@@ -134,7 +137,7 @@ fn ask_all(
     style: &Style,
     forced_scope: Option<Where>,
 ) -> Result<Option<(Where, Vec<Answer>)>, String> {
-    println!("amont setup — what `commit-msg` enforces, and how it decorates.");
+    println!("{BIN} setup — what `commit-msg` enforces, and how it decorates.");
     println!("Nothing here disables a check; it changes what the check asks for.");
     println!("Enter keeps the current value. `q` quits without writing anything.");
 
@@ -225,7 +228,7 @@ fn apply(answers: &[Answer], scope: Where, dry_run: bool) -> Result<(), String> 
                     }
                 };
                 if !ok {
-                    return Err(format!("amont setup: could not write {}", a.key));
+                    return Err(format!("{BIN} setup: could not write {}", a.key));
                 }
             }
         }
@@ -242,7 +245,7 @@ fn apply(answers: &[Answer], scope: Where, dry_run: bool) -> Result<(), String> 
     println!("\nTwo more, per repository rather than per person:");
     println!("  git config amont.fix true             # let a check fix what it finds");
     println!("  git config amont.testPushedTree true  # test what you push, not your tree");
-    println!("\nRead it all back with:  amont list");
+    println!("\nRead it all back with:  {BIN} list");
     Ok(())
 }
 
@@ -253,7 +256,7 @@ fn apply(answers: &[Answer], scope: Where, dry_run: bool) -> Result<(), String> 
 /// something usable rather than an error. The refusal goes to stderr so it does
 /// not end up in that file.
 fn offer_the_commands(style: &Style, scope: Where) -> Result<(), String> {
-    eprintln!("amont setup: not a terminal — nothing to ask. The keys, with their current values:");
+    eprintln!("{BIN} setup: not a terminal — nothing to ask. The keys, with their current values:");
     println!(
         "git config {} {KEY_GITMOJI} {}",
         scope.flag(),

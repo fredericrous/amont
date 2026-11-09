@@ -47,6 +47,7 @@
 //! background run can only ever REMOVE work from the push; it never lets
 //! the push skip work nobody did.
 
+use crate::names::BIN;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -648,9 +649,10 @@ fn strip_repo_env(cmd: &mut Command) {
 /// of spawned: `amont rehearse --wait` runs the same thing in the foreground.
 #[cfg(not(unix))]
 pub fn spawn_detached() -> Result<u32, String> {
-    Err("background rehearsal is not available on Windows yet — \
-         `amont rehearse --wait` runs it in the foreground"
-        .to_string())
+    Err(format!(
+        "background rehearsal is not available on Windows yet — \
+         `{BIN} rehearse --wait` runs it in the foreground"
+    ))
 }
 
 #[cfg(unix)]
@@ -666,7 +668,7 @@ pub fn spawn_detached() -> Result<u32, String> {
 #[cfg(unix)]
 pub fn spawn_amont(args: &[&str], log: &std::path::Path) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate amont: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate {BIN}: {e}"))?;
     let file =
         std::fs::File::create(log).map_err(|e| format!("cannot open {}: {e}", log.display()))?;
     let err = file
@@ -681,7 +683,7 @@ pub fn spawn_amont(args: &[&str], log: &std::path::Path) -> Result<u32, String> 
     cmd.process_group(0);
     let child = cmd
         .spawn()
-        .map_err(|e| format!("cannot start amont {}: {e}", args.join(" ")))?;
+        .map_err(|e| format!("cannot start {BIN} {}: {e}", args.join(" ")))?;
     Ok(child.id())
 }
 
@@ -1059,7 +1061,7 @@ pub fn worker(
         .map(PathBuf::from)
         .map(|p| if p.is_absolute() { p } else { repo.join(p) })
         .ok_or("could not locate the hooks directory")?;
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate amont: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate {BIN}: {e}"))?;
     let mut cmd = Command::new(exe);
     cmd.arg("--hooks-dir")
         .arg(&hooks_dir)
@@ -1139,9 +1141,9 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
     // what happens next is the push's call, and under `refuse` it is not a
     // run here — say so rather than promise one
     let then = if refuse_unstamped(settings) {
-        "fix it and rehearse again (`amont rehearse --wait`)"
+        format!("fix it and rehearse again (`{BIN} rehearse --wait`)")
     } else {
-        "running the gate here"
+        "running the gate here".to_string()
     };
     match state.phase {
         Phase::Passed => None, // the stamps say it all
@@ -1258,7 +1260,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
     };
     let prestage = match prestage {
         Prestage::Malformed(raw) => {
-            eprintln!("amont: {PRESTAGE_ENV} is not a push line ({raw:?}); nothing was rehearsed");
+            eprintln!("{BIN}: {PRESTAGE_ENV} is not a push line ({raw:?}); nothing was rehearsed");
             return 2;
         }
         line => line.line(),
@@ -1269,7 +1271,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
             Ok(Outcome::Interrupted(n)) => 128 + n,
             Ok(_) => 0,
             Err(e) => {
-                eprintln!("amont: {e}");
+                eprintln!("{BIN}: {e}");
                 2
             }
         };
@@ -1277,7 +1279,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
     let root = match crate::hooks::common::repo_root_checked() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             return 2;
         }
     };
@@ -1320,7 +1322,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
             }
             Err(e) => {
                 // It ran and failed (no upstream, no HEAD): not a usage error.
-                eprintln!("amont: {e}");
+                eprintln!("{BIN}: {e}");
                 return 1;
             }
         }
@@ -1359,7 +1361,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
                     Ok(Outcome::AlreadyRunning(_)) => continue,
                     Ok(_) => return 0,
                     Err(e) => {
-                        eprintln!("amont: {e}");
+                        eprintln!("{BIN}: {e}");
                         return 2;
                     }
                 }
@@ -1387,18 +1389,18 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
                     return 1;
                 }
                 None => {
-                    eprintln!("amont: the rehearsal ended without a verdict");
+                    eprintln!("{BIN}: the rehearsal ended without a verdict");
                     return 2;
                 }
             }
         }
-        eprintln!("amont: another rehearsal keeps claiming this tree — run the gate yourself");
+        eprintln!("{BIN}: another rehearsal keeps claiming this tree — run the gate yourself");
         return 2;
     }
     if let Some(state) = running_here {
         println!(
             "a rehearsal of this tree is already running (pid {}, started {} ago) — \
-             `amont rehearse --wait` follows it",
+             `{BIN} rehearse --wait` follows it",
             state.pid,
             human_secs(state.age_secs())
         );
@@ -1408,7 +1410,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
         Ok(pid) => {
             println!(
                 "rehearsing the push gate for HEAD in the background (pid {pid}) — \
-                 `amont rehearse --wait` follows it, `--status` reports{}",
+                 `{BIN} rehearse --wait` follows it, `--status` reports{}",
                 log_path()
                     .map(|p| format!("; log: {}", p.display()))
                     .unwrap_or_default()
@@ -1416,7 +1418,7 @@ pub fn command(args: &[OsString], prestage: &Prestage) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             2
         }
     }

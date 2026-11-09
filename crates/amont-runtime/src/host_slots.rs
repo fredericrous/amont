@@ -13,6 +13,7 @@
 //! when the check starts: a clippy with no Rust staged returns at once and
 //! must not wait behind somebody else's suite to do nothing.
 
+use crate::names::BIN;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -295,7 +296,7 @@ impl Drop for CheckGuard {
 fn park(lease: amont_slots::Lease, jobs: Option<u32>) {
     if let Err(error) = lease.rename(&between_gates()) {
         crate::hooks::common::say(&format!(
-            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+            "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
     let earlier = parked().replace(Parked { lease, jobs });
@@ -499,7 +500,7 @@ fn take_handed(handed: Parked, name: &str) -> bool {
     let Parked { lease, jobs } = handed;
     if let Err(error) = lease.rename(&holder_for(name)) {
         crate::hooks::common::say(&format!(
-            "  host slot kept, but `amont slots` may still name the previous check: {error}"
+            "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
     record_acquisition(name, jobs, Duration::ZERO, "handed");

@@ -630,7 +630,7 @@ fn a_bun_lockfile_is_refused_with_the_fix_named() {
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 2, "{out}");
     assert!(
-        out.contains("bun.lock in the root: amont cannot install bun dependencies"),
+        out.contains("bun.lock in the root: greengate cannot install bun dependencies"),
         "{out}"
     );
     assert!(out.contains("amont.snapshotPrepare"), "{out}");

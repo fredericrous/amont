@@ -34,6 +34,7 @@
 //! list that is only ever `refs/notes/amont-attest` would be work spent
 //! proving nothing.
 
+use crate::names::BIN;
 use std::path::{Path, PathBuf};
 
 use git_attest::format::block;
@@ -541,11 +542,11 @@ pub fn covered_report(
     let v =
         git_attest::verify::evaluate(dir, signers, principal, require_platform, anywhere, false);
     for line in v.loud.iter().chain(&v.warnings) {
-        eprintln!("amont: {line}");
+        eprintln!("{BIN}: {line}");
     }
     let rejected = signature_rejections(&v.trail);
     for why in &rejected {
-        eprintln!("amont: an attestation was found but did not verify: {why}");
+        eprintln!("{BIN}: an attestation was found but did not verify: {why}");
     }
     Covered {
         gates: (!v.gates.is_empty()).then(|| v.gates.join(" ")),

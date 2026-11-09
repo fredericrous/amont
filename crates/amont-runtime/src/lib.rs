@@ -91,6 +91,7 @@ pub mod ui;
 pub mod vocabulary;
 pub(crate) mod waves;
 
+use crate::names::BIN;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -499,7 +500,7 @@ pub fn print_text(listings: &[CheckListing], all: bool) {
             format!(" ({})", families.join(", "))
         };
         println!(
-            "  {runs} active here.  {} inert{named} — amont list --all",
+            "  {runs} active here.  {} inert{named} — {BIN} list --all",
             inert.len()
         );
     }
@@ -531,7 +532,7 @@ pub fn print_commit_style(style: &commit_style::Style, rows: &[commit_style::Set
     for w in style.warnings() {
         println!("  {} {w}", ui::warning_sign().trim());
     }
-    println!("  `amont setup` to change any of these");
+    println!("  `{BIN} setup` to change any of these");
 }
 
 /// The commit-style block as JSON: the effective value, the shipped default,
@@ -767,7 +768,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
                 if opts.json {
                     println!("{}", json::object(&[json::string_field("error", &msg)]));
                 } else {
-                    eprintln!("amont: {msg}");
+                    eprintln!("{BIN}: {msg}");
                 }
                 return 2;
             }

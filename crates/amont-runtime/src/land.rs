@@ -31,6 +31,7 @@
 //! may have advanced or replaced the ref in between. The observed sha is
 //! reported so the person can tell which.
 
+use crate::names::BIN;
 use std::ffi::OsString;
 use std::io::{IsTerminal, Read, Write};
 use std::ops::ControlFlow;
@@ -293,20 +294,20 @@ pub fn command(args: &[OsString]) -> i32 {
             "--tag" => match it.next() {
                 Some(name) if !name.is_empty() && !name.starts_with('-') => tag = Some(name),
                 _ => {
-                    eprintln!("amont: land: --tag needs a tag name");
+                    eprintln!("{BIN}: land: --tag needs a tag name");
                     return finish(&Report::new(Status::Usage), json_out);
                 }
             },
             other if other.starts_with("--tag=") => match &other["--tag=".len()..] {
                 "" => {
-                    eprintln!("amont: land: --tag needs a tag name");
+                    eprintln!("{BIN}: land: --tag needs a tag name");
                     return finish(&Report::new(Status::Usage), json_out);
                 }
                 name => tag = Some(name.to_string()),
             },
             _ => {
                 eprintln!(
-                    "amont: land: takes no arguments, only [--force] [--json] [--dry-run] [--tag <name>]"
+                    "{BIN}: land: takes no arguments, only [--force] [--json] [--dry-run] [--tag <name>]"
                 );
                 return finish(&Report::new(Status::Usage), json_out);
             }
@@ -314,7 +315,7 @@ pub fn command(args: &[OsString]) -> i32 {
     }
     if let Some(name) = tag {
         if mode == Mode::Force {
-            eprintln!("amont: land: a tag is never forced; --tag takes no --force");
+            eprintln!("{BIN}: land: a tag is never forced; --tag takes no --force");
             return finish(&Report::new(Status::Usage), json_out);
         }
         if dry_run {
@@ -380,7 +381,7 @@ fn shown_ref(report: &Report) -> &str {
 }
 
 fn refuse(mut report: Report, why: &str, next: &[&str]) -> Report {
-    eprintln!("amont: land: {why}");
+    eprintln!("{BIN}: land: {why}");
     report.status = Status::Refused;
     report.next = next.iter().map(|s| s.to_string()).collect();
     report
@@ -537,7 +538,7 @@ fn land(mode: Mode) -> Report {
         Seen::Tip(t) => t,
         Seen::Unreachable => {
             report.status = Status::Unreachable;
-            eprintln!("amont: land: could not read {rb} from {remote}");
+            eprintln!("{BIN}: land: could not read {rb} from {remote}");
             report.next = vec![format!("git ls-remote {remote} refs/heads/{rb}")];
             return report;
         }
@@ -585,7 +586,7 @@ fn land(mode: Mode) -> Report {
             attempt = 1;
             report.retried = true;
             eprintln!(
-                "amont: land: retrying once: pre-push hook fast-forwarded HEAD {} -> {}",
+                "{BIN}: land: retrying once: pre-push hook fast-forwarded HEAD {} -> {}",
                 short(&sha),
                 short(&head_now)
             );
@@ -606,15 +607,12 @@ fn land(mode: Mode) -> Report {
         // sentinel lines, never on the prose.
         if run.seen.contains(crate::land::LAND_REMOTE_MOVED) {
             report.status = Status::Refused;
-            report.next = vec!["amont land".to_string()];
+            report.next = vec![format!("{BIN} land")];
             return report;
         }
         if run.seen.contains(crate::land::LAND_EVIDENCE_MISSING) {
             report.status = Status::Refused;
-            report.next = vec![
-                "amont rehearse --wait".to_string(),
-                "amont land".to_string(),
-            ];
+            report.next = vec![format!("{BIN} rehearse --wait"), format!("{BIN} land")];
             return report;
         }
         report.status = status_of_failed_push(&run.stderr);
@@ -645,7 +643,7 @@ fn land(mode: Mode) -> Report {
             report.remote_after = t;
             report.status = Status::NotObserved;
             eprintln!(
-                "amont: land: the remote accepted the push but {rb} reads {}, not {}",
+                "{BIN}: land: the remote accepted the push but {rb} reads {}, not {}",
                 short(&report.remote_after),
                 short(&pushed)
             );
@@ -653,7 +651,7 @@ fn land(mode: Mode) -> Report {
         }
         Seen::Unreachable => {
             report.status = Status::Unverified;
-            eprintln!("amont: land: the push was accepted but {rb} could not be read back");
+            eprintln!("{BIN}: land: the push was accepted but {rb} could not be read back");
             report.next = vec![format!("git ls-remote {remote} refs/heads/{rb}")];
         }
     }
@@ -706,7 +704,7 @@ impl Staged {
         match self.end {
             Prestage::Ready => ControlFlow::Continue(report),
             Prestage::Refused(why, next) => {
-                eprintln!("amont: land: {why}");
+                eprintln!("{BIN}: land: {why}");
                 report.status = Status::Refused;
                 report.next = next;
                 ControlFlow::Break(Box::new(report))
@@ -753,8 +751,8 @@ fn prestage(
 ) -> Staged {
     // What to run again after a refusal: the same land.
     let again = match dst.strip_prefix("refs/tags/") {
-        Some(tag) => format!("amont land --tag {tag}"),
-        None => "amont land".to_string(),
+        Some(tag) => format!("{BIN} land --tag {tag}"),
+        None => format!("{BIN} land"),
     };
     let root = match crate::hooks::common::repo_root_checked() {
         Ok(root) => root,
@@ -768,7 +766,7 @@ fn prestage(
     // not the few seconds a reachability probe gets.
     if !remote_tip.is_empty() && !has_commit(remote_tip) {
         eprintln!(
-            "amont: land: fetching {} ({dst}) from the remote",
+            "{BIN}: land: fetching {} ({dst}) from the remote",
             short(remote_tip)
         );
         let budget = crate::hooks::common::check_timeout(&settings);
@@ -831,13 +829,13 @@ fn prestage(
             return Staged::refused(
                 owed,
                 PrestageState::Refused,
-                format!("cannot locate the amont binary for the pre-stage: {e}"),
+                format!("cannot locate the {BIN} binary for the pre-stage: {e}"),
             )
         }
     };
     let names: Vec<&str> = owed.iter().map(String::as_str).collect();
     eprintln!(
-        "amont: land: {} push gate{} to check before git connects:",
+        "{BIN}: land: {} push gate{} to check before git connects:",
         owed.len(),
         if owed.len() == 1 { "" } else { "s" }
     );
@@ -890,7 +888,7 @@ fn prestage(
             PrestageState::Failed,
             Prestage::Refused(
                 "a push gate failed before the push (named above); nothing was pushed".to_string(),
-                vec!["amont rehearse --status".to_string(), again],
+                vec![format!("{BIN} rehearse --status"), again],
             ),
         ),
         // `rehearse` reports a gate stopped by signal n as 128+n.
@@ -970,7 +968,7 @@ fn land_tag(name: &str) -> Report {
         }
         Seen::Unreachable => {
             report.status = Status::Unreachable;
-            eprintln!("amont: land: could not read {dst} from {remote}");
+            eprintln!("{BIN}: land: could not read {dst} from {remote}");
             report.next = vec![format!("git ls-remote {remote} {dst}")];
             return report;
         }
@@ -992,7 +990,7 @@ fn land_tag(name: &str) -> Report {
             if run.seen.contains(LAND_EVIDENCE_MISSING) {
                 // A rehearsal tests HEAD, never the tagged commit's release
                 // audits: land the tag again, which runs them first.
-                report.next = vec![format!("amont land --tag {name}")];
+                report.next = vec![format!("{BIN} land --tag {name}")];
             }
             return report;
         }
@@ -1090,12 +1088,12 @@ fn write_receipt(report: &Report, started: i64, ended: i64) {
         return;
     }
     let Some(dir) = receipt_dir() else {
-        eprintln!("amont: land: could not find the git directory; no landing receipt written");
+        eprintln!("{BIN}: land: could not find the git directory; no landing receipt written");
         return;
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!(
-            "amont: land: could not write a landing receipt in {}: {e}",
+            "{BIN}: land: could not write a landing receipt in {}: {e}",
             dir.display()
         );
         return;
@@ -1115,7 +1113,7 @@ fn write_receipt(report: &Report, started: i64, ended: i64) {
     ]);
     if let Err(e) = std::fs::write(&path, format!("{body}\n")) {
         eprintln!(
-            "amont: land: could not write the landing receipt {}: {e}",
+            "{BIN}: land: could not write the landing receipt {}: {e}",
             path.display()
         );
     }
@@ -1140,7 +1138,7 @@ fn prune_receipts(dir: &std::path::Path) {
         if old {
             if let Err(e) = std::fs::remove_file(&path) {
                 eprintln!(
-                    "amont: land: could not delete the old receipt {}: {e}",
+                    "{BIN}: land: could not delete the old receipt {}: {e}",
                     path.display()
                 );
             }
@@ -1159,7 +1157,7 @@ fn move_tracking_ref(remote: &str, rb: &str, sha: &str) {
     let tracking = format!("refs/remotes/{remote}/{rb}");
     if !git::succeeds(&["update-ref", &tracking, sha]) {
         eprintln!(
-            "amont: land: landed, but could not move {tracking} to {}",
+            "{BIN}: land: landed, but could not move {tracking} to {}",
             short(sha)
         );
     }
@@ -1169,7 +1167,7 @@ fn move_tracking_ref(remote: &str, rb: &str, sha: &str) {
 fn set_upstream(remote: &str, rb: &str) {
     let upstream = format!("{remote}/{rb}");
     if !git::succeeds(&["branch", "--set-upstream-to", &upstream]) {
-        eprintln!("amont: land: landed, but could not set the upstream to {upstream}");
+        eprintln!("{BIN}: land: landed, but could not set the upstream to {upstream}");
     }
 }
 
@@ -1219,7 +1217,7 @@ fn push(url: &str, src: &str, dst: &str, lease: Option<&str>, land_env: &str) ->
         Ok(c) => c,
         Err(e) => {
             let why = format!("could not run git push: {e}\n");
-            eprint!("amont: land: {why}");
+            eprint!("{BIN}: land: {why}");
             return PushRun {
                 outcome: PushOutcome::Failed,
                 stderr: why.clone(),

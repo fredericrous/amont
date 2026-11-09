@@ -18,6 +18,7 @@
 //!   linter pass here and fail in CI;
 //! - a merge, rebase, cherry-pick or revert is in progress.
 
+use crate::names::BIN;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -545,7 +546,7 @@ fn warm_later(cold: &[String]) {
             Err(e) => say(&format!(
                 "  tree lint cold: {} — could not start the warm-up ({e}); run {}",
                 cold.join(" "),
-                hl("amont warm")
+                hl(&format!("{BIN} warm"))
             )),
         }
     }
@@ -563,7 +564,7 @@ fn warm_later(cold: &[String]) {
 pub fn warm(root: &Path) -> i32 {
     let manifest = crate::manifest::load(root);
     if manifest.tree.is_empty() {
-        println!("amont warm: no trusted tree gate here");
+        println!("{BIN} warm: no trusted tree gate here");
         return 0;
     }
     for g in &manifest.tree {

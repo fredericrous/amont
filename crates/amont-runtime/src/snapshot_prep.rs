@@ -34,6 +34,7 @@
 //! or YAML parser, and a hand-rolled one reading `workspaces` would be a
 //! second, divergent answer to a question npm already answers.
 
+use crate::names::BIN;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -502,7 +503,7 @@ pub fn units(files: &[String], snapshot: &Path) -> Result<Vec<Unit>, String> {
 /// install command, or turns the preparation off.
 fn bun_refusal(u: &Unit) -> String {
     format!(
-        "{} in {}: amont cannot install bun dependencies — set amont.snapshotPrepare \
+        "{} in {}: {BIN} cannot install bun dependencies — set amont.snapshotPrepare \
          to the install command, or amont.snapshotDeps off",
         u.lockfile,
         unit_label(u)

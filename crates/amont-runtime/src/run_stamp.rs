@@ -30,6 +30,7 @@
 
 use crate::check::{Check, Outcome, Severity, Stage};
 use crate::manifest::Manifest;
+use crate::names::BIN;
 use crate::pushrefs::PushRefs;
 use crate::registry::Ctx;
 use crate::ui::{highlight, valid_sign, warning_sign};
@@ -101,7 +102,7 @@ fn resolve(
             crate::dispatch::Named2::Resolved(id) => vec![id],
             crate::dispatch::Named2::Ambiguous(ids) => ids,
             crate::dispatch::Named2::Unknown => {
-                return Err(format!("unknown gate {n:?} — try `amont list`"))
+                return Err(format!("unknown gate {n:?} — try `{BIN} list`"))
             }
         };
         for id in ids {
@@ -200,12 +201,12 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
     let dirty = crate::git::stdout(&["status", "--porcelain", "--untracked-files=no"]);
     match dirty.as_deref() {
         None => {
-            eprintln!("amont: git would not say whether the worktree is clean — nothing stamped");
+            eprintln!("{BIN}: git would not say whether the worktree is clean — nothing stamped");
             return EXIT_REFUSED;
         }
         Some(s) if !s.trim().is_empty() => {
             eprintln!(
-                "amont: run --stamp needs a clean worktree: tracked files differ from HEAD, so \
+                "{BIN}: run --stamp needs a clean worktree: tracked files differ from HEAD, so \
                  the gates would judge content no tree holds — commit or stash them first"
             );
             return EXIT_REFUSED;
@@ -216,13 +217,13 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
         crate::git::stdout(&["rev-parse", "HEAD"]),
         crate::git::stdout(&["rev-parse", "HEAD^{tree}"]),
     ) else {
-        eprintln!("amont: run --stamp needs a commit at HEAD to stamp");
+        eprintln!("{BIN}: run --stamp needs a commit at HEAD to stamp");
         return EXIT_REFUSED;
     };
     let ids = match resolve(settings, manifest, names) {
         Ok(ids) => ids,
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             return EXIT_REFUSED;
         }
     };
@@ -255,7 +256,7 @@ pub fn stamp(settings: &crate::config::Settings, manifest: &Manifest, names: &[S
                 Some((refs, changed))
             }
             Err(e) => {
-                eprintln!("amont: push gates cannot run here: {e}");
+                eprintln!("{BIN}: push gates cannot run here: {e}");
                 None
             }
         })
@@ -600,7 +601,7 @@ pub fn stamps_command(
     crate::cluster::collect_if_declared(manifest);
     let rev = tree.unwrap_or("HEAD");
     let Some(tree) = crate::git::stdout(&["rev-parse", &format!("{rev}^{{tree}}")]) else {
-        eprintln!("amont: {rev:?} names no tree here");
+        eprintln!("{BIN}: {rev:?} names no tree here");
         return EXIT_REFUSED;
     };
     // The commit the tree was asked for by, when it was asked for by one.
@@ -613,7 +614,7 @@ pub fn stamps_command(
     let ids = match resolve(settings, manifest, names) {
         Ok(ids) => ids,
         Err(e) => {
-            eprintln!("amont: {e}");
+            eprintln!("{BIN}: {e}");
             return EXIT_REFUSED;
         }
     };
