@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/greengate-name
 repos: [amont, amont-agent, homebrew-tap, decisions]
 adrs: [ADR-0064]
@@ -217,7 +217,7 @@ is a later ticket.
 - [x] Phase 4a — docs and the map: `README.md`, `docs/`, `CHANGELOG.md`,
   `decisions/docs/programmes/gate-guardrails/map.md`,
   `decisions/docs/programmes/gate-guardrails/t12-grh-fleet-view.md`.
-- [ ] Phase 4b — release 3.0.0, after this branch merges (tag only after
+- [x] Phase 4b — release 3.0.0, after this branch merges (tag only after
   Phase 0 is installed, the crates.io token scope is checked and the
   person's first npm publish is done or `publish-npm` is held); the tap
   files are written by the release's `publish-tap`
@@ -364,6 +364,29 @@ is a later ticket.
   item 22 contradicted); `publish-npm` is held by the repository variable
   `NPM_GREENGATE_PUBLISHED`; the formula's source is
   `packaging/homebrew/greengate.rb`, copied into the tap by `publish-tap`.
+
+- Phase 4b (2026-11-10): v3.0.0 tagged on 29373c66 through `amont land --tag`;
+  release run 42851776370 green in every job (`standalone`, Publish,
+  crates.io, the tap, `brew can install what was published`), npm skipped as
+  held. Assets: six `greengate-3.0.0-*` and six `amont-3.0.0-*` archives,
+  `greenharness.toml`, `SHA256SUMS`. crates.io answers 200 for `greengate`,
+  `greengate-fleet`, `greengate-runtime`, `greenharness-quiet`,
+  `greenharness-slots` at 3.0.0. The tap holds `Formula/greengate.rb`, no
+  `amont.rb`, and `formula_renames.json` `{"amont": "greengate"}`. On this
+  machine `brew upgrade fredericrous/tap/amont` moved it to greengate:
+  `greengate`, `amont` and `greengate-fleet --version` → 3.0.0.
+  `greengate-fleet scan` over ~/Developer: 167 repositories, 148 ok (2.3.1
+  bakes and unbaked shims read as current), 11 unreadable (redirected hooks
+  directories), 4 drifted, all third-party trees whose shims predate 2.3.1's
+  template (they were drifted before the release too).
+- Phase 4b decisions (the person, 2026-11-10): tag right after merge and
+  widen the crates.io token only if publish-crates fails (it did not);
+  npm held for 3.0.0 until the person's first publish of the seven
+  `@greenharness` packages and `NPM_GREENGATE_PUBLISHED=true`.
+- The land of the branch: the local pre-push suite looped (amont 2.3.0
+  restarted a passing `cargo test` four times on a loaded host); with the
+  person's agreement the push skipped it once and CI was the test gate; the
+  last fix was committed and pushed by the person with `--no-verify`.
 
 ## Implementation review
 
