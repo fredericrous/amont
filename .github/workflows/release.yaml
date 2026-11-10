@@ -460,7 +460,8 @@ jobs:
             # manifest's digest, and an installer that checked an archive
             # once must find the same bytes again.
             #
-            # A release whose SHA256SUMS is published is COMPLETE: SHA256SUMS
+            # A PUBLISHED (non-draft) release whose SHA256SUMS is listed is
+            # COMPLETE: SHA256SUMS
             # is uploaded with the archives, and a later job failing is why
             # anyone re-runs. Its assets are kept as they are, and this run's
             # build is not compared with them: a `workflow_dispatch` on the
@@ -469,9 +470,11 @@ jobs:
             # read the PUBLISHED assets, never this run's (publish-npm
             # downloads and checks them; publish-tap reads SHA256SUMS).
             #
-            # Without SHA256SUMS the publish stopped part-way: upload what is
-            # missing, and refuse an asset that is there with other bytes,
-            # because a half-published set from two builds is not a release.
+            # A draft, or a release without SHA256SUMS, stopped part-way: it is
+            # finished by checking or uploading each asset, then published. An
+            # asset there with other bytes is refused, because a half-published
+            # set from two builds is not a release; re-run the FAILED jobs of
+            # the original run (they reuse its build), not a new dispatch.
             # `gh release view`, not the tags API: an upload cut off part-way
             # leaves a DRAFT (gh creates the release as a draft, uploads,
             # then publishes), and the tags API does not see drafts.
@@ -499,7 +502,7 @@ jobs:
               fi
               if [ "$have" != "$want" ]; then
                 echo "::error::$name on the release is $have, this build made $want; a released asset is never replaced."
-                echo "::error::Delete the partial release's assets by hand, then re-run, or release the next version."
+                echo "::error::Re-run the failed jobs of the run that built it (they reuse its bytes), or delete the partial release's assets by hand and re-run, or release the next version."
                 exit 1
               fi
               echo "$name is already on the release with this build's bytes"

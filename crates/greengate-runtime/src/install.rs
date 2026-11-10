@@ -342,6 +342,8 @@ fn stage_copy(from: &Path, staged: &Path) -> std::io::Result<()> {
     let mut source = std::fs::File::open(from)?;
     let mut file = std::fs::File::create(staged)?;
     std::io::copy(&mut source, &mut file)?;
+    // For the installed binary only: shims get their mode from
+    // `hookfile::stage`, before a hook could be dispatched from them.
     // The mode through the open handle, BEFORE the flush, so the flush covers
     // it: after a power loss the target is never the whole binary at 0644.
     #[cfg(unix)]
@@ -552,8 +554,6 @@ fn write_shims(dir: &Path, bin: &str, force: bool) -> Result<Vec<Written>, ShimW
         .collect())
 }
 
-/// For the installed BINARY only — shims get their mode from `hookfile::stage`,
-/// before they are anywhere a hook could be dispatched from.
 /// Install: copy this binary somewhere stable, populate the template directory
 /// if that is safe, and bake the current repository's hooks.
 ///
@@ -926,7 +926,7 @@ fn offer_trust() {
         );
         return;
     };
-    print!(
+    eprint!(
         "{}",
         crate::trust::describe_source(&String::from_utf8_lossy(&source))
     );

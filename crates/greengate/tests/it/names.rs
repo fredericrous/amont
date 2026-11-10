@@ -205,14 +205,14 @@ fn the_old_name_is_said_only_where_it_is_allowed() {
                 continue;
             }
             let text = std::fs::read_to_string(&file).expect("utf-8 source");
-            let n = count(&text);
-            if n > 0 {
+            let old_spellings = count(&text);
+            if old_spellings > 0 {
                 let rel = file
                     .strip_prefix(&crates)
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/");
-                found.insert(rel, n);
+                found.insert(rel, old_spellings);
             }
         }
     }

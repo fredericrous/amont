@@ -360,8 +360,10 @@ pub fn confirm(prompt: &str) -> bool {
     let Ok(tty) = std::fs::File::open("/dev/tty") else {
         return false;
     };
-    print!("{prompt}");
-    let _ = std::io::stdout().flush();
+    // A prompt is talk, never data: on stderr, so it shows when stdout is
+    // redirected and the question is still asked on the terminal.
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
     let mut line = String::new();
     if BufReader::new(tty).read_line(&mut line).is_err() {
         return false;
@@ -395,8 +397,10 @@ pub fn confirm(prompt: &str) -> bool {
     let Ok(con) = std::fs::File::open("CONIN$") else {
         return false;
     };
-    print!("{prompt}");
-    let _ = std::io::stdout().flush();
+    // A prompt is talk, never data: on stderr, so it shows when stdout is
+    // redirected and the question is still asked on the terminal.
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
     let mut line = String::new();
     if BufReader::new(con).read_line(&mut line).is_err() {
         return false;

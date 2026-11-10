@@ -564,7 +564,7 @@ fn warm_later(cold: &[String]) {
 pub fn warm(root: &Path) -> i32 {
     let manifest = crate::manifest::load(root);
     if manifest.tree.is_empty() {
-        println!("{BIN} warm: no trusted tree gate here");
+        eprintln!("{BIN} warm: no trusted tree gate here");
         return 0;
     }
     for g in &manifest.tree {
