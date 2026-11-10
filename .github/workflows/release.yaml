@@ -461,14 +461,14 @@ jobs:
             # once must find the same bytes again.
             #
             # A PUBLISHED (non-draft) release whose SHA256SUMS is listed is
-            # COMPLETE: SHA256SUMS
-            # is uploaded with the archives, and a later job failing is why
-            # anyone re-runs. Its assets are kept as they are, and this run's
-            # build is not compared with them: a `workflow_dispatch` on the
-            # tag rebuilds the archives, and tar records file times, so the
-            # bytes differ while the release is fine. The jobs after this one
-            # read the PUBLISHED assets, never this run's (publish-npm
-            # downloads and checks them; publish-tap reads SHA256SUMS).
+            # COMPLETE: SHA256SUMS is uploaded with the archives, and a later
+            # job failing is why anyone re-runs. Its assets are kept as they
+            # are, and this run's build is not compared with them: a
+            # `workflow_dispatch` on the tag rebuilds the archives, and tar
+            # records file times, so the bytes differ while the release is
+            # fine. The jobs after this one read the PUBLISHED assets, never
+            # this run's (publish-npm downloads and checks them; publish-tap
+            # reads SHA256SUMS).
             #
             # A draft, or a release without SHA256SUMS, stopped part-way: it is
             # finished by checking or uploading each asset, then published. An
