@@ -130,6 +130,72 @@ fn the_test_gate_does_not_leak_git_env_to_the_suite() {
     assert_eq!(code, 0, "the suite saw git's environment");
 }
 
+/// A push that touches two members of one workspace runs that workspace's
+/// suite ONCE. Each changed file maps to its nearest `Cargo.toml`, which for a
+/// member is the member's own manifest, and the gate used to run
+/// `cargo test --workspace` in each of them: the whole suite once per touched
+/// member, in sequence, under a single "running cargo-test" line. On
+/// 2026-11-10 a rename touching six crates of this repository ran the
+/// workspace six times and held the push for nearly two hours.
+#[test]
+fn a_push_touching_two_members_runs_the_workspace_suite_once() {
+    if missing("cargo") {
+        return;
+    }
+    let r = Repo::new();
+    // Outside the repository, so the log is never part of the pushed tree.
+    let log = std::env::temp_dir().join(format!(
+        "greengate-ws-once-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_file(&log);
+    let member = |name: &str, touch: &str| {
+        r.stage(
+            &format!("{name}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
+            ),
+        );
+        r.stage(
+            &format!("{name}/src/lib.rs"),
+            &format!(
+                "#[test]\nfn ran() {{\n    use std::io::Write;\n    \
+                 let mut f = std::fs::OpenOptions::new().create(true).append(true)\n        \
+                 .open({log:?}).unwrap();\n    \
+                 writeln!(f, \"{name}\").unwrap();\n}}\n{touch}"
+            ),
+        );
+    };
+    r.stage(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
+    );
+    member("a", "");
+    member("b", "");
+    r.commit("feat: base");
+    let base = head(&r);
+    member("a", "// touch\n");
+    member("b", "// touch\n");
+    r.commit("feat: touch both members");
+
+    let code = pre_push(&r, &base, &head(&r));
+    let runs = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(code, 0, "the suite should pass");
+    let mut lines: Vec<&str> = runs.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        ["a", "b"],
+        "each member's test should run once; the workspace suite ran {} time(s)",
+        runs.lines().filter(|l| *l == "a").count()
+    );
+}
+
 /// A brand-new branch's changed-file set must cover EVERY new commit, not
 /// just the tip. For a new ref (`remote_oid` all-zero), the range logic used
 /// to diff only the tip commit against its parent — a branch that added

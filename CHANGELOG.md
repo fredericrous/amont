@@ -8,6 +8,18 @@ missing here.
 
 ## Unreleased
 
+### Fixed
+
+- The push gate's `cargo test --workspace` runs once per workspace, not once
+  per touched member crate. Each changed file maps to its nearest
+  `Cargo.toml`, which for a member is its own manifest, and the gate ran the
+  whole suite from each one in turn: a change to six crates of one workspace
+  ran it six times, under a single "running cargo-test" line. Roots now
+  collapse to the workspace root cargo reports (`cargo locate-project
+  --workspace`); `cargo fmt --all` and clippy's workspace mode collapse the
+  same way. When more than one run is still due, each is announced
+  (`cargo test: 1 of 2, in tools/x`), also in a piped run.
+
 ## v3.0.0
 
 amont is now **greengate** (Green Harness ADR-0064). The command, the crates
