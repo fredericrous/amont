@@ -21,11 +21,11 @@ const { existsSync } = require("node:fs");
 // `libc` is why linux-x64 appears twice: a musl host cannot run the glibc build,
 // and npm will install only the package whose `libc` matches.
 const PACKAGES = {
-  "darwin arm64": "@amont-hooks/darwin-arm64",
-  "darwin x64": "@amont-hooks/darwin-x64",
-  "linux arm64": "@amont-hooks/linux-arm64-gnu",
-  "linux x64": ["@amont-hooks/linux-x64-gnu", "@amont-hooks/linux-x64-musl"],
-  "win32 x64": "@amont-hooks/win32-x64",
+  "darwin arm64": "@greenharness/greengate-darwin-arm64",
+  "darwin x64": "@greenharness/greengate-darwin-x64",
+  "linux arm64": "@greenharness/greengate-linux-arm64-gnu",
+  "linux x64": ["@greenharness/greengate-linux-x64-gnu", "@greenharness/greengate-linux-x64-musl"],
+  "win32 x64": "@greenharness/greengate-win32-x64",
 };
 
 function candidates() {
@@ -88,9 +88,9 @@ function become(name) {
       (failures.length ? `  Installed but could not run:\n${failures.join("\n")}\n` : "") +
       `  npm installs one of: ${Object.values(PACKAGES).flat().join(", ")}\n` +
       `  If your platform is not among them, build from source:\n` +
-      `      cargo install amont\n` +
+      `      cargo install greengate\n` +
       `  If it is, the optional dependency did not install — try:\n` +
-      `      npm install --force amont\n`,
+      `      npm install --force @greenharness/greengate\n`,
   );
   process.exit(1);
 }

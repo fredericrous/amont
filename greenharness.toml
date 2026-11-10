@@ -1,0 +1,76 @@
+# greengate's manifest for grh (Green Harness), the v2 format of grh's
+# docs/extension-manifest.md. grh pins the copy each release publishes.
+#
+# No sums here, and no [tool.release]: the tarballs this would describe do
+# not exist when the file is committed. The release job writes
+# [tool.release] (repo, version, the sha256 of each unix tarball) into a copy
+# in dist/ before SHA256SUMS is computed, so the published manifest is
+# checksummed and attested with the archives (scripts/release-manifest.py).
+# The release guard checks [extension] version against the tag.
+
+[extension]
+name = "greengate"
+version = "3.0.0"
+harness = ">=0.3"
+summary = "what a commit or a push may carry: git hooks"
+needs = []
+aliases = ["gate"]
+
+[tool]
+bin = "greengate"
+
+# `greengate init`, never `greengate install`: install copies the binary and
+# fills the machine's git template dir, machine state a repo step must not
+# touch.
+[tool.repo_level]
+install = ["{bin}", "init"]
+uninstall = ["{bin}", "uninstall", "--repo"]
+[tool.repo_level.status]
+args = ["list", "--json"]
+json = ["installed", "state"]
+
+# Keep the placed binary while greengate's git template directory bakes its
+# path.
+[tool.keep_binary]
+args = ["list", "--json"]
+state = ["template_dir", "state"]
+absent = "absent"
+shims = ["template_dir", "shims"]
+binary = "binary"
+warning = "repositories armed by hand with it fail their next commit until `greengate init` re-arms them"
+
+[bundle]
+skills = ["relais-verified-push", "merge-when-green", "tag-release"]
+
+[[conflict]]
+git_config = "core.hooksPath"
+label = "core.hooksPath={hooks_path}"
+warning = "core.hooksPath redirects git hooks to {hooks_path}; greengate refuses a redirected hooks path: unset it before grh install {part}"
+
+[[conflict]]
+paths = [".husky"]
+label = "husky (.husky/)"
+warning = "{manager} already manages git hooks here; the {part} part (greengate) installs its own hooks next to it: check they do not clash"
+
+[[conflict]]
+paths = ["lefthook.yml", ".lefthook.yml"]
+label = "lefthook"
+warning = "{manager} already manages git hooks here; the {part} part (greengate) installs its own hooks next to it: check they do not clash"
+
+[[conflict]]
+paths = [".pre-commit-config.yaml"]
+label = "pre-commit (.pre-commit-config.yaml)"
+warning = "{manager} already manages git hooks here; the {part} part (greengate) installs its own hooks next to it: check they do not clash"
+
+[[conflict]]
+foreign_hooks = true
+
+[[recommend]]
+when = ["repo_present"]
+verdict = "already here"
+reason = "greengate's git hooks are installed here"
+
+[[recommend]]
+when = []
+verdict = "recommend"
+reason = "a git repository: gate its commits and pushes"

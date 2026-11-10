@@ -94,6 +94,8 @@ lint:
 	@cargo fmt --check
 	@cargo clippy --all-targets -- -D warnings
 	@python3 scripts/test_bump_tap.py
+	@python3 -I scripts/test_release_manifest.py
+	@sh scripts/test_publish_crates.sh
 
 # Clippy for the platforms this machine does not build: the CPU sampler
 # (src/proctree.rs) has a Linux module, a macOS module and a stub for the

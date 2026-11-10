@@ -1,0 +1,48 @@
+{
+  "name": "@greenharness/greengate",
+  "version": "__VERSION__",
+  "description": "Opinionated git hooks that judge what you are committing, not what is on disk",
+  "keywords": [
+    "git",
+    "git-hooks",
+    "pre-commit",
+    "pre-push",
+    "hooks",
+    "lint",
+    "husky"
+  ],
+  "homepage": "https://github.com/greenharness/greengate#readme",
+  "bugs": "https://github.com/greenharness/greengate/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/greenharness/greengate.git"
+  },
+  "license": "MIT",
+  "author": "Frederic Rousseau",
+  "type": "commonjs",
+  "_comment_bin": "Both names run the same wrapper: `greengate`, and `amont` for a package.json script or shim written before the rename.",
+  "bin": {
+    "greengate": "bin/greengate.js",
+    "amont": "bin/greengate.js"
+  },
+  "_comment_access": "Scoped packages default to RESTRICTED; this says public in the manifest too, so a hand-run publish cannot make the package private.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "bin/greengate.js",
+    "bin/native.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@greenharness/greengate-darwin-arm64": "__VERSION__",
+    "@greenharness/greengate-darwin-x64": "__VERSION__",
+    "@greenharness/greengate-linux-arm64-gnu": "__VERSION__",
+    "@greenharness/greengate-linux-x64-gnu": "__VERSION__",
+    "@greenharness/greengate-linux-x64-musl": "__VERSION__",
+    "@greenharness/greengate-win32-x64": "__VERSION__"
+  }
+}

@@ -202,7 +202,7 @@ is a later ticket.
   `crates/amont-runtime/src/install.rs`,
   `crates/amont-runtime/templates/hooks/pre-commit`, `templates/hooks/`,
   `crates/amont-fleet/src/shim.rs`, `scripts/check-no-deps.sh`, `Makefile`.
-- [ ] Phase 3 — packaging and CI: `install/install.sh`,
+- [x] Phase 3 — packaging and CI: `install/install.sh`,
   `install/install.ps1`, `npm/amont/package.json.in`,
   `npm/platform/package.json.in`, `scripts/npm-pack.sh`,
   `scripts/bump-tap.py`, `scripts/test_bump_tap.py`,
@@ -340,6 +340,26 @@ is a later ticket.
   `install.sh`/`install.ps1` write both aliases. The frozen shim lives at
   `crates/greengate-fleet/src/shim-2.3.1` (no `.sh`: shellcheck must not
   lint a byte-frozen file).
+- Phase 3, a local release dry run (the build job's archive loop on this
+  machine's target, the four unix names for the manifest): archives
+  `greengate-3.0.0-<t>` and `amont-3.0.0-<t>`; the old one lists
+  `amont-3.0.0-<t>/` first and holds the member `…/amont`, which the
+  homelab-style extraction leaves answering `greengate 3.0.0`; 2.3.1's own
+  `install.sh`, against those assets through a stub `curl`, installs `amont`
+  and `amont-fleet` answering 3.0.0 with the checksum verified; the new
+  `install.sh` writes greengate, greengate-fleet, amont, amont-fleet (four
+  inodes); `release-manifest.py` writes `[tool.release]` and `grh install
+  --extension` reads it (download greengate 3.0.0 from greenharness/greengate,
+  repo install `greengate init`); `npm-pack.sh` lays out
+  `@greenharness/greengate` (bin greengate and amont) and six
+  `@greenharness/greengate-<target>`; `test_bump_tap.py` (8),
+  `test_release_manifest.py` (4) and `test_publish_crates.sh` pass. The
+  Publish re-run, `standalone` and npm/brew jobs run first on the tag.
+- Phase 3 deviations: the manifest goes into `dist/` BEFORE `SHA256SUMS`, so
+  `SHA256SUMS` lists it (grh's "Shipping a manifest" contract, which carried
+  item 22 contradicted); `publish-npm` is held by the repository variable
+  `NPM_GREENGATE_PUBLISHED`; the formula's source is
+  `packaging/homebrew/greengate.rb`, copied into the tap by `publish-tap`.
 
 ## Outcome
 

@@ -59,6 +59,14 @@ jobs:
             echo "::error::Commit the version bump FIRST, confirm HEAD moved, then tag."
             exit 1
           fi
+          # The manifest grh pins says the same version (grh's "Shipping a
+          # manifest"): a released greenharness.toml naming another version
+          # is one grh refuses, and a released asset is never replaced.
+          gh_manifest=$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["extension"]["version"])' greenharness.toml)
+          if [ "$gh_manifest" != "$tag" ]; then
+            echo "::error::greenharness.toml [extension] version $gh_manifest does not match tag v$tag."
+            exit 1
+          fi
           # The same bargain as the version check: the release notes lead
           # with CHANGELOG.md's section for this version, so a missing
           # section would publish a release that opens with nothing. Refuse
@@ -134,38 +142,55 @@ jobs:
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
-      # Both binaries: `amont` is the hook runtime and the only one anybody
-      # strictly needs; `amont-fleet` is the opt-in dashboard, and shipping it
-      # here is what stops it being a build-from-source-only feature.
+      # Both binaries: `greengate` is the hook runtime and the only one
+      # anybody strictly needs; `greengate-fleet` is the opt-in dashboard, and
+      # shipping it here is what stops it being a build-from-source-only
+      # feature.
       #
       # `amont-agent` used to be a third. It is its own project now —
       # github.com/greenharness/greenpiste — with its own release.
-      - run: cargo build --release --target ${{ matrix.target }} --bin amont --bin amont-fleet
+      - run: cargo build --release --target ${{ matrix.target }} --bin greengate --bin greengate-fleet
 
       - name: Archive
         id: archive
         run: |
           set -euo pipefail
           version="${{ needs.guard.outputs.version }}"
-          name="amont-${version}-${{ matrix.target }}"
-          staging="dist/$name"
-          mkdir -p "$staging"
-          # The shims travel WITH the binary. A release that shipped only the
-          # executable would leave `init.templateDir` users with nothing to
-          # point git at, which is half the product.
-          cp -r templates "$staging/"
-          cp README.md LICENSE "$staging/"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/amont.exe" "$staging/"
-            cp "target/${{ matrix.target }}/release/amont-fleet.exe" "$staging/"
-            (cd dist && 7z a "$name.zip" "$name" > /dev/null)
-            echo "asset=dist/$name.zip" >> "$GITHUB_OUTPUT"
-          else
-            cp "target/${{ matrix.target }}/release/amont" "$staging/"
-            cp "target/${{ matrix.target }}/release/amont-fleet" "$staging/"
-            (cd dist && tar czf "$name.tar.gz" "$name")
-            echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
-          fi
+          exe=
+          if [ "${{ runner.os }}" = "Windows" ]; then exe=.exe; fi
+          rel="target/${{ matrix.target }}/release"
+          # Two archives from the same build. `greengate-<v>-<t>` holds
+          # greengate and greengate-fleet. `amont-<v>-<t>` holds the same
+          # bytes under the old names, from an `amont-<v>-<t>/` directory of
+          # REGULAR files, because 2.x install.sh/install.ps1 and CI images
+          # (the homelab runner extracts the member `amont-<v>-<t>/amont`)
+          # build that name from releases/latest. Shipped on every release
+          # until the step-5 census finds no 2.x consumer (plan "amont ships
+          # as greengate").
+          for pair in greengate:greengate-fleet amont:amont-fleet; do
+            hook=${pair%%:*}
+            fleet=${pair#*:}
+            name="${hook}-${version}-${{ matrix.target }}"
+            staging="dist/$name"
+            mkdir -p "$staging"
+            # The shims travel WITH the binary. A release that shipped only
+            # the executable would leave `init.templateDir` users with nothing
+            # to point git at, which is half the product.
+            cp -r templates "$staging/"
+            cp README.md LICENSE "$staging/"
+            cp "$rel/greengate$exe" "$staging/$hook$exe"
+            cp "$rel/greengate-fleet$exe" "$staging/$fleet$exe"
+            if [ -n "$exe" ]; then
+              (cd dist && 7z a "$name.zip" "$name" > /dev/null)
+            else
+              (cd dist && tar czf "$name.tar.gz" "$name")
+            fi
+          done
+          # Uploaded as one artifact per target; the archives only, never
+          # the staging directories.
+          echo "assets<<EOF" >> "$GITHUB_OUTPUT"
+          ls dist/*.tar.gz dist/*.zip 2>/dev/null >> "$GITHUB_OUTPUT" || true
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       # Prove the thing we are about to hand people actually runs. A release
       # asset that cannot execute is the one defect no amount of `cargo test`
@@ -175,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.guard.outputs.version }}"
-          bin="dist/amont-${version}-${{ matrix.target }}/amont"
+          bin="dist/greengate-${version}-${{ matrix.target }}/greengate"
           # An `if`, not `[ … ] && …`: under `set -e` a false test as the last
           # command of a line is a FAILING step, so the short form would abort
           # every non-Windows target here.
@@ -185,18 +210,25 @@ jobs:
           # Every shipped binary, not just the first one: a packaged asset that
           # cannot execute is the defect `cargo test` structurally cannot see,
           # and it used to be checked for exactly one of them.
-          for extra in amont-fleet; do
-            side="dist/amont-${version}-${{ matrix.target }}/$extra"
+          for extra in greengate-fleet; do
+            side="dist/greengate-${version}-${{ matrix.target }}/$extra"
             if [ "${{ runner.os }}" = "Windows" ]; then side="$side.exe"; fi
             [ -x "$side" ] || { echo "::error::$extra is missing or not executable"; exit 1; }
             "$side" --help > /dev/null || { echo "::error::$extra does not answer --help"; exit 1; }
+          done
+          # The old-name archive runs too, and answers as the new build.
+          for old in amont amont-fleet; do
+            side="dist/amont-${version}-${{ matrix.target }}/$old"
+            if [ "${{ runner.os }}" = "Windows" ]; then side="$side.exe"; fi
+            [ -f "$side" ] && [ ! -L "$side" ] || { echo "::error::$old is missing or a link in the old-name archive"; exit 1; }
+            "$side" --version | grep -q "$version" || { echo "::error::$old does not answer --version $version"; exit 1; }
           done
           echo "every packaged binary answers --help"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ steps.archive.outputs.asset }}
+          path: ${{ steps.archive.outputs.assets }}
           if-no-files-found: error
 
   # The blocking twin of ci.yaml's advisory audit — same parsing, opposite
@@ -318,9 +350,49 @@ jobs:
       # A dry run asks once: it rehearses, it does not wait for CI.
       - run: ./scripts/ci-release-gates.sh --wait ${{ needs.guard.outputs.dry_run == 'true' && '0' || '2700' }}
 
+  # greengate stands alone (ADR-0064 `harness.standalone-tools`): installed
+  # from its own archive on a clean runner with no grh, it answers --help,
+  # reads a real repository, and its old name runs as the same build.
+  standalone:
+    name: greengate stands alone
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: x86_64-unknown-linux-gnu
+          path: dist
+      - name: Install the archive and run it with no grh
+        run: |
+          set -euo pipefail
+          version="${{ needs.guard.outputs.version }}"
+          if command -v grh > /dev/null 2>&1; then
+            echo "::error::grh is on this runner; the check would prove nothing"; exit 1
+          fi
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          tar xzf "dist/greengate-${version}-x86_64-unknown-linux-gnu.tar.gz" -C "$RUNNER_TEMP"
+          src="$RUNNER_TEMP/greengate-${version}-x86_64-unknown-linux-gnu"
+          cp "$src/greengate" "$src/greengate-fleet" "$bin/"
+          cp "$src/greengate" "$bin/amont"
+          export PATH="$bin:$PATH"
+          greengate --help | grep -q 'agents-md'
+          repo="$RUNNER_TEMP/repo"
+          git init -q --template= "$repo"
+          (cd "$repo" && greengate list --json) > "$RUNNER_TEMP/list.json"
+          python3 -I -c 'import json, sys; json.load(open(sys.argv[1]))' "$RUNNER_TEMP/list.json"
+          amont --version | tee "$RUNNER_TEMP/v"
+          grep -qx "greengate $version" "$RUNNER_TEMP/v"
+          # And the old-name archive a 2.x installer fetches holds a runnable
+          # `amont-<v>-<t>/amont` at that exact member path.
+          tar tzf "dist/amont-${version}-x86_64-unknown-linux-gnu.tar.gz" > "$RUNNER_TEMP/members"
+          grep -qx "amont-${version}-x86_64-unknown-linux-gnu/amont" "$RUNNER_TEMP/members"
+          echo "greengate installs, runs and answers to amont with no grh"
+
   publish:
     name: publish the release
-    needs: [guard, build, audit, proven]
+    needs: [guard, build, audit, proven, standalone]
     runs-on: ubuntu-latest
     # `id-token: write` is the OIDC grant `attest-build-provenance` signs
     # with — the same one `publish-npm` already holds for `--provenance`.
@@ -336,6 +408,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # The manifest grh pins, written from the tarballs BEFORE SHA256SUMS so
+      # it is checksummed and attested with them (grh's "Shipping a
+      # manifest"). Its [tool.release] names the greengate-* tarballs only.
+      - name: The manifest grh pins
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release-manifest.py "${{ needs.guard.outputs.version }}" \
+            dist greenharness.toml dist/greenharness.toml
       - name: Checksums
         run: |
           set -euo pipefail
@@ -372,8 +452,34 @@ jobs:
           # `publish-crates`, which needs this job. That is precisely backwards:
           # the reason to re-run is usually that a LATER step failed.
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            echo "release ${GITHUB_REF_NAME} already exists — refreshing its assets"
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+            # A released asset is never replaced (no --clobber): grh pins the
+            # manifest's digest, and an installer that checked an archive
+            # once must find the same bytes again. Upload what is missing;
+            # an asset already there must carry the digest this run's
+            # SHA256SUMS names, or the run fails, because a different digest
+            # means this build is not the one that was published.
+            echo "release ${GITHUB_REF_NAME} already exists — uploading only what is missing"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              --jq '.assets[] | .name + " " + (.digest // "")' > /tmp/published
+            for f in dist/*; do
+              name=$(basename "$f")
+              line=$(awk -v n="$name" '$1 == n { print $2 }' /tmp/published)
+              if [ -z "$(awk -v n="$name" '$1 == n' /tmp/published)" ]; then
+                echo "uploading $name"
+                gh release upload "${GITHUB_REF_NAME}" "$f"
+                continue
+              fi
+              want="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+              if [ "$name" = SHA256SUMS ]; then
+                # The published SHA256SUMS must list the same digests.
+                gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --output /tmp/published-sums --clobber
+                cmp -s /tmp/published-sums "$f" || { echo "::error::the published SHA256SUMS differs from this build's"; exit 1; }
+              elif [ -n "$line" ] && [ "$line" != "$want" ]; then
+                echo "::error::$name on the release is $line, this build made $want; a released asset is never replaced"
+                exit 1
+              fi
+              echo "$name is already published with this build's digest"
+            done
           else
             # Notes an upgrader can read, then the generated PR list. Bare
             # --generate-notes published this repository's PR titles as the
@@ -403,7 +509,7 @@ jobs:
           cat dist/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # crates.io, so `cargo install amont` works.
+  # crates.io, so `cargo install greengate` works.
   #
   # Here rather than from a laptop for the usual reason a release belongs in CI:
   # the bytes published should come from a checkout of the tag, built by
@@ -412,11 +518,12 @@ jobs:
   #
   # `needs: build` on purpose. If a target does not compile, that is a release
   # nobody should be able to `cargo install` either — and crates.io versions are
-  # npm, so `npm install -D amont` + `"prepare": "amont init"` works — the
+  # npm, so `npm install -D @greenharness/greengate` + `"prepare": "greengate init"`
+  # works — the
   # husky-shaped adoption path.
   #
   # Seven packages: six per-platform ones carrying the SAME binaries this release
-  # already published and checksummed, and `amont` itself, which is a JS shim and
+  # already published and checksummed, and `@greenharness/greengate` itself, a JS shim and
   # six `optionalDependencies`. No `postinstall` anywhere, so this survives
   # `npm ci --ignore-scripts`, an offline cache and a pull-through registry —
   # see npm/README.md for why that ruled out the download-on-install shape.
@@ -427,14 +534,16 @@ jobs:
     # publish-crates is, so a workflow_dispatch against an existing tag can
     # resume a publish that failed for a reason outside this repository.
     #
-    # OFF until the rename to greengate (Green Harness ADR-0064, build step
-    # 3), the person's decision of 2026-11-08: npm's `amont` stays at 2.3.0,
-    # which keeps working because the binary is still `amont`. The rename
-    # publishes `@greenharness/greengate` and its platform packages, sets up
-    # trusted publishing once on those, and deprecates `amont` towards it.
-    # Configuring trusted publishing on the seven `amont` packages first
-    # would be the same setup done twice. Turn this back on, renamed, then.
-    if: false && github.ref_type == 'tag'
+    # HELD until each new package exists on npm. 3.0.0 publishes
+    # `@greenharness/greengate` and six `@greenharness/greengate-<target>`
+    # packages; npm's trusted publishing cannot create a package, so the
+    # person publishes each once (a one-time granular token, or npm's pending
+    # publisher), names this workflow as its trusted publisher, and sets the
+    # repository variable NPM_GREENGATE_PUBLISHED=true. Until then this job
+    # is skipped, and `gh workflow run release.yaml --ref v<version>` resumes
+    # it afterwards. npm's `amont` stays at 2.3.0, deprecated towards the
+    # new package (plan "amont ships as greengate").
+    if: github.ref_type == 'tag' && vars.NPM_GREENGATE_PUBLISHED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # `contents: read` narrows the workflow-level `write` — this job publishes
@@ -477,7 +586,7 @@ jobs:
       - name: The tarball actually carries the binary
         run: |
           set -euo pipefail
-          cd dist/npm/@amont-hooks/linux-x64-gnu
+          cd dist/npm/@greenharness/greengate-linux-x64-gnu
           # Listed to a file, THEN grepped — never `tar … | grep -q`. `grep -q`
           # exits at the first match and closes the pipe, tar takes EPIPE, and
           # under `pipefail` that is a failed step reported as
@@ -485,32 +594,32 @@ jobs:
           # so it passed on macOS locally and failed the release on ubuntu.
           npm pack --silent > /tmp/packed
           tar tzf "$(cat /tmp/packed)" > /tmp/contents
-          grep -qx 'package/bin/amont' /tmp/contents
-          echo "the linux-x64-gnu tarball carries bin/amont"
+          grep -qx 'package/bin/greengate' /tmp/contents
+          echo "the linux-x64-gnu tarball carries bin/greengate"
 
           # And the ROOT package, which is the one people install. Checking a
           # platform package alone is what let a broken root ship for four
-          # releases: `amont.js` requires `./native.js`, the packer staged
+          # releases: the wrapper requires `./native.js`, the packer staged
           # only the first, and the result installed cleanly and died on
           # first use with MODULE_NOT_FOUND.
-          cd "$GITHUB_WORKSPACE/dist/npm/amont"
+          cd "$GITHUB_WORKSPACE/dist/npm/@greenharness/greengate"
           npm pack --silent > /tmp/packed-root
           tar tzf "$(cat /tmp/packed-root)" > /tmp/root-contents
-          for f in package/bin/amont.js package/bin/native.js; do
+          for f in package/bin/greengate.js package/bin/native.js; do
             grep -qx "$f" /tmp/root-contents || {
-              echo "::error::the amont tarball is missing $f"
+              echo "::error::the @greenharness/greengate tarball is missing $f"
               echo "::error::it carries:"; sed 's/^/::error::  /' /tmp/root-contents
               exit 1; }
           done
-          echo "the amont tarball carries both wrappers"
+          echo "the @greenharness/greengate tarball carries both wrappers"
 
-      - name: Publish platform packages, then amont
+      - name: Publish platform packages, then @greenharness/greengate
         run: |
           set -euo pipefail
 
-          # ORDER IS LOAD-BEARING. `amont` declares each platform package at this
+          # ORDER IS LOAD-BEARING. The root declares each platform package at this
           # exact version, and npm validates that a dependency version exists at
-          # publish time — so publishing `amont` first fails the whole job, and
+          # publish time — so publishing the root first fails the whole job, and
           # publishing it first SUCCESSFULLY would be worse: an immutable version
           # nobody can install.
           #
@@ -564,9 +673,9 @@ jobs:
           # AN EXPLICIT LIST, NOT A GLOB.
           #
           # The platform packages are scoped now, so they lay out under
-          # `dist/npm/@amont-hooks/…` and `dist/npm/amont-*` matches nothing
+          # `dist/npm/@greenharness/…` and `dist/npm/greengate-*` matches nothing
           # at all — the loop would silently publish ZERO platform packages
-          # and then publish `amont` against six dependencies that do not
+          # and then publish the root against six dependencies that do not
           # exist. npm versions are immutable, so that is a version bump to
           # recover from, not a re-run.
           #
@@ -575,18 +684,19 @@ jobs:
           # but care. `npm-pack.sh`'s TARGETS table is the source of truth,
           # and `npm_packaging.rs` asserts this list agrees with it.
           for t in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu linux-x64-musl win32-x64; do
-            publish "dist/npm/@amont-hooks/$t"
+            publish "dist/npm/@greenharness/greengate-$t"
           done
-          publish dist/npm/amont
+          publish dist/npm/@greenharness/greengate
 
           echo "### Published to npm" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`npm i -D amont\` — v${{ needs.guard.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`npm i -D @greenharness/greengate\` — v${{ needs.guard.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
 
   # IMMUTABLE, so a bad publish can only be yanked and superseded, never fixed.
   # The binaries are the cheaper thing to get wrong.
   publish-crates:
     name: publish to crates.io
-    needs: [guard, build, publish]
+    # `standalone` too: a broken archive must never leave published crates.
+    needs: [guard, build, standalone, publish]
     # Keyed on the ref being a TAG, not on dry_run — so a `workflow_dispatch`
     # against an existing tag (`gh workflow run release.yaml --ref v1.0.0`)
     # publishes the crates without re-creating a GitHub release that already
@@ -600,59 +710,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Order is a dependency order, not a preference: `amont` depends on
-      # `amont-runtime` and crates.io resolves that by VERSION, so the
-      # dependency has to exist in the index before the dependent is accepted.
-      # `amont-fleet` depends on the runtime too.
-      #
-      # Each publish is skipped when that exact version is already on crates.io,
-      # so re-running a release after a partial failure resumes instead of
-      # failing on "crate version already uploaded".
+      # The order, the resume probe and the "already uploaded" tolerance
+      # live in scripts/publish-crates.sh, which scripts/test_publish_crates.sh
+      # checks with a stubbed registry (CI's `rust` job). Old `amont-*`
+      # crates are not republished: their pages keep 2.3.1 (the person's
+      # decision, plan "amont ships as greengate").
       - name: Publish in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-
           if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo "::error::CARGO_REGISTRY_TOKEN is not set for this environment."
             exit 1
           fi
-
-          # No index polling of our own, and no pre-flight "is it already
-          # there?" API call. Both were mine and both were wrong:
-          #
-          #   * cargo ALREADY waits for the upload to become available — the
-          #     run log reads "waiting for X to be available at registry" then
-          #     "Published X". Polling on top of that was redundant.
-          #   * the crates.io API rate-limits datacenter IPs, so the poll saw
-          #     non-200 for a crate that had just published successfully and
-          #     failed the job ten minutes later. amont-runtime 1.0.1 was
-          #     live the whole time.
-          #
-          # Idempotency comes from cargo's own answer instead. Re-running a
-          # release must not fail on a crate that is already up, and "already
-          # uploaded" is exactly that answer — anything else is a real failure.
-          # amont-quiet and amont-slots first: amont-runtime depends on both, and crates.io
-          # resolves that dependency by version.
-          for crate in amont-quiet amont-slots amont-runtime amont amont-fleet; do
-            echo "→ publishing $crate $VERSION"
-            if out=$(cargo publish -p "$crate" 2>&1); then
-              printf '%s\n' "$out"
-            else
-              printf '%s\n' "$out"
-              if printf '%s' "$out" | grep -qiE "already (been )?uploaded|already exists"; then
-                echo "  $crate $VERSION was already published — continuing"
-              else
-                echo "::error::publishing $crate failed"
-                exit 1
-              fi
-            fi
-          done
-
+          sh scripts/publish-crates.sh
           echo "### Published to crates.io" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`cargo install amont\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`cargo install greengate\`, then \`greengate install\` for the amont alias — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
   # The release's last manual step, retired. The tap formula was bumped by
   # hand four times in three days — copy a version, copy four sha256 lines,
@@ -667,7 +742,7 @@ jobs:
   # proves the result is at least a formula before anything is pushed.
   publish-tap:
     name: publish to the homebrew tap
-    needs: [guard, publish]
+    needs: [guard, standalone, publish]
     # Keyed on the ref being a TAG exactly as publish-npm is, so a
     # workflow_dispatch against an existing tag can resume this too. The
     # push step's nothing-to-commit path makes that resume a no-op when the
@@ -703,27 +778,43 @@ jobs:
           GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" \
             git clone --depth 1 git@github.com:fredericrous/homebrew-tap.git tap
 
+      # The formula is greengate's own (packaging/homebrew/greengate.rb),
+      # rewritten from the published SHA256SUMS. The rename amont -> greengate
+      # goes in the SAME tap commit, written only now that the assets exist:
+      # `formula_renames.json` makes `brew upgrade` move an installed amont
+      # to greengate, and Formula/amont.rb is removed so the old name cannot
+      # be installed beside it.
       - name: Rewrite the formula
         run: |
           set -euo pipefail
-          python3 scripts/bump-tap.py "$VERSION" SHA256SUMS tap/Formula/amont.rb
-          ruby -c tap/Formula/amont.rb
+          cp packaging/homebrew/greengate.rb tap/Formula/greengate.rb
+          python3 -I scripts/bump-tap.py "$VERSION" SHA256SUMS tap/Formula/greengate.rb
+          ruby -c tap/Formula/greengate.rb
+          python3 -I - tap/formula_renames.json <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          renames = json.loads(path.read_text()) if path.exists() else {}
+          renames["amont"] = "greengate"
+          path.write_text(json.dumps(renames, indent=2, sort_keys=True) + "\n")
+          PY
+          rm -f tap/Formula/amont.rb
 
       - name: Push
         run: |
           set -euo pipefail
           cd tap
-          if git diff --quiet; then
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
             echo "the tap already carries $VERSION — nothing to publish"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/amont.rb
-          git commit -m "chore: amont $VERSION"
+          git add Formula/greengate.rb formula_renames.json
+          git add -u Formula
+          git commit -m "chore: greengate $VERSION"
           git push origin HEAD
           echo "### Published to the homebrew tap" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`brew upgrade fredericrous/tap/amont\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew upgrade fredericrous/tap/greengate\` — v$VERSION (amont renamed to it)" >> "$GITHUB_STEP_SUMMARY"
 
   # The only thing anywhere that runs the formula.
   #
@@ -768,22 +859,25 @@ jobs:
         run: |
           set -euo pipefail
           brew tap fredericrous/tap
-          brew install fredericrous/tap/amont
+          brew install fredericrous/tap/greengate
 
       - name: The installed binaries are the version just published
         run: |
           set -euo pipefail
-          amont --version | tee /tmp/v
-          grep -qx "amont $VERSION" /tmp/v
+          greengate --version | tee /tmp/v
+          grep -qx "greengate $VERSION" /tmp/v
+          greengate-fleet --version | grep -q "$VERSION"
+          # The old names, copies of the same build.
+          amont --version | grep -qx "greengate $VERSION"
           amont-fleet --version | grep -q "$VERSION"
 
       # The formula's own test block, which is the only place the INSTALLED
       # artifact is exercised — and which referenced the departed binary too,
       # so it would have failed for the same reason had anyone run it.
       - name: brew test
-        run: brew test fredericrous/tap/amont
+        run: brew test fredericrous/tap/greengate
 
       - name: Say so
         run: |
           echo "### brew install verified" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`brew install fredericrous/tap/amont\` produces v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew install fredericrous/tap/greengate\` produces v$VERSION" >> "$GITHUB_STEP_SUMMARY"

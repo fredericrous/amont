@@ -14,7 +14,12 @@ Idempotent on purpose: re-run against a formula already at the version it
 produces byte-identical output, so the workflow's "nothing to commit" path
 is how a resumed release run no-ops.
 
-Usage: bump-tap.py <version> <SHA256SUMS> <Formula/amont.rb>
+Since 3.0.0 the archives are `greengate-<v>-<target>`; a release also ships
+old-name `amont-<v>-<target>` archives for 2.x installers until the census,
+and the formula names only the `greengate-` ones. A formula still on the old
+prefix (the 2.3.1 one) moves to the new.
+
+Usage: bump-tap.py <version> <SHA256SUMS> <Formula/greengate.rb>
 """
 
 import pathlib
@@ -36,14 +41,15 @@ def main() -> None:
         if len(parts) != 2:
             continue
         sha, name = parts
-        m = re.fullmatch(r"amont-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
+        # Only the new name: the old-name archives are for 2.x installers.
+        m = re.fullmatch(r"greengate-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
         if not m:
             continue
         assert m.group(1) == version, (
             f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?"
         )
         sums[m.group(2)] = (sha, name)
-    assert sums, f"no amont checksums parsed from {sums_path}"
+    assert sums, f"no greengate checksums parsed from {sums_path}"
 
     formula = pathlib.Path(formula_path)
     text = formula.read_text()
@@ -66,7 +72,7 @@ def main() -> None:
 
     pair = re.compile(
         r'url "https://github\.com/(?:fredericrous/amont|greenharness/greengate)/releases/'
-        r'download/v[0-9.]+/amont-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
+        r'download/v[0-9.]+/(?:amont|greengate)-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
@@ -82,7 +88,7 @@ def main() -> None:
     )
     assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont or greenharness/greengate"
 
-    stale = set(re.findall(r"amont-([0-9.]+)-", text)) - {version}
+    stale = set(re.findall(r"(?:amont|greengate)-([0-9.]+)-", text)) - {version}
     assert not stale, f"stale release versions survived the rewrite: {stale}"
 
     formula.write_text(text)

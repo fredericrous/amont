@@ -1,8 +1,8 @@
 //! The npm packaging describes the same six targets the release builds.
 //!
 //! Four files have to agree about that list — `release.yaml`'s build matrix,
-//! `scripts/npm-pack.sh`'s table, `npm/amont/bin/native.js`'s resolution map, and
-//! `npm/amont/package.json.in`'s `optionalDependencies` — and nothing compiles
+//! `scripts/npm-pack.sh`'s table, `npm/greengate/bin/native.js`'s resolution map, and
+//! `npm/greengate/package.json.in`'s `optionalDependencies` — and nothing compiles
 //! any of them together. Every way they can disagree fails at a moment nothing
 //! can be taken back:
 //!
@@ -23,7 +23,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/amont; the files live at the repo root.
+    // CARGO_MANIFEST_DIR is crates/greengate; the files live at the repo root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -49,7 +49,7 @@ fn packed_pairs() -> Vec<(String, String)> {
     read("scripts/npm-pack.sh")
         .lines()
         .map(str::trim)
-        .filter(|l| l.starts_with('"') && l.contains("|@amont-hooks/"))
+        .filter(|l| l.starts_with('"') && l.contains("|@greenharness/greengate-"))
         .filter_map(|l| {
             let row = l.trim_start_matches('"').trim_end_matches('"');
             let mut it = row.split('|');
@@ -60,7 +60,7 @@ fn packed_pairs() -> Vec<(String, String)> {
 
 /// Package names in `amont`'s `optionalDependencies`.
 fn declared_packages() -> Vec<String> {
-    let text = read("npm/amont/package.json.in");
+    let text = read("npm/greengate/package.json.in");
     let (_, after) = text
         .split_once("\"optionalDependencies\"")
         .expect("optionalDependencies block");
@@ -81,13 +81,13 @@ fn wrapper_packages() -> Vec<String> {
     // The map lives in `native.js` rather than in the bin wrapper: it moved
     // there when a second wrapper needed the same resolution logic, and it
     // stays there because one copy is one place to read it from.
-    let text = read("npm/amont/bin/native.js");
+    let text = read("npm/greengate/bin/native.js");
     let (_, after) = text.split_once("const PACKAGES").expect("PACKAGES map");
     after
         .lines()
         .take_while(|l| !l.starts_with("};"))
         .flat_map(|l| {
-            l.match_indices("\"@amont-hooks/")
+            l.match_indices("\"@greenharness/greengate-")
                 .filter_map(|(i, _)| {
                     let rest = &l[i + 1..];
                     rest.split_once('"').map(|(name, _)| name.to_string())
@@ -141,7 +141,7 @@ fn the_wrapper_can_resolve_every_package_that_is_published() {
 /// on a spawn-level failure — and must NOT fall through on a real exit code,
 /// which is a binary having answered.
 ///
-/// Runs the real `bin/amont.js` under node against a fake package tree:
+/// Runs the real `bin/greengate.js` under node against a fake package tree:
 /// the first candidate is executable garbage (spawn fails), the second is a
 /// script that exits 7. The 7 coming back is the fallback working end to end.
 #[cfg(unix)]
@@ -157,13 +157,13 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
 
     // The wrapper itself, where npm would put it — resolution walks up from
     // the file's own directory, exactly as in a real install.
-    let wrapper = modules.join("amont/bin/amont.js");
-    // `amont.js` is a two-line shim over `native.js`; the fixture needs both or
+    let wrapper = modules.join("@greenharness/greengate/bin/greengate.js");
+    // `greengate.js` is a two-line shim over `native.js`; the fixture needs both or
     // the require fails before any of the resolution under test happens.
-    let native = modules.join("amont/bin/native.js");
+    let native = modules.join("@greenharness/greengate/bin/native.js");
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
-    std::fs::copy(root().join("npm/amont/bin/amont.js"), &wrapper).unwrap();
-    std::fs::copy(root().join("npm/amont/bin/native.js"), &native).unwrap();
+    std::fs::copy(root().join("npm/greengate/bin/greengate.js"), &wrapper).unwrap();
+    std::fs::copy(root().join("npm/greengate/bin/native.js"), &native).unwrap();
 
     // Candidate one: exists, is executable, cannot run — the gnu-on-musl
     // shape, faithfully. A glibc binary on musl fails exec with ENOENT (the
@@ -172,13 +172,13 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     // those fail with ENOEXEC, and on Linux `execvp` retries ENOEXEC through
     // /bin/sh — the garbage RUNS, exits 127, and that is an answer, not a
     // spawn failure.
-    let gnu = modules.join("@amont-hooks/linux-x64-gnu/bin/amont");
+    let gnu = modules.join("@greenharness/greengate-linux-x64-gnu/bin/greengate");
     std::fs::create_dir_all(gnu.parent().unwrap()).unwrap();
     std::fs::write(&gnu, "#!/nonexistent/ld-linux-x86-64.so.2\n").unwrap();
     std::fs::set_permissions(&gnu, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // Candidate two: runs, and answers with a distinctive exit code.
-    let musl = modules.join("@amont-hooks/linux-x64-musl/bin/amont");
+    let musl = modules.join("@greenharness/greengate-linux-x64-musl/bin/greengate");
     std::fs::create_dir_all(musl.parent().unwrap()).unwrap();
     std::fs::write(&musl, "#!/bin/sh\nexit 7\n").unwrap();
     std::fs::set_permissions(&musl, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -190,7 +190,7 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
         &run,
         "Object.defineProperty(process, \"platform\", { value: \"linux\" });\n\
          Object.defineProperty(process, \"arch\", { value: \"x64\" });\n\
-         require(\"./node_modules/amont/bin/amont.js\");\n",
+         require(\"./node_modules/@greenharness/greengate/bin/greengate.js\");\n",
     )
     .unwrap();
 
@@ -217,7 +217,8 @@ fn the_wrapper_tries_the_next_candidate_when_a_spawn_fails() {
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("no runnable native binary") && err.contains("@amont-hooks/linux-x64-gnu"),
+        err.contains("no runnable native binary")
+            && err.contains("@greenharness/greengate-linux-x64-gnu"),
         "the failure must name what was tried:\n{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -279,7 +280,7 @@ fn published_suffixes() -> Vec<String> {
 /// The publish loop names every packed package, explicitly.
 ///
 /// A glob cannot do this job any more and never really could. Scoped
-/// packages lay out under `dist/npm/@amont-hooks/…`, so `dist/npm/amont-*`
+/// packages lay out under `dist/npm/@greenharness/…`, so `dist/npm/greengate-*`
 /// matches NOTHING — the loop would publish zero platform packages and then
 /// publish `amont` against six dependencies that do not exist. npm versions
 /// are immutable, so that is a version bump to recover from.
@@ -289,8 +290,8 @@ fn the_publish_loop_names_every_packed_package_explicitly() {
     let expected: Vec<String> = packed
         .iter()
         .map(|p| {
-            p.strip_prefix("@amont-hooks/")
-                .unwrap_or_else(|| panic!("{p} is not under the @amont-hooks scope"))
+            p.strip_prefix("@greenharness/greengate-")
+                .unwrap_or_else(|| panic!("{p} is not under the @greenharness scope"))
                 .to_string()
         })
         .collect();
@@ -303,23 +304,29 @@ fn the_publish_loop_names_every_packed_package_explicitly() {
     );
 }
 
-/// Every platform package is scoped, and the root package is not.
+/// Every package is scoped under `@greenharness`, the root included.
 ///
 /// The scope is why the six can be renamed or added to without meeting npm's
 /// spam heuristic, which rejected an unscoped `amont-agent-win32-x64` on name
-/// alone. The root stays bare `amont` so `npm i -D amont` is unchanged.
+/// alone. The root is `@greenharness/greengate` (plan "amont ships as
+/// greengate"); the bare `amont` on npm stays at 2.3.0, deprecated.
 #[test]
-fn platform_packages_are_scoped_and_the_root_is_not() {
+fn every_package_is_scoped_under_greenharness() {
     for p in packed_pairs().into_iter().map(|(_, p)| p) {
         assert!(
-            p.starts_with("@amont-hooks/"),
+            p.starts_with("@greenharness/greengate-"),
             "{p} is not scoped — unscoped names are the ones npm rejects"
         );
     }
-    let text = read("npm/amont/package.json.in");
+    let text = read("npm/greengate/package.json.in");
     assert!(
-        text.contains("\"name\": \"amont\""),
-        "the root package must stay bare `amont`"
+        text.contains("\"name\": \"@greenharness/greengate\""),
+        "the root package is @greenharness/greengate"
+    );
+    assert!(
+        text.contains("\"greengate\": \"bin/greengate.js\"")
+            && text.contains("\"amont\": \"bin/greengate.js\""),
+        "the root maps both greengate and its old name amont to the wrapper"
     );
 }
 
@@ -336,7 +343,7 @@ fn platform_packages_are_scoped_and_the_root_is_not() {
 /// green release, a green test suite, and a package that could not run.
 #[test]
 fn every_file_the_manifest_promises_is_copied_by_the_packer() {
-    let manifest = read("npm/amont/package.json.in");
+    let manifest = read("npm/greengate/package.json.in");
     let (_, after) = manifest.split_once("\"files\"").expect("a files array");
     let promised: Vec<String> = after
         .lines()
@@ -355,7 +362,10 @@ fn every_file_the_manifest_promises_is_copied_by_the_packer() {
     for f in &promised {
         // README.md is copied from the repo root under its own name.
         if f == "README.md" {
-            assert!(packer.contains("$OUT/amont/README.md"), "README not staged");
+            assert!(
+                packer.contains("$OUT/$ROOT_PKG/README.md"),
+                "README not staged"
+            );
             continue;
         }
         let base = f.rsplit('/').next().expect("a file name");
