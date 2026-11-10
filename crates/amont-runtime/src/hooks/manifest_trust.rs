@@ -66,7 +66,7 @@ pub fn run_in(settings: &crate::config::Settings, manifest: &Manifest, root: &Pa
                     State::Changed => "it changed since it was trusted",
                     _ => "it has never been trusted here",
                 },
-                hl("amont trust"),
+                hl(concat!(crate::bin!(), " trust")),
             ));
             Outcome::Failed
         }

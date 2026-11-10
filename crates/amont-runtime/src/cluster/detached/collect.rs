@@ -581,7 +581,7 @@ fn resolve(record: Pending, list: &Value, now: u64) -> Resolution {
 /// not keep what it learned, 2 on usage.
 pub fn collect_command(args: &[std::ffi::OsString]) -> i32 {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: amont cluster collect");
+        println!("usage: {} cluster collect", crate::names::BIN);
         return 0;
     }
     match args.first().and_then(|a| a.to_str()) {
@@ -609,7 +609,7 @@ pub fn collect_command(args: &[std::ffi::OsString]) -> i32 {
             }
         }
         _ => {
-            eprintln!("usage: amont cluster collect");
+            eprintln!("usage: {} cluster collect", crate::names::BIN);
             2
         }
     }

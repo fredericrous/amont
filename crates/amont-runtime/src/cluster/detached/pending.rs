@@ -319,13 +319,16 @@ fn parse_file(text: &str) -> Result<Vec<Pending>, String> {
     let doc = crate::json_read::parse(text).ok_or("not JSON")?;
     match doc.get("format") {
         Some(Value::Num(n)) if n == &FORMAT.to_string() => {}
-        _ => return Err("a layout this amont did not write".into()),
+        _ => return Err(format!("a layout this {} did not write", crate::names::BIN)),
     }
     doc.get("records")
         .ok_or("no records")?
         .items()
         .iter()
-        .map(|r| Pending::parse(r).ok_or_else(|| "a record this amont cannot read".to_string()))
+        .map(|r| {
+            Pending::parse(r)
+                .ok_or_else(|| format!("a record this {} cannot read", crate::names::BIN))
+        })
         .collect()
 }
 

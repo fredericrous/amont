@@ -217,7 +217,7 @@ fn the_declared_journey() {
     config(&r, "amont.severity.pre-commit-manifest-trust", "warn");
     let (ok, out) = commit(&r, "feat: a manifest");
     step!("trust downgraded", ok, "{out}");
-    step!("trust downgraded", out.contains("amont trust"), "{out}");
+    step!("trust downgraded", out.contains("greengate trust"), "{out}");
     step!("trust downgraded", !out.contains("probe-"), "{out}");
     unset(&r, "amont.severity.pre-commit-manifest-trust");
 
@@ -330,7 +330,7 @@ fn the_declared_journey() {
     );
     step!(
         "changed manifest",
-        out.contains("amont trust"),
+        out.contains("greengate trust"),
         "must name the fix:\n{out}"
     );
     step!(

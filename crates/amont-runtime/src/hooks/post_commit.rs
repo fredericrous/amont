@@ -48,7 +48,10 @@ pub(crate) fn rehearse(settings: &crate::config::Settings, after_rebase: bool) {
         return;
     }
     match crate::rehearsal::spawn_detached() {
-        Ok(_) => println!("rehearsing the push gate in the background (`amont rehearse --status`)"),
+        Ok(_) => println!(
+            "rehearsing the push gate in the background (`{} rehearse --status`)",
+            crate::names::BIN
+        ),
         Err(e) => crate::hooks::common::warn(&format!("could not start the rehearsal: {e}")),
     }
 }

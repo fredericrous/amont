@@ -63,7 +63,10 @@ pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {
         }
     }
     if drifted.is_empty() {
-        ok(settings, "AGENTS.md matches what this amont generates");
+        ok(
+            settings,
+            concat!("AGENTS.md matches what this ", crate::bin!(), " generates"),
+        );
         return Outcome::Passed;
     }
     let names = drifted.join(" and ");
@@ -88,7 +91,8 @@ pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {
                 ok(
                     settings,
                     &format!(
-                        "{names} regenerated for amont {} and re-staged",
+                        "{names} regenerated for {} {} and re-staged",
+                        crate::names::BIN,
                         env!("CARGO_PKG_VERSION")
                     ),
                 );
@@ -109,11 +113,12 @@ pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {
         }
     }
     warn(&format!(
-        "{names} {} behind what amont {} generates — an agent reading it follows \
+        "{names} {} behind what {} {} generates — an agent reading it follows \
          last release's instructions. Run {} (or {} and this check does it).",
         if drifted.len() == 1 { "is" } else { "are" },
+        crate::names::BIN,
         env!("CARGO_PKG_VERSION"),
-        hl("amont agents-md"),
+        hl(concat!(crate::bin!(), " agents-md")),
         hl("git config amont.fix true")
     ));
     Outcome::Warned

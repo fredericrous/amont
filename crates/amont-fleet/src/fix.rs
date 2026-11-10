@@ -41,6 +41,7 @@
 //! tri-state, so "could not tell" is its own refusal ([`Refusal::TrackedUnknown`])
 //! rather than a clean "no".
 
+use amont_runtime::names::BIN;
 use std::path::{Path, PathBuf};
 
 use amont_runtime::hookfile::Tracked;
@@ -174,7 +175,7 @@ impl Refusal {
                     .unwrap_or_else(|| "another tool owns".to_string());
                 format!(
                     "core.hooksPath resolves to {} — {owner} the hooks here, \
-                     so amont is not running\n      \
+                     so {BIN} is not running\n      \
                      Hand dispatch back: git config --unset core.hooksPath",
                     sanitize_path(path)
                 )

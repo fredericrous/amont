@@ -674,7 +674,7 @@ pub fn run(settings: &crate::config::Settings) -> Outcome {
         "{} tree-gate parity problem(s) — fix the workflow or the {} line; run {} to re-check",
         problems.len(),
         MANIFEST,
-        hl("amont tree-parity")
+        hl(concat!(crate::bin!(), " tree-parity"))
     ));
     Outcome::Failed
 }

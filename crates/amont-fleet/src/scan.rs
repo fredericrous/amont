@@ -12,6 +12,7 @@
 //! "found nothing because there is nothing" from "found nothing because I
 //! looked in the wrong place", which no scalar can express.
 
+use amont_runtime::names::BIN;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -365,7 +366,7 @@ impl HooksDir {
             } => match amont_runtime::install::redirect_culprit(path) {
                 Some(tool) => format!("{} — {tool} owns the hooks here", path.display()),
                 None => format!(
-                    "{} — core.hooksPath sent git here, amont is not running",
+                    "{} — core.hooksPath sent git here, {BIN} is not running",
                     path.display()
                 ),
             },

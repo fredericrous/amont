@@ -33,8 +33,8 @@ fn a_stale_block_warns_without_blocking() {
     stale_block(&r);
     let run = r.run(&["run", "pre-commit-agents-md"]);
     assert!(run.passed(), "a warning must not block: {}", run.output());
-    assert!(run.says("behind what amont"), "{}", run.output());
-    assert!(run.says("amont agents-md"), "{}", run.output());
+    assert!(run.says("behind what greengate"), "{}", run.output());
+    assert!(run.says("greengate agents-md"), "{}", run.output());
 }
 
 /// With `amont.fix true` the block is regenerated AND re-staged, so the
