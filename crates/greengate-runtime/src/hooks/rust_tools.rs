@@ -14,8 +14,8 @@
 //! mid-refactor, without losing the formatting gate.
 
 use super::common::{
-    fail, fixing_enabled, hl, ok, repo_root, restage, run as run_tool, staged_files, warn, which,
-    Restaged,
+    fail, fixing_enabled, hl, ok, repo_root, restage, run as run_tool, say, staged_files, warn,
+    which, Restaged,
 };
 use crate::check::Outcome;
 use crate::git;
@@ -60,8 +60,8 @@ fn is_rust_path(f: &str) -> bool {
 ///
 /// Not simply "the repo root": plenty of repos keep a Rust component in a
 /// subdirectory next to services in other languages, and cargo must run where
-/// the manifest is. `--workspace` then covers every member from that point, so
-/// one invocation per manifest root is enough.
+/// the manifest is. For a member that is its own manifest, so a command that
+/// spans the workspace collapses these roots first (`workspace_roots`).
 fn cargo_root_for(root: &str, file: &str) -> Option<PathBuf> {
     let mut dir = Path::new(root).join(file);
     dir.pop();
@@ -287,16 +287,97 @@ fn cargo_for(
     Ok(cargo)
 }
 
+/// True when `args` make cargo act on the whole workspace from any member:
+/// `--workspace` (test, clippy's workspace mode) and `fmt --all`.
+fn spans_workspace(args: &[&str]) -> bool {
+    args.iter()
+        .take_while(|a| **a != "--")
+        .any(|a| *a == "--workspace" || (args.first() == Some(&"fmt") && *a == "--all"))
+}
+
+fn canonical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// The workspace root cargo resolves for `dir`, asked of cargo itself
+/// (`locate-project --workspace`) so `exclude`, `package.workspace` and
+/// nested workspaces mean what cargo says. `None` when cargo does not answer.
+fn workspace_root(cargo: &[String], dir: &Path) -> Option<PathBuf> {
+    let (program, rest) = cargo.split_first()?;
+    let out = Command::new(program)
+        .args(rest)
+        .args(["locate-project", "--workspace", "--message-format", "plain"])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let manifest = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    manifest.parent().filter(|p| p.is_absolute()).map(canonical)
+}
+
+/// Manifest roots collapsed to their workspace roots, for a command that
+/// spans the workspace. `cargo_roots` gives the nearest `Cargo.toml` of each
+/// changed file, which for a member is the member's own manifest, and
+/// `cargo test --workspace` run from each member ran the whole suite once per
+/// touched member (six times for a six-crate change, 2026-11-10). A root cargo
+/// will not place, or places above `bound` (the repository or the pushed
+/// tree's checkout), is kept as it is: running it alone is what it did before.
+fn workspace_roots(cargo: &[String], roots: &[PathBuf], bound: &Path) -> Vec<PathBuf> {
+    let bound = canonical(bound);
+    let mut seen = BTreeSet::new();
+    for dir in roots {
+        let dir = canonical(dir);
+        let ws = workspace_root(cargo, &dir)
+            .filter(|ws| dir.starts_with(ws) && ws.starts_with(&bound))
+            .unwrap_or(dir);
+        seen.insert(ws);
+    }
+    seen.into_iter().collect()
+}
+
 /// Run one cargo invocation in every manifest root. True when all succeeded.
+///
+/// A command that spans the workspace runs once per workspace, not once per
+/// touched member. When more than one invocation is still due, each is
+/// announced, so a second suite run never looks like the first one stalling.
+/// The line is progress, like the dispatcher's "still running" lines, so
+/// `amont.quiet` does not hide it: an agent's piped run is where a silent
+/// second run cost two hours.
 fn run_in_roots(
     settings: &crate::config::Settings,
     roots: &[PathBuf],
+    bound: &Path,
     argv: &[String],
     args: &[&str],
 ) -> bool {
+    let roots = if spans_workspace(args) {
+        workspace_roots(argv, roots, bound)
+    } else {
+        roots.to_vec()
+    };
     let extra: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+    let bound = canonical(bound);
     let mut all_ok = true;
-    for dir in roots {
+    for (i, dir) in roots.iter().enumerate() {
+        if roots.len() > 1 {
+            let shown = canonical(dir);
+            let rel = shown
+                .strip_prefix(&bound)
+                .ok()
+                .map(|r| r.to_string_lossy().into_owned())
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| ".".into());
+            say(&format!(
+                "cargo {}: {} of {}, in {rel}",
+                args.first().copied().unwrap_or(""),
+                i + 1,
+                roots.len()
+            ));
+        }
         let d = dir.to_string_lossy().into_owned();
         if !run_tool(settings, &d, argv, &extra) {
             all_ok = false;
@@ -313,12 +394,13 @@ fn run_in_roots(
 fn each_root(
     settings: &crate::config::Settings,
     roots: &[PathBuf],
+    bound: &Path,
     component: Option<&str>,
     args: &[&str],
     missing: &str,
 ) -> Result<bool, Outcome> {
     let argv = cargo_for(roots, component, missing)?;
-    Ok(run_in_roots(settings, roots, &argv, args))
+    Ok(run_in_roots(settings, roots, bound, &argv, args))
 }
 
 pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> Outcome {
@@ -344,7 +426,13 @@ pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     // the tree IS the staged content. This comment used to call that "the same
     // trade-off cargo fmt gives everyone", which was true of the observation
     // and wrong about the conclusion: see `staged_only`.
-    if run_in_roots(settings, &roots, &argv, &["fmt", "--all", "--", "--check"]) {
+    if run_in_roots(
+        settings,
+        &roots,
+        Path::new(&root),
+        &argv,
+        &["fmt", "--all", "--", "--check"],
+    ) {
         ok(settings, "Rust formatting is clean");
         return Outcome::Passed;
     }
@@ -355,7 +443,9 @@ pub fn fmt(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
     // anywhere. Only prettier and the manifest's externals ever called
     // `restage`. Rather than downgrade the declaration, the fixing is now
     // real.
-    if fixing_enabled(settings) && run_in_roots(settings, &roots, &argv, &["fmt", "--all"]) {
+    if fixing_enabled(settings)
+        && run_in_roots(settings, &roots, Path::new(&root), &argv, &["fmt", "--all"])
+    {
         // The non-obvious guard: `cargo fmt --all` formats the WHOLE
         // workspace, not just the staged files — but `restage` is handed the
         // staged `.rs` list, so nothing the author did not stage is staged
@@ -442,6 +532,7 @@ pub fn clippy(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) 
     match each_root(
         settings,
         &roots,
+        Path::new(&root),
         Some("clippy"),
         args,
         "Rust staged but clippy is not installed. `rustup component add clippy`.",
@@ -507,6 +598,7 @@ pub fn test(
         match each_root(
             settings,
             &roots,
+            &where_,
             None,
             &["test", "--workspace", "--all-features"],
             "Rust changed but cargo is not installed.",
@@ -528,6 +620,20 @@ pub fn test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a command cargo runs over the whole workspace is collapsed to
+    /// the workspace root; clippy's per-package mode keeps one run per
+    /// touched package, and a `--workspace` after `--` is the tool's, not
+    /// cargo's.
+    #[test]
+    fn only_workspace_wide_commands_collapse_to_the_workspace() {
+        assert!(spans_workspace(&["test", "--workspace", "--all-features"]));
+        assert!(spans_workspace(&["fmt", "--all", "--", "--check"]));
+        assert!(spans_workspace(clippy_args(&["Cargo.toml".into()], false)));
+        assert!(!spans_workspace(clippy_args(&["src/a.rs".into()], false)));
+        assert!(!spans_workspace(&["clippy", "--", "--workspace"]));
+        assert!(!spans_workspace(&["test", "--all"]));
+    }
 
     #[test]
     fn recognises_rust_paths() {
