@@ -74,35 +74,35 @@ const OLD: &[&str] = &["amont ", "amont: ", "amont-fleet"];
 /// Comments are skipped; char literals and raw strings are understood well
 /// enough for this codebase.
 fn count(src: &str) -> usize {
-    let b = src.as_bytes();
+    let bytes = src.as_bytes();
     let mut i = 0;
-    let mut n = 0;
-    while i < b.len() {
-        match b[i] {
-            b'/' if b.get(i + 1) == Some(&b'/') => {
-                while i < b.len() && b[i] != b'\n' {
+    let mut found = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
                     i += 1;
                 }
             }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
                 i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
                     i += 1;
                 }
                 i += 2;
             }
             b'\'' => {
                 // A char literal ('x', '\n', '"'); a lifetime has no closing quote.
-                if b.get(i + 1) == Some(&b'\\') {
+                if bytes.get(i + 1) == Some(&b'\\') {
                     let mut j = i + 2;
-                    while j < b.len() && b[j] != b'\'' {
+                    while j < bytes.len() && bytes[j] != b'\'' {
                         j += 1;
                     }
                     i = j + 1;
                 } else if let Some(width) = src[i + 1..].chars().next().map(char::len_utf8) {
                     // One char of any UTF-8 width, then the closing quote:
                     // `'x'`, `'—'`. A lifetime has no closing quote there.
-                    if b.get(i + 1 + width) == Some(&b'\'') {
+                    if bytes.get(i + 1 + width) == Some(&b'\'') {
                         i += 2 + width;
                     } else {
                         i += 1;
@@ -111,27 +111,27 @@ fn count(src: &str) -> usize {
                     i += 1;
                 }
             }
-            b'r' if matches!(b.get(i + 1), Some(b'"') | Some(b'#'))
-                && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) =>
+            b'r' if matches!(bytes.get(i + 1), Some(b'"') | Some(b'#'))
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) =>
             {
                 let mut j = i + 1;
                 let mut hashes = 0;
-                while b.get(j) == Some(&b'#') {
+                while bytes.get(j) == Some(&b'#') {
                     hashes += 1;
                     j += 1;
                 }
-                if b.get(j) != Some(&b'"') {
+                if bytes.get(j) != Some(&b'"') {
                     i += 1;
                     continue;
                 }
                 let start = j + 1;
                 let mut end = start;
                 loop {
-                    if end >= b.len() {
+                    if end >= bytes.len() {
                         break;
                     }
-                    if b[end] == b'"'
-                        && b[end + 1..]
+                    if bytes[end] == b'"'
+                        && bytes[end + 1..]
                             .iter()
                             .take(hashes)
                             .filter(|c| **c == b'#')
@@ -142,25 +142,25 @@ fn count(src: &str) -> usize {
                     }
                     end += 1;
                 }
-                n += hits(&src[start..end.min(b.len())]);
+                found += hits(&src[start..end.min(bytes.len())]);
                 i = end + 1 + hashes;
             }
             b'"' => {
                 let start = i + 1;
                 let mut j = start;
-                while j < b.len() && b[j] != b'"' {
-                    if b[j] == b'\\' {
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' {
                         j += 1;
                     }
                     j += 1;
                 }
-                n += hits(&src[start..j.min(b.len())]);
+                found += hits(&src[start..j.min(bytes.len())]);
                 i = j + 1;
             }
             _ => i += 1,
         }
     }
-    n
+    found
 }
 
 /// Occurrences of an old spelling in one literal's text, at a word start.
@@ -284,5 +284,10 @@ fn the_shipped_manifest_and_release_script_use_the_names_module() {
     assert!(
         script.contains(&format!("{BIN}-{{version}}-{{target}}.tar.gz")),
         "scripts/release-manifest.py reads tarballs under another name than names::BIN"
+    );
+    let tap = std::fs::read_to_string(root.join("scripts/bump-tap.py")).expect("bump-tap.py");
+    assert!(
+        tap.contains(&format!("REPO = \"{REPO}\"")),
+        "scripts/bump-tap.py names another repository than names::REPO"
     );
 }

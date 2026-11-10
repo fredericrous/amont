@@ -48,7 +48,7 @@ def main() -> None:
     version = version.lstrip("v")
 
     sums: dict[str, tuple[str, str]] = {}
-    for line in pathlib.Path(sums_path).read_text().splitlines():
+    for line in pathlib.Path(sums_path).read_text(encoding="utf-8").splitlines():
         parts = line.split()
         if len(parts) != 2:
             continue
@@ -59,10 +59,10 @@ def main() -> None:
             continue
         require(m.group(1) == version, f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?")
         sums[m.group(2)] = (sha, name)
-    require(sums, f"no greengate checksums parsed from {sums_path}")
+    require(bool(sums), f"no greengate checksums parsed from {sums_path}")
 
     formula = pathlib.Path(formula_path)
-    text = formula.read_text()
+    text = formula.read_text(encoding="utf-8")
     text, n_version = re.subn(
         r'version "[0-9.]+"', f'version "{version}"', text, count=1
     )
@@ -99,7 +99,7 @@ def main() -> None:
     stale = set(re.findall(r"(?:amont|greengate)-([0-9.]+)-", text)) - {version}
     require(not stale, f"stale release versions survived the rewrite: {stale}")
 
-    formula.write_text(text)
+    formula.write_text(text, encoding="utf-8")
     print(f"formula -> {version} ({n} targets)")
 
 

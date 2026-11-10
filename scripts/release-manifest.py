@@ -22,6 +22,7 @@ manifest that already carries [tool.release], a missing tarball, or an
 output that does not read back with the same values.
 
 Usage: release-manifest.py <version> <dist-dir> <greenharness.toml> <out>
+Everything it says goes to stderr; it writes only the <out> file.
 Python 3.11 or later (tomllib); run it as `python3 -I`.
 """
 

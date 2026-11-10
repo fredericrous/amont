@@ -154,7 +154,13 @@ try {
                     $aside = "$to.old-" + [guid]::NewGuid().ToString('N')
                     Rename-Item -Path $to -NewName (Split-Path $aside -Leaf)
                 }
-                Move-Item -Path $staged -Destination $to -Force
+                try {
+                    Move-Item -Path $staged -Destination $to -Force
+                } catch {
+                    # Put the old binary back rather than leave no .exe at all.
+                    if ($aside) { Rename-Item -Path $aside -NewName (Split-Path $to -Leaf) }
+                    throw
+                }
                 if ($aside) { Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue; $aside = $null }
             }
             Write-Ok "installed $(Join-Path $BinDir $pair[0]) (and $($pair[1]), its old name)"

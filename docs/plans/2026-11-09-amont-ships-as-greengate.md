@@ -354,8 +354,9 @@ is a later ticket.
   --extension` reads it (download greengate 3.0.0 from greenharness/greengate,
   repo install `greengate init`); `npm-pack.sh` lays out
   `@greenharness/greengate` (bin greengate and amont) and six
-  `@greenharness/greengate-<target>`; `test_bump_tap.py` (8),
-  `test_release_manifest.py` (4) and `test_publish_crates.sh` pass. The
+  `@greenharness/greengate-<target>`; after the implementation review
+  `test_bump_tap.py` (9, the shipped formula included, under `python -O`
+  too), `test_release_manifest.py` (5) and `test_publish_crates.sh` pass. The
   checks that need a tag (the `standalone` job, a Publish re-run keeping
   the published assets, the npm, crates and brew jobs) move to Phase 4b.
 - Phase 3 deviations: the manifest goes into `dist/` BEFORE `SHA256SUMS`, so

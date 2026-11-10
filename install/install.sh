@@ -100,6 +100,8 @@ main() {
 
     t=$(target)
     v=$(resolve_version)
+    # The 3.0.0 cutover, once, here: the names it maps from live in
+    # greengate-runtime's names.rs (BIN, OLD_BIN, FLEET_BIN, OLD_FLEET_BIN).
     # Releases before 3.0.0 shipped `amont-<v>-<t>` with binaries named
     # amont and amont-fleet; a pinned rollback (AMONT_VERSION=2.3.1) must
     # still find them, and installs them under both names like any other.

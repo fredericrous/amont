@@ -304,13 +304,7 @@ fn replace_atomically(from: &Path, target: &Path) -> std::io::Result<()> {
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_default();
     let staged_copy = dir.join(format!(".{file}.tmp.{}", std::process::id()));
-    // Flushed to disk before the rename: after a power loss the target must
-    // be the old binary or the whole new one, never an empty file every shim
-    // points at.
-    let written = std::fs::copy(from, &staged_copy)
-        .and_then(|_| make_executable(&staged_copy))
-        .and_then(|_| std::fs::File::open(&staged_copy)?.sync_all());
-    if let Err(e) = written {
+    if let Err(e) = stage_copy(from, &staged_copy) {
         let _ = std::fs::remove_file(&staged_copy); // the error being returned says what failed
         return Err(e);
     }
@@ -333,13 +327,30 @@ fn replace_atomically(from: &Path, target: &Path) -> std::io::Result<()> {
     renamed
 }
 
+/// Write `from`'s bytes to `staged`, executable and flushed to disk.
+///
+/// Flushed before the caller's rename: after a power loss the target must be
+/// the old binary or the whole new one, never an empty file every shim points
+/// at. Copied by hand, not `fs::copy`: on macOS that clones the file and the
+/// clone keeps the running binary's old mtime, so a leftover sweep would take
+/// this live temporary for a stale one. A file this writes is new.
+fn stage_copy(from: &Path, staged: &Path) -> std::io::Result<()> {
+    let mut source = std::fs::File::open(from)?;
+    let mut file = std::fs::File::create(staged)?;
+    std::io::copy(&mut source, &mut file)?;
+    // `sync_all` needs a handle open for writing on Windows, which this is.
+    file.sync_all()?;
+    make_executable(staged)
+}
+
+/// How long a leftover must be untouched before an install sweeps it.
+const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Remove what an interrupted [`replace_atomically`] can leave in `dir`:
 /// `.greengate*.tmp.*` and `.amont*.tmp.*` temporaries, and `*.old.exe` files
 /// renamed aside on Windows. Best effort: a file still in use stays for the
 /// next install. Only files untouched for [`LEFTOVER_AGE`]: a temporary that
 /// young may be another install's, running now, whose rename would then fail.
-const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(600);
-
 fn sweep_install_leftovers(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -383,8 +394,9 @@ fn write_aliases(binary: &Path) -> Result<Vec<&'static str>, String> {
         let alias = dir.join(name_for(binary, old));
         replace_atomically(&from, &alias).map_err(|e| {
             format!(
-                "installed {}, but cannot write its old name {}: {e} — shims baked to {old} keep running the build that was there",
+                "installed {}, but cannot write its old name {}: {e}\n    hooks baked to the old name keep running the build that was there; run `{BIN} install` again, or delete {}",
                 from.display(),
+                alias.display(),
                 alias.display()
             )
         })?;
@@ -1096,9 +1108,10 @@ fn install_binary() -> Result<String, String> {
     }
     let aliases = write_aliases(&target)?;
     let installed = target.to_string_lossy().into_owned();
-    println!("{} installed {}", valid_sign(), highlight(&installed));
+    // On stderr: a report of what was done, not data a caller asked for.
+    eprintln!("{} installed {}", valid_sign(), highlight(&installed));
     if !aliases.is_empty() {
-        println!(
+        eprintln!(
             "    also as {}: hooks baked to the old name keep working",
             aliases.join(" and ")
         );
@@ -2220,8 +2233,17 @@ mod tests {
             .status()
             .unwrap();
         assert!(aged.success(), "touch -t could not age the leftover");
+        // The young one staged through the same copy an install makes, from
+        // a source that is itself old (the running binary usually is).
+        let old_source = dir.join("old-source");
+        std::fs::write(&old_source, "y").unwrap();
+        std::process::Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(&old_source)
+            .status()
+            .unwrap();
         let young = dir.join(format!(".{BIN}.tmp.2"));
-        std::fs::write(&young, "y").unwrap();
+        stage_copy(&old_source, &young).unwrap();
         std::fs::write(dir.join(OLD_BIN), "2.x binary").unwrap();
 
         sweep_install_leftovers(&dir);
