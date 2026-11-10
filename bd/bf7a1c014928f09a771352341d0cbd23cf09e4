@@ -1,0 +1,15 @@
+amont-provenance-v1
+commit bdbf7a1c014928f09a771352341d0cbd23cf09e4
+tree a9b49e39aaf0e49e8def194f25bf5a1882d855be
+canon 23a7f57ce3cc98c583e34dd4dfb823a92e4da7da
+plan docs/plans/2026-11-09-amont-ships-as-greengate.md 8a973c1271fefb32f469dec79d6beb7af73f418732cb28cc8afc79650817e3bd
+review reviewed 61f41a36db312a8861a2b005460a051803026db7d24dc312f682af799b2abcba
+preview not-required
+producer amont-agent 3.28.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBb6lvPDGhtik7cMmhOifR3omPWxZ6pvfPBxvtKYd/fkUvuUF
+onyssjVSuJxcrNOL6Y+36VrE7yLJojuln/bd8N
+-----END SSH SIGNATURE-----
