@@ -18,43 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "amont"
-version = "2.3.1"
-dependencies = [
- "amont-runtime",
- "serde_json",
-]
-
-[[package]]
-name = "amont-fleet"
-version = "2.3.1"
-dependencies = [
- "amont-runtime",
- "crossterm",
- "git-attest",
- "ratatui",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "amont-quiet"
-version = "2.3.1"
-
-[[package]]
-name = "amont-runtime"
-version = "2.3.1"
-dependencies = [
- "amont-quiet",
- "amont-slots",
- "git-attest",
-]
-
-[[package]]
-name = "amont-slots"
-version = "2.3.1"
-
-[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -475,6 +438,43 @@ name = "git-attest"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a12f2673859977c6881ec41112453071d2765a06b66f1fa56ffc5e6303dbcf14"
+
+[[package]]
+name = "greengate"
+version = "3.0.0"
+dependencies = [
+ "greengate-runtime",
+ "serde_json",
+]
+
+[[package]]
+name = "greengate-fleet"
+version = "3.0.0"
+dependencies = [
+ "crossterm",
+ "git-attest",
+ "greengate-runtime",
+ "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "greengate-runtime"
+version = "3.0.0"
+dependencies = [
+ "git-attest",
+ "greenharness-quiet",
+ "greenharness-slots",
+]
+
+[[package]]
+name = "greenharness-quiet"
+version = "3.0.0"
+
+[[package]]
+name = "greenharness-slots"
+version = "3.0.0"
 
 [[package]]
 name = "hashbrown"

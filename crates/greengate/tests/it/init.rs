@@ -1,0 +1,333 @@
+//! `amont init` — the verb a package manager calls.
+//!
+//! `"prepare": "amont init"` in a `package.json` means the hooks arrive with a
+//! `npm install`, so these run it the way npm would: unattended, with no
+//! terminal to answer a prompt, in whatever directory the install happened in.
+//!
+//! Every case here is one where `install` would have done the wrong thing —
+//! written outside the repository, hung on `/dev/tty`, or failed an install
+//! that had no business failing.
+//!
+//! The journey itself (silent outside a repository, the six shims, nothing
+//! outside the repository, a real commit, a re-bake, a linked worktree) is
+//! `flows::onboarding`'s `the_init_journey`; the refusals and the push
+//! snapshot stand-down stay here, each on a fixture of its own.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+struct Sandbox(PathBuf);
+
+impl Sandbox {
+    fn new(name: &str) -> Self {
+        let d = std::env::temp_dir().join(format!("amont-init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("mkdir");
+        Sandbox(d)
+    }
+    fn path(&self, rel: &str) -> PathBuf {
+        rel.split('/').fold(self.0.clone(), |p, c| p.join(c))
+    }
+    /// `init`, with HOME and XDG pointed inside the sandbox so a regression that
+    /// reached for either is visible as a written file rather than as damage to
+    /// the developer's real configuration.
+    ///
+    /// **stdin is closed.** npm's `prepare` inherits a terminal, and the whole
+    /// reason `init` exists rather than `install` is that `install` opens
+    /// `/dev/tty` and blocks. A test that left stdin attached would pass while
+    /// the real thing hung.
+    fn init(&self, cwd: &Path) -> (i32, String) {
+        let out = crate::common::amont_cmd()
+            .arg("init")
+            .current_dir(cwd)
+            .env("HOME", &self.0)
+            .env("USERPROFILE", &self.0)
+            .env("XDG_CONFIG_HOME", self.path(".config"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run amont init");
+        (
+            out.status.code().unwrap_or(-1),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git");
+}
+
+fn init_repo(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    git(dir, &["init", "-q", "--template=", "."]);
+    git(dir, &["config", "user.email", "t@t.test"]);
+    git(dir, &["config", "user.name", "t"]);
+}
+
+/// `init`'s silence outside a repository is git's VERDICT ("not a git repository"), never git's
+/// absence. A repository git refuses to answer about — dubious ownership in a
+/// container bind mount, an unreadable `.git/config` — used to take the same
+/// silent exit 0, so `npm install` logged success, the team believed hooks
+/// were wired, and commits from that environment ran no checks. The doc
+/// promises init "stays LOUD about everything else"; this is the everything
+/// else.
+#[cfg(unix)]
+#[test]
+fn init_is_loud_when_git_refuses_to_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new("gitrefuses");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    // An unreadable `.git/config` makes every git command fail with something
+    // other than "not a git repository" — the same failure class as dubious
+    // ownership, which needs a second uid to stage. Skip under root, where
+    // chmod 000 stops nothing.
+    let config = repo.join(".git/config");
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&config).is_ok() {
+        return; // running as root; the fixture cannot fail
+    }
+
+    let (code, out) = s.init(&repo);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).expect("chmod back");
+    assert_ne!(
+        code, 0,
+        "a repository git cannot answer about must fail init, not silently skip it:\n{out}"
+    );
+    assert!(
+        out.contains("git would not say"),
+        "the failure must say git is the blocker:\n{out}"
+    );
+    assert!(
+        !repo.join(".git/hooks/pre-commit").exists(),
+        "no shim may be written on a guess"
+    );
+}
+
+/// The husky collision, from the `prepare` side.
+///
+/// This is the state a repository is in DURING a migration: husky still owns
+/// `core.hooksPath`, and `package.json` already says `amont init`. Writing
+/// either directory would be wrong — `.git/hooks` is not dispatched from, and
+/// `.husky/_` is regenerated by husky's own prepare — so it fails loudly, which
+/// is what makes the half-finished migration visible instead of silent.
+#[test]
+fn init_refuses_a_repository_husky_still_owns() {
+    let s = Sandbox::new("husky");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    std::fs::create_dir_all(repo.join(".husky/_")).expect("mkdir");
+    git(&repo, &["config", "core.hooksPath", ".husky/_"]);
+
+    let (code, out) = s.init(&repo);
+    assert_ne!(code, 0, "init wrote into a husky repository:\n{out}");
+    assert!(out.contains("husky"), "must name the tool:\n{out}");
+    assert!(
+        out.contains("git config --unset core.hooksPath"),
+        "must name the remedy:\n{out}"
+    );
+    assert!(
+        !repo.join(".git/hooks/pre-commit").exists(),
+        "wrote a shim git would never dispatch"
+    );
+    assert!(
+        !repo.join(".husky/_/pre-commit").exists(),
+        "wrote into the directory husky regenerates"
+    );
+}
+
+/// A hook somebody wrote themselves is theirs. `init` has no `--force` and must
+/// not behave as though it did: it runs unattended, so there is nobody who
+/// could have decided that file was replaceable.
+#[test]
+fn init_refuses_to_overwrite_a_hook_it_did_not_write() {
+    let s = Sandbox::new("foreign");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let hooks = repo.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).expect("mkdir");
+    let mine = "#!/bin/sh\n# mine, thanks\nexit 0\n";
+    std::fs::write(hooks.join("pre-commit"), mine).expect("write");
+
+    let (code, out) = s.init(&repo);
+    assert_ne!(code, 0, "init overwrote a foreign hook:\n{out}");
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("pre-commit")).expect("read"),
+        mine,
+        "somebody's own pre-commit was replaced"
+    );
+    // Fail closed for the whole repository: three shims plus one refusal is the
+    // state where half the checks run and nothing says so.
+    for name in ["commit-msg", "pre-push", "prepare-commit-msg"] {
+        assert!(
+            !hooks.join(name).exists(),
+            "{name} was written despite the refusal — a half-installed repo"
+        );
+    }
+}
+
+// ----------------------------------------------------- push snapshots
+
+/// A linked worktree marked the way amont's push snapshot marks itself: an
+/// `amont-snapshot` file in its OWN git admin dir.
+fn marked_worktree(repo: &Path, wt: &Path) {
+    git(repo, &["commit", "--allow-empty", "-qm", "seed"]);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "-q", "--detach"])
+        .arg(wt)
+        .output()
+        .expect("git worktree add");
+    assert!(out.status.success(), "worktree add failed");
+    let marker = Command::new("git")
+        .arg("-C")
+        .arg(wt)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "amont-snapshot",
+        ])
+        .output()
+        .expect("git rev-parse");
+    let marker = PathBuf::from(String::from_utf8_lossy(&marker.stdout).trim());
+    assert!(
+        marker.ends_with(
+            Path::new(".git/worktrees")
+                .join(wt.file_name().unwrap())
+                .join("amont-snapshot")
+        ),
+        "the marker must be worktree-private: {}",
+        marker.display()
+    );
+    std::fs::write(marker, "").expect("mark");
+}
+
+/// Every hook file's bytes, by name, so "untouched" means byte for byte.
+fn hook_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<_> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read(e.path()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// Inside a push snapshot, `init` writes nothing. The shims are baked to a
+/// sentinel A first and the running binary is a different path B, so a
+/// re-bake would SHOW — "unchanged" cannot pass by baking the same bytes.
+#[test]
+fn init_in_a_marked_snapshot_leaves_the_shared_hooks_alone() {
+    let s = Sandbox::new("snapshot");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    // The worktree first: its seed commit must not run shims that point at
+    // a sentinel.
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+    let (code, out) = s.init(&repo);
+    assert_eq!(code, 0, "{out}");
+    let hooks = repo.join(".git/hooks");
+    for (name, bytes) in hook_bytes(&hooks) {
+        let text = String::from_utf8_lossy(&bytes)
+            .replace(env!("CARGO_BIN_EXE_greengate"), "/sentinel/A/amont");
+        std::fs::write(hooks.join(name), text).expect("seed");
+    }
+    let before = hook_bytes(&hooks);
+    let shims: Vec<_> = before
+        .iter()
+        .filter(|(_, b)| String::from_utf8_lossy(b).contains("BAKED="))
+        .collect();
+    assert!(!shims.is_empty(), "no amont shims to seed");
+    assert!(
+        shims
+            .iter()
+            .all(|(_, b)| String::from_utf8_lossy(b).contains("/sentinel/A/amont")),
+        "the sentinel did not take: a re-bake could not show"
+    );
+
+    let (code, out) = s.init(&wt);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("inside a greengate push snapshot"), "{out}");
+    assert_eq!(before, hook_bytes(&hooks), "init re-baked from a snapshot");
+}
+
+/// The stand-down comes BEFORE hook config is judged: a redirect `init`
+/// would refuse anywhere else must not fail a snapshot's `prepare`, since
+/// nothing is going to be written either way.
+#[test]
+fn init_in_a_marked_snapshot_does_not_fail_over_a_redirect() {
+    let s = Sandbox::new("snapshot-husky");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    std::fs::create_dir_all(repo.join(".husky/_")).expect("mkdir");
+    git(&repo, &["config", "core.hooksPath", ".husky/_"]);
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+
+    let (code, out) = s.init(&wt);
+    assert_eq!(code, 0, "{out}");
+    assert!(hook_bytes(&repo.join(".git/hooks")).is_empty(), "{out}");
+    assert!(hook_bytes(&repo.join(".husky/_")).is_empty(), "{out}");
+    // …and outside the snapshot it is still refused, as before.
+    let (code, out) = s.init(&repo);
+    assert_ne!(code, 0, "{out}");
+}
+
+/// Why a marker in the snapshot's git dir and not an inherited variable:
+/// while a snapshot exists, `init` in ANOTHER repository — with
+/// `AMONT_SNAPSHOT=1` in its environment, as a suite run from a snapshot
+/// would inherit — still bakes that repository's hooks normally.
+#[test]
+fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
+    let s = Sandbox::new("isolation");
+    let repo = s.path("repo");
+    init_repo(&repo);
+    let wt = s.path("snap");
+    marked_worktree(&repo, &wt);
+    let other = s.path("other");
+    init_repo(&other);
+
+    let out = crate::common::amont_cmd()
+        .arg("init")
+        .current_dir(&other)
+        .env("HOME", s.path(""))
+        .env("XDG_CONFIG_HOME", s.path(".config"))
+        .env("AMONT_SNAPSHOT", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run amont init");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{text}");
+    assert!(!text.contains("inside a greengate push snapshot"), "{text}");
+    let hook = std::fs::read_to_string(other.join(".git/hooks/pre-commit")).expect("baked");
+    assert!(hook.contains(env!("CARGO_BIN_EXE_greengate")), "{hook}");
+}

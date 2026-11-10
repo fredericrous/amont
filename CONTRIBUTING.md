@@ -13,7 +13,7 @@ For questions and ideas that are not yet defects, use
 
 ```sh
 git clone https://github.com/greenharness/greengate.git
-cd amont
+cd greengate
 make check
 ```
 
@@ -35,7 +35,7 @@ for passing tests, and a silent skip is indistinguishable from a pass.
 | `make lint` | Exactly what CI's `rust` job gates on: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`. |
 | `make test` | `scripts/check-no-deps.sh` plus `cargo test`. Deliberately lint-free so the inner loop stays fast. `make test RUN=<suite>` runs one. |
 | `make deps` | The dependency guard on its own. |
-| `make install` | Builds and runs `amont install`. |
+| `make install` | Builds and runs `greengate install`. |
 | `make install-fleet` | The dashboard, installed separately and on purpose. |
 | `make propagate` | Push the shim **set** to every repo. Dry run; `APPLY=1` writes. Only needed when a hook is added, removed or renamed. |
 
@@ -49,7 +49,7 @@ whichever line you happened to be looking at.
 
 ## The one hard rule: the commit path takes no dependencies
 
-`amont` and `amont-runtime` link **no external crates**, and
+`greengate` and `greengate-runtime` link **no external crates**, and
 `scripts/check-no-deps.sh` fails a build that changes that. CI runs it as its
 own job.
 
@@ -72,27 +72,27 @@ that crate's tree against the code it replaces, and make the case in the PR. A
 rule nobody may question is just superstition with CI attached.
 
 The guard checks the **resolved dependency tree**, not the manifest, because a
-dependency reaches the commit path through `amont-runtime` as easily as
+dependency reaches the commit path through `greengate-runtime` as easily as
 directly. Every step of it fails **closed**: cargo missing, registry
 unreachable, run from outside the workspace — all of those are failures, not
 passes. It used to send stderr to `/dev/null` and end with `|| true`, and a
 job named "hook binary has no external dependencies" would have stayed green
 through every one of them. A guard that cannot fail is decoration.
 
-`amont-fleet` takes dependencies quite happily — ratatui, crossterm, serde.
+`greengate-fleet` takes dependencies quite happily — ratatui, crossterm, serde.
 It is installed separately and runs when asked. **If your feature needs a
 crate, that is where it goes.**
 
 ## Layout
 
 ```
-crates/amont-runtime/   the checks, registry and dispatchers. std only.
-crates/amont/           the hook binary. Runs on every commit. std only.
-crates/amont-fleet/     the dashboard and the fleet fixer. Opt-in.
+crates/greengate-runtime/   the checks, registry and dispatchers. std only.
+crates/greengate/           the hook binary. Runs on every commit. std only.
+crates/greengate-fleet/     the dashboard and the fleet fixer. Opt-in.
 ```
 
 A new check is **a module plus one registry entry** in
-`crates/amont-runtime/src/registry.rs` — not a script. Name, stage, scope,
+`crates/greengate-runtime/src/registry.rs` — not a script. Name, stage, scope,
 severity and function are declared together in one table, and a consistency
 test fails if a registered name has no shim or a shim has no handler. See
 [docs/hook-architecture.md](docs/hook-architecture.md).

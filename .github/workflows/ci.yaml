@@ -70,7 +70,7 @@ jobs:
           # Through the API, not raw.githubusercontent.com, which throttles
           # anonymous reads like the release web route (504s on 2026-11-08).
           path=repos/greenharness/greenpiste/contents/tests/fixtures/excerpt/MANIFEST.sha256
-          ours=crates/amont/tests/fixtures/excerpt/MANIFEST.sha256
+          ours=crates/greengate/tests/fixtures/excerpt/MANIFEST.sha256
           for attempt in 1 2 3; do
             rc=0
             timeout 30 gh api "$path?ref=main" -H 'Accept: application/vnd.github.raw' > /tmp/theirs.sha256 || rc=$?
@@ -82,7 +82,7 @@ jobs:
             sleep $((attempt * 5))
           done
           if ! diff -u /tmp/theirs.sha256 "$ours"; then
-            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/it/excerpt_golden.rs"
+            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/greengate/tests/it/excerpt_golden.rs"
             exit 1
           fi
           echo "excerpt fixtures match amont-agent's"
@@ -289,6 +289,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: python3 scripts/test_bump_tap.py
+      - run: python3 -I scripts/test_release_manifest.py
+      - run: sh scripts/test_publish_crates.sh
       # The CPU sampler's macOS and Windows code never compiles on this runner;
       # `make lint-cross` lints it anyway (std only, no linker). The Linux
       # target is this runner's own and costs one more pass.
@@ -333,7 +335,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install "$MSRV" --profile minimal --no-self-update
-      - name: cargo +MSRV check (amont, amont-runtime)
+      - name: cargo +MSRV check (greengate, greengate-runtime)
         run: |
           set -euo pipefail
           # Cargo 1.74 cannot PARSE a v4 lock file ("lock file version `4` was
@@ -344,15 +346,15 @@ jobs:
           # to enforce — so the floor is resolved for it from `^1.6` as well.
           # The checkout is disposable; nothing is committed back.
           rm -f Cargo.lock
-          cargo "+$MSRV" check -p amont -p amont-runtime
+          cargo "+$MSRV" check -p greengate -p greengate-runtime
       # The CPU sampler's macOS FFI only compiles for a macOS target; check it
       # at the floor too (std only, no linker).
-      - name: cargo +MSRV check --target aarch64-apple-darwin (amont-runtime)
+      - name: cargo +MSRV check --target aarch64-apple-darwin (greengate-runtime)
         run: |
           set -euo pipefail
           rustup target add --toolchain "$MSRV" aarch64-apple-darwin
           rm -f Cargo.lock
-          cargo "+$MSRV" check --target aarch64-apple-darwin -p amont-runtime
+          cargo "+$MSRV" check --target aarch64-apple-darwin -p greengate-runtime
       # Last step, only when the work above passed: a result file naming this
       # tree, uploaded for the `sign` job. This job ran the pull request's code,
       # so it never holds the signing key.
@@ -466,7 +468,7 @@ jobs:
   #
   # This job used to bill itself as a "cheap backstop for the hooks no test file
   # covers (argo-lint, kube-linter, kubeconform, yamllint)". Those four have
-  # been Rust since phase 3 and are covered by crates/amont/tests/it/k8s.rs,
+  # been Rust since phase 3 and are covered by crates/greengate/tests/it/k8s.rs,
   # linters.rs and tool_tables.rs; the comment outlived its subject by three
   # phases. It also dispatched on the shebang across four arms, of which the
   # `*zsh` and `*node` ones could never fire — no hook has been either since the
@@ -610,19 +612,22 @@ jobs:
             throw
           }
 
-          # Same skip for a latest release that predates the rename to amont:
-          # its assets carry the old name, and the script under test fetches
-          # the new one. The first amont release reactivates this on its own.
-          if (-not ($latest.assets | Where-Object { $_.name -like 'amont-*' })) {
-            Write-Host '::notice::latest release predates the amont rename - skipping the installer test'
+          # Same skip for a latest release that predates the rename to
+          # greengate: its assets carry the old name, and the script under test
+          # fetches the new one. The first greengate release reactivates this
+          # on its own.
+          if (-not ($latest.assets | Where-Object { $_.name -like 'greengate-*' })) {
+            Write-Host '::notice::latest release predates the greengate rename - skipping the installer test'
             exit 0
           }
 
-          $bin = Join-Path $env:RUNNER_TEMP 'amont-bin'
+          $bin = Join-Path $env:RUNNER_TEMP 'greengate-bin'
           & "$PWD\install\install.ps1" -BinDir $bin -Version $latest.tag_name
 
-          $exe = Join-Path $bin 'amont.exe'
+          $exe = Join-Path $bin 'greengate.exe'
           if (-not (Test-Path $exe)) { throw "install.ps1 did not produce $exe" }
+          # And its old name beside it, a copy, for shims a 2.x install baked.
+          if (-not (Test-Path (Join-Path $bin 'amont.exe'))) { throw "install.ps1 did not write the amont.exe alias" }
 
           # It has to RUN, not merely exist — and answer as itself.
           $help = & $exe --help 2>&1 | Out-String
@@ -647,8 +652,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release
-          BIN="$PWD/target/release/amont.exe"
-          [ -x "$BIN" ] || BIN="$PWD/target/release/amont"
+          BIN="$PWD/target/release/greengate.exe"
+          [ -x "$BIN" ] || BIN="$PWD/target/release/greengate"
 
           repo=$(mktemp -d)/r && mkdir -p "$repo" && cd "$repo"
           # --template= (empty): without it `git init` copies the MACHINE's
@@ -695,7 +700,7 @@ jobs:
           # setup` with no terminal must print the keys rather than hang or
           # fail, which is the path a Windows provisioning script would take.
           "$BIN" setup | grep -q "amont.commit.gitmoji" \
-            || { echo "::error::amont setup printed no keys"; exit 1; }
+            || { echo "::error::greengate setup printed no keys"; exit 1; }
           echo "windows end-to-end OK"
 
       # The case the baked run above cannot see. `make install` puts the binary
@@ -711,8 +716,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN_SRC="$PWD/target/release/amont.exe"
-          [ -f "$BIN_SRC" ] || BIN_SRC="$PWD/target/release/amont"
+          BIN_SRC="$PWD/target/release/greengate.exe"
+          [ -f "$BIN_SRC" ] || BIN_SRC="$PWD/target/release/greengate"
           mkdir -p "$HOME/.local/bin"
           cp "$BIN_SRC" "$HOME/.local/bin/$(basename "$BIN_SRC")"
 
@@ -736,17 +741,19 @@ jobs:
           # The test is only worth anything if the binary is unreachable by the
           # LAST fallback. If PATH can still find it, fallback 4 answers and the
           # .exe branch this step exists for is never taken.
-          if PATH="$MIN_PATH" command -v amont > /dev/null 2>&1; then
-            echo "::error::amont is still on the reduced PATH — test proves nothing"
-            exit 1
-          fi
+          for n in greengate amont; do
+            if PATH="$MIN_PATH" command -v "$n" > /dev/null 2>&1; then
+              echo "::error::$n is still on the reduced PATH — test proves nothing"
+              exit 1
+            fi
+          done
 
           echo "hello" > a.txt && git add a.txt
           out=$(PATH="$MIN_PATH" git commit -m "feat: unbaked shim resolves" 2>&1) \
             || { echo "$out"; echo "::error::unbaked shim could not find the binary"; exit 1; }
           echo "$out"
           case "$out" in
-            *"amont binary not found"*)
+            *"greengate binary not found"*)
               echo "::error::shim fell through every fallback"; exit 1 ;;
           esac
           git rev-parse --verify HEAD > /dev/null 2>&1 \
@@ -1120,7 +1127,7 @@ jobs:
             exit 1
           fi
 
-          # `missing()` in crates/amont/tests/common/mod.rs prints exactly
+          # `missing()` in crates/greengate/tests/common/mod.rs prints exactly
           # `  ! <tool> unavailable — skipping`. Pull the tool name out of that.
           skipped=$(grep -o '! [A-Za-z0-9_.+-]* unavailable — skipping' /tmp/hooks-test.log \
                     | awk '{print $2}' | sort -u || true)

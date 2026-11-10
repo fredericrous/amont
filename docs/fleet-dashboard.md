@@ -1,9 +1,9 @@
-# `amont-fleet` — a TUI for the 96-repo hook fleet
+# `greengate-fleet` — a TUI for the 96-repo hook fleet
 
 Status: **built**. PRs #41-#47 implement v1 and v2; `scripts/propagate.sh` is
-gone, replaced by `amont-fleet fix`.
+gone, replaced by `greengate-fleet fix`.
 
-![the amont-fleet dashboard over a small fleet: overview, repo detail, and the hook-centric view](assets/fleet-demo.gif)
+![the greengate-fleet dashboard over a small fleet: overview, repo detail, and the hook-centric view](assets/fleet-demo.gif)
 
 The recording is real: real repositories, shims written by the release binary,
 scanned by the shipped dashboard — rebuilt any time with
@@ -262,7 +262,7 @@ absolute path anywhere on the disk, and activation used to `create_dir_all` it
 and write five 0o755 files into it. The fleet now refuses anything that does not
 resolve inside the repository's own worktree or its git common directory.
 
-Note the deliberate asymmetry: **per-repo `amont install` keeps honouring its
+Note the deliberate asymmetry: **per-repo `greengate install` keeps honouring its
 own repository's `core.hooksPath`**, absolute or not — you are standing in that
 repository and configured it yourself. The fleet refuses, because it is walking
 ninety-six repositories it did not configure.
@@ -276,7 +276,7 @@ display as covered-by.
 
 ### `attest`
 
-`attest` measures the step that retires amont's opt-out from attest (decisions
+`attest` measures the step that retires greengate's opt-out from attest (decisions
 ADR-0037). `git-attest` 2.0.0 stops reading `set planExempt off` in
 `amont.conf`, so it waits for `repos_with_deprecated_opt_out` to reach zero.
 The sweep that gets it there adds `@plan-exempt off` to `attest-inputs`. Where
@@ -300,7 +300,7 @@ drifted merely because `__AMONT_BIN__` was replaced.
 ## Screen 1 — Fleet overview (default)
 
 ```
-┌ amont fleet ──────────────────── scanning 98/98 · 8.1s ── /Users/me/Developer ┐
+┌ greengate fleet ──────────────────── scanning 98/98 · 8.1s ── /Users/me/Developer ┐
 │ 96 managed · 2 unmanaged (skipped) · 384 shims · 20 checks                       │
 │ consistency  commit-msg 96/1 ✓   pre-commit 96/1 ✓   pre-push 96/1 ✓             │
 │              prepare-commit-msg 96/1 ✓          ← copies/distinct blobs          │
@@ -392,7 +392,7 @@ a failure in words. This single screen is the reason the tool exists.
 │   ✓ commit-msg           blob 7914a85  matches template                         │
 │   ✓ pre-commit           blob 7914a85  matches template                         │
 │   ✓ pre-push             blob 7914a85  matches template                         │
-│   ✗ prepare-commit-msg   MISSING       → `amont fleet fix`                    │
+│   ✗ prepare-commit-msg   MISSING       → `greengate fleet fix`                    │
 │                                                                                 │
 │ CHECKS (20)                        pre-commit                                   │
 │   ● ban-terms      ● merge-conflict   ● package-lock   ● usual-name              │
@@ -490,12 +490,12 @@ refused in place with a one-line reason, no modal. On the command line the same
 split is enforced by the verb rather than a prompt:
 
 ```sh
-amont-fleet fix                    # DRY RUN — prints the plan, writes nothing
-amont-fleet fix --apply            # carries it out
-amont-fleet install                # implies applying; named after intent
-amont-fleet fix --apply --agents-md          # opt in, per invocation
-amont-fleet fix --apply --aval-hook          # opt in, per invocation
-amont-fleet fix --apply --remove-unrecognized
+greengate-fleet fix                    # DRY RUN — prints the plan, writes nothing
+greengate-fleet fix --apply            # carries it out
+greengate-fleet install                # implies applying; named after intent
+greengate-fleet fix --apply --agents-md          # opt in, per invocation
+greengate-fleet fix --apply --aval-hook          # opt in, per invocation
+greengate-fleet fix --apply --remove-unrecognized
 ```
 
 `fix` with no `--apply` is the preview, built from the same typed `FixPlan` the
@@ -580,7 +580,7 @@ one is not a code path that exists.
   `DECL` and `BYPASS` together; below 60, fall back to a single-column list. Never horizontal
   scrolling.
 - **Screen readers do not meaningfully work with TUIs.** The accessible path is
-  therefore `amont fleet --json`, emitting the full data model for scripting
+  therefore `greengate fleet --json`, emitting the full data model for scripting
   and assistive tooling. This is a first-class output, not a debug flag, and the
   TUI is a renderer over it.
 
@@ -590,17 +590,17 @@ A cargo **workspace**, so the commit path keeps its posture:
 
 ```
 crates/
-  amont-runtime/ # registry + hook logic. std-only.
+  greengate-runtime/ # registry + hook logic. std-only.
   amont/         # the hook binary. ZERO external dependencies.
-  amont-fleet/   # scanner, fixer, JSON, TUI. ratatui + crossterm.
+  greengate-fleet/   # scanner, fixer, JSON, TUI. ratatui + crossterm.
 ```
 
-`amont` must not gain an external dependency, directly or transitively; that
+`greengate` must not gain an external dependency, directly or transitively; that
 property is the reason the Rust migration happened at all. The TUI is a separate
 artifact that a developer opts into, and `make install` continues to install
 only the hook binary.
 
-Extracting `amont-runtime` has an independent benefit: there is currently no
+Extracting `greengate-runtime` has an independent benefit: there is currently no
 lib target, which is why `cargo test --lib` fails outright. Unit tests for hook
 logic would move into a library where they belong, without letting TUI
 dependencies into the commit path.
@@ -611,15 +611,15 @@ dependencies into the commit path.
 
 Build the minimum useful tool, but build it in the final architecture:
 
-- Workspace split into `amont-runtime`, `amont`, and `amont-fleet`.
+- Workspace split into `greengate-runtime`, `greengate`, and `greengate-fleet`.
 - Rust scanner for `--root` and `--depth`, with explicit counters for found git
   dirs, seen hook dirs, managed/unmanaged repos, unreadable paths, and excluded
   directories.
 - Rust shim inspection: five dispatcher states, baked path state, stale managed
   files, foreign sub-hooks, vestigial hook `package.json`, languages, skips.
-- `amont-fleet --json`, emitting `FleetScan`.
+- `greengate-fleet --json`, emitting `FleetScan`.
 - Default TUI overview and repo detail views.
-- Rust `amont-fleet fix [repo|--all] --dry-run`, producing a `FixPlan`.
+- Rust `greengate-fleet fix [repo|--all] --dry-run`, producing a `FixPlan`.
   *Shipped inverted, and better: dry run is the DEFAULT and `--apply` is the
   flag, so the writing form is the one you have to type.*
 - Rust apply path for that exact `FixPlan`, with a second confirmation in the
@@ -648,7 +648,7 @@ Add the workflows that make the grid more than a safer propagation report:
 - Remove `scripts/propagate.sh` once v1/v2 fix coverage has replaced its last
   practical use.
 
-### Shipped alongside — `amont-fleet gates`
+### Shipped alongside — `greengate-fleet gates`
 
 Not in either list above, because the question it answers was not one this
 design knew to ask. The scan says whether a repository's hooks are
@@ -658,7 +658,7 @@ A fleet audit on 2026-09-19 found four mechanisms that had silently stopped
 old Go, `uv` with no `.venv`, an `npm` that timed out — all of them green,
 all of them fast.
 
-`amont-fleet gates` reads the run record the hooks keep in each repository's
+`greengate-fleet gates` reads the run record the hooks keep in each repository's
 `refs/notes/amont-gate` and reports, per repository and gate: runs in the
 window, pass/fail, median and last duration, last-run age, and the flags
 `no-op suspect`, `flaky` and `stale`. Same shape as the rest of this tool —
@@ -691,12 +691,12 @@ after a differential has proven the model it destroys with, and the TUI is last
 because it is the least risky part and the least useful if the data beneath it
 is wrong.
 
-**1. Workspace split, zero behaviour change.** `amont-runtime` (lib,
-std-only) and `amont` (bin), no features. The proof is that all 174 tests
+**1. Workspace split, zero behaviour change.** `greengate-runtime` (lib,
+std-only) and `greengate` (bin), no features. The proof is that all 174 tests
 pass UNCHANGED, plus a differential running every hook over the same fixtures
 before and after, comparing bytes and exit codes — the technique that caught
 four bugs during the zsh port. This PR must also land the **zero-dependency CI
-guard** (`cargo tree` for `amont` shows nothing external); without it the
+guard** (`cargo tree` for `greengate` shows nothing external); without it the
 packaging rule is a comment, and ratatui arrives transitively three PRs later.
 Highest mechanical risk, no feature value, therefore alone.
 
@@ -731,9 +731,9 @@ practical use.
 
 ### Two details settled before starting
 
-- **Invocation is `amont-fleet`, not `amont fleet`.** A subcommand would
+- **Invocation is `greengate-fleet`, not `greengate fleet`.** A subcommand would
   require the hook binary to locate and exec the TUI binary, coupling the commit
-  path to a tool it must never know about. The screens' `amont fleet` prompt
+  path to a tool it must never know about. The screens' `greengate fleet` prompt
   is shorthand for the separate binary.
 - **Templates are embedded** with `include_str!` against the workspace root, so
   the tool reports correctly from any directory rather than only inside a

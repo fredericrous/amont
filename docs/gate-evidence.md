@@ -29,7 +29,7 @@ run 1726903600 pre-push-audit-js fail 903
 
 `run <epoch> <gate> <outcome> <milliseconds>`. Line one is the stamp, exactly
 as it has always been — [`amont.pushStamps`](configuration.md#amontpushstamps--remember-what-the-push-gate-already-proved)
-reads that line and nothing else, so every version of amont that predates
+reads that line and nothing else, so every version of greengate that predates
 these lines reads a note that carries them and sees no change at all. The
 `run` lines are additive, optional, and are never consulted by any decision
 about whether a check may be skipped.
@@ -52,7 +52,7 @@ Four things are worth knowing about the shape:
   one tree read identical content. If they disagree, the content is not what
   changed.
 - **It is local.** Notes in this ref are never pushed, never travel, and are
-  deleted by `amont uninstall` along with the rest of amont's own
+  deleted by `greengate uninstall` along with the rest of greengate's own
   bookkeeping. Nothing here is a statement to anybody else's system — that is
   what [`amont.attest`](configuration.md#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci)
   is for, and its signed payload is a separate, versioned contract that this
@@ -71,7 +71,7 @@ clean worktree of its own — relais, in a candidate worktree that shares this
 repository's notes — runs:
 
 ```sh
-amont run --stamp [<gate>…]
+greengate run --stamp [<gate>…]
 ```
 
 It runs the named gates (by default every blocking commit-time declaration and
@@ -91,7 +91,7 @@ pre-push hook signs what it finds stamped, with the key it already uses.
 To ask which gates a tree carries a verdict for:
 
 ```sh
-amont stamps [--json] [--tree <rev>] [<gate>…]
+greengate stamps [--json] [--tree <rev>] [<gate>…]
 ```
 
 ```json
@@ -110,14 +110,14 @@ It exits 0 with an answer, and 2 on usage.
 ## The report
 
 ```sh
-amont-fleet gates                       # every repository under the scan root
-amont-fleet gates --root . --depth 1    # just this one
-amont-fleet gates --json
+greengate-fleet gates                       # every repository under the scan root
+greengate-fleet gates --root . --depth 1    # just this one
+greengate-fleet gates --json
 ```
 
 Per repository and gate: runs in the window, pass and fail counts, median and
 last duration, how long ago it last ran — and the flags below. A gate that
-has never run does not appear: this record knows what ran, and `amont list`
+has never run does not appear: this record knows what ran, and `greengate list`
 is the answer to what is *declared*.
 
 ### `no-op suspect`
@@ -235,7 +235,7 @@ outranks the committed value, as it does for every key.
 ## What this is not
 
 - **It is not a test selector.** Nothing chooses which tests a suite runs;
-  amont does not know what is inside one.
+  greengate does not know what is inside one.
 - **It is not a prediction, and it does not act on one.** Every flag above
   is a statement about runs that happened, and the only thing the ordering
   does with a prediction is decide what to try first.

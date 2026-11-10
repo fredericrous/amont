@@ -122,7 +122,7 @@ rather than installing a bare `.exe` as the hook file.
 
 > **A PLAN NOT TAKEN.** None of the release pipeline below was built, and
 > `make install` does not work the way this describes. What ships is:
-> `make install` runs `cargo build --release` and then `amont install`, which
+> `make install` runs `cargo build --release` and then `greengate install`, which
 > writes the binary and bakes the shims — building from source is the ONLY path,
 > so the "contributor fallback" became the whole story and the
 > `make install-from-source` target this bullet list asks for never existed.
@@ -242,7 +242,7 @@ every repo rather than for the framework.
 rewriting them early would remove the net while walking the wire.
 
 *Done, and it stopped being optional the moment Windows mattered.* The suites
-are `crates/amont/tests/it/` and `crates/amont-fleet/tests/it/`, each
+are `crates/greengate/tests/it/` and `crates/greengate-fleet/tests/it/`, each
 `Repo` an isolated temp repository so they run in parallel — which the old
 one-repo-per-suite runner could not, and which is why several old cases depended
 on state left by earlier ones. Windows CI runs the full suite rather than a
@@ -287,7 +287,7 @@ updating the binary updates every repo at once.
    does not know, and gets `unknown hook` and exit 2.
 
    That is deliberate and it is fine, because the repair path is the fleet, not
-   a compatibility shim in the binary. `amont-fleet fix` / `install` is what
+   a compatibility shim in the binary. `greengate-fleet fix` / `install` is what
    moves the 96 repos, and `Repo::stale_ours` — "our files that we no longer
    ship" — is exactly the field that finds those leftovers and turns them into a
    removal. The binary and the repos DO move independently; the mechanism is a
@@ -455,7 +455,7 @@ members from there. `Cargo.toml`/`Cargo.lock` count as touching Rust for clippy.
 
 ## `propagate.sh` is gone (PR #47)
 
-Replaced by `amont-fleet fix`, after a differential proved the Rust plan
+Replaced by `greengate-fleet fix`, after a differential proved the Rust plan
 removes exactly the same set on a fixture covering every actionable case. That
 comparison is what earned the deletion; the expectation it produced is kept as a
 golden test, because deleting the gate along with the script would have thrown
@@ -466,7 +466,7 @@ away the only evidence the rewrite was faithful.
 
 ## Why the dependency guard exists (corrected)
 
-`scripts/check-no-deps.sh` asserts that `amont` resolves to nothing outside
+`scripts/check-no-deps.sh` asserts that `greengate` resolves to nothing outside
 the workspace. Its original comment said the migration existed because a Python
 repo needed node and zsh to commit, so a dependency tree "would undo it".
 
@@ -480,7 +480,7 @@ The guard is still worth having, for reasons that survive scrutiny:
 1. **Supply chain.** The binary runs on every commit in 96 repos, with the
    developer's credentials, reading every staged file. Every transitive crate is
    code executing in that position. This argument is specific to THIS binary —
-   `amont-fleet` pulls ratatui and a dozen crates without concern, because it
+   `greengate-fleet` pulls ratatui and a dozen crates without concern, because it
    is opt-in.
 2. **Offline reproducibility.** A std-only crate builds without a registry,
    indefinitely. Real but modest.

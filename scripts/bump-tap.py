@@ -14,16 +14,33 @@ Idempotent on purpose: re-run against a formula already at the version it
 produces byte-identical output, so the workflow's "nothing to commit" path
 is how a resumed release run no-ops.
 
-Usage: bump-tap.py <version> <SHA256SUMS> <Formula/amont.rb>
+Since 3.0.0 the archives are `greengate-<v>-<target>`; a release also ships
+old-name `amont-<v>-<target>` archives for 2.x installers until the census,
+and the formula names only the `greengate-` ones. A formula still on the old
+prefix (the 2.3.1 one) moves to the new.
+
+Usage: bump-tap.py <version> <SHA256SUMS> <Formula/greengate.rb>
 """
 
 import pathlib
 import re
 import sys
+from typing import NoReturn
 
 # Where the release assets live. The formula may still name the old owner
 # (`fredericrous/amont`); the patterns below accept either and write this one.
 REPO = "greenharness/greengate"
+
+
+def fail(message: str) -> NoReturn:
+    """Refuse, on stderr, exit 1. Not `assert`: `python -O` strips those."""
+    print(f"bump-tap: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def require(ok: bool, message: str) -> None:
+    if not ok:
+        fail(message)
 
 
 def main() -> None:
@@ -31,32 +48,29 @@ def main() -> None:
     version = version.lstrip("v")
 
     sums: dict[str, tuple[str, str]] = {}
-    for line in pathlib.Path(sums_path).read_text().splitlines():
+    for line in pathlib.Path(sums_path).read_text(encoding="utf-8").splitlines():
         parts = line.split()
         if len(parts) != 2:
             continue
         sha, name = parts
-        m = re.fullmatch(r"amont-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
-        if not m:
+        # Only the new name: the old-name archives are for 2.x installers.
+        archive = re.fullmatch(r"greengate-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
+        if not archive:
             continue
-        assert m.group(1) == version, (
-            f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?"
-        )
-        sums[m.group(2)] = (sha, name)
-    assert sums, f"no amont checksums parsed from {sums_path}"
+        require(archive.group(1) == version, f"SHA256SUMS is for {archive.group(1)}, not {version} — wrong release?")
+        sums[archive.group(2)] = (sha, name)
+    require(bool(sums), f"no greengate checksums parsed from {sums_path}")
 
     formula = pathlib.Path(formula_path)
-    text = formula.read_text()
+    text = formula.read_text(encoding="utf-8")
     text, n_version = re.subn(
         r'version "[0-9.]+"', f'version "{version}"', text, count=1
     )
-    assert n_version == 1, "the formula carries no version line"
+    require(n_version == 1, "the formula carries no version line")
 
     def rewrite(m: "re.Match[str]") -> str:
         target = m.group("target")
-        assert target in sums, (
-            f"the formula wants {target} and this release did not publish it"
-        )
+        require(target in sums, f"the formula wants {target} and this release did not publish it")
         sha, name = sums[target]
         return (
             f'url "https://github.com/{REPO}/releases/'
@@ -66,11 +80,11 @@ def main() -> None:
 
     pair = re.compile(
         r'url "https://github\.com/(?:fredericrous/amont|greenharness/greengate)/releases/'
-        r'download/v[0-9.]+/amont-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
+        r'download/v[0-9.]+/(?:amont|greengate)-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
-    assert n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}"
+    require(n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}")
 
     # The repository moved (2026-11-08); a formula still on the old owner's
     # homepage is pointed at the new one, and a current one is left as it is.
@@ -80,12 +94,12 @@ def main() -> None:
         text,
         count=1,
     )
-    assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont or greenharness/greengate"
+    require(n_home == 1, "the formula carries no homepage line naming fredericrous/amont or greenharness/greengate")
 
-    stale = set(re.findall(r"amont-([0-9.]+)-", text)) - {version}
-    assert not stale, f"stale release versions survived the rewrite: {stale}"
+    stale = set(re.findall(r"(?:amont|greengate)-([0-9.]+)-", text)) - {version}
+    require(not stale, f"stale release versions survived the rewrite: {stale}")
 
-    formula.write_text(text)
+    formula.write_text(text, encoding="utf-8")
     print(f"formula -> {version} ({n} targets)")
 
 

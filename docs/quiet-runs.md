@@ -1,16 +1,16 @@
 # The quiet-run active entry
 
-amont (`amont run`, pre-commit checks) and `amont-agent quiet` keep a
+greengate (`greengate run`, pre-commit checks) and `amont-agent quiet` keep a
 check's output out of the agent's context: the output goes to a
 `.log.tmp` file. So that a person can still see such a run live, each
 tool writes one small JSON file while the run is active, and a reader
 such as relais's `relais quiet watch --protocol` turns those files into
 something it can draw. A writer never depends on a reader.
 
-This page is the contract for that file. amont owns it (decisions
+This page is the contract for that file. greengate owns it (decisions
 ADR-0039, `harness.cross-tool-reads`), and it has one implementation, the
-std-only [`amont-quiet`](https://crates.io/crates/amont-quiet) crate, which
-amont and amont-agent write through and relais finds the directory with
+std-only [`greenharness-quiet`](https://crates.io/crates/greenharness-quiet) crate, which
+greengate and amont-agent write through and relais finds the directory with
 (`harness.shared-code`). A reader documents only what it does with the
 file. relais's watcher protocol, with its own retention rules, is in
 relais `docs/quiet-runs.md`.
@@ -40,7 +40,7 @@ The file's name without `.json` is the run's `id`.
 | field     | type             | meaning                                                              |
 | --------- | ---------------- | -------------------------------------------------------------------- |
 | `v`       | number           | format version, `1`: the version token a reader checks; a reader ignores any other |
-| `tool`    | string           | `amont` or `amont-agent`                                             |
+| `tool`    | string           | `greengate` or `amont-agent`                                             |
 | `session` | string or null   | `CLAUDE_CODE_SESSION_ID` of the starter; null outside Claude Code    |
 | `check`   | string           | the check name, or the program name for `amont-agent quiet`          |
 | `repo`    | string           | the git toplevel, else the working directory                         |
@@ -64,7 +64,7 @@ Unknown fields are ignored. A new field that a reader may ignore keeps
    - an entry of its own tool without `ended` whose pid is dead.
 
    - a temp file older than an hour: `.<id>.json.tmp`, and the two forms
-     writers used before `amont-quiet`, `<id>.json.tmp` and
+     writers used before `greenharness-quiet`, `<id>.json.tmp` and
      `.amont-agent-tmp-*.json`.
 
    A pid is gone only when `kill(pid, 0)` fails with `ESRCH`; any other

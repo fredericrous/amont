@@ -8,7 +8,58 @@ missing here.
 
 ## Unreleased
 
+## v3.0.0
+
+amont is now **greengate** (Green Harness ADR-0064). The command, the crates
+and the packages change name; the names it reads stay, and every hook a 2.x
+install wrote keeps working.
+
 ### Changed
+
+- The binaries are `greengate` and `greengate-fleet`. Every message, usage
+  line, error prefix and `--version` (`greengate 3.0.0`) says greengate, from
+  one names module. `greengate install`, `install.sh`, `install.ps1` and the
+  Homebrew formula also place `amont` and `amont-fleet` beside them as
+  **copies**, written by rename (a commit during an install never finds the
+  binary missing), so shims baked to `…/amont` keep running the new build. A
+  2.x `amont install` over the alias replaces only the alias. The alias is
+  the same binary, so `amont --version` answers `greengate 3.0.0`: a script
+  that reads the first word of it sees the new name.
+- `install`, `enroll`, `init` and `uninstall` print their report on stderr,
+  in one stream and in order; stdout is left for data. A script that read
+  `amont install`'s stdout reads stderr now.
+- **2.x installers and CI images now receive 3.0.0 under the name `amont`.**
+  Each release ships `amont-<version>-<target>` archives beside the new
+  `greengate-<version>-<target>` ones, holding the same build as regular files
+  `amont-<v>-<t>/amont` and `amont-fleet`, because 2.x `install.sh`, the
+  homelab runner image and anything else that builds that name from
+  `releases/latest` keeps doing so. They ship until a census finds no 2.x
+  consumer.
+- New shims bake `greengate` and fall back to `~/.local/bin/greengate`, then
+  `amont`, then PATH; their install hint names greengate. `greengate-fleet`
+  finds `greengate` on PATH, then `amont`, and reads a shim rendered by the
+  2.3.1 template, or baked to `amont` beside the binary, as current: 3.0.0
+  reports no repository drifted, and `fix --apply` rewrites none of them.
+- Crates: `greengate`, `greengate-fleet`, `greengate-runtime`, and the two
+  shared with greenpiste and relais, `greenharness-quiet` and
+  `greenharness-slots`, all at 3.0.0. The `amont-*` crates stay at 2.3.1,
+  neither republished nor yanked. `cargo install greengate` places no alias:
+  run `greengate install` once for it.
+- Homebrew: `fredericrous/tap/greengate`. The tap renames `amont` to it, so
+  `brew upgrade` moves an installed amont over.
+- npm: `@greenharness/greengate` (its `bin` maps both `greengate` and
+  `amont`) and six `@greenharness/greengate-<target>` packages, by trusted
+  publishing. npm's `amont` stays at 2.3.0 and is deprecated towards it.
+  v2.3.1's npm publish had failed (`NPM_TOKEN` hit npm's 90-day limit,
+  `E401`); the job now holds no npm secret.
+- Each release ships `greenharness.toml`, the manifest grh pins, with the
+  sha256 of each unix tarball, checksummed and attested with them; a
+  released asset is never uploaded again under the same tag.
+- Unchanged in 3.0.0, and read under both names in a later release: config
+  keys (`amont.*`), `amont.conf`, `AMONT_*` variables, ledgers and state
+  paths under `amont`, the AGENTS.md generated block, signed-notes refs.
+
+### Before this release
 
 - npm stays at 2.3.0 until the rename to greengate. v2.3.1's npm publish
   failed (`NPM_TOKEN` hit npm's 90-day limit that day, `E401`), and the

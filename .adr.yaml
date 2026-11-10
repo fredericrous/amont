@@ -163,7 +163,7 @@ packs:
 # counted; `aval rules --all-traits` lists them. `aval traits --check`, run
 # by this repository's gate, reports a package this stops describing.
 areas:
-  # cli: crates/amont-fleet/Cargo.toml — `crates/amont-fleet/src/main.rs`
-  "crates/amont-fleet/**": [cli]
-  # cli: crates/amont/Cargo.toml — `crates/amont/src/main.rs`
-  "crates/amont/**": [cli]
+  # cli: crates/greengate-fleet/Cargo.toml — `crates/greengate-fleet/src/main.rs`
+  "crates/greengate-fleet/**": [cli]
+  # cli: crates/greengate/Cargo.toml — `crates/greengate/src/main.rs`
+  "crates/greengate/**": [cli]

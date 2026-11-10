@@ -14,7 +14,7 @@
 #      commit in 96 repos, with the developer's credentials, reading every
 #      staged file, while nobody is watching. Every transitive crate is code
 #      executing in that position. Zero dependencies means that code is std and
-#      ours. The argument is about THIS binary; amont-fleet pulls ratatui and
+#      ours. The argument is about THIS binary; greengate-fleet pulls ratatui and
 #      a dozen crates quite happily, because it is opt-in and runs when asked.
 #
 #   2. OFFLINE REPRODUCIBILITY. A std-only crate builds indefinitely without a
@@ -26,7 +26,7 @@
 #      ever genuinely needs a parser, weigh that crate's tree against the code
 #      it replaces and decide. Do not treat this file as a prohibition.
 #
-# A dependency reaches the commit path through amont-runtime as easily as
+# A dependency reaches the commit path through greengate-runtime as easily as
 # directly, so the check is on the RESOLVED tree rather than on a manifest.
 #
 # Every step below fails CLOSED. This script used to send cargo's stderr to
@@ -46,7 +46,7 @@ set -eu
 EDGES="--edges normal,build --target all"
 
 # shellcheck disable=SC2086 # $EDGES is two flags, split on purpose
-if ! tree_out=$(cargo tree -p amont $EDGES --prefix none); then
+if ! tree_out=$(cargo tree -p greengate $EDGES --prefix none); then
   echo "check-no-deps: cargo tree failed — the commit path is UNVERIFIED." >&2
   echo "That is a failure, not a pass: see the error above." >&2
   exit 1
@@ -62,30 +62,30 @@ crates=$(printf '%s\n' "$tree_out" | sed 's/ (\*)$//' | awk '{print $1}' | sort 
 # The root crate must be in its own tree. If it is not, we are reading
 # something other than what we think we are, and an empty `ext` below would
 # mean nothing.
-if ! printf '%s\n' "$crates" | grep -qx 'amont'; then
-  echo "check-no-deps: 'amont' is absent from its own dependency tree." >&2
+if ! printf '%s\n' "$crates" | grep -qx 'greengate'; then
+  echo "check-no-deps: 'greengate' is absent from its own dependency tree." >&2
   echo "Refusing to conclude anything from that. Output was:" >&2
   printf '%s\n' "$tree_out" | sed 's/^/  /' >&2
   exit 1
 fi
 
 # Two crates are allowed, each argued beside its declaration in
-# crates/amont-runtime/Cargo.toml: git-attest (decisions ADR-0037), attest's
-# std-only implementation of the attestation format, and amont-quiet
+# crates/greengate-runtime/Cargo.toml: git-attest (decisions ADR-0037), attest's
+# std-only implementation of the attestation format, and greenharness-quiet
 # (ADR-0039), the one implementation of the quiet-run active entry. Each is
 # allowed by name, and only while its OWN tree is empty, checked below: a
 # dependency it gains would reach the commit path through it.
-ALLOWED="git-attest amont-quiet amont-slots"
+ALLOWED="git-attest greenharness-quiet greenharness-slots"
 #
 # The one legitimate `|| true` in this file: `grep -v` exits 1 when nothing
 # matches, and nothing matching IS the success case here.
-ext=$(printf '%s\n' "$crates" | grep -vE '^(amont|amont-runtime|git-attest|amont-quiet|amont-slots)$' || true)
+ext=$(printf '%s\n' "$crates" | grep -vE '^(greengate|greengate-runtime|git-attest|greenharness-quiet|greenharness-slots)$' || true)
 
 if [ -n "$ext" ]; then
-  echo "amont gained external dependencies:" >&2
+  echo "greengate gained external dependencies:" >&2
   echo "$ext" | sed 's/^/  /' >&2
   echo "" >&2
-  echo "The commit path must stay dependency-free. Put this in amont-fleet." >&2
+  echo "The commit path must stay dependency-free. Put this in greengate-fleet." >&2
   exit 1
 fi
 for leaf in $ALLOWED; do
@@ -101,4 +101,4 @@ for leaf in $ALLOWED; do
     exit 1
   fi
 done
-echo "amont: no external dependencies (git-attest, amont-quiet and amont-slots, std-only, are the allowed crates)"
+echo "greengate: no external dependencies (git-attest, greenharness-quiet and greenharness-slots, std-only, are the allowed crates)"

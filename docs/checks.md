@@ -9,10 +9,10 @@ This page is the catalogue. **It is not the answer to "what will run in my
 repository"** — for that, ask:
 
 ```sh
-amont list                       # here, and why not
-amont list --stage pre-push      # one trigger
-amont list --all                 # the inert ones too, one row each
-amont list --json                # the same, machine-readable
+greengate list                       # here, and why not
+greengate list --stage pre-push      # one trigger
+greengate list --all                 # the inert ones too, one row each
+greengate list --json                # the same, machine-readable
 ```
 
 Most checks are **inert** in most repositories, by design. A check fires only
@@ -20,14 +20,14 @@ when the commit touches files it understands *and* the repository carries the
 configuration that opts into that tool. A JavaScript repository never invokes
 cargo; a repository with no `ruff.toml` never needs ruff.
 
-That is why `amont list` leads with what actually runs and gives the rest a
+That is why `greengate list` leads with what actually runs and gives the rest a
 line:
 
 ```text
-  15 active here.  23 inert (Go, JavaScript, Kubernetes, Python, Rust) — amont list --all
+  15 active here.  23 inert (Go, JavaScript, Kubernetes, Python, Rust) — greengate list --all
 ```
 
-Even in a repository amont serves well, about half the checks are inert; in one
+Even in a repository greengate serves well, about half the checks are inert; in one
 built on a stack it does not cover yet, two thirds. Printing all of them
 interleaved meant a Terraform shop read thirty rows naming Rust, Go, Python and
 JavaScript — which says "this tool is for other people" when the truth is the
@@ -60,7 +60,7 @@ and a count is the wrong shape for either.
 
 ## `--json`, the machine contract
 
-`amont list --json` is what an agent or a script reads instead of parsing the
+`greengate list --json` is what an agent or a script reads instead of parsing the
 human table, so its field names are a contract rather than an implementation
 detail. Every document it prints declares which contract it is:
 
@@ -78,7 +78,7 @@ than a bare array.
 `branch_style`, `bypasses`, `downgrades`, `conventions_apply`, `installed`,
 `template_dir`.
 
-**`installed` and `template_dir`**: whether amont's six shims are in this
+**`installed` and `template_dir`**: whether greengate's six shims are in this
 repository's hooks directory (where git dispatches from) and in the machine's
 template dir, read from the shim files themselves. Each is
 `{"state", "hooks_dir", "shims": [{"name", "binary"}]}`, where `state` is
@@ -126,7 +126,7 @@ with one blank line before them, and places the type's gitmoji wherever you
 asked for it — nowhere, by default.
 
 Every number above and the gitmoji placement are `amont.commit.*` settings;
-`amont setup` walks them. See
+`greengate setup` walks them. See
 [if the defaults do not fit](commit-convention.md#if-the-defaults-do-not-fit).
 
 ## `prepare-commit-msg`
@@ -140,7 +140,7 @@ Only for a commit you are authoring. `-m`, `-t`, a merge, a squash and
 ## The safety net vs the conventions
 
 With `git config --global amont.conventions declared` — the mode
-[`amont enroll`](team-rollout.md) offers for machines that also clone other
+[`greengate enroll`](team-rollout.md) offers for machines that also clone other
 people's projects — the checks split in two. Five are the **safety net**
 and run in every repository, declared or not: `merge-conflict`,
 `large-files`, both `secrets` checks, and `ban-terms` — findings that are
@@ -162,7 +162,7 @@ its test suite:
 ```
   ↷ 1 check(s) skipped because pre-commit-cargo-fmt failed: pre-commit-clippy
   fix the failures above and commit again; to run one now:
-    amont run pre-commit-clippy
+    greengate run pre-commit-clippy
 ```
 
 A skipped check earns no stamp, so the corrected commit runs it. A Light
@@ -172,7 +172,7 @@ before 2.1.
 
 | id | fires when | what it does |
 |---|---|---|
-| `pre-commit-agents-md` | `AGENTS.md`/`CLAUDE.md` carry the amont markers | The generated guidance block is behind the amont that would generate it now — an agent reading it follows last release's instructions. Warns with the `amont agents-md` fix; with `amont.fix true` regenerates and re-stages. Silent without the markers (opt-in), and during merge/rebase/cherry-pick. **Never blocks.** **fixes** |
+| `pre-commit-agents-md` | `AGENTS.md`/`CLAUDE.md` carry the greengate markers | The generated guidance block is behind the greengate that would generate it now — an agent reading it follows last release's instructions. Warns with the `greengate agents-md` fix; with `amont.fix true` regenerates and re-stages. Silent without the markers (opt-in), and during merge/rebase/cherry-pick. **Never blocks.** **fixes** |
 | `pre-commit-argo-lint` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Argo CD app lint. **soft** |
 | `pre-commit-ban-terms` | `.js` `.jsx` `.ts` `.tsx` `.vue` `.rs` `.py` | Refuses focused/debug leftovers in staged sources — `describe.only`, `fit(`, `debugger` in JS/TS, `dbg!(` in Rust, `breakpoint()` and `pdb.set_trace()` in Python. Scoped to what this commit touches, and re-checked against staged content with each language's comments and string literals blanked (a term named in prose is discussion, not code — and an f-string interpolation or template substitution is code, not prose). |
 | `pre-commit-branch-pattern` | always | Says at the **first commit** what [`pre-push-branch-pattern`](#pre-push) will refuse at push time, with the `git branch -m` fix — while renaming costs nothing. Quiet on a detached head, in a remoteless repository, and on any branch a remote already has. **Never blocks.** |
@@ -185,7 +185,7 @@ before 2.1.
 | `pre-commit-kubeconform` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Schema-validates rendered manifests. **soft** |
 | `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint at zero warnings (`--max-warnings 0`), only in repos that carry an eslint config. |
 | `pre-commit-lint-json-yaml` | `.json` `.yaml` `.yml` | Parses staged JSON/YAML so a syntax error never reaches the repo. **soft** |
-| `pre-commit-manifest-trust` | `amont.conf` | Blocks a commit that changes `amont.conf` while the checks it declares are untrusted — otherwise they stand down as "could not run" for exactly the commit that introduces them. Names the fix (`amont trust`); never trusts anything itself. Not during a merge, rebase, cherry-pick or revert: a manifest arriving from another branch stays a gap. |
+| `pre-commit-manifest-trust` | `amont.conf` | Blocks a commit that changes `amont.conf` while the checks it declares are untrusted — otherwise they stand down as "could not run" for exactly the commit that introduces them. Names the fix (`greengate trust`); never trusts anything itself. Not during a merge, rebase, cherry-pick or revert: a manifest arriving from another branch stays a gap. |
 | `pre-commit-merge-conflict` | always | Refuses staged files still carrying conflict markers. |
 | `pre-commit-package-lock` | `package.json` | Keeps `package.json` and its lockfile in step, scoped per directory — one project's lockfile does not satisfy another's in a monorepo, and a `package.json` with no lockfile beside it never demands one. |
 | `pre-commit-prettier` | a prettier config is present | Format check. **fixes** |
@@ -272,7 +272,7 @@ moment it leaves the machine, and the remedy stops being `git commit
 Detection is curated token shapes, not entropy — entropy heuristics are
 where secret scanners get noisy, and a noisy blocker is a blocker people
 learn to delete. A legitimate fixture opts out per line with the pragma
-`amont:allow-secret` on the same line: visible in review, greppable, and
+`greengate:allow-secret` on the same line: visible in review, greppable, and
 narrower than skipping the whole check. Binary files and files over 2 MB
 are skipped.
 
@@ -289,7 +289,7 @@ and `pnpm audit` (`pnpm-lock.yaml`), each in every directory that tracks one,
 `pip-audit` (`requirements.txt`, or a `pyproject.toml` project's virtualenv),
 and `govulncheck ./...` (`go.sum`). No lockfile, no check — an audit without
 a resolved tree audits a guess — and no check means nothing said: an audit
-the repository never opted into is inert, exactly as `amont list` reports
+the repository never opted into is inert, exactly as `greengate list` reports
 it, not a check that "could not run".
 
 The severity is the push's, not the finding's:
@@ -352,7 +352,7 @@ in its exit status, and those mean opposite things.
 
 **`audit-rust` names the crate, and what reaches it.** An advisory id says
 nothing about whether it matters to you, so the warning reads
-`RUSTSEC-2026-0002 (lru → amont-fleet)`: the crate the advisory is against,
+`RUSTSEC-2026-0002 (lru → greengate-fleet)`: the crate the advisory is against,
 and which of this workspace's crates depend on it. A finding in an opt-in
 tool is a different Monday from one on the commit path, and reading the id
 alone meant running `cargo tree --invert` by hand to tell them apart.
@@ -405,7 +405,7 @@ pre-commit    test   *.rs    block     cargo test
 pre-push      test   *.rs    block     cargo test
 ```
 
-**A BUILT-IN gate needs only the commit-time half.** amont already owns the
+**A BUILT-IN gate needs only the commit-time half.** greengate already owns the
 push side of `cargo-test`, `pytest`, `go-test` and `run-tests-js`, so declare
 the commit-time twin under the built-in's own short name and stop:
 
@@ -415,7 +415,7 @@ pre-commit    cargo-test  *.rs    block     cargo test
 ```
 
 `pre-push-cargo-test` then defers to its stamps — no second declaration, no
-`hook.skip`, and no repeating a command amont already knows how to run. The
+`hook.skip`, and no repeating a command greengate already knows how to run. The
 name must be the SHORT one (`cargo-test`, not `pre-push-cargo-test`): it is
 matched against what you wrote here, and a full id matches nothing.
 
@@ -463,12 +463,12 @@ Two things fall out of one record:
   remote closed the idle session while it ran, the push died; `git push`
   again sends the same tips, finds their stamps, and is on the wire in
   seconds.
-- **The suite can run before git connects at all.** `amont run pre-push`
+- **The suite can run before git connects at all.** `greengate run pre-push`
   drives the same dispatcher with no push in flight — on a branch that has
   never been pushed it measures against `origin/HEAD`, `origin/main` or
   `origin/master` — and stamps `HEAD` when every block gate passes. Then
   `git push` holds its connection open for the seconds the transport takes,
-  not the minutes the suite does. An agent that runs `amont run pre-push`
+  not the minutes the suite does. An agent that runs `greengate run pre-push`
   before every `git push` never meets the idle timeout; `amont-agent`'s
   `push-preflight` rule says so when a push is about to run without one.
 
@@ -506,12 +506,12 @@ honouring off.
 
 ### Rehearsing in the background
 
-`amont run pre-push` is still a wait somebody has to remember to start.
-`amont rehearse` starts it for you and gets out of the way:
+`greengate run pre-push` is still a wait somebody has to remember to start.
+`greengate rehearse` starts it for you and gets out of the way:
 
 ```text
 $ git commit -m "feat: the thing"
-rehearsing the push gate in the background (`amont rehearse --status`)
+rehearsing the push gate in the background (`greengate rehearse --status`)
 $ git push
 ✓ pre-push-run-tests-js passed on this exact tree earlier — not repeating it here
 ```
@@ -573,7 +573,7 @@ snapshot; a rebase replaying ten commits does not queue ten suites. One on
 the same tree is left alone. Nothing starts during a rebase, merge or
 cherry-pick: the commit being made is not the one that will be pushed.
 
-`amont rehearse` by hand starts one for `HEAD` in the background;
+`greengate rehearse` by hand starts one for `HEAD` in the background;
 `--wait` follows the running one, or runs it in the foreground if none is
 (the shape an agent wants before `git push`); `--status` says which tree the
 last one was for and how it ended; `--stop` cancels. Every path that goes
@@ -583,7 +583,7 @@ push, never let it skip work nobody did.
 
 The detached worker is Unix-only for now. On Windows a child process
 inherits its parent's pipes, so a worker started from a hook whose output
-is captured would hold the commit until the suite ended; there `amont
+is captured would hold the commit until the suite ended; there `greengate
 rehearse` says so, and `--wait` runs the rehearsal in the foreground.
 
 A push whose commits all carry the `test` stamp skips the pre-push line with
@@ -631,10 +631,10 @@ declared `pre-commit typecheck`, never trusted it, and had types checked at
 When the moved check runs at commit time, the `post-commit` hook records that
 fact against the commit — a local notes ref, `refs/notes/amont-gate`, never
 pushed, invisible to `git log`, garbage-collected with the commits it
-annotates, and removed by `amont uninstall`. At push, the gate skips a script
+annotates, and removed by `greengate uninstall`. At push, the gate skips a script
 only when every pushed commit inside the declaration's scope carries its
 stamp. A commit created with `git commit --no-verify`, made by a client that
-runs no hooks, made on a machine without amont, or whose hash a rebase or
+runs no hooks, made on a machine without greengate, or whose hash a rebase or
 amend rewrote has no stamp — and the push says so and runs the script itself:
 
 ```text
@@ -653,11 +653,11 @@ script to `$(git rev-parse --git-common-dir)/amont-bypasses` — a plain local
 file, never a ref, never pushed, never sent anywhere; the no-telemetry
 promise applies in full. `--no-verify` is only the commonest cause: a
 blocked attempt retried with it, or a gate whose tool was missing, count the
-same way, which is why `amont list` labels the tally **unverified commits**
+same way, which is why `greengate list` labels the tally **unverified commits**
 rather than guessing at intent. A rising count is the first symptom of a
 gate people have started routing around — a slow check, a flaky one — and
 until it was counted, the hooks detected that signal on every commit and
-threw it away. `amont uninstall` deletes the file;
+threw it away. `greengate uninstall` deletes the file;
 `git config amont.recordBypasses false` stops the counting.
 
 ### Trying it before you impose it
@@ -695,10 +695,10 @@ The events land in `$(git rev-parse --git-common-dir)/amont-downgrades`, on
 the same terms as the bypass ledger above: a plain local file, never a ref,
 never pushed, never sent anywhere. It follows that this **cannot aggregate
 across a team** — each developer's ledger is their own machine's, and a lead
-runs the trial on their own checkout or asks people to paste. `amont uninstall`
+runs the trial on their own checkout or asks people to paste. `greengate uninstall`
 deletes the file; `git config amont.recordDowngrades false` stops the counting.
 
-A rehearsal (`amont run`, `amont run --all-files`) deliberately records
+A rehearsal (`greengate run`, `greengate run --all-files`) deliberately records
 nothing: it is not a commit, and letting it count would make the number mean
 something other than what it says. Neither does a check that actually blocked —
 there is nothing to report about a problem that did its job.
@@ -735,14 +735,14 @@ Besides the checks above, a repository may declare **tree gates** in
 `amont.conf` (`tree` lines, see [custom checks](custom-checks.md#whole-tree-gates--tree-lines)).
 A tree gate runs a whole-tree lint or format command, the one CI runs, next
 to the pre-commit checks. It never decides the commit. When it passes on
-exactly the tree being committed, amont stamps that tree. The push then
+exactly the tree being committed, greengate stamps that tree. The push then
 attests `tree-<name>`, and CI skips its step
 ([the CI backstop](ci.md#skipping-lint-tree-gates)).
 
 ## Adding one
 
 A check is a module plus one registry entry in
-`crates/amont-runtime/src/registry.rs`; see
+`crates/greengate-runtime/src/registry.rs`; see
 [hook architecture](hook-architecture.md) and
 [CONTRIBUTING.md](https://github.com/greenharness/greengate/blob/main/CONTRIBUTING.md).
 

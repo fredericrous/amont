@@ -1,16 +1,16 @@
 # Host slots
 
-The contract of the `amont-slots` crate (amont ADR-0014, decisions
+The contract of the `greenharness-slots` crate (greengate ADR-0014, decisions
 ADR-0049). A test suite, a build or a type checker already uses every core
 on its own, so a heavy job takes a host slot before it runs. Every heavy job
-on the machine takes its slot through this one queue: amont's git-hook gates,
+on the machine takes its slot through this one queue: greengate's git-hook gates,
 relais's verification commands, and any command run through
-`amont slot run`. relais links the crate; it does not carry a copy.
+`greengate slot run`. relais links the crate; it does not carry a copy.
 
 ## The directory
 
-`AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/amont-slots` on Linux, else
-`/tmp/amont-slots-<uid>`. It is a fixed path, never `$TMPDIR`, which macOS
+`AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/greenharness-slots` on Linux, else
+`/tmp/greenharness-slots-<uid>`. It is a fixed path, never `$TMPDIR`, which macOS
 and agent sandboxes set per session. It must be a real directory owned by
 this user with mode 0700. Otherwise slots are off for the job, and it says
 why.
@@ -22,7 +22,7 @@ why.
 | `admitted-at` | the time of the last admission, in ms since the epoch, for the ramp. |
 | `queue/<nanos>-<pid>-<n>` | a waiter's ticket, flocked for as long as it waits. It is created hidden (`.new-…`), locked, then renamed into place, so a visible ticket is never unlocked. A visible ticket whose lock is free belongs to a waiter that died, and is removed. |
 | `holders/slot-N.who` | who holds slot N, as a JSON object (`pid`, `tool`, `repo`, `command`, `session`, `started_ms`, and `jobs` when the writer knows it). It is written after the slot is won and removed before it is released. A reader trusts it only while `pid` is alive. A hidden `.slot-N.who.<pid>.tmp` beside it is a rename in flight; when a slot is granted, those whose `pid` is dead are removed, as dead queue tickets are. It lives in a subdirectory so an old client counting `slot-*` files never mistakes it for a slot. |
-| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`, `handed`), `pid`, and `jobs` when the writer knows it. Lines written by amont's checks also carry `name` (the check), `session` when one is known, and `"rehearsal":true` / `"prestage":true` inside a rehearsal snapshot / land's pre-stage. |
+| `waits.jsonl` | one line per acquisition: `at_ms`, `tool`, `weight`, `waited_ms`, `load1`, `outcome` (`admitted`, `deferred`, `unqueued`, `timeout`, `handed`), `pid`, and `jobs` when the writer knows it. Lines written by greengate's checks also carry `name` (the check), `session` when one is known, and `"rehearsal":true` / `"prestage":true` inside a rehearsal snapshot / land's pre-stage. |
 
 ## Admission
 
@@ -46,9 +46,9 @@ the one-minute load shows only about 15% of it.
 
 Only the process that took the slot holds it. Slot descriptors are
 close-on-exec, so a command's children, and any daemon it leaves behind,
-never hold it. `amont slot run` frees the slot when its command exits.
+never hold it. `greengate slot run` frees the slot when its command exits.
 `AMONT_HOST_SLOT=held` in a command's environment means its parent holds a
-slot, and an amont or wrapper started under it does not queue again.
+slot, and an greengate or wrapper started under it does not queue again.
 
 ## Handoff inside a rehearsal
 
@@ -57,7 +57,7 @@ the next. The finished gate parks its lease and renames the holder record to
 `pre-push, between checks`; the next heavy gate takes it with a `handed` line
 in `waits.jsonl` (a wait of 0, the same `pid`). The pre-push releases a parked
 slot when it ends, however it ends. While a slot is parked, a light check's
-tools run under it, width-bound, and a child `amont slot run` does not queue. A gate that runs on the cluster executor releases the parked slot first.
+tools run under it, width-bound, and a child `greengate slot run` does not queue. A gate that runs on the cluster executor releases the parked slot first.
 A plain push and a commit release their slot after each check.
 
 ## The ceiling in land's pre-stage
@@ -73,14 +73,14 @@ gate and a background rehearsal wait as before.
 A slot bounds how many heavy jobs run, and the width bounds how hard each
 one runs. Left alone, `cargo` builds and its test harness runs on every
 core, so `cap` holders ran `cap × cores` jobs at once. A holder of `weight`
-slots therefore runs `jobs = max(1, weight × cores / cap)` wide. amont sets
+slots therefore runs `jobs = max(1, weight × cores / cap)` wide. greengate sets
 `MAKEFLAGS=-j{jobs}`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
-`NEXTEST_TEST_THREADS` on every heavy hook check and every `amont slot run`
+`NEXTEST_TEST_THREADS` on every heavy hook check and every `greengate slot run`
 command (`amont_slots::bound_width`). relais uses the same formula for its
 verification commands.
 
 - **Precedence:** the check's own environment first, then the parent's
-  environment, then amont's computed width. A key already set to a
+  environment, then greengate's computed width. A key already set to a
   non-empty value is kept, so a check that sets its own width, or a relais
   run that bounded its command, wins. An empty value counts as unset.
   A `MAKEFLAGS` that carries flags but no job bound gains ` -j{jobs}`.
@@ -89,22 +89,22 @@ verification commands.
 - **Nothing is set** when slots are off (`amont.hostSlots 0`), unsupported
   (Windows), or the command is nested under a holder (`AMONT_HOST_SLOT=held`),
   whose bounds it inherits.
-- `amont slots` shows each holder's `jobs`, or `-` for a record written
+- `greengate slots` shows each holder's `jobs`, or `-` for a record written
   without it.
 
 ## Old clients
 
-amont up to 1.61 and relais before it linked this crate take `slot-0..N`
+greengate up to 1.61 and relais before it linked this crate take `slot-0..N`
 with no ticket and no load test. They jump the queue until they are
 upgraded. Their slots show as `unknown (old client)`, because they write no
 holder record.
 
 ## Commands
 
-- `amont slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <cmd…>`
+- `greengate slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <cmd…>`
   waits for a slot, then runs the command with `AMONT_HOST_SLOT=held` and
   passes its exit status through. After `--max-wait` (default 90 s, under
   Claude Code's 120 s Bash timeout) it exits 75 and runs nothing, unless
   `--on-timeout run` is given.
-- `amont slots [--json]` lists the holders, the old-client slots and the
+- `greengate slots [--json]` lists the holders, the old-client slots and the
   number of waiters.

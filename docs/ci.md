@@ -6,10 +6,10 @@ runs nothing at all. So the question "what actually stops a bad commit
 reaching the default branch" has one honest answer, and it is not a hook —
 it is CI, where nothing can be skipped from a laptop.
 
-## amont does not run in CI — on purpose
+## greengate does not run in CI — on purpose
 
-The obvious move would be an `amont run` step, or a marketplace action.
-Deliberately not. amont's job is *local* ergonomics: one binary
+The obvious move would be an `greengate run` step, or a marketplace action.
+Deliberately not. greengate's job is *local* ergonomics: one binary
 orchestrating many tools with scoped selection, index fidelity, live
 progress, and escape hatches a human sitting at the keyboard is entitled
 to. CI wants none of that — it wants the **real tools, called directly**:
@@ -20,9 +20,9 @@ to. CI wants none of that — it wants the **real tools, called directly**:
   workflow, not by whatever binary a runner happens to have;
 - there is no second opinion to keep in sync: when `cargo clippy` disagrees
   between laptop and CI, that is a toolchain version question, not an
-  amont question.
+  greengate question.
 
-The checks that exist *only* inside amont — `ban-terms`, the secrets scan,
+The checks that exist *only* inside greengate — `ban-terms`, the secrets scan,
 `large-files`, `merge-conflict`, the commit-message and branch-name
 conventions, `pull-rebase` — are deliberately not reproduced in CI. They
 are local ergonomics (catch it before it exists) or they have a better
@@ -32,18 +32,18 @@ don't already guard: a `debugger;` that slips past the local hook still
 has to survive the test suite and review.
 
 One thing this repository points CI at does run there, and it is deliberately
-**not amont**: [`attest`](https://github.com/fredericrous/attest), a
+**not greengate**: [`attest`](https://github.com/fredericrous/attest), a
 single-purpose verifier that reads a signed note and reports which checks it
 covers. It runs no checks and has no opinions to keep in sync — it verifies a
 *document about work that already happened*, which is the opposite of the
 second-opinion problem above. It lives in its own repository precisely so this
-rule can stay written as it is; amont is still not installed on any runner.
+rule can stay written as it is; greengate is still not installed on any runner.
 
 ## The templates
 
 Copy the file for your stack into `.github/workflows/` (GitHub) or
 `.forgejo/workflows/` (Forgejo), then prune the steps your repository does
-not use. Each step is annotated with the amont check it mirrors, so the
+not use. Each step is annotated with the greengate check it mirrors, so the
 local and CI stories stay legible against each other.
 
 | stack | GitHub Actions | Forgejo Actions |
@@ -62,7 +62,7 @@ $ curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/templ
 
 ## What maps where
 
-| amont check (local) | CI step |
+| greengate check (local) | CI step |
 |---|---|
 | `pre-commit-cargo-fmt` | `cargo fmt --all -- --check` |
 | `pre-commit-clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
@@ -100,7 +100,7 @@ laptop warns when it drifts from what CI runs.
 happened. When `pre-push` has just run the suite against the pushed tree
 and every block gate passed, re-running the identical suite on the
 identical tree buys a second copy of the same answer — real money on a
-resource-constrained runner fleet. So amont can leave a receipt:
+resource-constrained runner fleet. So greengate can leave a receipt:
 
 ```sh
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/amont-attest   # once, per machine
@@ -124,8 +124,8 @@ amont 1.9.0
 -----END SSH SIGNATURE-----
 ```
 
-This does **not** repeal "amont does not run in CI". CI still never
-executes amont — the templates' `attest` step is
+This does **not** repeal "greengate does not run in CI". CI still never
+executes greengate — the templates' `attest` step is
 [`fredericrous/attest`](https://github.com/fredericrous/attest), which needs
 nothing but `git` and `ssh-keygen`, and skips a test step only when *all four*
 hold:
@@ -154,7 +154,7 @@ hold:
 `cargo test` green on an arm64 Mac is no evidence at all about the Windows
 leg of a matrix — and a mechanism that let one laptop retire three
 platforms' CI would be the unsound version of this whole idea. So the note
-records where the suite ran, and `amont attest covered` defaults to
+records where the suite ran, and `greengate attest covered` defaults to
 requiring that platform to equal the verifier's own:
 
 | leg | attestation says | outcome |
@@ -164,7 +164,7 @@ requiring that platform to equal the verifier's own:
 | `windows-latest` | `platform aarch64-macos` | runs |
 
 No per-leg configuration: every leg runs the same one-liner and only the
-matching one finds anything covering it. amont's own CI is the worked
+matching one finds anything covering it. greengate's own CI is the worked
 example — a laptop push retires the macOS leg's `cargo test` and leaves
 the other two exactly as they were.
 
@@ -208,13 +208,13 @@ attest: no attestation found for tree 9f2a1c…
 ```
 
 If you would rather not depend on an action, `git-attest covered` (`cargo
-install git-attest`) is the same verifier as a binary, and `amont attest
-covered` runs it too, through the `git_attest` library amont links (decisions
+install git-attest`) is the same verifier as a binary, and `greengate attest
+covered` runs it too, through the `git_attest` library greengate links (decisions
 ADR-0037), for CI that is neither GitHub nor Forgejo. All of them answer to
 the format in
 [`SPEC.md`](https://github.com/fredericrous/attest/blob/main/SPEC.md).
 
-Origin is the source of truth. `amont attest covered` treats the local
+Origin is the source of truth. `greengate attest covered` treats the local
 `refs/notes/amont-attest` as a mirror of origin's: deleting that ref on
 origin revokes every attestation it held — the next `covered` in any clone
 deletes its copy and prints how to undo that — and an origin that cannot be
@@ -253,7 +253,7 @@ repository say what each gate reads; a result is then reused on any tree whose
 declared paths are byte-identical to the ones it passed on (attest's
 [input fingerprints](https://github.com/fredericrous/attest/blob/main/SPEC.md)).
 Both halves use the same fingerprint, from one module
-(`crates/amont-runtime/src/attest_inputs.rs`):
+(`crates/greengate-runtime/src/attest_inputs.rs`):
 
 - **CI** verifies the signature as before, but on the fingerprint.
 - **The local hooks** file each gate's stamp under its fingerprint too, in
@@ -262,11 +262,11 @@ Both halves use the same fingerprint, from one module
   pre-push. Never run `git notes prune` on that ref: its keys are not objects.
   A gate the spec does not declare keeps the whole-tree behaviour, and so does
   every gate when the spec is missing, invalid or ambiguous. The token's
-  identity (command, tool, amont version) still has to match.
+  identity (command, tool, greengate version) still has to match.
 
 The grammar cannot exclude paths, so a declaration is only as good as its
 completeness: a gate that omits something it reads is skipped wrongly the day
-that something changes. `amont attest check-inputs --require <gate>…` (run by
+that something changes. `greengate attest check-inputs --require <gate>…` (run by
 `make check`, gates listed in the Makefile's `ATTEST_GATES`) fails unless each
 named gate declares every tracked file, by real ancestry: `crates/foo` never
 stands for `crates`, and one gate is never rescued by another. Only
@@ -400,7 +400,7 @@ it. So the CI step must run **exactly** the gate's normalized declaration:
 same tool. One gate proves one command: two CI steps (`ruff check` and
 `ruff format --check`) are two gates.
 
-`amont tree-parity` (and the `pre-commit-tree-parity` check) enforce this. It
+`greengate tree-parity` (and the `pre-commit-tree-parity` check) enforce this. It
 fails closed on a gated step it cannot read with certainty:
 
 - a block scalar, an anchor or alias, a quoted form with escapes, or
@@ -412,7 +412,7 @@ fails closed on a gated step it cannot read with certainty:
 The one inherited setting it accepts is `defaults: run: shell: bash`, and only
 for a simple command: no pipe, list, redirection or substitution. There,
 bash's `-e` and `pipefail` cannot change the verdict. Run
-`amont tree-parity` as an ungated CI step, so a drift committed with
+`greengate tree-parity` as an ungated CI step, so a drift committed with
 `--no-verify` still fails.
 
 A step skipped on a built-in test gate (`!contains(…, 'pre-push-cargo-test')`,
@@ -436,7 +436,7 @@ Next to its attestation, a push can publish a second signed note,
 `refs/notes/amont-provenance`: what the push carried besides its tests, the
 plan it implements and the verdicts given on it (decisions ADR-0036). amont-agent
 writes the unsigned payload when its implementation-review hook passes a
-push with a plan; amont's pre-push signs it with the attestation key under the
+push with a plan; greengate's pre-push signs it with the attestation key under the
 namespace `amont-provenance` and publishes it by tree and by commit, with the
 same append-and-push loop as attestations. The format is the attest SPEC's
 `amont-provenance-v1` section.

@@ -1,0 +1,49 @@
+[package]
+name = "greengate-fleet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The amont fleet dashboard: see and repair hook coverage across many repositories"
+readme = "../../README.md"
+keywords = ["git", "git-hooks", "tui", "dashboard", "hooks"]
+categories = ["development-tools", "command-line-utilities"]
+# NOT `rust-version.workspace = true`, and that is the interesting part of this
+# file. The workspace floor is 1.74 — a real, verified claim about the
+# dependency-free commit path. This crate cannot honour it and never could:
+# `cargo +1.74 check --workspace` fails with "package `darling_core v0.23.0`
+# cannot be built because it requires rustc 1.88.0 or newer", pulled in by
+# ratatui → instability → darling. Inheriting 1.74 here would have made the
+# workspace floor a number that no toolchain could satisfy.
+#
+# So this crate states the floor its TREE imposes, which it does not control and
+# which will drift upward as those crates move. That asymmetry is the same one
+# the dependency policy is built on: the binary that runs on every commit owes a
+# low, verified floor; the opt-in dashboard buys features with dependencies and
+# pays for them in version requirements.
+#
+# Verified the same way as the other floor: 1.88.0 checks the whole workspace
+# clean against the committed Cargo.lock; 1.74.0 refuses, naming darling_core.
+rust-version = "1.88"
+
+[dependencies]
+# The registry is the source of truth for what a check IS. Hand-copying the
+# names here let the dashboard silently omit a check the dispatcher runs.
+greengate-runtime.workspace = true
+# What each repository says to attest (its opt-out, its spec, read from
+# HEAD), through attest's one implementation rather than a fleet copy
+# (decisions ADR-0037). The same crate greengate-runtime links.
+git-attest = "1.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ratatui = "0.30"
+crossterm = "0.29"
+
+# NO [dev-dependencies]. There was one, and it listed `serde_json = "1"` — the
+# same crate already in [dependencies] above. A normal dependency is in scope
+# for this crate's tests, examples and benches without being restated, so the
+# entry bought nothing and cost the usual thing a duplicate costs: two places to
+# bump, one of which nobody would remember. (`crates/amont` keeps its
+# dev-dependency on serde_json because there it is genuinely test-only — that
+# crate must not link serde_json into the shipped binary.)

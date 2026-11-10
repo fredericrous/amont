@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install the amont binary. Nothing else.
+# Install the greengate binaries (and their old names, amont and
+# amont-fleet, as copies). Nothing else.
 #
 #   curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 #
@@ -56,7 +57,7 @@ target() {
             if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=gnu; fi
             case "$arch" in
                 x86_64|amd64)  echo "x86_64-unknown-linux-$libc" ;;
-                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install amont"
+                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install greengate"
                                echo "aarch64-unknown-linux-gnu" ;;
                 *) die "unsupported architecture: $arch" ;;
             esac
@@ -95,11 +96,20 @@ resolve_version() {
 }
 
 main() {
-    printf '\n  amont installer\n\n'
+    printf '\n  greengate installer\n\n'
 
     t=$(target)
     v=$(resolve_version)
-    name="amont-${v}-${t}"
+    # The 3.0.0 cutover, once, here: the names it maps from live in
+    # greengate-runtime's names.rs (BIN, OLD_BIN, FLEET_BIN, OLD_FLEET_BIN).
+    # Releases before 3.0.0 shipped `amont-<v>-<t>` with binaries named
+    # amont and amont-fleet; a pinned rollback (AMONT_VERSION=2.3.1) must
+    # still find them, and installs them under both names like any other.
+    case "$v" in
+        [012].*) prefix=amont; hook=amont; fleet=amont-fleet ;;
+        *)       prefix=greengate; hook=greengate; fleet=greengate-fleet ;;
+    esac
+    name="${prefix}-${v}-${t}"
     base="https://github.com/$REPO/releases/download/v${v}"
 
     say "version:  $v"
@@ -108,8 +118,12 @@ main() {
     printf '\n'
 
     tmp=$(mktemp -d)
-    # Clean up on the way out however we leave, including Ctrl-C.
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    # Clean up on the way out however we leave, a half-copied temporary in
+    # $BIN_DIR included; an interrupt exits 130 (143 on TERM), not the status
+    # of whatever it cut short.
+    trap 'rm -rf "$tmp"; rm -f "$BIN_DIR"/.*.tmp.$$' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     say "downloading…"
     fetch_to "$base/${name}.tar.gz" "$tmp/${name}.tar.gz" \
@@ -145,17 +159,27 @@ main() {
     # Whether this is an upgrade decides what to say at the end: the
     # first-install steps are wrong advice the second time.
     upgrading=0
-    [ -x "$BIN_DIR/amont" ] && upgrading=1
+    { [ -x "$BIN_DIR/greengate" ] || [ -x "$BIN_DIR/amont" ]; } && upgrading=1
     mkdir -p "$BIN_DIR"
-    for b in amont amont-fleet; do
-        if [ -f "$tmp/$name/$b" ]; then
-            # Write to a temporary name and rename over the destination:
-            # replacing a RUNNING binary in place fails on some platforms, and
-            # rename is atomic, so a half-copied amont never exists.
-            cp "$tmp/$name/$b" "$BIN_DIR/.$b.new"
-            chmod 755 "$BIN_DIR/.$b.new"
-            mv "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
-            ok "installed $BIN_DIR/$b"
+    # Each binary, then its old name as a COPY of it: shims a 2.x install
+    # baked to $BIN_DIR/amont keep running the new build. A copy, never a
+    # link: a 2.x `amont install` copies onto its target, and through a link
+    # it would overwrite greengate itself.
+    for pair in "$hook:greengate:amont" "$fleet:greengate-fleet:amont-fleet"; do
+        src=${pair%%:*}
+        rest=${pair#*:}
+        b=${rest%%:*}
+        old=${rest#*:}
+        if [ -f "$tmp/$name/$src" ]; then
+            for dest in "$b" "$old"; do
+                # Write to a temporary name and rename over the destination:
+                # replacing a RUNNING binary in place fails on some platforms,
+                # and rename is atomic, so a half-copied binary never exists.
+                cp "$tmp/$name/$src" "$BIN_DIR/.$dest.tmp.$$"
+                chmod 755 "$BIN_DIR/.$dest.tmp.$$"
+                mv "$BIN_DIR/.$dest.tmp.$$" "$BIN_DIR/$dest"
+            done
+            ok "installed $BIN_DIR/$b (and $old, its old name)"
         fi
     done
 
@@ -170,16 +194,16 @@ main() {
         printf '  needs redoing for the checks themselves. What does not update on its\n'
         printf '  own: a repository'"'"'s hook shims when a release changes them, and the\n'
         printf '  generated block in AGENTS.md/CLAUDE.md. One command sees both:\n\n'
-        printf '    amont-fleet fix --root ~/Developer                       # dry run\n'
-        printf '    amont-fleet fix --root ~/Developer --apply --agents-md\n\n'
-        printf '  or, in one repository:  amont install && amont agents-md\n\n'
+        printf '    greengate-fleet fix --root ~/Developer                   # dry run\n'
+        printf '    greengate-fleet fix --root ~/Developer --apply --agents-md\n\n'
+        printf '  or, in one repository:  greengate install && greengate agents-md\n\n'
         return
     fi
     printf '  Nothing is enabled yet, on purpose. To turn the hooks on:\n\n'
-    printf '    cd <your-repo> && amont install     # this repository only\n'
-    printf '    amont list                          # what would run here\n'
-    printf '    amont uninstall                     # and back out again\n\n'
-    printf '  Across many repositories at once:  amont-fleet install --root ~/Developer\n\n'
+    printf '    cd <your-repo> && greengate install # this repository only\n'
+    printf '    greengate list                      # what would run here\n'
+    printf '    greengate uninstall                 # and back out again\n\n'
+    printf '  Across many repositories at once:  greengate-fleet install --root ~/Developer\n\n'
 }
 
 main "$@"

@@ -10,7 +10,7 @@ subject, the 50-character description budget, the body wrapping — none of the
 four answers below is the right one. Those are settings:
 
 ```sh
-amont setup      # walks you through them, with the current values
+greengate setup      # walks you through them, with the current values
 ```
 
 This matters most for `commit-msg`, which is the one hook `hook.skip`
@@ -33,10 +33,10 @@ still fails to earn a [gate stamp](checks.md#moving-a-gate-entry-earlier).
 
 Bypassing stays a supported escape hatch, and it is now *counted*: a commit
 that dodged a commit-time gate adds a line to a local ledger
-(`$(git rev-parse --git-common-dir)/amont-bypasses`) that `amont list`
+(`$(git rev-parse --git-common-dir)/amont-bypasses`) that `greengate list`
 summarises as "unverified commits". Local means local — the file is never
 pushed and never leaves the machine. `git config amont.recordBypasses false`
-turns the counting off; `amont uninstall`, or deleting the file, erases it.
+turns the counting off; `greengate uninstall`, or deleting the file, erases it.
 
 Neither `commit-msg` nor `prepare-commit-msg` takes `hook.skip` or a severity
 override: they are entrypoints rather than checks, so the keys below do not
@@ -94,10 +94,10 @@ first move when adopting a check into an existing repository with a backlog.
 ## 4. Remove the hooks entirely
 
 ```sh
-amont uninstall              # this repository
-amont uninstall --repo       # this repository only: the template dir stays
-amont uninstall --binary     # …and the binary from ~/.local/bin
-amont-fleet uninstall --root ~/Developer
+greengate uninstall              # this repository
+greengate uninstall --repo       # this repository only: the template dir stays
+greengate uninstall --binary     # …and the binary from ~/.local/bin
+greengate-fleet uninstall --root ~/Developer
 ```
 
 This removes **our six shims and nothing else**. A hook you wrote yourself is
@@ -118,17 +118,17 @@ git config --global --unset init.templateDir
 
 That glob deletes **every** hook in the
 directory — including ones other tools installed and ones you wrote — in order
-to remove six files that belong to us. `amont uninstall` exists precisely
+to remove six files that belong to us. `greengate uninstall` exists precisely
 so that removing our hooks never means removing yours.
 
 ## A repository is asking to run its own checks
 
-If `amont list` shows a check with:
+If `greengate list` shows a check with:
 
 ```
-declared in an untrusted amont.conf — review it, then `amont trust`
+declared in an untrusted amont.conf — review it, then `greengate trust`
 ```
 
 then that repository has declared checks and they are **already not running**.
-There is nothing to opt out of. Opting *in* is `amont trust`, after reading
+There is nothing to opt out of. Opting *in* is `greengate trust`, after reading
 the file. See [the trust model](trust.md).

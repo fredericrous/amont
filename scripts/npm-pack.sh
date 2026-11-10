@@ -4,7 +4,7 @@
 #   scripts/npm-pack.sh <version> <artifact-dir> [out-dir]
 #
 # `<artifact-dir>` is the directory the release workflow downloads into: one
-# `amont-<version>-<target>.tar.gz` (or `.zip`) per target, exactly as
+# `greengate-<version>-<target>.tar.gz` (or `.zip`) per target, exactly as
 # `release.yaml`'s `Archive` step produced them. Nothing is compiled here — the
 # bytes published to npm are the SAME bytes published to the GitHub release and
 # checksummed in `SHA256SUMS`, which is the property that makes the npm path
@@ -31,12 +31,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # to nothing is worse than one npm skips — it installs, then fails at the first
 # commit. `install.sh` refuses the same pair for the same reason.
 TARGETS=(
-    "aarch64-apple-darwin|@amont-hooks/darwin-arm64|darwin|arm64|"
-    "x86_64-apple-darwin|@amont-hooks/darwin-x64|darwin|x64|"
-    "aarch64-unknown-linux-gnu|@amont-hooks/linux-arm64-gnu|linux|arm64|glibc"
-    "x86_64-unknown-linux-gnu|@amont-hooks/linux-x64-gnu|linux|x64|glibc"
-    "x86_64-unknown-linux-musl|@amont-hooks/linux-x64-musl|linux|x64|musl"
-    "x86_64-pc-windows-msvc|@amont-hooks/win32-x64|win32|x64|"
+    "aarch64-apple-darwin|@greenharness/greengate-darwin-arm64|darwin|arm64|"
+    "x86_64-apple-darwin|@greenharness/greengate-darwin-x64|darwin|x64|"
+    "aarch64-unknown-linux-gnu|@greenharness/greengate-linux-arm64-gnu|linux|arm64|glibc"
+    "x86_64-unknown-linux-gnu|@greenharness/greengate-linux-x64-gnu|linux|x64|glibc"
+    "x86_64-unknown-linux-musl|@greenharness/greengate-linux-x64-musl|linux|x64|musl"
+    "x86_64-pc-windows-msvc|@greenharness/greengate-win32-x64|win32|x64|"
 )
 
 say() { printf '  %s\n' "$1"; }
@@ -52,7 +52,7 @@ mkdir -p "$OUT"
 for row in "${TARGETS[@]}"; do
     IFS='|' read -r target pkg os cpu libc <<< "$row"
 
-    name="amont-${VERSION}-${target}"
+    name="greengate-${VERSION}-${target}"
     # Every binary the archive carries. `npm/platform/package.json.in` lists
     # `bin/` as a DIRECTORY, so a package ships whatever is put in there and
     # this loop is the whole change needed to add one.
@@ -75,7 +75,7 @@ for row in "${TARGETS[@]}"; do
     fi
 
     mkdir -p "$OUT/$pkg/bin"
-    for b in amont amont-fleet; do
+    for b in greengate greengate-fleet; do
         src="$scratch/$name/$b$suffix"
         [ -f "$src" ] || die "$name archive holds no $b$suffix"
         cp "$src" "$OUT/$pkg/bin/$b$suffix"
@@ -116,8 +116,9 @@ rm -rf "$OUT/.unpack"
 
 # --- the package people depend on ----------------------------------------
 
-mkdir -p "$OUT/amont/bin"
-# BOTH wrappers. `amont.js` is the bin entry and `native.js` is what it
+ROOT_PKG="@greenharness/greengate"
+mkdir -p "$OUT/$ROOT_PKG/bin"
+# BOTH wrappers. `greengate.js` is the bin entry and `native.js` is what it
 # requires; shipping one without the other produces a package that installs
 # cleanly and dies on first use with MODULE_NOT_FOUND.
 #
@@ -126,13 +127,13 @@ mkdir -p "$OUT/amont/bin"
 # package.json.in named `bin/native.js` the whole time, but `files` cannot
 # ship what was never staged here, so the manifest promised a file the packer
 # had not copied and npm said nothing.
-for f in amont.js native.js; do
-    cp "$HERE/npm/amont/bin/$f" "$OUT/amont/bin/$f"
-    chmod 0755 "$OUT/amont/bin/$f"
+for f in greengate.js native.js; do
+    cp "$HERE/npm/greengate/bin/$f" "$OUT/$ROOT_PKG/bin/$f"
+    chmod 0755 "$OUT/$ROOT_PKG/bin/$f"
 done
-cp "$HERE/README.md" "$OUT/amont/README.md"
-sed "s/__VERSION__/$VERSION/g" "$HERE/npm/amont/package.json.in" > "$OUT/amont/package.json"
-say "amont"
+cp "$HERE/README.md" "$OUT/$ROOT_PKG/README.md"
+sed "s/__VERSION__/$VERSION/g" "$HERE/npm/greengate/package.json.in" > "$OUT/$ROOT_PKG/package.json"
+say "$ROOT_PKG"
 
 # --- prove it before anybody publishes it --------------------------------
 #
@@ -144,35 +145,35 @@ for row in "${TARGETS[@]}"; do
     IFS='|' read -r _ pkg os _ _ <<< "$row"
     suffix=
     [ "$os" = "win32" ] && suffix=.exe
-    for b in amont amont-fleet; do
+    for b in greengate greengate-fleet; do
         [ -x "$OUT/$pkg/bin/$b$suffix" ] || die "$pkg/bin/$b$suffix missing or not executable"
     done
     python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/$pkg/package.json" \
         || die "$pkg/package.json is not valid JSON"
 done
-python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/amont/package.json" \
-    || die "amont/package.json is not valid JSON"
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/$ROOT_PKG/package.json" \
+    || die "$ROOT_PKG/package.json is not valid JSON"
 
 # Every file `files` names is actually here. The one failure this catches is
 # the one that shipped for four releases: a manifest promising bin/native.js
 # that the layout above never staged, producing a package that installs and
 # then dies on first use.
-python3 - "$OUT/amont" <<'PY'
+python3 - "$OUT/$ROOT_PKG" <<'PY'
 import json, os, sys
 root = sys.argv[1]
 manifest = json.load(open(os.path.join(root, "package.json")))
 missing = [f for f in manifest.get("files", [])
            if not os.path.exists(os.path.join(root, f))]
 if missing:
-    sys.exit("  \u2717 amont/package.json names files that were never staged: "
+    sys.exit("  \u2717 the root package.json names files that were never staged: "
              + ", ".join(missing))
 PY
 
 # The dependency versions must match the packages actually laid out beside them.
-python3 - "$OUT" "$VERSION" <<'PY'
+python3 - "$OUT" "$VERSION" "$ROOT_PKG" <<'PY'
 import json, os, sys
-out, version = sys.argv[1], sys.argv[2]
-main = json.load(open(os.path.join(out, "amont", "package.json")))
+out, version, root_pkg = sys.argv[1], sys.argv[2], sys.argv[3]
+main = json.load(open(os.path.join(out, root_pkg, "package.json")))
 missing = []
 for dep, want in main.get("optionalDependencies", {}).items():
     path = os.path.join(out, dep, "package.json")
@@ -187,5 +188,5 @@ if missing:
 PY
 
 say ""
-say "laid out $VERSION in $OUT — publish the six platform packages BEFORE amont,"
+say "laid out $VERSION in $OUT — publish the six platform packages BEFORE $ROOT_PKG,"
 say "or npm rejects it for an optionalDependency version that does not exist yet."

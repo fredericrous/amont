@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Install the amont binary on Windows. Nothing else.
+    Install the greengate binaries on Windows (and their old names, amont
+    and amont-fleet, as copies). Nothing else.
 
 .DESCRIPTION
     irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
@@ -22,7 +23,7 @@
 .PARAMETER BinDir
     Where to put the executables. Defaults to $HOME\.local\bin, and not
     arbitrarily: that is candidate 3 in the shim's own resolution order, and
-    the shim tries both `amont` and `amont.exe` there — so a binary in
+    the shim tries `greengate`, `greengate.exe`, `amont` and `amont.exe` there — so a binary in
     that directory is found even by a shim whose path was never baked.
 #>
 [CmdletBinding()]
@@ -53,7 +54,7 @@ try {
 }
 
 Write-Host ''
-Write-Host '  amont installer'
+Write-Host '  greengate installer'
 Write-Host ''
 
 # Only x86_64 is published today. Windows on ARM runs x64 binaries through
@@ -68,7 +69,7 @@ if ($arch -eq 'ARM64') {
 if ($Version -eq 'latest') {
     try {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-            -Headers @{ 'User-Agent' = 'amont-installer' }
+            -Headers @{ 'User-Agent' = 'greengate-installer' }
         $Version = $release.tag_name
     } catch {
         Fail "could not determine the latest release (rate limited? pass -Version v1.2.3): $_"
@@ -76,7 +77,7 @@ if ($Version -eq 'latest') {
 }
 $v = $Version -replace '^v', ''
 
-$name = "amont-$v-$target"
+$name = "greengate-$v-$target"
 $base = "https://github.com/$Repo/releases/download/v$v"
 
 Write-Host "  version:  $v"
@@ -84,7 +85,7 @@ Write-Host "  platform: $target"
 Write-Host "  into:     $BinDir"
 Write-Host ''
 
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("amont-" + [guid]::NewGuid().ToString('N'))
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("greengate-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
@@ -124,21 +125,50 @@ try {
     $src = Join-Path $tmp $name
     # Whether this is an upgrade decides what to say at the end: the
     # first-install steps are wrong advice the second time.
-    $upgrading = Test-Path (Join-Path $BinDir 'amont.exe')
+    $upgrading = (Test-Path (Join-Path $BinDir 'greengate.exe')) -or (Test-Path (Join-Path $BinDir 'amont.exe'))
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
-    foreach ($exe in @('amont.exe', 'amont-fleet.exe')) {
-        $from = Join-Path $src $exe
+    # Each binary, then its old name as a COPY of it: shims a 2.x install
+    # baked to amont.exe keep running the new build. A copy, never a link: a
+    # 2.x `amont install` copies onto its target, and through a link it would
+    # overwrite greengate.exe itself.
+    # Set-aside files a running hook kept from an earlier install.
+    Get-ChildItem -Path $BinDir -Filter '*.exe.old-*' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $aside = $null
+    $pairs = @(@('greengate.exe', 'amont.exe'), @('greengate-fleet.exe', 'amont-fleet.exe'))
+    foreach ($pair in $pairs) {
+        $from = Join-Path $src $pair[0]
         if (Test-Path $from) {
-            $to = Join-Path $BinDir $exe
-            # Copy beside the destination and move it into place: replacing a
-            # RUNNING executable in place fails on Windows with a sharing
-            # violation, and a move is atomic, so a half-copied amont.exe
-            # never exists.
-            $staged = "$to.new"
-            Copy-Item -Path $from -Destination $staged -Force
-            Move-Item -Path $staged -Destination $to -Force
-            Write-Ok "installed $to"
+            foreach ($exe in $pair) {
+                $to = Join-Path $BinDir $exe
+                # Copy beside the destination, set the old .exe ASIDE, then move
+                # the copy into place. Windows refuses to overwrite or delete a
+                # RUNNING executable (a hook may be running it), but lets it be
+                # renamed; the move itself is atomic, so a half-copied .exe
+                # never exists. The set-aside file is removed when nothing runs
+                # it any more, else on the next install.
+                $staged = "$to.new"
+                Copy-Item -Path $from -Destination $staged -Force
+                if (Test-Path $to) {
+                    $aside = "$to.old-" + [guid]::NewGuid().ToString('N')
+                    Rename-Item -Path $to -NewName (Split-Path $aside -Leaf)
+                }
+                try {
+                    Move-Item -Path $staged -Destination $to -Force
+                } catch {
+                    # Put the old binary back rather than leave no .exe at all,
+                    # and keep the move's own error as the one reported.
+                    $moveError = $_
+                    if ($aside) {
+                        try { Rename-Item -Path $aside -NewName (Split-Path $to -Leaf) }
+                        catch { Write-Warn "the previous binary is still at $aside; rename it to $to" }
+                    }
+                    throw $moveError
+                }
+                if ($aside) { Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue; $aside = $null }
+            }
+            Write-Ok "installed $(Join-Path $BinDir $pair[0]) (and $($pair[1]), its old name)"
         }
     }
 } finally {
@@ -162,18 +192,18 @@ if ($upgrading) {
     Write-Host "  own: a repository's hook shims when a release changes them, and the"
     Write-Host '  generated block in AGENTS.md/CLAUDE.md. One command sees both:'
     Write-Host ''
-    Write-Host '    amont-fleet fix --root $HOME\source                       # dry run'
-    Write-Host '    amont-fleet fix --root $HOME\source --apply --agents-md'
+    Write-Host '    greengate-fleet fix --root $HOME\source                   # dry run'
+    Write-Host '    greengate-fleet fix --root $HOME\source --apply --agents-md'
     Write-Host ''
-    Write-Host '  or, in one repository:  amont install; amont agents-md'
+    Write-Host '  or, in one repository:  greengate install; greengate agents-md'
     Write-Host ''
 } else {
     Write-Host '  Nothing is enabled yet, on purpose. To turn the hooks on:'
     Write-Host ''
-    Write-Host '    cd <your-repo>; amont install     # this repository only'
-    Write-Host '    amont list                        # what would run here'
-    Write-Host '    amont uninstall                   # and back out again'
+    Write-Host '    cd <your-repo>; greengate install # this repository only'
+    Write-Host '    greengate list                    # what would run here'
+    Write-Host '    greengate uninstall               # and back out again'
     Write-Host ''
-    Write-Host '  Across many repositories at once:  amont-fleet install --root $HOME\source'
+    Write-Host '  Across many repositories at once:  greengate-fleet install --root $HOME\source'
     Write-Host ''
 }

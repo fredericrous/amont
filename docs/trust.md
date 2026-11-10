@@ -22,25 +22,25 @@ every repository they clone — including one cloned only to read.
 ## What happens instead
 
 A manifest is **inert until trusted**. Its declared checks are listed by
-`amont list` with the reason they will not fire:
+`greengate list` with the reason they will not fire:
 
 ```
-declared in an untrusted amont.conf — review it, then `amont trust`
+declared in an untrusted amont.conf — review it, then `greengate trust`
 ```
 
 ```sh
-amont trust          # show what this repo declares, and accept it
-amont trust --show   # what is trusted here
-amont trust --revoke # forget it
+greengate trust          # show what this repo declares, and accept it
+greengate trust --show   # what is trusted here
+greengate trust --revoke # forget it
 ```
 
-`amont trust` prints the declarations before asking. That is not politeness:
+`greengate trust` prints the declarations before asking. That is not politeness:
 "trust this file" is not a question anybody can answer without seeing it, and a
 prompt that does not show the file is a prompt that trains people to press `y`.
 
-`amont trust` outside a repository is refused rather than falling back to
+`greengate trust` outside a repository is refused rather than falling back to
 `.`. Trust is recorded per repository, keyed by the root that resolves — so a
-`.` fallback would let `amont trust` in `~` read `~/amont.conf`, show
+`.` fallback would let `greengate trust` in `~` read `~/amont.conf`, show
 its declarations, and record trust against a repository that does not exist, in
 a state no later `--revoke` would find.
 
@@ -71,7 +71,7 @@ distinctly from "never trusted", because *somebody changed it* is a different
 thing to tell a reader than *you have not looked at this yet*:
 
 ```
-amont.conf changed since it was trusted — review it, then `amont trust`
+amont.conf changed since it was trusted — review it, then `greengate trust`
 ```
 
 That is a **gap**, not a block, when the change arrived from somewhere else:
@@ -82,14 +82,14 @@ the commit at hand is the one changing `amont.conf`
 without it every check the file declares would stand down for exactly the
 commit that introduces them — letting everything else in that commit through
 ungated. The check names the fix and trusts nothing itself; accepting is still
-`amont trust`, and still yours. It stays quiet during a merge, rebase,
+`greengate trust`, and still yours. It stays quiet during a merge, rebase,
 cherry-pick or revert, where a manifest arriving from another branch is the
 pulled case. Downgrade it like any check:
 `git config amont.severity.pre-commit-manifest-trust warn`.
 
 ## Why `git hash-object --no-filters`
 
-`amont` links no external crates ([and CI enforces
+`greengate` links no external crates ([and CI enforces
 that](https://github.com/greenharness/greengate/blob/main/scripts/check-no-deps.sh)),
 and the only hash in `std` is `DefaultHasher` — SipHash with a fixed key, not
 collision-resistant, so a crafted manifest could be made to match a trusted
@@ -121,7 +121,7 @@ recorded about bytes nobody was shown.
 
 ## Two windows that were closed, and how
 
-**Between showing and answering.** `amont install` prints the manifest, then
+**Between showing and answering.** `greengate install` prints the manifest, then
 blocks on a keypress — sometimes for several seconds — before recording
 anything. Re-hashing at that point would trust whatever is on disk *then*,
 which is not necessarily what was shown. So callers fingerprint what they show
@@ -139,7 +139,7 @@ how its own consent is rendered any more than it can pick how it is hashed.
 
 ## A vendored pack is consented to like anything else
 
-`amont add` ([custom checks](custom-checks.md#shipping-a-check--packs)) copies
+`greengate add` ([custom checks](custom-checks.md#shipping-a-check--packs)) copies
 declarations from somebody else's repository into your `amont.conf`. It grants
 no trust, and it gets no exemption:
 
@@ -147,7 +147,7 @@ no trust, and it gets no exemption:
   and every declared check goes inert — including ones you had already trusted
   — and `pre-commit-manifest-trust` blocks the commit that carries the append
   until you have reviewed it;
-- the pack's rows are shown by `amont trust` alongside your own, in the same
+- the pack's rows are shown by `greengate trust` alongside your own, in the same
   listing, with no marking that would invite skimming past them;
 - editing a vendored row by hand revokes consent exactly as editing a
   hand-written one does.

@@ -1,6 +1,6 @@
 # Rolling out to a team
 
-Hooks only protect the machines that installed them. One person with amont
+Hooks only protect the machines that installed them. One person with greengate
 has one protected machine; a team has sixty, plus new hires, plus the
 laptop that got reimaged on Tuesday. This page is the whole story of
 closing that gap, and it is honest about the one thing git will not do.
@@ -18,23 +18,23 @@ Three shapes exist, and they compose:
 
 | shape | typed how often | covers |
 |---|---|---|
-| `"prepare": "amont init"` in `package.json` | never (npm types it) | JS repositories, on `npm install` |
-| `amont enroll` | **once per machine** | every future `git clone` and `git init` |
-| `amont init` | once per repository per machine | that one clone |
+| `"prepare": "greengate init"` in `package.json` | never (npm types it) | JS repositories, on `npm install` |
+| `greengate enroll` | **once per machine** | every future `git clone` and `git init` |
+| `greengate init` | once per repository per machine | that one clone |
 
-## The machine grant: `amont enroll`
+## The machine grant: `greengate enroll`
 
 ```console
 $ brew install fredericrous/tap/amont   # or the curl installer, or cargo
-$ amont enroll --conventions declared
+$ greengate enroll --conventions declared
 ```
 
-`enroll` does three things `amont install` has always done one repository
+`enroll` does three things `greengate install` has always done one repository
 at a time — puts the binary somewhere stable, populates the template
 directory, and (the part `install` deliberately left to the user) points
 `init.templateDir` at it. From then on every `git clone` and every
 `git init` on that machine arrives with the shims already in
-`.git/hooks`, resolving whatever amont binary the machine has. Upgrading
+`.git/hooks`, resolving whatever greengate binary the machine has. Upgrading
 the binary upgrades every repository at once; nothing is re-run per
 clone.
 
@@ -43,10 +43,10 @@ somewhere else — something else installs hooks on that machine, and
 silently disabling it is the husky failure one level up. And it is
 idempotent: re-running it is a no-op that says so.
 
-Two lines in the onboarding doc — install the binary, `amont enroll` —
+Two lines in the onboarding doc — install the binary, `greengate enroll` —
 replace a per-clone ritual forever. Repositories cloned *before* the
-grant are the one thing it does not reach: `amont init` wires one,
-`amont-fleet install --root ~/work` wires all of them.
+grant are the one thing it does not reach: `greengate init` wires one,
+`greengate-fleet install --root ~/work` wires all of them.
 
 ## The repository declaration: `amont.conf`, and `--conventions declared`
 
@@ -70,15 +70,15 @@ declared` by hand) splits the checks in two:
   `amont.conf`** — even an empty one:
 
 ```console
-$ echo "# this repository subscribes to amont" > amont.conf
-$ git add amont.conf && git commit -m "chore: declare amont"
+$ echo "# this repository subscribes to greengate" > amont.conf
+$ git add amont.conf && git commit -m "chore: declare greengate"
 ```
 
 Presence is the declaration; presence executes nothing, so it needs no
 trust decision. What the file *says* — declared checks, tool pins — stays
 [trust-gated](trust.md) exactly as before. A held-back stage says so in
 one line (`N convention check(s) held back … the safety net still runs`)
-rather than silently doing less, and `amont list` reports the state in
+rather than silently doing less, and `greengate list` reports the state in
 text and in `--json` (`"conventions_apply"`).
 
 The default is `everywhere`: nothing changes for anyone until a machine
@@ -89,17 +89,17 @@ opts into `declared`.
 1. **Each machine, once** (onboarding doc, two lines):
    ```console
    $ brew install fredericrous/tap/amont     # pick your installer
-   $ amont enroll --conventions declared
+   $ greengate enroll --conventions declared
    ```
 2. **Each repository, once ever** (committed, travels with the clone):
    - commit an `amont.conf` — empty declares; [custom checks](custom-checks.md),
      [committed policy](custom-checks.md#repo-policy--severity-skip-and-set-lines)
      (`severity`/`skip` lines for the built-ins) and `tool` pins can come
      later;
-   - JS repositories additionally get `"prepare": "amont init"` so even an
+   - JS repositories additionally get `"prepare": "greengate init"` so even an
      unenrolled machine is covered by `npm install`.
-3. **Repositories cloned before enrollment**: `amont init` in one,
-   `amont-fleet install --root <dir>` for all of them.
+3. **Repositories cloned before enrollment**: `greengate init` in one,
+   `greengate-fleet install --root <dir>` for all of them.
 
 New hire day one: install, enroll, clone — protected. No per-clone step,
 no per-repo step, nothing to forget.
@@ -118,7 +118,7 @@ So measure first. On your own machine, in a repository you work in daily:
 git config amont.severity.pre-commit warn
 ```
 
-Everything runs and reports; nothing blocks. A fortnight later, `amont list`
+Everything runs and reports; nothing blocks. A fortnight later, `greengate list`
 tells you what a rollout would have felt like:
 
 ```text
@@ -147,7 +147,7 @@ exist.
   the hook becomes the fast feedback, not the enforcement — [the CI
   backstop](ci.md) ships copyable workflow templates for exactly that.
 - **Version skew.** Enrolled machines resolve whatever binary they have;
-  two teammates on different amont versions run different check sets until
+  two teammates on different greengate versions run different check sets until
   a shim is newer than a binary (which warns). Commit the floor:
   `set minVersion 1.11.0` in `amont.conf` makes every older binary say so
   on each commit — warn-only, but no longer silent. Pin the exact version

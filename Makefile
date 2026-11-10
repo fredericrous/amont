@@ -5,25 +5,25 @@ MAKEFILE_DIR       := $(dir $(MAKEFILE_PATH))
 XDG_CONFIG_HOME	   ?= ~/.config
 SRC_CTRL_HOOKS     := $(MAKEFILE_DIR)templates/hooks/*
 
-# Windows produces amont.exe; everywhere else, amont. Detected from the
+# Windows produces greengate.exe; everywhere else, greengate. Detected from the
 # ARTIFACT rather than by sniffing the OS: Git Bash, MSYS2 and Cygwin report
 # three different `uname` strings and all build the same .exe. Recursive `=`,
 # not `:=`, so it is evaluated when a recipe line runs — i.e. after the
 # `cargo build` above it, when the file exists to be detected.
-EXE                 = $(shell [ -f "$(MAKEFILE_DIR)target/release/amont.exe" ] \
-                        || [ -f "$(MAKEFILE_DIR)target/debug/amont.exe" ] && echo .exe)
+EXE                 = $(shell [ -f "$(MAKEFILE_DIR)target/release/greengate.exe" ] \
+                        || [ -f "$(MAKEFILE_DIR)target/debug/greengate.exe" ] && echo .exe)
 # Where installed binaries go. Mirrors `install::bin_dir()` in the runtime,
 # which honours $AMONT_BIN_DIR and falls back to ~/.local/bin — so `make
-# install-fleet` lands beside whatever `amont install` wrote.
+# install-fleet` lands beside whatever `greengate install` wrote.
 #
 # This was dropped in #62 when installation moved into the binary and the
 # Makefile's own install recipe went with it. `install-fleet` still referenced
-# it, so it expanded to nothing and the recipe ran `install … /amont-fleet`
+# it, so it expanded to nothing and the recipe ran `install … /greengate-fleet`
 # — an attempt to write to the filesystem root.
 INSTALL_BIN_DIR    ?= $(if $(AMONT_BIN_DIR),$(AMONT_BIN_DIR),$(HOME)/.local/bin)
 
-DEBUG_BIN           = $(MAKEFILE_DIR)target/debug/amont$(EXE)
-RELEASE_BIN         = $(MAKEFILE_DIR)target/release/amont$(EXE)
+DEBUG_BIN           = $(MAKEFILE_DIR)target/debug/greengate$(EXE)
+RELEASE_BIN         = $(MAKEFILE_DIR)target/release/greengate$(EXE)
 
 # `check`, not `test`. A bare `make` used to run `test` alone, which is exactly
 # the set CI's `rust` job does NOT gate on — so the local default could be green
@@ -35,7 +35,7 @@ all: check
 # extension, so the extensionless git entrypoints (commit-msg, pre-commit,
 # pre-push, prepare-commit-msg) get +x. POSIX sh — no zsh needed.
 #
-# The loop used to also walk crates/amont/tests/*. Those are `.rs` files with
+# The loop used to also walk crates/greengate/tests/*. Those are `.rs` files with
 # no shebang, so every iteration read a first line and did nothing: a leftover
 # from when the suites were executable zsh scripts. The comment likewise still
 # excused "never data files like package.json" — there has been no package.json
@@ -61,16 +61,16 @@ test: chmodx
 	@./scripts/check-no-deps.sh
 	@cargo test $(if $(filter timing,$(RUN)),--test timing,$(if $(RUN),--test it)) -- $(if $(filter-out timing,$(RUN)),$(RUN)::) --show-output
 	@# The quiet capture's injected write failure exists only behind this
-	@# feature (crates/amont-runtime/Cargo.toml); nothing else needs it.
-	@$(if $(RUN),true,cargo test -p amont-runtime --lib --features test-hooks -- capture::)
-	@$(if $(RUN),true,cargo test -p amont --features test-hooks --test it -- quiet_run::)
+	@# feature (crates/greengate-runtime/Cargo.toml); nothing else needs it.
+	@$(if $(RUN),true,cargo test -p greengate-runtime --lib --features test-hooks -- capture::)
+	@$(if $(RUN),true,cargo test -p greengate --features test-hooks --test it -- quiet_run::)
 
 # The real-clock load scenarios `make test` leaves out (tests/timing.rs, the
 # `#[ignore]`d ones): about 105 s of CPU-burning children, lock waits and the
 # chatty check outliving its idle budget. CI's
 # hooks job runs them on Linux and macOS; a commit does not (ADR-0009).
 test-load:
-	@cargo test -p amont --test timing -- --ignored --show-output
+	@cargo test -p greengate --test timing -- --ignored --show-output
 
 # EXACTLY what CI's `rust` job runs, in the same order, with the same flags.
 # Keep them identical: the point of this target is that a contributor can
@@ -82,7 +82,7 @@ test-load:
 # every local target the repo offered and went red on push.
 #
 # WARNING — there is a THIRD clippy invocation, and it is stricter than this
-# one. `amont`' own `pre-commit-clippy` (crates/amont-runtime/src/hooks/
+# one. `greengate`' own `pre-commit-clippy` (crates/greengate-runtime/src/hooks/
 # rust_tools.rs) runs `cargo clippy --workspace --all-targets --all-features --
 # -D warnings` on every Rust commit in this repo. CI's is `--all-targets` only:
 # no `--workspace`, no `--all-features`. So the hook can reject a commit that
@@ -94,6 +94,8 @@ lint:
 	@cargo fmt --check
 	@cargo clippy --all-targets -- -D warnings
 	@python3 scripts/test_bump_tap.py
+	@python3 -I scripts/test_release_manifest.py
+	@sh scripts/test_publish_crates.sh
 
 # Clippy for the platforms this machine does not build: the CPU sampler
 # (src/proctree.rs) has a Linux module, a macOS module and a stub for the
@@ -105,7 +107,7 @@ CROSS_TARGETS ?= aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows
 lint-cross:
 	@for t in $(CROSS_TARGETS); do \
 		echo "clippy --target $$t"; \
-		cargo clippy --target $$t -p amont-runtime --all-targets -- -D warnings || exit 1; \
+		cargo clippy --target $$t -p greengate-runtime --all-targets -- -D warnings || exit 1; \
 	done
 
 # The full local gate: everything CI's `rust` job and `hooks` job assert.
@@ -126,9 +128,9 @@ check: lint test attest-inputs
 ATTEST_GATES := cargo-test pre-push-cargo-test ci-rust ci-msrv ci-deps \
 	ci-hooks-ubuntu ci-hooks-macos ci-windows-test ci-load-ubuntu ci-load-macos
 attest-inputs:
-	@cargo run -q -p amont -- attest check-inputs --tree $$(git write-tree) --require $(ATTEST_GATES)
+	@cargo run -q -p greengate -- attest check-inputs --tree $$(git write-tree) --require $(ATTEST_GATES)
 
-# Installation lives in the BINARY, not here: `amont install`.
+# Installation lives in the BINARY, not here: `greengate install`.
 #
 # The routine has to decide whether a directory may be emptied —
 # ~/.config/git/git-templates is commonly a symlink to a checkout, so
@@ -146,20 +148,20 @@ install: chmodx
 #
 # `make install` ships only the hook binary. That one runs on every commit in
 # every repo, and its dependency-free posture is the entire reason the Rust
-# migration happened; amont-fleet pulls ratatui, crossterm and serde. Keeping
+# migration happened; greengate-fleet pulls ratatui, crossterm and serde. Keeping
 # the two installs apart is what stops "I wanted the dashboard" from becoming
 # "every commit now depends on a TUI library".
 #
 # Nothing is deleted here — it writes one binary — so this needs none of the
 # fail-closed machinery `install` carries.
 install-fleet:
-	@cargo build --release --quiet -p amont-fleet
+	@cargo build --release --quiet -p greengate-fleet
 	@mkdir -p $(INSTALL_BIN_DIR)
-	@install -m 0755 $(MAKEFILE_DIR)target/release/amont-fleet $(INSTALL_BIN_DIR)/amont-fleet
-	@echo "installed $(INSTALL_BIN_DIR)/amont-fleet"
-	@echo "  amont-fleet          report the fleet"
-	@echo "  amont-fleet tui      the dashboard"
-	@echo "  amont-fleet fix      what would change (dry run; --apply to write)"
+	@install -m 0755 $(MAKEFILE_DIR)target/release/greengate-fleet $(INSTALL_BIN_DIR)/greengate-fleet
+	@echo "installed $(INSTALL_BIN_DIR)/greengate-fleet"
+	@echo "  greengate-fleet          report the fleet"
+	@echo "  greengate-fleet tui      the dashboard"
+	@echo "  greengate-fleet fix      what would change (dry run; --apply to write)"
 
 # Push the shim SET to every repo. Only needed when a hook is added, removed
 # or renamed — ordinary binary fixes reach all repos via `make install`, since
@@ -169,7 +171,7 @@ install-fleet:
 # same set on a fixture covering every actionable case. Dry-run by default;
 # APPLY=1 to write.
 propagate:
-	@cargo run -q -p amont-fleet -- fix $(if $(APPLY),--apply,)
+	@cargo run -q -p greengate-fleet -- fix $(if $(APPLY),--apply,)
 
 # The commit path must stay dependency-free; see the script.
 deps:

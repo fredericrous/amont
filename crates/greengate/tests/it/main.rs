@@ -1,0 +1,100 @@
+//! amont's integration tests, as ONE binary.
+//!
+//! Each file here was its own test binary, and each binary linked
+//! amont-runtime again: 69 links, about 50 s to rebuild after a one-line
+//! change, and the same cost for every mutant a mutation run builds
+//! (decisions plan 2026-10-17-amont-tests-follow-user-flows). As modules of
+//! one crate they link once. Test names now carry the old file as their
+//! module path, so `cargo test --test it land::` runs what
+//! `cargo test --test land` did.
+//!
+//! `timing.rs` stays a binary of its own: its tests assert elapsed time and
+//! need the machine to themselves (its header says why).
+
+#[path = "../common/mod.rs"]
+mod common;
+
+mod agents_md;
+mod agents_md_drift;
+mod attest_check_inputs;
+mod attest_dirty_tree;
+mod audit;
+mod ban_terms;
+mod branch_pattern;
+mod branch_pattern_early;
+mod branch_protect_early;
+// Host slots are `flock` files: Windows has none, so nothing there defers.
+#[cfg(unix)]
+mod busy_defers;
+mod check_verb;
+mod ci_attest_scripts;
+mod cli_dispatch;
+// The fake `kubectl` is a POSIX shell script.
+#[cfg(unix)]
+mod cluster_gates;
+// The detached lane shares the fake `kubectl` of the cluster gates.
+mod commit_msg;
+mod commit_style;
+#[cfg(unix)]
+mod detached_cluster;
+mod dispatchers;
+mod docs_counts;
+mod downgrades;
+mod excerpt_golden;
+mod external;
+mod fail_fast;
+mod fixing;
+mod flows;
+mod gate_evidence;
+mod gate_pairs;
+mod git_state;
+mod helm;
+mod host_env_pinned;
+mod index_fidelity;
+mod init;
+mod install;
+mod js_tool_source;
+mod json_contract;
+mod k8s;
+mod land;
+mod large_files;
+mod linters;
+mod merge_conflict;
+mod names;
+mod npm_packaging;
+mod pack_add;
+mod package_lock;
+mod policy;
+mod prepare_commit_msg;
+mod pull_rebase;
+mod push_gates;
+mod push_gates_portable;
+mod push_stamps;
+mod pushed_tree;
+mod pytest_gate;
+mod quiet_run;
+mod reach;
+mod rehearsal;
+mod release_profile;
+mod run_mode;
+mod run_stamp;
+mod run_tests_js;
+mod rust_toolchain;
+mod rust_tools;
+mod scope_dirs;
+mod scope_opt_in;
+mod secrets;
+// `amont slot run` holds flock slots: unix only, as busy_defers.
+mod severity;
+mod sigpipe;
+#[cfg(unix)]
+mod slot_run;
+mod snapshot_deps;
+mod spawn_budget;
+mod staged_index;
+mod tool_tables;
+mod tree_gates;
+mod trust_display;
+mod usual_name;
+mod worktrees;
+mod zero_warnings;
