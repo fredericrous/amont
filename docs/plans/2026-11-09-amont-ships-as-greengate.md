@@ -373,12 +373,27 @@ is a later ticket.
   `greengate-fleet`, `greengate-runtime`, `greenharness-quiet`,
   `greenharness-slots` at 3.0.0. The tap holds `Formula/greengate.rb`, no
   `amont.rb`, and `formula_renames.json` `{"amont": "greengate"}`. On this
-  machine `brew upgrade fredericrous/tap/amont` moved it to greengate:
-  `greengate`, `amont` and `greengate-fleet --version` → 3.0.0.
+  machine, from brew's `amont` 2.3.0 (the version installed here; 2.3.1 was
+  never brewed on it), `brew update` then `brew upgrade
+  fredericrous/tap/amont` moved it to greengate: `greengate`, `amont` and
+  `greengate-fleet --version` → 3.0.0.
+  The released `install.sh`, piped from GitHub into `sh` with a scratch HOME,
+  verified the checksum and wrote `greengate`, `amont`, `greengate-fleet`,
+  `amont-fleet` (four inodes), each answering 3.0.0.
+  A re-run of the Publish job on the finished release took the "is published
+  and complete; its assets are kept" branch; `greenharness.toml`
+  (sha256:ea79766b…) and `SHA256SUMS` (sha256:d890abd7…) kept their digests,
+  and crates.io, the tap and the brew check re-ran green (idempotent).
+  `relais programme check docs/programmes/gate-guardrails` → exit 0 on the
+  map with the step-3a entry and t12 (decisions#185, merged).
   `greengate-fleet scan` over ~/Developer: 167 repositories, 148 ok (2.3.1
   bakes and unbaked shims read as current), 11 unreadable (redirected hooks
   directories), 4 drifted, all third-party trees whose shims predate 2.3.1's
-  template (they were drifted before the release too).
+  template (they were drifted before the release too). The Outcome's "no
+  repository Drifted or Stale" holds for every shim a 2.3.1 install wrote; the
+  4 pre-2.x shims and the 11 redirected hooks directories are outside what
+  this rename changes and are left to the step-4 sweep. The Outcome's
+  day-after `git hook run pre-commit` probe is still to run (2026-11-11).
 - Phase 4b decisions (the person, 2026-11-10): tag right after merge and
   widen the crates.io token only if publish-crates fails (it did not);
   npm held for 3.0.0 until the person's first publish of the seven
@@ -395,7 +410,7 @@ is a later ticket.
 - lang:rust, lang:python, unix: approve; fixed: Windows write handle and mode before `sync_all`, fresh-mtime staging, `fail()` for `assert`, utf-8, rollback archives for `install.sh` < 3.0, signal traps, `install.ps1` restore.
 - tui, architect: approve (tui with one deliberate low: the AGENTS.md offer quotes `amont list --json`, the frozen block's own text); fixed: one-stream report, a short alias line, a `--help` note, the names-agreement test.
 - After the closing commit, CI's `attestations` check found `greenharness.toml` and `packaging/` undeclared in `.github/attest-inputs`; added for every gate (`check-attest-inputs: ok`).
-- Carried: the shim's not-found colour off a terminal (next shim-template change); `npm deprecate amont` names `npm uninstall -g amont` (Phase 4b).
+- Carried: the shim's not-found colour off a terminal (next shim-template change); `npm deprecate amont` names `npm uninstall -g amont`, at the person's first publish of `@greenharness/greengate` (npm held for 3.0.0).
 
 ## Outcome
 
