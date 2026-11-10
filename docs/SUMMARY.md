@@ -1,8 +1,8 @@
 # Summary
 
-[amont](index.md)
+[greengate](index.md)
 
-# Using amont
+# Using greengate
 
 - [Installing and activating](install.md)
 - [Rolling out to a team](team-rollout.md)

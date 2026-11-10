@@ -1,21 +1,21 @@
-# amont
+# greengate
 
 **Catch the bad commit before it exists — and take the whole thing back out in
 one command.**
 
 One Rust binary, no runtime, no config file to write. Install it, run
-`amont install` in a repository, and your next commit is checked by thirty-nine
+`greengate install` in a repository, and your next commit is checked by thirty-nine
 language-aware checks that already know when to stay out of the way.
 
-![amont catching a commit and letting the fixed one through](assets/amont-demo.gif)
+![greengate catching a commit and letting the fixed one through](assets/amont-demo.gif)
 
 ## Why this one
 
 - **Useful in the first minute.** Other hook managers install empty and wait
-  for you to write YAML. amont ships thirty-nine checks — commit-message
+  for you to write YAML. greengate ships thirty-nine checks — commit-message
   conventions, merge-conflict markers, linters and formatters for the languages
   your repository actually uses, branch rules, your test suite — and each one
-  fires only where the repository has opted into its tool. `amont list`
+  fires only where the repository has opted into its tool. `greengate list`
   shows you what runs here, and why the rest will not.
 - **Nothing on the commit path but `std`.** The hook binary links no external
   crates, and CI fails any build that changes that. What runs on every commit,
@@ -23,14 +23,14 @@ language-aware checks that already know when to stay out of the way.
   arrange: none.
 - **A cloned repository cannot run code on your machine.** Repositories declare
   their own checks in a committed `amont.conf` — and those declarations are
-  inert until you review them and say `amont trust`. No other hook manager
+  inert until you review them and say `greengate trust`. No other hook manager
   puts a review gate between `git clone` and running the repository's commands.
   [The trust model](trust.md).
 - **Your uncommitted work is never collateral.** Checks run against exactly
   what you staged; unstaged work is held aside without `git stash` and restored
   even if a check panics. The design that makes that true is the most carefully
   argued part of the codebase.
-- **Leaving is one command.** `amont uninstall` removes exactly the six
+- **Leaving is one command.** `greengate uninstall` removes exactly the six
   shims install wrote — a hook you or another tool put there is named and left
   alone. A gate you cannot exit cleanly is a gate you were right not to enter.
 
@@ -43,7 +43,7 @@ A prompt theme is cosmetic. This blocks commits and pushes, reads every staged
 file, and runs with your credentials while nobody is watching — so the claim it
 has to earn is not "delightful", it is "harmless".
 
-- **The commit path links no external crates.** `amont` and `amont-runtime`
+- **The commit path links no external crates.** `greengate` and `greengate-runtime`
   are std-only, and `scripts/check-no-deps.sh` fails a build that changes
   that — fails _closed_, so a cargo error or an unreachable registry is a
   failure rather than a reassuring green tick.
@@ -71,7 +71,7 @@ Threat model and private reporting:
 
 ## The repositories around it
 
-Three companions, each its own repository because it runs somewhere amont
+Three companions, each its own repository because it runs somewhere greengate
 deliberately does not:
 
 - [**amont-agent**](https://github.com/greenharness/greenpiste) — a Claude
@@ -80,17 +80,17 @@ deliberately does not:
   exit status, so a rejected push reads as success. The guard judges the
   pipeline before it runs. Independent by design — no shared code, and
   neither needs the other; they meet in one optional place, where its
-  session notice asks `amont agents-md --check` whether the guidance block
+  session notice asks `greengate agents-md --check` whether the guidance block
   an agent is about to believe has gone stale.
 - [**attest**](https://github.com/fredericrous/attest) — the CI half of
-  `amont.attest`: when every pre-push block gate passed locally, amont
+  `amont.attest`: when every pre-push block gate passed locally, greengate
   leaves a **signed** note on the tree it tested, and this single-purpose
   verifier lets CI skip work provably already done. Fail-open by
-  construction, and separate precisely so that amont itself never runs in
+  construction, and separate precisely so that greengate itself never runs in
   CI — [the reasoning](ci.md).
 - [**amont-pack-java**](https://github.com/fredericrous/amont-pack-java) —
   the worked example of [a pack](custom-checks.md#shipping-a-check--packs):
-  how checks amont deliberately does not build in get shipped anyway.
+  how checks greengate deliberately does not build in get shipped anyway.
 
 ## Start here
 
@@ -109,7 +109,7 @@ Then, as you need them: [where the hooks fit in your flow](coding-flow.md) ·
 
 ## How the documentation is organised
 
-The pages under **Using amont** are for anybody who has installed it or is
+The pages under **Using greengate** are for anybody who has installed it or is
 deciding whether to.
 
 The pages under **Design records** are for maintainers: the arguments behind

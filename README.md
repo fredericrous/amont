@@ -1,4 +1,4 @@
-# amont
+# greengate
 
 **Catch the bad commit before it exists — and take the whole thing back out in one command.**
 
@@ -12,13 +12,20 @@ secrets, the linters and test suites of the languages your repository actually
 uses — and each one fires only where the repository has opted into its tool, so
 there is no YAML to write before it is useful. The commit path links no
 external crates, a cloned repository's own checks stay inert until you
-`amont trust` them, and `amont uninstall` removes exactly the six shims install
+`greengate trust` them, and `greengate uninstall` removes exactly the six shims install
 wrote. [How it compares](docs/similar-projects.md) to pre-commit, lefthook and
 husky.
 
-![amont catching a commit and letting the fixed one through](docs/assets/amont-demo.gif)
+![greengate catching a commit and letting the fixed one through](docs/assets/amont-demo.gif)
 
-`amont list` says what runs in the repository you are standing in — here, a
+> **greengate was called amont until 3.0.0.** Installs place `amont` and
+> `amont-fleet` beside it as copies, so hooks baked to the old name keep
+> working; the `amont-*` crates stay at 2.3.1 and npm's `amont` at 2.3.0 (now
+> `cargo install greengate`, `npm i -D @greenharness/greengate`,
+> `brew install fredericrous/tap/greengate`). Config keys, `amont.conf` and
+> `AMONT_*` variables are unchanged. See [Installing](docs/install.md).
+
+`greengate list` says what runs in the repository you are standing in — here, a
 Python one:
 
 ```
@@ -30,7 +37,7 @@ pre-commit
 pre-push
   ● audit-python
   …
-  15 active here.  23 inert (Go, JavaScript, Kubernetes, Python, Rust) — amont list --all
+  15 active here.  23 inert (Go, JavaScript, Kubernetes, Python, Rust) — greengate list --all
 ```
 
 ## Install
@@ -53,24 +60,24 @@ archives and building from source: [installing](docs/install.md). Needs git
 ## Turning hooks on
 
 ```sh
-cd <your-repo> && amont install          # this repository only — the default
-amont-fleet install --root ~/Developer   # many repositories at once
-amont enroll --conventions declared      # every future clone on this machine
+cd <your-repo> && greengate install          # this repository only — the default
+greengate-fleet install --root ~/Developer   # many repositories at once
+greengate enroll --conventions declared      # every future clone on this machine
 ```
 
 `enroll` is a standing grant; read [rolling out to a team](docs/team-rollout.md)
-before you use it. `amont uninstall` removes the shims again —
+before you use it. `greengate uninstall` removes the shims again —
 [opting out](docs/opting-out.md) covers that and everything short of it.
 
 ## Day to day
 
 ```sh
-amont run                  # would my commit pass? (the staged set)
-amont run --all-files      # does my working tree pass?
-amont check src/main.rs    # these files, in the format editors already parse
-amont rehearse --wait      # the push gate on a snapshot of HEAD, before you push
-amont land                 # push this branch, then read the remote back to prove it moved
-amont trust                # review what this repository's amont.conf declares
+greengate run                  # would my commit pass? (the staged set)
+greengate run --all-files      # does my working tree pass?
+greengate check src/main.rs    # these files, in the format editors already parse
+greengate rehearse --wait      # the push gate on a snapshot of HEAD, before you push
+greengate land                 # push this branch, then read the remote back to prove it moved
+greengate trust                # review what this repository's amont.conf declares
 git config amont.severity.clippy warn   # runs, reports, does not block
 git config hook.skip clippy             # does not run at all
 ```

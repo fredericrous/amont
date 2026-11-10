@@ -11,7 +11,7 @@
 ## it is a file in the repository that the site does not have.
 
 [book]
-title = "amont"
+title = "greengate"
 description = "Git hooks that catch a bad commit before it exists — a single Rust binary, no runtime dependencies, and an uninstall that removes exactly what it wrote."
 authors = ["Frederic Rousseau"]
 language = "en"

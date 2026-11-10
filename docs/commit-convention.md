@@ -1,7 +1,7 @@
 # Commit and branch conventions
 
 Two vocabularies, kept in one place —
-`crates/amont-runtime/src/vocabulary.rs` — with a test that fails unless
+`crates/greengate-runtime/src/vocabulary.rs` — with a test that fails unless
 every name is either shared between them or declared an exception *with a
 reason*.
 
@@ -39,11 +39,11 @@ Both numbers are defaults, not laws — see
 `--no-verify` skips it for a single commit (git's rule, and an emergency
 exit, not a dial). So it is the one hook whose opinions
 have to be adjustable in themselves, and they are — four `git config` keys,
-walked by `amont setup` and listed in
+walked by `greengate setup` and listed in
 [configuration](configuration.md#amontcommit--what-a-commit-message-must-look-like):
 
 ```sh
-amont setup                                   # ask me the four questions
+greengate setup                                   # ask me the four questions
 git config amont.commit.descriptionMax 68     # or set one directly
 ```
 

@@ -68,6 +68,6 @@ lto = true
 #
 # The sharp part is that no test can catch the regression: cargo IGNORES the
 # `panic` setting for test targets, so both panic tests pass identically with
-# or without this line. `crates/amont/tests/release_profile.rs` reads this
+# or without this line. `crates/greengate/tests/release_profile.rs` reads this
 # file instead, because asserting on the manifest is the only mechanism that
 # can see a setting the test profile discards.

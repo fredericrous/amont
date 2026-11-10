@@ -1,6 +1,6 @@
 <!--
 Moved here from attest's SPEC.md (decisions ADR-0037): the provenance record
-is amont's, signed by amont from amont-agent's handoff (ADR-0036), and attest
+is greengate's, signed by greengate from amont-agent's handoff (ADR-0036), and attest
 reads no part of it. The text is unchanged but for links to attest's SPEC and the sentence
 that said where it was specified.
 -->
@@ -9,7 +9,7 @@ that said where it was specified.
 A second, separate note (decisions ADR-0036): a signed record of what a push
 carried besides its tests — the plan it implements and the verdicts given
 on it. It is **not** an attestation. CI never reads it, and attest's verifier
-does not either. amont produces it with the same key and the same publishing
+does not either. greengate produces it with the same key and the same publishing
 rules as an attestation, from the payload amont-agent writes. Each line has one owner: amont-agent records
 what it witnessed (the plan, the review, the preview), and the signer states
 the tree facts it checks or computes itself (`tree`, `canon`).
@@ -64,7 +64,7 @@ is `$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, else `%USERPROFILE%\.claude`
 (amont-agent's `settings::config_dir`), and `<repo>` is spelled as in amont-agent's
 `implementation-review/by-tree/<repo>/`: the name of the directory holding
 the repository's common git directory. Only amont-agent's hook writes there.
-The payload it hands over has **no** `canon` line. amont's pre-push reads
+The payload it hands over has **no** `canon` line. greengate's pre-push reads
 that one path — never a path a git config key could redirect — and:
 
 1. refuses a payload whose `tree` is not the pushed commit's tree;
@@ -78,7 +78,7 @@ that one path — never a path a git config key could redirect — and:
 4. signs and publishes the result, and deletes the file once published.
 
 **What the signature says, and no more.** This machine's amont-agent recorded
-`plan`, `review` and `preview`, amont checked `tree` against the pushed commit
+`plan`, `review` and `preview`, greengate checked `tree` against the pushed commit
 and computed `canon` from it. A reader checks `plan` itself, against the
 plan file in `tree`, and can recompute `canon` and the `review` content id
 from `tree`. Nothing checks the verdicts `review` and `preview` state: only
@@ -87,7 +87,7 @@ best-effort against a shell command that writes the file.
 Anyone holding the key can sign any payload, as for attestations.
 
 **Reading it.** A record whose `commit` is not reachable from origin is
-ignored: amont publishes before the push delivers, so a push that failed
+ignored: greengate publishes before the push delivers, so a push that failed
 can leave a note behind. A record is found on the pull request's head
 commit, else on the merge commit's tree, else by its `patch` line. To match by
 `patch`, a reader hashes the merge commit's own change the same way: the

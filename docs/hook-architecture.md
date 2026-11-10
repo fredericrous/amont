@@ -12,10 +12,10 @@ before this landed, not the state now.
 
 | table | where | holds |
 |---|---|---|
-| `REGISTRY` | `amont-runtime/registry.rs` | name → fn pointer |
+| `REGISTRY` | `greengate-runtime/registry.rs` | name → fn pointer |
 | `PRE_COMMIT_CHECKS` | same file | order, pre-commit |
 | `PRE_PUSH_CHECKS` | same file | order, pre-push |
-| `LANGUAGES` | `amont-fleet/checks.rs` | name → language scope |
+| `LANGUAGES` | `greengate-fleet/checks.rs` | name → language scope |
 
 Adding a check means editing three of them and writing a module. The tests that
 keep them aligned are good tests, but they exist to police a shape that should
@@ -275,22 +275,22 @@ third-party command should not be able to delay `branch-protect`.
 
 ## Developer experience
 
-- `amont list` — every check, stage, scope, severity, and whether it would
+- `greengate list` — every check, stage, scope, severity, and whether it would
   run *here*. Externals are listed too, marked `(declared)`, and a line that
   could not be parsed gets its own glyph: correctly-inert, disabled, and
   unusable are three different things and none may look like another.
 - Adding a built-in: one module plus one descriptor; the compiler names what is
   missing.
 - Adding an external: edit a committed file, no rebuild.
-- `amont-fleet` gains third-party checks in its views, which it cannot see
+- `greengate-fleet` gains third-party checks in its views, which it cannot see
   today at all.
 
-### Named future: `amont explain <check>`
+### Named future: `greengate explain <check>`
 
 Not built. It was in the list above, among shipped DX, which made "why didn't
 prettier run" look like a question the tool answers.
 
-Half of it exists: `amont list` says whether a check would run HERE and why
+Half of it exists: `greengate list` says whether a check would run HERE and why
 not — inert, skipped, or an unusable declaration, as three distinct glyphs. What
 is missing is the other half, the retrospective one: why a check did or did not
 fire on the commit you just made. Today that is a code-reading exercise.
@@ -307,7 +307,7 @@ classified one at a time: 12 `Unavailable`, 2 `Warned` (a waived-past lockfile, 
 first-time author identity), 1 left `Passed` (unpinned ruff, which ran). Config
 override shipped. Dashboard shows downgrades apart from enforcement.
 
-**PR 3 — external checks.** DONE. Manifest, parser, `External`, `amont list`,
+**PR 3 — external checks.** DONE. Manifest, parser, `External`, `greengate list`,
 and the fleet views. Two things the sketch did not anticipate:
 
 *`Scope` had to gate externals at RUN time.* For a built-in it is a declaration
@@ -343,6 +343,6 @@ did not notice.
    or flaky one.
 2b. ~~**Can an external run before a built-in?**~~ RESOLVED: no, and not
    configurably. Externals are appended to each stage.
-3. **Does `amont list` belong in the hook binary or the fleet tool?** The
+3. **Does `greengate list` belong in the hook binary or the fleet tool?** The
    fleet tool has the nicer output; the hook binary is what is installed
    everywhere.

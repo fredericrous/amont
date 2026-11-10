@@ -270,7 +270,7 @@ The important ones are about honesty, not mechanics:
 
 ## How we would know it worked
 
-- **Zero inert skips.** Measurable from `amont-fleet --json` at any time. A
+- **Zero inert skips.** Measurable from `greengate-fleet --json` at any time. A
   skip that names nothing is a developer who believes a check is off when it is
   not.
 - **Time-to-discover a skip.** The announcement drives this to one commit; before

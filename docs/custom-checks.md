@@ -29,7 +29,7 @@ dashboard.
 `<stage>-<name>`, exactly as a built-in has: a line reading
 `pre-commit  lint-shell  …` declares `pre-commit-lint-shell`.
 
-That id is what `amont list` and the dashboard show, and either the id or the
+That id is what `greengate list` and the dashboard show, and either the id or the
 short name addresses it in `hook.skip` and in a severity override — the same
 three-way vocabulary the built-ins take:
 
@@ -71,7 +71,7 @@ comma-separated and each is an OR — any trigger, any one of the opt-ins —
 while the two halves are an AND. With nothing on the left, `+Gemfile` reads
 "any change, in a repository that carries a Gemfile".
 
-The separator is the one `amont list` already prints between the halves:
+The separator is the one `greengate list` already prints between the halves:
 
 ```text
 ○ rubocop (declared)   inert here — needs .rb + .rubocop.yml
@@ -82,7 +82,7 @@ What you read in the listing is what you write in the file.
 **Why it exists.** Every builtin has this: `clippy` stays inert without a
 `Cargo.toml`, `yamllint` without a `.yamllint.yaml`. Declarations did not,
 because the manifest _was_ the opt-in — you typed the line, so you wanted the
-check. [`amont add`](#shipping-a-check--packs) ended that: a vendored line is
+check. [`greengate add`](#shipping-a-check--packs) ended that: a vendored line is
 in your file because you took a whole pack, and without a condition a packaged
 `rubocop` fires on every `.rb` in a repository that never wanted it and just
 errors.
@@ -102,14 +102,14 @@ changed files, and — with [`amont.testPushedTree`](configuration.md#amonttestp
 — in a throwaway checkout of that ref's tip rather than your working tree,
 exactly as the built-in test suites do. A scoped `pre-push` gate does not run
 while git holds the connection open: by default a bare `git push` whose gates
-have not run on its tree is refused, and `amont land` runs them first
+have not run on its tree is refused, and `greengate land` runs them first
 ([`amont.pushGates`](configuration.md#amontpushgates--never-run-a-heavy-gate-on-an-open-connection)).
 
 ## Your command gets the file list
 
 Two ways, both carrying exactly the paths the scope matched — the same set the
 gate above judged, which a wrapper re-running `git diff --cached` can diverge
-from (`amont run --all-files` overrides the set in-process):
+from (`greengate run --all-files` overrides the set in-process):
 
 - **`$AMONT_FILES`**, always: the matched paths, newline-separated, relative
   to the repository root. Empty when the set would not fit in an environment
@@ -145,7 +145,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   `skipped — the commit only edits existing documentation`. A `docs-skip` on a
   `pre-push` line is a parse error.
 
-  This is a trade, and the `adr` line in amont's own `amont.conf` takes it: a
+  This is a trade, and the `adr` line in greengate's own `amont.conf` takes it: a
   documentation edit that adds a link to a file that does not exist will pass
   commit time. A skipped check is **not** recorded as having passed: it earns
   no commit-time stamp, so a same-named `pre-push` declaration still runs and
@@ -170,13 +170,13 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   `index ` when it reads the index through git and cannot be taught
   `$AMONT_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
   variable a declared command keeps. Declare it only on a command that makes
-  no repositories of its own. When amont cannot locate the index, every
+  no repositories of its own. When greengate cannot locate the index, every
   pre-commit command is refused rather than run blind, with git's reason. `index` on a `pre-push` line, or
-  beside `platform=any`, is a parse error. An older amont reads `index` as the
+  beside `platform=any`, is a parse error. An older greengate reads `index` as the
   program name, cannot start it, and only warns, so the line stops blocking
   until everyone reading the file has upgraded.
 
-  A pre-commit pass recorded by an amont that did not set these variables
+  A pre-commit pass recorded by an greengate that did not set these variables
   does not count: each declared pre-commit gate runs once more after the
   upgrade, and once more when `index` is added or removed.
 
@@ -190,7 +190,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   [host slots](configuration.md#amonthostslots--how-many-heavy-checks-one-machine-runs-at-once)
   before it runs, and the repository's busy policy (`set onBusy`) says what
   it does when none frees. A check that moves a built-in heavy gate
-  (`pre-commit cargo-test`) is heavy without the marker. An amont older than
+  (`pre-commit cargo-test`) is heavy without the marker. An greengate older than
   1.61 reads `heavy` as part of the command, so add it once everyone reading
   the file has upgraded.
 
@@ -210,7 +210,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   local result is the verdict. `platform=any` with `fix` or with `files` is a
   broken line: the pod rewrites nothing and is not handed the matched files.
   `platform=` with any other word is broken too. From an untrusted manifest
-  the marker does nothing, like the line it is on. An amont older than 1.67
+  the marker does nothing, like the line it is on. An greengate older than 1.67
   reads `platform=any` as the program name, so the gate fails: add it once
   everyone reading the file has upgraded.
 
@@ -222,7 +222,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
 ### A `platform=any` gate can outlive the laptop
 
 A `platform=any` pre-push gate of a repository that says `set executor cluster`
-may also be handed to a **detached Argo Workflow** by `amont rehearse
+may also be handed to a **detached Argo Workflow** by `greengate rehearse
 --cluster` (or `git config amont.rehearse.cluster true` for the post-commit
 rehearsal): the rehearsal submits it and returns, and the next commit or push
 collects the pass, whether or not the laptop was awake meanwhile (ADR-0017). The
@@ -231,7 +231,7 @@ platform. Two things are specific to this lane. The pod gets a shallow checkout
 of the tree (depth 1), so the gate must read only the working tree and need no
 git history. And it gets the gate's command as written, in the pinned image, with
 `clusterPrepare` first when set: a gate whose tool exists only on your machine
-fails there, and runs here: in `amont land` (or in the push itself under
+fails there, and runs here: in `greengate land` (or in the push itself under
 `amont.pushGates inline`). The machine keys, what a pass needs and
 the off switches are in
 [configuration](configuration.md#amontrehearsecluster--a-rehearsal-that-outlives-the-laptop).
@@ -419,12 +419,12 @@ make — not one `git clone` makes for you. So nothing in `amont.conf` runs
 until somebody accepts it here:
 
 ```sh
-amont trust            # shows what it declares, then records it
-amont trust --show     # what it declares, and whether it is trusted
-amont trust --revoke
+greengate trust            # shows what it declares, then records it
+greengate trust --show     # what it declares, and whether it is trusted
+greengate trust --revoke
 ```
 
-`amont install` asks once, with the declarations in view. Declining still
+`greengate install` asks once, with the declarations in view. Declining still
 installs the built-ins.
 
 Until then the checks are **reported, not dropped** — the point is that you can
@@ -468,7 +468,7 @@ A substring, not a semver range: `0.6.` pins a minor, `0.6.3` a patch, and
 the point is agreement between machines, not range arithmetic. Pins are
 trust-gated like every declaration — verifying one executes
 `<program> --version` for a name the repository chose, which is exactly the
-consent `amont trust` collects.
+consent `greengate trust` collects.
 
 ## Whole-tree gates — `tree` lines
 
@@ -495,7 +495,7 @@ it always was.
   trigger.
 - **tool** — one of `eslint`, `prettier`, `ruff`, `pyright`, `gofmt`. It is
   declared, never guessed from the command: `npm run lint` does not say
-  what it runs, and amont needs to know what `{cache}` expands to and which
+  what it runs, and greengate needs to know what `{cache}` expands to and which
   version the gate really executes.
 - **scope** — the same column as a check's.
 - **options** — lowercase `key=value` tokens directly after `attest`:
@@ -508,7 +508,7 @@ it always was.
   uppercase `NAME=value` is not an option; it begins the command, so
   `NODE_OPTIONS=… npm run lint` is still expressible.
 - **command** — **the exact command the CI step runs.** `{cache}` is the
-  only thing amont may add, and it is allowed once, for `eslint` and
+  only thing greengate may add, and it is allowed once, for `eslint` and
   `prettier` only. It expands to the tool's cache flags, which never change
   a verdict.
 
@@ -535,14 +535,14 @@ gate's current *namespace*. The namespace is a hash of:
 - the gate's `inputs=`.
 
 A plugin upgrade therefore starts a new, cold namespace, and the old cache is
-deleted. A warm gate also has to *fit*. amont remembers how long each gate's last
+deleted. A warm gate also has to *fit*. greengate remembers how long each gate's last
 run took, and how long the repository's own declared commit checks took.
 When nothing long is in scope, as on a docs-only commit where no test run
 covers it, a gate that would outlast the slack is **skipped**, not started
 and cancelled: the commit stays fast, and CI lints. It shows up as `slow`
-in the evidence. A cold gate does not slow the commit either: amont starts
-`amont warm --worker` in the background (log: `.git/amont-warm.log`), and the
-next commit can prove it. `amont warm` does the same in the foreground. There
+in the evidence. A cold gate does not slow the commit either: greengate starts
+`greengate warm --worker` in the background (log: `.git/amont-warm.log`), and the
+next commit can prove it. `greengate warm` does the same in the foreground. There
 is no background warm-up on Windows, where tree gates do not run at all.
 
 When it passes on exactly the committed tree, the commit and its tree are
@@ -626,7 +626,7 @@ it applies but should not be a gate.
 ## Seeing what you declared
 
 ```sh
-amont list
+greengate list
 ```
 
 ```
@@ -641,15 +641,15 @@ pre-push
   ● runs here   ○ inert   ⊘ skipped via hook.skip   ✗ declaration unusable
 ```
 
-Across the fleet, `amont-fleet` has a `DECL` column — `2` for two declared
+Across the fleet, `greengate-fleet` has a `DECL` column — `2` for two declared
 checks, `2!1` when one of them cannot run — and lists them per repository in the
 detail pane.
 
 ## Shipping a check — packs
 
-A check you wrote could always be run; until `amont add` it could not be
+A check you wrote could always be run; until `greengate add` it could not be
 **shared**, except by pasting a line into somebody's manifest or upstreaming it
-into amont itself.
+into greengate itself.
 
 A **pack** is any git repository with an `amont.pack` at its root, written in
 exactly the syntax above:
@@ -661,13 +661,13 @@ pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./grad
 ```
 
 ```console
-$ amont add github:fredericrous/amont-pack-java@v1
+$ greengate add github:fredericrous/amont-pack-java@v1
 github:fredericrous/amont-pack-java @ 2f5dbd9 declares:
     pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
     pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 
 amont.conf changed — these commands cannot run until you review them:
-    amont trust
+    greengate trust
 ```
 
 `<source>` is `github:owner/repo`, `forgejo:host/owner/repo`, or any git URL —
@@ -682,10 +682,10 @@ Its README is the long-form version of this section.
 
 This is the whole design, and it is what separates it from the ecosystem
 model pre-commit built. pre-commit **clones a repository and executes it**,
-building an isolated environment per hook. `amont add` copies rows into _your_
+building an isolated environment per hook. `greengate add` copies rows into _your_
 `amont.conf`, and stops:
 
-- the rows land between `# amont:pack:start` / `# amont:pack:end` markers with
+- the rows land between `# greengate:pack:start` / `# greengate:pack:end` markers with
   the pack's **commit id**, so what you got is recorded next to what you run;
 - the manifest's content changed, so its fingerprint no longer matches and
   **every** declared check — the pack's and your own — is inert until you
@@ -698,12 +698,12 @@ way to avoid typing.
 
 ### Pinning, and what "verify" means here
 
-`@v2` is a tag, and a tag moves. `amont add` resolves it with `git ls-remote`
+`@v2` is a tag, and a tag moves. `greengate add` resolves it with `git ls-remote`
 **before** fetching, then refuses whatever arrives unless it is that commit —
 so a ref that moves between the two steps is an error, not a surprise. The
 commit id, never the tag, is what gets written into your manifest.
 
-That is also why the transport is git and not HTTP. amont links no crates and
+That is also why the transport is git and not HTTP. greengate links no crates and
 has no TLS stack; git is already a hard dependency, it is content-addressed, and
 it brings SSH, private repositories and self-hosted forges with it for free.
 
@@ -754,7 +754,7 @@ Test it before it goes anywhere. A local path is a source, so the whole loop
 is:
 
 ```sh
-amont add ../my-pack --dry-run
+greengate add ../my-pack --dry-run
 ```
 
 Then tag it, and let people pin the tag:
@@ -768,13 +768,13 @@ A moving alias is safe here in a way it is not for a CI action, because what
 lands in a consumer's manifest is the **commit id** and never the tag: `@v1`
 resolves once, at install time, and then stops moving. The cost of that is
 that a consumer does not get your fixes by pulling — they get them by running
-`amont add` again, which is also a fresh `amont trust`. That is the trade the
+`greengate add` again, which is also a fresh `greengate trust`. That is the trade the
 whole design makes, and it is the right way round: nothing you publish later
 can start running on somebody's machine without them reading it first.
 
 ### Updating and removing
 
-`amont add` the same source again and its block is **replaced** — not appended,
+`greengate add` the same source again and its block is **replaced** — not appended,
 which would declare the same id twice and break the manifest. To remove a pack,
 delete its block; it is plain text, and the markers say where it ends.
 

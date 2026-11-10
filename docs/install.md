@@ -4,6 +4,15 @@ Two separate acts, and keeping them separate is deliberate. **Installing the
 binary** puts a program on your machine. **Activating** turns hooks on in a
 repository. Nothing about the first does the second.
 
+> **greengate was called amont until 3.0.0.** Every installer below also
+> places `amont` and `amont-fleet` beside `greengate` and `greengate-fleet`,
+> as **copies** of them, so hooks a 2.x install baked to `…/amont` keep
+> running the current build. Copies, not links: a 2.x `amont install` copies
+> onto its target, and through a link it would overwrite greengate itself.
+> The names greengate reads from disk, git config and the environment
+> (`amont.conf`, `amont.*` keys, `AMONT_*`) are unchanged in 3.0.0. The
+> `amont-*` crates on crates.io stay at 2.3.1, and `amont` on npm at 2.3.0.
+
 ## 1. Get the binary
 
 Linux and macOS:
@@ -22,7 +31,7 @@ irm https://raw.githubusercontent.com/greenharness/greengate/main/install/instal
 The installer resolves the latest release, downloads the archive for your
 platform, verifies it against the published `SHA256SUMS`, and writes the binary
 to `$AMONT_BIN_DIR` (default `~/.local/bin`) by atomic rename, so a
-half-copied `amont` never exists.
+half-copied `greengate` never exists.
 
 It refuses to guess. If the checksum does not match it exits rather than
 installing; if `SHA256SUMS` is missing or there is no sha256 tool on the
@@ -39,7 +48,7 @@ the check the installer does *not* run for you, because it needs the `gh`
 CLI or a Sigstore client:
 
 ```sh
-gh attestation verify amont-<version>-<target>.tar.gz --repo greenharness/greengate
+gh attestation verify greengate-<version>-<target>.tar.gz --repo greenharness/greengate
 ```
 
 See [SECURITY.md](../SECURITY.md#verifying-what-you-installed) for what each
@@ -51,21 +60,21 @@ path is wrong — and it is the same convention systemd, pipx and uv observe.
 
 ### Where the binary ends up
 
-`amont install` copies the running binary somewhere stable and bakes that
+`greengate install` copies the running binary somewhere stable and bakes that
 path into every shim it writes — **unless the binary is already on your
 `PATH`**, in which case it bakes it where it is and copies nothing.
 
-That split matters for package managers. `./target/release/amont install`
+That split matters for package managers. `./target/release/greengate install`
 must copy, because `cargo clean` deletes that directory and the shims would
 stop resolving. A binary from `brew install`, `cargo install` or a distro
 package must **not** be copied: the copy is a second, unmanaged binary that the
-package manager will never update again, so `brew upgrade amont` refreshes
+package manager will never update again, so `brew upgrade greengate` refreshes
 one file while every repository stays baked to a frozen one. That is the same
 staleness the copy exists to prevent, arrived at from the other side.
 
 The path baked for a package-managed binary is the one **`PATH` exposes**, not
-the resolved one. Homebrew's `/usr/local/bin/amont` is a symlink into
-`/usr/local/Cellar/amont/<version>/bin/`, and that versioned directory is
+the resolved one. Homebrew's `/usr/local/bin/greengate` is a symlink into
+`/usr/local/Cellar/greengate/<version>/bin/`, and that versioned directory is
 deleted on the next upgrade — baking it would pin every repository to a path
 about to stop existing. The same is true of nix, asdf and mise.
 
@@ -79,7 +88,7 @@ The exception is the setup where shims are deliberately left **unbaked**:
 `init.templateDir` pointed at a checkout. Those shims resolve at run time from
 `~/.local/bin`, which is a constant inside a POSIX `sh` file. Choose both and
 they stop composing — nothing baked a path, and the one path the shims know is
-not where the binary went. `amont install` says so when it sees the
+not where the binary went. `greengate install` says so when it sees the
 combination, and offers the two ways out: link the binary where the shims look,
 or set `$GIT_HOOKS_BIN`.
 
@@ -106,15 +115,15 @@ Or build it:
 
 ```sh
 git clone https://github.com/greenharness/greengate.git
-cd amont && cargo build --release
-./target/release/amont install
+cd greengate && cargo build --release
+./target/release/greengate install
 ```
 
-Or from [crates.io](https://crates.io/crates/amont), which builds the same
-source:
+Or from [crates.io](https://crates.io/crates/greengate), which builds the same
+source (it places no `amont` alias; run `greengate install` once for it):
 
 ```sh
-cargo install amont
+cargo install greengate
 ```
 
 Or with Homebrew:
@@ -122,7 +131,7 @@ Or with Homebrew:
 ```sh
 brew tap fredericrous/tap
 brew trust fredericrous/tap
-brew install amont
+brew install fredericrous/tap/greengate
 ```
 
 The `brew trust` line is Homebrew's policy for every tap outside its own core,
@@ -136,8 +145,8 @@ For a JavaScript project, the binary can travel with the repository instead of
 with the machine:
 
 ```sh
-npm i -D amont        # or: pnpm add -D amont
-npm pkg set scripts.prepare="amont init"
+npm i -D @greenharness/greengate   # or: pnpm add -D @greenharness/greengate
+npm pkg set scripts.prepare="greengate init"
 npm install           # prepare runs; the hooks appear
 ```
 
@@ -146,7 +155,7 @@ That is [§2](#2-turn-hooks-on) done for them, by the package manager, once —
 which is the whole point of the shape.
 
 Six prebuilt platform packages are declared as `optionalDependencies`
-(`@amont-hooks/darwin-arm64`, `@amont-hooks/linux-x64-gnu`, …), each carrying
+(`@greenharness/greengate-darwin-arm64`, `@greenharness/greengate-linux-x64-gnu`, …), each carrying
 `os`, `cpu` and `libc`, so npm and pnpm install exactly one and skip the other
 five. They live under a scope so that adding a target later cannot be refused
 by npm's spam heuristic, which rejects unscoped names on their shape alone —
@@ -154,20 +163,20 @@ it turned down an unscoped `amont-agent-win32-x64` while accepting
 `amont-agent-linux-x64-musl` beside it. **There is
 no `postinstall`**, deliberately: `npm ci --ignore-scripts` is a normal
 hardening choice, and a package that quietly installs nothing under it would
-fail much later, as `amont: not found` from a git hook.
+fail much later, as `greengate: not found` from a git hook.
 
 The `bin` npm links is a small JS shim, because a linked `bin` has to live
-inside the package it belongs to. It is not on the hook path: `amont init`
+inside the package it belongs to. It is not on the hook path: `greengate init`
 bakes the **native** binary's path into `.git/hooks`, so node runs once during
 `prepare` and never on a commit.
 
 If your platform is not one of the six, `npm install` will succeed and the shim
-will say so the first time it runs. `cargo install amont` builds the same
+will say so the first time it runs. `cargo install greengate` builds the same
 source anywhere Rust does.
 
 #### `init` and `install` are different verbs
 
-`amont init` wires up **one repository** and nothing else. It does not copy a
+`greengate init` wires up **one repository** and nothing else. It does not copy a
 binary into `~/.local/bin`, does not touch `~/.config/git/git-templates`, and
 never prompts — all three of which `install` does, and all three of which are
 wrong for something that runs on every teammate's `npm install`. The trust
@@ -181,18 +190,18 @@ about everything else.
 #### If anything ever installs without your dev dependencies
 
 `npm` runs `prepare` on `npm ci` too — including `npm ci --omit=dev`, which is
-the usual second stage of a Dockerfile. `amont` is a **dev** dependency, so it
+the usual second stage of a Dockerfile. `greengate` is a **dev** dependency, so it
 is not there, and `prepare` fails on a command that does not exist. The install
 fails with it, and a broken image build is a confusing way to learn this.
 
 Guard it the same way husky's own documentation does:
 
 ```json
-"prepare": "amont init || true"
+"prepare": "greengate init || true"
 ```
 
 Only where you need it. A repository with no production-install path should
-keep the bare `amont init`, so a real failure — a hook it may not overwrite, a
+keep the bare `greengate init`, so a real failure — a hook it may not overwrite, a
 `core.hooksPath` another tool owns — is loud rather than swallowed. `|| true`
 buys nothing there and hides something.
 
@@ -232,8 +241,8 @@ opted into that check: a repository with no `ruff.toml` never needs ruff.
 ### Per repository — the default
 
 ```sh
-cd <your-repo> && amont install
-amont list                        # what would run here, and why not
+cd <your-repo> && greengate install
+greengate list                        # what would run here, and why not
 ```
 
 That writes six shims into `.git/hooks` — `pre-commit`, `pre-push`,
@@ -249,24 +258,24 @@ in.
 Across many repositories at once:
 
 ```sh
-amont-fleet install --root ~/Developer
-amont-fleet                              # report the fleet
-amont-fleet tui                          # the dashboard
-amont-fleet fix --root ~/Developer       # what drifted (dry run)
+greengate-fleet install --root ~/Developer
+greengate-fleet                              # report the fleet
+greengate-fleet tui                          # the dashboard
+greengate-fleet fix --root ~/Developer       # what drifted (dry run)
 ```
 
-![the amont-fleet dashboard scanning a fleet of repositories](assets/fleet-demo.gif)
+![the greengate-fleet dashboard scanning a fleet of repositories](assets/fleet-demo.gif)
 
 It answers the questions a directory full of repositories accumulates: which
 repos are covered, which shims went stale after an upgrade, and which
 repository is quietly carrying a `hook.skip` somebody forgot. Design record:
 [the fleet dashboard](fleet-dashboard.md).
 
-`amont-fleet` is a separate binary on purpose: it pulls ratatui, crossterm and
+`greengate-fleet` is a separate binary on purpose: it pulls ratatui, crossterm and
 serde, and keeping the two apart is what stops "I wanted the dashboard" from
 becoming "every commit now depends on a TUI library". The one-line installers
 put both binaries in place; from crates.io it is its own
-`cargo install amont-fleet`.
+`cargo install greengate-fleet`.
 
 ### When another tool already owns the hooks
 
@@ -293,16 +302,16 @@ deliberately keeps its hooks in, say, `tooling/hooks` under version control has
 chosen a location, not handed dispatch to something that will overwrite it, and
 is installed into exactly as before. The refusal needs evidence: either the
 destination belongs to a hook manager that regenerates it, or our shims are
-already sitting in the repository's own hooks directory — which means amont was
+already sitting in the repository's own hooks directory — which means greengate was
 installed here and something later took dispatch away.
 
-`amont uninstall` deliberately does **not** refuse. Versions before this check
+`greengate uninstall` deliberately does **not** refuse. Versions before this check
 wrote shims into whatever `core.hooksPath` named, so it has to be able to reach
 files that are already there.
 
 ### `--force`, and what it will not do
 
-`amont install --force` replaces a hook the installer would otherwise
+`greengate install --force` replaces a hook the installer would otherwise
 refuse:
 
 - one that is **present but carries no marker of ours** — somebody else's hook,
@@ -324,14 +333,14 @@ Two refusals `--force` does not override:
 
 Neither ever deletes a hook it did not write. A `pre-commit-*` or `pre-push-*`
 file in `.git/hooks` without our marker is reported and left exactly where it
-is. `amont-fleet --remove-unrecognized` opts into removing them, and is
+is. `greengate-fleet --remove-unrecognized` opts into removing them, and is
 spelled that way rather than `--remove-stale` because "stale" means our own
 retired shims, which are a different thing entirely.
 
 ### Everywhere, forever — a real opt-in
 
 ```console
-$ amont enroll
+$ greengate enroll
 ```
 
 One command: it puts the binary somewhere stable, populates the template
@@ -351,19 +360,19 @@ git config --global commit.template ~/.config/git/git-templates/message
 Git copies that directory into `.git/hooks` on every `init` **and every
 clone**, so from then on every repository you clone runs these hooks without
 being asked again. That is the convenience, and it is worth having: you never
-forget to install, and `amont-fleet` never shows you an uncovered repo.
+forget to install, and `greengate-fleet` never shows you an uncovered repo.
 
 It is also a standing grant, and worth stating in full. A cloned repository can
 declare its own checks in `amont.conf`. With this key set, those
 declarations are present in every repository you clone — including one you
-cloned only to read — and are one `amont trust` away from running. They do
+cloned only to read — and are one `greengate trust` away from running. They do
 **not** run before that; see [the trust model](trust.md). But if you set this
 key, trust deliberately, rather than letting installation be the moment you
 decided:
 
 ```sh
-amont trust          # show what this repo declares, and accept it
-amont trust --show   # what is trusted here
+greengate trust          # show what this repo declares, and accept it
+greengate trust --show   # what is trusted here
 ```
 
 Full reasoning: [index fidelity and run modes](index-fidelity-and-run-modes.md) §0.
@@ -371,10 +380,10 @@ Full reasoning: [index fidelity and run modes](index-fidelity-and-run-modes.md) 
 ## 3. Turn them off again
 
 ```sh
-amont uninstall              # this repository
-amont uninstall --repo       # this repository only: the template dir stays
-amont uninstall --binary     # …and remove the binary from ~/.local/bin
-amont-fleet uninstall --root ~/Developer
+greengate uninstall              # this repository
+greengate uninstall --repo       # this repository only: the template dir stays
+greengate uninstall --binary     # …and remove the binary from ~/.local/bin
+greengate-fleet uninstall --root ~/Developer
 ```
 
 `--repo` leaves the machine alone: the template dir every clone copies from,
@@ -389,19 +398,19 @@ about your repository, not ours.
 
 It does forget **its own bookkeeping**, and says which parts it forgot: the
 gate stamps and attestation notes, the bypass ledger, the version-skew
-marker, the known-identity memo — each of which only ever said "amont
+marker, the known-identity memo — each of which only ever said "greengate
 checked this", which stops being true once the hooks are gone — and the
 `amont.conf` trust record. That last one is a deliberate choice: trust is
 consent for a committed file to run commands, and uninstalling is a request
 to stop running them, so a later reinstall asks again rather than silently
-re-honouring a review from a year ago. Re-granting is one `amont trust`,
-which shows you the file. `amont-fleet uninstall` now does the same sweep in
+re-honouring a review from a year ago. Re-granting is one `greengate trust`,
+which shows you the file. `greengate-fleet uninstall` now does the same sweep in
 every repository it disarms, instead of leaving that bookkeeping behind in
 all of them.
 
 What no uninstall ever touches is **work you have not committed**: an
 interrupted run's parked changes stay in `$GIT_DIR/amont-held`, and
-`amont restore` keeps working after the hooks are gone.
+`greengate restore` keeps working after the hooks are gone.
 
 It also takes the shims back out of the template directory, and — if
 `init.templateDir` is still set — says so loudly, with the command to unset it.
@@ -413,7 +422,7 @@ source and belong to the checkout.
 This is also why the documentation never tells you to run
 `rm $(git rev-parse --git-dir)/hooks/*`. That glob deletes every hook in the
 directory — including ones other tools installed and ones you wrote — in order
-to remove six files that belong to us. `amont uninstall` exists precisely
+to remove six files that belong to us. `greengate uninstall` exists precisely
 so that removing our hooks never means removing yours.
 
 For bypassing a single commit, or disabling one check without uninstalling
@@ -432,15 +441,15 @@ Re-installing is only needed when the shim **set** changes — a hook added,
 removed or renamed:
 
 ```sh
-cd <your-repo> && amont install        # re-bake the shims here
-amont-fleet fix --root ~/Developer     # or see what the whole fleet needs
-amont-fleet fix --apply --root ~/Developer
+cd <your-repo> && greengate install        # re-bake the shims here
+greengate-fleet fix --root ~/Developer     # or see what the whole fleet needs
+greengate-fleet fix --apply --root ~/Developer
 ```
 
 ## Windows
 
 Everything works, with one setup difference: there is no symlink.
-(The `amont trust` prompt reads the console directly — `CONIN$`, the
+(The `greengate trust` prompt reads the console directly — `CONIN$`, the
 platform's `/dev/tty` — and Ctrl-C mid-check restores your parked
 unstaged changes before dying, both same as unix.)
 
@@ -450,9 +459,9 @@ The one-liner for this platform is PowerShell:
 irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
-It writes `amont.exe` and `amont-fleet.exe` into
+It writes `amont.exe` and `greengate-fleet.exe` into
 `%USERPROFILE%\.local\bin`, which is where the shims look — they try both
-`amont` and `amont.exe` there, so a binary in that directory resolves
+`greengate` and `amont.exe` there, so a binary in that directory resolves
 even in a shim whose path was never baked. CI runs this script on a real
 Windows runner against a real published release, because a documented install
 path nobody executes is one you find out about from a bug report.
@@ -462,7 +471,7 @@ not `make`:
 
 ```sh
 cargo build --release
-./target/release/amont install
+./target/release/greengate install
 ```
 
 On macOS and Linux `~/.config/git/git-templates` is usually a symlink to the

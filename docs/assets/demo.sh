@@ -32,7 +32,7 @@
 # `init.templateDir` — noise, and somebody's directory layout published to
 # strangers.
 #
-# `amont install` runs BEFORE the recording rather than inside it: it prompts
+# `greengate install` runs BEFORE the recording rather than inside it: it prompts
 # about AGENTS.md on a tty, and a demo that hangs waiting for a keypress records
 # the hang.
 set -eu
@@ -47,7 +47,7 @@ say() {
 
 sleep 0.3
 
-say 'amont list --stage pre-push'
+say 'greengate list --stage pre-push'
 "$BIN" list --stage pre-push
 sleep 3
 
@@ -62,6 +62,6 @@ git commit -m "feat: a cart the checks agree with" || true
 sleep 3.5
 
 printf '\n'
-say 'amont uninstall'
+say 'greengate uninstall'
 "$BIN" uninstall
 sleep 3.5

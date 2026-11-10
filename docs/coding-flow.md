@@ -2,7 +2,7 @@
 
 One commit, start to finish, with every place a hook steps in.
 
-![amont catching a commit and letting the fixed one through](assets/amont-demo.gif)
+![greengate catching a commit and letting the fixed one through](assets/amont-demo.gif)
 
 ## You hit `git commit`
 
@@ -27,7 +27,7 @@ at once. Piped or in CI the region stays silent and only the blocks appear.
 
 Most of them will say nothing, because most are inert in any given repository:
 a check fires only when the commit touches files it understands *and* the
-repository carries the configuration that opts into that tool. `amont list`
+repository carries the configuration that opts into that tool. `greengate list`
 tells you which ones are live where you are standing.
 
 Some checks **fix** rather than complain — `cargo fmt`, `prettier`, `ruff` —
@@ -51,7 +51,7 @@ This is the hook that rejects `Add to Cart`: no type prefix. `git commit -m
 `--no-verify` skips `commit-msg` along with `pre-commit` — that is git's
 behaviour — but neither `hook.skip` nor a severity override names it, so
 there is no way to turn it down and leave it on. So this is the one
-hook whose rules are adjustable in themselves: `amont setup` sets the
+hook whose rules are adjustable in themselves: `greengate setup` sets the
 subject and description limits, the body wrap, and where the type's gitmoji
 goes (nowhere, by default).
 
@@ -82,9 +82,9 @@ The hooks are not the only way to run the checks, and during adoption they are
 the wrong way:
 
 ```sh
-amont run                 # would my commit pass? (the staged set)
-amont run --all-files     # does my working tree pass? (git ls-files)
-amont run pre-commit-prettier
+greengate run                 # would my commit pass? (the staged set)
+greengate run --all-files     # does my working tree pass? (git ls-files)
+greengate run pre-commit-prettier
 ```
 
 Those two questions differ on purpose. `--all-files` on a dirty tree reports on
@@ -92,23 +92,23 @@ content that is not committed and may never be — which is exactly what you wan
 when adopting a check into an existing repository, where `git add .` is not an
 acceptable way to measure the mess.
 
-`amont rehearse --wait` asks the push question early: it runs the push gate on
+`greengate rehearse --wait` asks the push question early: it runs the push gate on
 a snapshot of `HEAD` before git opens a connection and stamps the tree, so the
-`git push` that follows skips the suite. `amont land` is the push itself, with
+`git push` that follows skips the suite. `greengate land` is the push itself, with
 proof: it pushes the branch and reads the remote back, so a push that was
 accepted but did not move the ref is an exit code, not a green terminal.
-`amont restore` brings back unstaged work a killed hook left parked.
+`greengate restore` brings back unstaged work a killed hook left parked.
 
 ## For coding agents
 
-`amont list --json` is the same answer as `amont list`, machine-readable:
+`greengate list --json` is the same answer as `greengate list`, machine-readable:
 declared and effective severity, whether each check fires here and why not,
 and the command if it is a declared external. `--stage` filters to one
 trigger, `--pushed` scopes to what your next push would carry. The contract is
 described in [the checks](checks.md#--json-the-machine-contract).
 
-`amont agents-md` writes that guidance into a generated block in `AGENTS.md`,
-plus a `CLAUDE.md` signpost pointing at it; `amont agents-md --check` reports
+`greengate agents-md` writes that guidance into a generated block in `AGENTS.md`,
+plus a `CLAUDE.md` signpost pointing at it; `greengate agents-md --check` reports
 drift only, and the `pre-commit-agents-md` check warns when the block is behind
 the binary that would generate it now.
 
@@ -117,12 +117,12 @@ the binary that would generate it now.
 Everything above happens once the work is finished, staged, and described. That
 is the latest possible moment to learn that line 7 has a `debugger;` in it.
 
-`amont check` asks about **files** instead of about a commit:
+`greengate check` asks about **files** instead of about a commit:
 
 ```sh
-amont check src/app.js                          # a path
-amont check src/*.ts --format json              # several, structured
-amont check --stdin-filename src/app.js < buf   # a buffer you have not saved
+greengate check src/app.js                          # a path
+greengate check src/*.ts --format json              # several, structured
+greengate check --stdin-filename src/app.js < buf   # a buffer you have not saved
 ```
 
 ```text
@@ -137,18 +137,18 @@ blocking was found, 0 otherwise — a warning is not a failure.
 Only the content checks answer here — `ban-terms`, `secrets`, `merge-conflict`,
 `large-files`. `branch-pattern` and `pull-rebase` are not about a file, and
 `clippy`, `ruff` and `eslint` already talk to your editor better than anything
-proxied through amont could.
+proxied through greengate could.
 
 ### Wiring it to an editor
 
 `file:line:col: severity: message` is the format every editor's error parser
-already reads, so there is no amont plugin to install — anywhere.
+already reads, so there is no greengate plugin to install — anywhere.
 
 **Neovim**, with [`nvim-lint`](https://github.com/mfussenegger/nvim-lint):
 
 ```lua
 require("lint").linters.amont = {
-  cmd = "amont",
+  cmd = "greengate",
   stdin = true,
   args = { "check", "--stdin-filename", function() return vim.fn.expand("%:p") end },
   ignore_exitcode = true,          -- exit 1 means "found something", not "broke"
@@ -160,18 +160,18 @@ require("lint").linters.amont = {
     { error = vim.diagnostic.severity.ERROR, warning = vim.diagnostic.severity.WARN }
   ),
 }
-require("lint").linters_by_ft = { javascript = { "amont" }, rust = { "amont" } }
+require("lint").linters_by_ft = { javascript = { "greengate" }, rust = { "greengate" } }
 ```
 
 **VS Code**, as a task with a problem matcher:
 
 ```jsonc
 {
-  "label": "amont check",
+  "label": "greengate check",
   "type": "shell",
-  "command": "amont check ${file}",
+  "command": "greengate check ${file}",
   "problemMatcher": {
-    "owner": "amont",
+    "owner": "greengate",
     "fileLocation": ["relative", "${workspaceFolder}"],
     "pattern": {
       "regexp": "^(.+?):(\\d+):?(\\d*): (error|warning): (.+)$",

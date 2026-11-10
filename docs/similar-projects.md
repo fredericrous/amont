@@ -3,29 +3,29 @@
 The field is good. [pre-commit](https://github.com/pre-commit/pre-commit),
 [lefthook](https://github.com/evilmartians/lefthook) and
 [husky](https://github.com/typicode/husky) are all mature, widely used and
-worth your time. This page is what you get by choosing amont instead — and
+worth your time. This page is what you get by choosing greengate instead — and
 what you give up.
 
 ## At a glance
 
-| | amont | pre-commit | lefthook | husky |
+| | greengate | pre-commit | lefthook | husky |
 |---|---|---|---|---|
 | Runtime it needs | none — one binary | Python (hooks bring their own environments) | none — one binary | Node.js — already present in the projects it targets |
 | Useful before you write any config | **39 built-in checks**, scoped to what the repo uses | starts empty | starts empty | starts empty |
 | On the commit path | **zero external crates**, CI-enforced | Python + a managed environment per hook | Go binary | Node + `node_modules` |
-| A cloned repo's committed config runs code… | **only after you review it and `amont trust`** | after `pre-commit install`, unreviewed | after `lefthook install` — often automatic via a package `postinstall` | after `npm install` — the `prepare` script activates it |
+| A cloned repo's committed config runs code… | **only after you review it and `greengate trust`** | after `pre-commit install`, unreviewed | after `lefthook install` — often automatic via a package `postinstall` | after `npm install` — the `prepare` script activates it |
 | Your unstaged work during a run | held aside without `git stash`, restored even if a check panics | `git stash` around the run | untouched — checks see the worktree, not the staged set | your problem — hooks are your scripts |
 | Uninstall | removes exactly the five files it wrote, names everything else | `pre-commit uninstall` | `lefthook uninstall` | delete `.husky/`, unset `core.hooksPath` |
 | Commit-message conventions | built in — validated, wrapped, limits and gitmoji configurable | via a separate hook | via commitlint etc. | via commitlint etc. |
-| One view across all your repos | **`amont-fleet`** — bulk install, report, dashboard | per repo | per repo | per repo |
-| Machine-readable state for coding agents | **`amont list --json`, `amont agents-md`** | no | no | no |
+| One view across all your repos | **`greengate-fleet`** — bulk install, report, dashboard | per repo | per repo | per repo |
+| Machine-readable state for coding agents | **`greengate list --json`, `greengate agents-md`** | no | no | no |
 
 ## The three arguments
 
 **It works before you configure it.** Every other manager on this list installs
 a framework and hands you an empty file: nothing runs until you have decided
 what a good commit looks like and written it down, per repository, in that
-tool's YAML. amont ships the decision — conventional commit subjects, no
+tool's YAML. greengate ships the decision — conventional commit subjects, no
 merge-conflict markers, no `describe.only` leftovers, the linters and
 formatters for the languages your repository actually uses, a test-suite gate
 on push — and scopes it automatically: a repository with no `ruff.toml` never
@@ -37,18 +37,18 @@ to configure is the exception, not the baseline, and every knob is plain
 manager runs on every commit, with your credentials, reading every staged
 file. husky puts `node_modules` on that path; pre-commit puts a tree of
 cloned hook repositories with their managed language environments there. The
-amont binary links no external crates — `std` only, with a CI script that
+greengate binary links no external crates — `std` only, with a CI script that
 fails any build that changes it — and the installer verifies its download
 against published checksums before placing the binary. And where the others
 run a cloned repository's committed config as a side effect of routine setup —
-`npm install`, a `postinstall`, an unreviewed `pre-commit install` — amont
+`npm install`, a `postinstall`, an unreviewed `pre-commit install` — greengate
 holds a repository's declared checks **inert until you have read them and said
-[`amont trust`](trust.md)**. Nobody else on this list has that gate.
+[`greengate trust`](trust.md)**. Nobody else on this list has that gate.
 
 **It is built for the failure cases.** What happens to your unstaged work when
 a formatter rewrites files mid-commit — and when it panics mid-rewrite? What
 happens when a check's tool is not installed, a config line is malformed, or a
-`hook.skip` was set three years ago and forgotten? amont has a designed
+`hook.skip` was set three years ago and forgotten? greengate has a designed
 answer to each: unstaged work is held aside without `git stash` and restored
 even on panic; a check that cannot run is reported as a gap rather than passed
 or silently dropped; a skipped check is announced on every commit. These cases
@@ -61,7 +61,7 @@ Stated plainly, because a comparison that finds no trade-offs is an
 advertisement:
 
 - **pre-commit's ecosystem is enormous.** Hundreds of ready-made hooks, and it
-  bootstraps each hook's language environment for you. amont deliberately
+  bootstraps each hook's language environment for you. greengate deliberately
   refuses to be a package manager — a check that cannot find its tool warns or
   fails loudly, and the tool stays your problem. For turnkey environments
   around many exotic tools, pre-commit is the right call.

@@ -8,13 +8,13 @@ had.
 
 | § | what | status | where it lives |
 |---|---|---|---|
-| 0 | activation, `uninstall`, bulk install | **shipped** | `install.rs`, `amont-fleet install/uninstall` |
-| 0b | manifest trust | **shipped** | `trust.rs`, `amont trust [--show]` |
+| 0 | activation, `uninstall`, bulk install | **shipped** | `install.rs`, `greengate-fleet install/uninstall` |
+| 0b | manifest trust | **shipped** | `trust.rs`, `greengate trust [--show]` |
 | 1 | index fidelity (staged-only) | **shipped** | `staged_only.rs`, `dispatch::pre_commit` |
 | 2 | `stage_fixed` | **shipped** as `Fix::Rewrite` + `Outcome::Fixed` | `check.rs`, `hooks/common.rs::restage` |
 | 3 | `not_during` git-state conditions | **shipped** | `check.rs::GitState`, `registry.rs::MID_OPERATION` |
-| 4 | `amont run [--all-files]` | **shipped** | `main.rs`, `dispatch::run_named` |
-| 4b | `amont check <paths…>` | **shipped** | `content.rs`, `finding.rs` |
+| 4 | `greengate run [--all-files]` | **shipped** | `main.rs`, `dispatch::run_named` |
+| 4b | `greengate check <paths…>` | **shipped** | `content.rs`, `finding.rs` |
 | 5 | shebang detection | **not built** | — |
 
 §5 is the only one still a proposal. Everything below the numbered sections —
@@ -43,10 +43,10 @@ backlog.
 
 ## 0. A cloned repository can run its own commands
 
-> **Shipped.** Per-repository activation is the default; `amont install`
-> / `uninstall` and `amont-fleet install` / `uninstall` are all real
-> verbs. `install.rs` carries the routine, and `crates/amont/tests/it/
-> install.rs` and `crates/amont-fleet/tests/it/uninstall.rs` carry the
+> **Shipped.** Per-repository activation is the default; `greengate install`
+> / `uninstall` and `greengate-fleet install` / `uninstall` are all real
+> verbs. `install.rs` carries the routine, and `crates/greengate/tests/it/
+> install.rs` and `crates/greengate-fleet/tests/it/uninstall.rs` carry the
 > guards. `uninstall` also removes the shims from the template directory
 > and says so loudly if `init.templateDir` is still set.
 
@@ -83,7 +83,7 @@ Not from the manifest, and not from the shims. From one line in our own README:
 git config --global init.templatedir ~/.config/git/git-templates/templates
 ```
 
-We never set that key in code — `amont install` writes files and touches no
+We never set that key in code — `greengate install` writes files and touches no
 config. The README asks the user to make *every future clone on the machine*
 managed, and that ambient grant is what turns a committed manifest into a
 drive-by.
@@ -102,13 +102,13 @@ command is not a category.
 else:
 
 ```
-amont install              # this repo
-amont uninstall            # this repo — remove shims, leave the binary
-amont-fleet install        # every managed-eligible repo under a root
-amont-fleet uninstall
+greengate install              # this repo
+greengate uninstall            # this repo — remove shims, leave the binary
+greengate-fleet install        # every managed-eligible repo under a root
+greengate-fleet uninstall
 ```
 
-`amont install` already does the per-repo half. `amont-fleet` has `scan`,
+`greengate install` already does the per-repo half. `greengate-fleet` has `scan`,
 `fix` and `tui`, with `--apply` behind `fix` — bulk activation exists but is
 named after repair rather than intent, which is why nobody reaches for it when
 they mean "set this up".
@@ -145,29 +145,29 @@ Worth being precise, because it is tempting to stop here.
 Explicit installation removes the case where you clone something to read it.
 It does not remove the case that matters most in open source: you clone a
 stranger's repository **because you intend to contribute**, you run
-`amont install` because you want your own checks while you work, and their
+`greengate install` because you want your own checks while you work, and their
 `amont.conf` runs on your first commit.
 
-`amont install` means *I want my hooks here*. It does not mean *I have read
+`greengate install` means *I want my hooks here*. It does not mean *I have read
 this repository's committed commands and accept them*. Those are two different
 grants and only one of them was made.
 
 ### So: one prompt, at the moment of the deliberate act
 
-> **Shipped** — this is §0b. `crates/amont-runtime/src/trust.rs`, surfaced as
-> `amont trust` and `amont trust --show`, with `amont install` offering
+> **Shipped** — this is §0b. `crates/greengate-runtime/src/trust.rs`, surfaced as
+> `greengate trust` and `greengate trust --show`, with `greengate install` offering
 > it interactively. The record is keyed on the manifest's CONTENT (via
 > `git hash-object`, because the binary links no crates and `std`'s only hash is
 > a fixed-key SipHash a crafted manifest could collide), so a `git pull` that
 > adds a command does not inherit consent given to the file before it.
-> `crates/amont/tests/it/trust_display.rs`.
+> `crates/greengate/tests/it/trust_display.rs`.
 
 Which is where activation-as-the-boundary improves on the `direnv` design rather
 than replacing it. direnv must prompt lazily, on `cd`, because there is no
 install step to hang the question from. We have one:
 
 ```
-$ amont install
+$ greengate install
   ✓ installed /Users/me/.local/bin/amont
   ✓ baked 4 shims into .git/hooks
 
@@ -183,7 +183,7 @@ untrusted, and reports as `Unavailable` with a reason rather than being silently
 skipped:
 
 ```
-⚠ amont.conf declares 2 checks and is not trusted here — `amont trust`
+⚠ amont.conf declares 2 checks and is not trusted here — `greengate trust`
 ⚠ 2 check(s) could not run: shellcheck, smoke
 ```
 
@@ -214,7 +214,7 @@ what makes the `unmanaged` column earn its place. With `init.templateDir` set it
 is close to noise, because everything cloned since is managed and "unmanaged"
 records the date you ran a `git config` command. Without it, the column is the
 point of the tool: which of your ninety-six repositories are not covered, with
-`amont-fleet install` as the fix.
+`greengate-fleet install` as the fix.
 
 Both modes are legitimate. They trade a quiet failure for a loud grant, and the
 tool should let you pick which one you would rather explain.
@@ -244,10 +244,10 @@ hang from and is much smaller once it exists.
 
 ## 1. We name the staged files and then read the unstaged ones
 
-> **Shipped**, as `crates/amont-runtime/src/staged_only.rs`, wrapped
+> **Shipped**, as `crates/greengate-runtime/src/staged_only.rs`, wrapped
 > around the whole `pre-commit` check stage in `dispatch::pre_commit`.
 > The mechanism is NOT the one designed below — see *The design* and *The
-> danger* for what changed and why. `crates/amont/tests/
+> danger* for what changed and why. `crates/greengate/tests/
 > index_fidelity.rs` is its suite, including the Ctrl-C case.
 
 `staged_files()` asks the index for the path list, which is right:
@@ -344,7 +344,7 @@ struct StagedOnly { stash: Option<StashRef> }   // `git stash --keep-index`
 ```
 
 ```rust
-// WHAT SHIPS — crates/amont-runtime/src/staged_only.rs
+// WHAT SHIPS — crates/greengate-runtime/src/staged_only.rs
 pub struct StagedOnly { held: bool }
 impl StagedOnly {
     pub fn enter() -> Result<StagedOnly, String>;
@@ -386,7 +386,7 @@ working tree on restore, because a suffix strip turned one file's payload into a
 statement about another. The symlink form was worse: the repo chose both the
 link name and an arbitrary absolute target, so committing in it planted a
 symlink pointing anywhere on the machine. Escaping cannot fix it, because
-`amont restore` runs in a later process with only the filenames to go on. So
+`greengate restore` runs in a later process with only the filenames to go on. So
 the metadata moved out of band into `index`, and everything repo-controlled
 moved under `files/`, where it cannot collide with `index` whatever it is
 called. The `index` carries each entry's KIND (modified / absent / symlink) and,
@@ -401,8 +401,8 @@ worse failure than any this repository has had, including the two that
 overwrote tracked files, because there is nothing on disk to recover from.
 
 Rules, all of which wanted tests and all of which now have them, in
-`crates/amont/tests/it/index_fidelity.rs` and the commit flow
-(`crates/amont/tests/it/flows/commit.rs`):
+`crates/greengate/tests/it/index_fidelity.rs` and the commit flow
+(`crates/greengate/tests/it/flows/commit.rs`):
 
 - **Nothing unstaged → do nothing**, and silently. The common case must not
   touch the tree, and it is not a degraded run — there is no unstaged content
@@ -421,7 +421,7 @@ Rules, all of which wanted tests and all of which now have them, in
   same net via `SetConsoleCtrlHandler` (Ctrl-C, Ctrl-Break, console
   closed) — the handler already runs on its own thread there, restores
   under the same lock, and then lets the default action terminate.
-- **A recovery path for when even that fails**: `amont restore` puts back
+- **A recovery path for when even that fails**: `greengate restore` puts back
   what this tool parked. Belt and braces, because the handler can itself be
   interrupted.
 - **Restore failure is fatal and loud**: print the STORE'S PATH, do not swallow
@@ -444,7 +444,7 @@ Rules, all of which wanted tests and all of which now have them, in
 ```
 $ git show :x.json      # staged:      {"a": 2}       ← valid
 $ cat x.json            # working tree: { THIS IS NOT JSON
-$ amont pre-commit
+$ greengate pre-commit
   ✗ Invalid JSON: x.json
   🚨 Error raised by: pre-commit-lint-json-yaml
 ```
@@ -494,8 +494,8 @@ dirty commit costs git a walk of the changed files, not of the whole tree.
 > the re-staging is `hooks::common::restage`, and the result is
 > `Outcome::Fixed`. Three checks declare it — prettier, ruff and cargo-fmt
 > — and all three now genuinely repair; two of them declared the fix for a
-> while without having any fixing code, which `amont list --json`
-> reported to agents as a capability. `crates/amont/tests/it/fixing.rs`.
+> while without having any fixing code, which `greengate list --json`
+> reported to agents as a capability. `crates/greengate/tests/it/fixing.rs`.
 
 From lefthook's job options: *"automatically add modified files back to git
 staging"*.
@@ -548,7 +548,7 @@ Not eslint `--fix`: its fixes are semantic and occasionally wrong.
 > and `registry::MID_OPERATION` as the shared set applied to the checks
 > that need it. `lib.rs::git_states_in_progress` does the detection and
 > `dispatch.rs` consults it for BOTH stages, closing the pre-push gap the
-> section names. `crates/amont/tests/it/git_state.rs`.
+> section names. `crates/greengate/tests/it/git_state.rs`.
 
 lefthook:
 
@@ -603,11 +603,11 @@ to copy the other two.
 
 ---
 
-## 4. `amont run [--all-files]`
+## 4. `greengate run [--all-files]`
 
 > **Shipped**, exactly as specified, plus `--hooks-dir`.
-> `amont run`, `amont run --all-files`, `amont run <check>`.
-> `crates/amont/tests/it/run_mode.rs`.
+> `greengate run`, `greengate run --all-files`, `greengate run <check>`.
+> `crates/greengate/tests/it/run_mode.rs`.
 
 `pre-commit run --all-files` runs every hook over the whole repository rather
 than the staged set. Two uses, both of which we currently cannot serve:
@@ -616,16 +616,16 @@ than the staged set. Two uses, both of which we currently cannot serve:
   is before you turn it on, and `git add .` is not an acceptable way to find out.
 - **CI parity** — running the same checks in CI over the whole tree.
 
-We have `amont list` (would it run here?) and `amont <check>` (run one,
+We have `greengate list` (would it run here?) and `greengate <check>` (run one,
 staged). We have no "run everything, over everything".
 
 `Scope::matches` already answers against an arbitrary path list, so the file
 selection is done. The work is:
 
 ```
-amont run                 # every applicable check, staged files (what a commit does)
-amont run --all-files     # …over `git ls-files` instead
-amont run <check>         # one check, either way
+greengate run                 # every applicable check, staged files (what a commit does)
+greengate run --all-files     # …over `git ls-files` instead
+greengate run <check>         # one check, either way
 ```
 
 `--all-files` skips the §1 stash: there is no staged/unstaged distinction to
@@ -633,10 +633,10 @@ protect when the answer is "all of it".
 
 ---
 
-## 4b. `amont check <paths…>` — the read that is not a rehearsal
+## 4b. `greengate check <paths…>` — the read that is not a rehearsal
 
-> **Shipped.** `crates/amont/tests/it/check_verb.rs`,
-> `amont-runtime/src/content.rs`, `amont-runtime/src/finding.rs`.
+> **Shipped.** `crates/greengate/tests/it/check_verb.rs`,
+> `greengate-runtime/src/content.rs`, `greengate-runtime/src/finding.rs`.
 
 `run` answers *"is this commit ready?"* — a question about the **index**. It is
 entitled to everything in §1 and §2: the staged-only hold, the stash, the
@@ -650,9 +650,9 @@ buffer would inherit a stash. So it is a separate verb with a separate
 contract:
 
 ```
-amont check src/app.js                          # a path
-amont check src/*.ts --format json              # several, structured
-amont check --stdin-filename src/app.js < buf   # a buffer never saved
+greengate check src/app.js                          # a path
+greengate check src/*.ts --format json              # several, structured
+greengate check --stdin-filename src/app.js < buf   # a buffer never saved
 ```
 
 **It is a read.** No index, no staging, no stash, no writes —
@@ -683,7 +683,7 @@ is that place, and the hooks improved on the way past:
 `file:line:col: severity: message [check]` is the output format because every
 editor's error parser already reads it and every modern terminal makes it
 clickable — which is what lets `efm-langserver`, `nvim-lint`, a VS Code
-`problemMatcher` or `flycheck` consume amont with **no editor-side code in this
+`problemMatcher` or `flycheck` consume greengate with **no editor-side code in this
 repository**. `--format json` (`amont-check-v1`) is there for anything that
 would rather not parse a line.
 
@@ -696,7 +696,7 @@ between two; and `clippy`, `ruff` and `eslint` already have editor
 integrations of their own that are better than anything proxied through here.
 
 What remains is exactly the set `docs/ci.md` says CI deliberately does not
-reproduce — the checks only amont has are the ones only amont can surface
+reproduce — the checks only greengate has are the ones only greengate can surface
 early, which is the whole argument for the verb.
 
 Positions are a **reporting** concern and never a decision input: a check
@@ -739,7 +739,7 @@ format inherits, not because anything is waiting on it.
 ## What we are not taking, and why
 
 **`core.hooksPath` (husky).** Husky sets one config key and ships no per-repo
-hook files. Our entire drift model — `amont-fleet apply`, `BakeState`, the
+hook files. Our entire drift model — `greengate-fleet apply`, `BakeState`, the
 `SHIMS` column, `recover_baked` — exists because we copy five files into
 ninety-six repositories. A global `core.hooksPath` deletes that problem class
 outright.
@@ -761,7 +761,7 @@ unchallenged for as long as it lasted. That is exactly "a repository with hooks
 of its own silently loses them", arrived at from the other direction, and it is
 now [refused by name](install.md#when-another-tool-already-owns-the-hooks).
 
-None of which the npm packaging contradicts. `amont init` writes the same five
+None of which the npm packaging contradicts. `greengate init` writes the same five
 files to the same `.git/hooks`; what a `prepare` script changes is *who types
 the command*, not where the hooks live or whether they can be read.
 
@@ -784,7 +784,7 @@ shape nobody has asked for.
 Named because an adoption review asks these first, and an honest "no" is worth
 more than silence.
 
-**Tool versions are pinned by the repository, and amont says when they are
+**Tool versions are pinned by the repository, and greengate says when they are
 not.** §1 fixes *which content* is checked; ADR-0019 (`build.toolchain-source`)
 fixes *which tool*: the repository pins it. For prettier and eslint,
 `resolve_js_tool` reads the root `package.json` of the checkout being
@@ -812,8 +812,8 @@ is to stop running anything else silently.
 `--no-verify` and `hook.skip` are each one command away, deliberately. So the
 question "what stops an unformatted commit reaching the default branch" has no
 answer in this document. An earlier draft of this paragraph proposed making
-`amont run --all-files` CI-grade — exit-code contract, SARIF, JUnit. The
-decision went the other way: amont deliberately does not run in CI at all.
+`greengate run --all-files` CI-grade — exit-code contract, SARIF, JUnit. The
+decision went the other way: greengate deliberately does not run in CI at all.
 CI wants the real tools, called directly, with the platform's own caching
 and attribution — see [the CI backstop](ci.md), which ships copyable
 workflow templates saying exactly that.
@@ -838,7 +838,7 @@ precede `stage_fixed`, why `not_during` had to precede index fidelity — is the
 part worth keeping, and it reads as advice only in the future tense.
 
 **PR 0a — activation and `uninstall` (§0).** Add `uninstall` at both levels and
-name bulk activation `amont-fleet install` rather than hiding it behind
+name bulk activation `greengate-fleet install` rather than hiding it behind
 `fix --apply`. The README presents per-repository activation as the default and
 `init.templateDir` as a stated opt-in with its consequence spelled out. Closes
 the drive-by case for the default mode and makes the fleet's `unmanaged` column
@@ -850,7 +850,7 @@ untrusted manifest — and it is the **only** thing standing between a cloned
 repository and your shell for anyone who set `init.templateDir`, which is the
 convenient mode and therefore the popular one.
 
-**PR 1 — `amont run [--all-files]`.** Small, useful immediately, no risk, and
+**PR 1 — `greengate run [--all-files]`.** Small, useful immediately, no risk, and
 it gives the later work a way to be exercised over a whole repository.
 
 **PR 2 — `not_during` git-state conditions.** Generalises the `CHERRY_PICK_HEAD`
@@ -883,7 +883,7 @@ solve*, which is a list of known gaps rather than a backlog.
 1. `--all-files` implies no stash. There is no staged/unstaged distinction to
    protect when the input set is `git ls-files`, so taking a stash would be
    surprising extra mutation with no correctness upside. If a future explicit
-   `--no-stash` flag exists for diagnostics, `amont run --all-files
+   `--no-stash` flag exists for diagnostics, `greengate run --all-files
    --no-stash` should be accepted as redundant rather than rejected.
 
    **Corollary, stated because it is the inverse of §1**: on a dirty tree,
