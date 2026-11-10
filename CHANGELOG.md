@@ -25,6 +25,9 @@ install wrote keeps working.
   2.x `amont install` over the alias replaces only the alias. The alias is
   the same binary, so `amont --version` answers `greengate 3.0.0`: a script
   that reads the first word of it sees the new name.
+- `install`, `enroll`, `init` and `uninstall` print their report on stderr,
+  in one stream and in order; stdout is left for data. A script that read
+  `amont install`'s stdout reads stderr now.
 - **2.x installers and CI images now receive 3.0.0 under the name `amont`.**
   Each release ships `amont-<version>-<target>` archives beside the new
   `greengate-<version>-<target>` ones, holding the same build as regular files

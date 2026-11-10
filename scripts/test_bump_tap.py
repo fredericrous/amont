@@ -77,19 +77,19 @@ class BumpTap(unittest.TestCase):
         self.formula.write_text(formula("greenharness/greengate"))
         run = self.bump()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assert_on_new_name(self.formula.read_text())
+        self.assert_on_new_name(self.formula.read_text(encoding="utf-8"))
 
     def test_an_old_owner_formula_moves_too(self) -> None:
         self.formula.write_text(formula("fredericrous/amont"))
         run = self.bump()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assert_on_new_name(self.formula.read_text())
+        self.assert_on_new_name(self.formula.read_text(encoding="utf-8"))
 
     def test_a_greengate_formula_stays_on_greengate(self) -> None:
         self.formula.write_text(formula("greenharness/greengate", "3.0.0", "greengate"))
         run = self.bump()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assert_on_new_name(self.formula.read_text())
+        self.assert_on_new_name(self.formula.read_text(encoding="utf-8"))
 
     def test_a_second_run_changes_nothing(self) -> None:
         self.formula.write_text(formula("fredericrous/amont"))
@@ -132,7 +132,7 @@ class BumpTap(unittest.TestCase):
         self.formula.write_text(shipped.read_text(encoding="utf-8"), encoding="utf-8")
         run = self.bump()
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assert_on_new_name(self.formula.read_text())
+        self.assert_on_new_name(self.formula.read_text(encoding="utf-8"))
 
     def test_a_formula_without_a_homepage_is_refused(self) -> None:
         self.formula.write_text(

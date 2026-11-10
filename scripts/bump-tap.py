@@ -54,11 +54,11 @@ def main() -> None:
             continue
         sha, name = parts
         # Only the new name: the old-name archives are for 2.x installers.
-        m = re.fullmatch(r"greengate-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
-        if not m:
+        archive = re.fullmatch(r"greengate-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
+        if not archive:
             continue
-        require(m.group(1) == version, f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?")
-        sums[m.group(2)] = (sha, name)
+        require(archive.group(1) == version, f"SHA256SUMS is for {archive.group(1)}, not {version} — wrong release?")
+        sums[archive.group(2)] = (sha, name)
     require(bool(sums), f"no greengate checksums parsed from {sums_path}")
 
     formula = pathlib.Path(formula_path)

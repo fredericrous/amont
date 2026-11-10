@@ -157,9 +157,14 @@ try {
                 try {
                     Move-Item -Path $staged -Destination $to -Force
                 } catch {
-                    # Put the old binary back rather than leave no .exe at all.
-                    if ($aside) { Rename-Item -Path $aside -NewName (Split-Path $to -Leaf) }
-                    throw
+                    # Put the old binary back rather than leave no .exe at all,
+                    # and keep the move's own error as the one reported.
+                    $moveError = $_
+                    if ($aside) {
+                        try { Rename-Item -Path $aside -NewName (Split-Path $to -Leaf) }
+                        catch { Write-Warn "the previous binary is still at $aside; rename it to $to" }
+                    }
+                    throw $moveError
                 }
                 if ($aside) { Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue; $aside = $null }
             }

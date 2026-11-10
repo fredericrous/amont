@@ -1,5 +1,9 @@
 //! `amont install` — put the binary somewhere stable and wire up the shims.
 //!
+//! Everything this module prints is a report for a person (what was
+//! installed, wired, trusted or left alone), so all of it goes to stderr, in
+//! one stream and in order; stdout stays free for data.
+//!
 //! This was a Makefile recipe. It moved here for one reason: the guard below
 //! decides whether a directory is safe to delete, it has been got wrong TWICE —
 //! both times overwriting tracked source files with machine-specific paths — and
@@ -226,20 +230,20 @@ fn warn_if_unbaked_cannot_resolve(binary: &str) {
         return;
     }
 
-    println!();
-    println!(
+    eprintln!();
+    eprintln!(
         "{} the binary is at {}, which an unbaked shim will not find.",
         warning_sign(),
         highlight(binary)
     );
-    println!(
+    eprintln!(
         "    Shims here keep the placeholder, and they look only in {}.",
         looked.display()
     );
-    println!("    Either link it where they look:");
-    println!("      ln -s {} {}", binary, looked.join(BIN).display());
-    println!("    or set GIT_HOOKS_BIN in the environment git runs hooks with:");
-    println!("      export GIT_HOOKS_BIN={binary}");
+    eprintln!("    Either link it where they look:");
+    eprintln!("      ln -s {} {}", binary, looked.join(BIN).display());
+    eprintln!("    or set GIT_HOOKS_BIN in the environment git runs hooks with:");
+    eprintln!("      export GIT_HOOKS_BIN={binary}");
 }
 
 /// `~/.local/bin`, or `$AMONT_BIN_DIR`.
@@ -338,9 +342,15 @@ fn stage_copy(from: &Path, staged: &Path) -> std::io::Result<()> {
     let mut source = std::fs::File::open(from)?;
     let mut file = std::fs::File::create(staged)?;
     std::io::copy(&mut source, &mut file)?;
+    // The mode through the open handle, BEFORE the flush, so the flush covers
+    // it: after a power loss the target is never the whole binary at 0644.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    }
     // `sync_all` needs a handle open for writing on Windows, which this is.
-    file.sync_all()?;
-    make_executable(staged)
+    file.sync_all()
 }
 
 /// How long a leftover must be untouched before an install sweeps it.
@@ -394,7 +404,7 @@ fn write_aliases(binary: &Path) -> Result<Vec<&'static str>, String> {
         let alias = dir.join(name_for(binary, old));
         replace_atomically(&from, &alias).map_err(|e| {
             format!(
-                "installed {}, but cannot write its old name {}: {e}\n    hooks baked to the old name keep running the build that was there; run `{BIN} install` again, or delete {}",
+                "installed {}, but cannot write its old name {}: {e}\n    hooks baked to the old name keep running the build that was there;\n    run `{BIN} install` again, or delete {}",
                 from.display(),
                 alias.display(),
                 alias.display()
@@ -544,17 +554,6 @@ fn write_shims(dir: &Path, bin: &str, force: bool) -> Result<Vec<Written>, ShimW
 
 /// For the installed BINARY only — shims get their mode from `hookfile::stage`,
 /// before they are anywhere a hook could be dispatched from.
-#[cfg(unix)]
-fn make_executable(p: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755))
-}
-
-#[cfg(not(unix))]
-fn make_executable(_p: &Path) -> std::io::Result<()> {
-    Ok(()) // Windows has no execute bit; git runs the shim through sh regardless.
-}
-
 /// Install: copy this binary somewhere stable, populate the template directory
 /// if that is safe, and bake the current repository's hooks.
 ///
@@ -616,42 +615,42 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
             if !crate::git::succeeds(&["config", "--global", "amont.conventions", word]) {
                 return Err("could not write amont.conventions to the global git config".into());
             }
-            println!(
+            eprintln!(
                 "{} amont.conventions = {} (global)",
                 valid_sign(),
                 highlight(word)
             );
             if word == "declared" {
-                println!("    House rules run only in repositories that commit an amont.conf;");
-                println!("    the safety net (conflicts, secrets, size, debug leftovers) runs");
-                println!("    everywhere.");
+                eprintln!("    House rules run only in repositories that commit an amont.conf;");
+                eprintln!("    the safety net (conflicts, secrets, size, debug leftovers) runs");
+                eprintln!("    everywhere.");
             }
         }
         None => {
-            println!(
+            eprintln!(
                 "{} conventions currently apply everywhere. On a machine that also",
                 warning_sign()
             );
-            println!("    clones other people's projects, consider:");
-            println!(
+            eprintln!("    clones other people's projects, consider:");
+            eprintln!(
                 "        {}",
                 highlight(concat!(crate::bin!(), " enroll --conventions declared"))
             );
         }
     }
 
-    println!();
-    println!("Enrolled. Every future `git clone` and `git init` gets the hooks.");
-    println!("Repositories cloned before now are untouched — wire them with");
-    println!(
+    eprintln!();
+    eprintln!("Enrolled. Every future `git clone` and `git init` gets the hooks.");
+    eprintln!("Repositories cloned before now are untouched — wire them with");
+    eprintln!(
         "    {}   (one repository)",
         highlight(concat!(crate::bin!(), " init"))
     );
-    println!(
+    eprintln!(
         "    {}   (every repository under a root)",
         highlight(concat!(crate::fleet_bin!(), " install --root <dir>"))
     );
-    println!(
+    eprintln!(
         "Undo with {}.",
         highlight("git config --global --unset init.templateDir")
     );
@@ -671,7 +670,7 @@ fn point_template_dir_at(templates: &std::path::Path) -> Result<(), String> {
             if !crate::git::succeeds(&["config", "--global", "init.templateDir", &want]) {
                 return Err("could not write init.templateDir to the global git config".into());
             }
-            println!(
+            eprintln!(
                 "{} init.templateDir = {} (global)",
                 valid_sign(),
                 highlight(&want)
@@ -679,7 +678,7 @@ fn point_template_dir_at(templates: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
         Some(existing) if same_dir(&existing, &want) => {
-            println!(
+            eprintln!(
                 "{} init.templateDir already points here ({})",
                 valid_sign(),
                 highlight(&existing)
@@ -854,7 +853,7 @@ fn init_with(
     // unattended — there is no one at the keyboard to have decided otherwise.
     let written = write_shims(&hooks, &binary, false)
         .map_err(|e| format!("cannot write shims to {}: {e}", hooks.display()))?;
-    println!(
+    eprintln!(
         "{} {BIN}: {} hooks in {}",
         valid_sign(),
         written.len(),
@@ -872,7 +871,7 @@ fn init_with(
 /// and it puts the dial in front of the one person guaranteed to be reading.
 fn point_at_setup(settings: &crate::config::Settings) {
     let s = crate::commit_style::Style::resolve(settings);
-    println!(
+    eprintln!(
         "  commit style: gitmoji {}, subject ≤{}, description ≤{} — `{BIN} setup` to change",
         s.gitmoji.as_str(),
         s.subject_max,
@@ -906,8 +905,8 @@ fn offer_trust() {
         return;
     }
 
-    println!();
-    println!(
+    eprintln!();
+    eprintln!(
         "{} {} declares checks and policy that would apply to your commits:",
         warning_sign(),
         crate::manifest::MANIFEST
@@ -920,7 +919,7 @@ fn offer_trust() {
     // one step earlier: the listing approved need not be the one recorded.
     let manifest = root.join(crate::manifest::MANIFEST);
     let Ok(source) = std::fs::read(&manifest) else {
-        println!(
+        eprintln!(
             "{} could not read {}",
             warning_sign(),
             crate::manifest::MANIFEST
@@ -932,7 +931,7 @@ fn offer_trust() {
         crate::trust::describe_source(&String::from_utf8_lossy(&source))
     );
     let Some(fp) = crate::trust::fingerprint_bytes(root, &source) else {
-        println!(
+        eprintln!(
             "{} could not hash {}",
             warning_sign(),
             crate::manifest::MANIFEST
@@ -941,12 +940,12 @@ fn offer_trust() {
     };
     if crate::trust::confirm("    Trust them? (y/N) ") {
         match crate::trust::record_verified(root, &fp) {
-            Ok(()) => println!("{} trusted ({fp})", valid_sign()),
-            Err(e) => println!("{} {e}", warning_sign()),
+            Ok(()) => eprintln!("{} trusted ({fp})", valid_sign()),
+            Err(e) => eprintln!("{} {e}", warning_sign()),
         }
     } else {
-        println!("    Left untrusted. The built-ins still run; these do not.");
-        println!("    Change your mind with `{BIN} trust`.");
+        eprintln!("    Left untrusted. The built-ins still run; these do not.");
+        eprintln!("    Change your mind with `{BIN} trust`.");
     }
 }
 
@@ -981,19 +980,19 @@ fn offer_agents_md(settings: &crate::config::Settings) {
         Err(_) => return,
     }
 
-    println!();
-    println!(
+    eprintln!();
+    eprintln!(
         "{} AGENTS.md can point coding agents at `amont list --json` \
          instead of leaving them to discover these checks the hard way:",
         warning_sign()
     );
     if crate::trust::confirm("    Add it? (y/N) ") {
         match crate::agents_md::write(settings, &path) {
-            Ok(()) => println!("{} wrote {}", valid_sign(), path.display()),
-            Err(e) => println!("{} {e}", warning_sign()),
+            Ok(()) => eprintln!("{} wrote {}", valid_sign(), path.display()),
+            Err(e) => eprintln!("{} {e}", warning_sign()),
         }
     } else {
-        println!("    Left as-is. Change your mind with `{BIN} agents-md`.");
+        eprintln!("    Left as-is. Change your mind with `{BIN} agents-md`.");
     }
 }
 
@@ -1073,9 +1072,9 @@ fn install_binary() -> Result<String, String> {
     if std::env::var_os("AMONT_BIN_DIR").is_none() {
         if let Some(stable) = on_path_already(&me) {
             let shown = stable.to_string_lossy().into_owned();
-            println!("{} using {}", valid_sign(), highlight(&shown));
-            println!("    already on PATH, so nothing was copied — an upgrade there");
-            println!("    reaches every repository without reinstalling.");
+            eprintln!("{} using {}", valid_sign(), highlight(&shown));
+            eprintln!("    already on PATH, so nothing was copied — an upgrade there");
+            eprintln!("    reaches every repository without reinstalling.");
             return Ok(shown);
         }
     }
@@ -1108,7 +1107,6 @@ fn install_binary() -> Result<String, String> {
     }
     let aliases = write_aliases(&target)?;
     let installed = target.to_string_lossy().into_owned();
-    // On stderr: a report of what was done, not data a caller asked for.
     eprintln!("{} installed {}", valid_sign(), highlight(&installed));
     if !aliases.is_empty() {
         eprintln!(
@@ -1137,34 +1135,34 @@ fn populate_template_dir(binary: &str, force: bool) -> Result<(), String> {
 
     match classify_dir(&dir) {
         TemplateDir::IsCheckout => {
-            println!(
+            eprintln!(
                 "{} template dir IS the checkout ({shown}) — nothing to install.",
                 warning_sign()
             );
-            println!("    Its shims keep the placeholder deliberately and resolve");
-            println!("    {binary} at run time. This is the intended setup.");
+            eprintln!("    Its shims keep the placeholder deliberately and resolve");
+            eprintln!("    {binary} at run time. This is the intended setup.");
             // …as long as run-time resolution can actually reach the binary,
             // which the sentence above used to assert unconditionally.
             warn_if_unbaked_cannot_resolve(binary);
         }
         TemplateDir::InsideCheckout => {
-            println!(
+            eprintln!(
                 "{} {shown} is inside a git checkout — leaving it alone.",
                 warning_sign()
             );
             warn_if_unbaked_cannot_resolve(binary);
         }
-        TemplateDir::NoGit => println!(
+        TemplateDir::NoGit => eprintln!(
             "{} git is not on PATH — refusing to delete anything.",
             warning_sign()
         ),
         TemplateDir::Unresolvable => {
-            println!("{} cannot resolve {shown} — skipping.", warning_sign())
+            eprintln!("{} cannot resolve {shown} — skipping.", warning_sign())
         }
         TemplateDir::Safe => {
             let written = write_shims(&dir, binary, force)
                 .map_err(|e| format!("cannot write shims to {shown}: {e}"))?;
-            println!("{} wrote {} shims to {shown}", valid_sign(), written.len());
+            eprintln!("{} wrote {} shims to {shown}", valid_sign(), written.len());
             report_overwrites(&written);
         }
     }
@@ -1183,7 +1181,7 @@ fn report_overwrites(written: &[Written]) {
         if matches!(w.replaced, HookFile::Absent | HookFile::Ours) {
             continue;
         }
-        println!(
+        eprintln!(
             "{} overwrote {} — it was {}",
             warning_sign(),
             w.path.display(),
@@ -1416,7 +1414,7 @@ fn bake_repo_hooks(binary: &str, force: bool) -> Result<(), String> {
         }
         RepoHooks::Redirected { to, .. } => to,
         RepoHooks::Nowhere => {
-            println!(
+            eprintln!(
                 "{} not inside a git repository — no repo hooks written.",
                 warning_sign()
             );
@@ -1456,7 +1454,7 @@ fn bake_repo_hooks(binary: &str, force: bool) -> Result<(), String> {
 
     let written = write_shims(&hooks, binary, force)
         .map_err(|e| format!("cannot write shims to {}: {e}", hooks.display()))?;
-    println!(
+    eprintln!(
         "{} baked {} shims into {}",
         valid_sign(),
         written.len(),
@@ -1492,7 +1490,7 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
         for name in [BIN, OLD_BIN] {
             let target = bin_dir().join(name_for(&me, name));
             match std::fs::remove_file(&target) {
-                Ok(()) => println!(
+                Ok(()) => eprintln!(
                     "{} removed {}",
                     valid_sign(),
                     highlight(&target.to_string_lossy())
@@ -1507,7 +1505,7 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
 
     // Said out loud, because a user who uninstalls and reinstalls should not be
     // surprised that a check they disabled is still disabled.
-    println!("    hook.skip and amont.severity were not touched.");
+    eprintln!("    hook.skip and amont.severity were not touched.");
     Ok(())
 }
 
@@ -1714,7 +1712,7 @@ fn uninstall_repo_hooks() -> Result<(), String> {
         RepoHooks::Own(dir) => vec![dir],
         RepoHooks::Redirected { to, own } => vec![to, own],
         RepoHooks::Nowhere => {
-            println!(
+            eprintln!(
                 "{} not inside a git repository — no repo hooks removed.",
                 warning_sign()
             );
@@ -1723,7 +1721,7 @@ fn uninstall_repo_hooks() -> Result<(), String> {
         // Removal stays forgiving where writing does not: failing here would
         // leave `uninstall --binary` unable to finish its cleanup. Loud, and Ok.
         RepoHooks::Unanswerable { why } => {
-            println!(
+            eprintln!(
                 "{} git would not answer here — no repo hooks removed ({})",
                 warning_sign(),
                 crate::ui::sanitize(&why)
@@ -1755,14 +1753,14 @@ fn uninstall_repo_hooks() -> Result<(), String> {
         // The second directory is usually empty of ours and saying so every time
         // would be noise. Report it only when it held something.
         if removed > 0 || !left.is_empty() || dirs.len() == 1 {
-            println!(
+            eprintln!(
                 "{} removed {removed} shims from {}",
                 valid_sign(),
                 hooks.display()
             );
         }
         for reason in &left {
-            println!("{} left alone: {reason}", warning_sign());
+            eprintln!("{} left alone: {reason}", warning_sign());
         }
     }
     // Our bookkeeping only ever says "amont checked this" (or "didn't"),
@@ -1772,7 +1770,7 @@ fn uninstall_repo_hooks() -> Result<(), String> {
     if let Ok(root) = crate::hooks::common::repo_root_checked() {
         let gone = forget_bookkeeping_in(Path::new(&root));
         if !gone.is_empty() {
-            println!("{} forgot {}", valid_sign(), gone.join(", "));
+            eprintln!("{} forgot {}", valid_sign(), gone.join(", "));
         }
     }
     Ok(())
@@ -1801,19 +1799,19 @@ fn uninstall_template_dir() -> Result<(), String> {
 
     match classify_dir(&dir) {
         TemplateDir::IsCheckout | TemplateDir::InsideCheckout => {
-            println!(
+            eprintln!(
                 "{} template dir is a git checkout ({shown}) — deleting NOTHING there.",
                 warning_sign()
             );
-            println!("    Those shims are tracked files belonging to that checkout,");
-            println!("    not something this install put there. Remove them with git,");
-            println!("    or point init.templateDir somewhere else.");
+            eprintln!("    Those shims are tracked files belonging to that checkout,");
+            eprintln!("    not something this install put there. Remove them with git,");
+            eprintln!("    or point init.templateDir somewhere else.");
         }
-        TemplateDir::NoGit => println!(
+        TemplateDir::NoGit => eprintln!(
             "{} git is not on PATH — cannot tell whether {shown} is a checkout, deleting nothing.",
             warning_sign()
         ),
-        TemplateDir::Unresolvable => println!(
+        TemplateDir::Unresolvable => eprintln!(
             "{} no template dir at {shown} — nothing to remove.",
             warning_sign()
         ),
@@ -1835,9 +1833,9 @@ fn uninstall_template_dir() -> Result<(), String> {
                     what => left.push(format!("{name} — {}", what.describe())),
                 }
             }
-            println!("{} removed {removed} shims from {shown}", valid_sign());
+            eprintln!("{} removed {removed} shims from {shown}", valid_sign());
             for reason in &left {
-                println!("{} left alone: {reason}", warning_sign());
+                eprintln!("{} left alone: {reason}", warning_sign());
             }
         }
     }
@@ -1862,16 +1860,16 @@ fn report_global_template_dir() {
     else {
         return;
     };
-    println!();
-    println!(
+    eprintln!();
+    eprintln!(
         "{} init.templateDir is still set: {}",
         warning_sign(),
         highlight(&configured)
     );
-    println!("    Every `git clone` and `git init` still copies hooks from there");
-    println!("    into the new repository. Uninstalling this repo did not change that.");
-    println!("    Undo it with:");
-    println!(
+    eprintln!("    Every `git clone` and `git init` still copies hooks from there");
+    eprintln!("    into the new repository. Uninstalling this repo did not change that.");
+    eprintln!("    Undo it with:");
+    eprintln!(
         "        {}",
         highlight("git config --global --unset init.templateDir")
     );

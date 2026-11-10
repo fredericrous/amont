@@ -166,15 +166,15 @@ fn count(src: &str) -> usize {
 /// Occurrences of an old spelling in one literal's text, at a word start.
 fn hits(text: &str) -> usize {
     let bytes = text.as_bytes();
-    let mut n = 0;
+    let mut old_spellings = 0;
     for (at, _) in text.match_indices("amont") {
         let word_start =
             at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
         if word_start && OLD.iter().any(|o| text[at..].starts_with(o)) {
-            n += 1;
+            old_spellings += 1;
         }
     }
-    n
+    old_spellings
 }
 
 /// Every `.rs` file under `dir`, depth first.
