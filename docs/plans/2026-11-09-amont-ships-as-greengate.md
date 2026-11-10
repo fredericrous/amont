@@ -214,12 +214,13 @@ is a later ticket.
   step summary; old-name archives, `standalone`,
   Publish's re-run branch, `publish-tap` writing the new formula),
   `.github/workflows/ci.yaml` (installer test skip glob), `greenharness.toml`.
-- [ ] Phase 4 — docs, the map and release 3.0.0 (tag only after Phase 0 is
-  installed, the crates.io token scope is checked and the person's first
-  npm publish is done or `publish-npm` is held): `README.md`, `docs/`,
-  `CHANGELOG.md`, `decisions/docs/programmes/gate-guardrails/map.md`,
-  `decisions/docs/programmes/gate-guardrails/t12-grh-fleet-view.md`; the
-  tap files are written by the release's `publish-tap`
+- [x] Phase 4a — docs and the map: `README.md`, `docs/`, `CHANGELOG.md`,
+  `decisions/docs/programmes/gate-guardrails/map.md`,
+  `decisions/docs/programmes/gate-guardrails/t12-grh-fleet-view.md`.
+- [ ] Phase 4b — release 3.0.0, after this branch merges (tag only after
+  Phase 0 is installed, the crates.io token scope is checked and the
+  person's first npm publish is done or `publish-npm` is held); the tap
+  files are written by the release's `publish-tap`
   (`homebrew-tap/Formula/greengate.rb`, `homebrew-tap/formula_renames.json`,
   `homebrew-tap/Formula/amont.rb` removed).
 
@@ -327,8 +328,9 @@ is a later ticket.
   `greengate install` → `~/.local/bin/greengate` and `amont` (copies, two
   inodes), shims bake `…/greengate`; a commit through a shim rendered from
   the 2.3.1 template and baked to `…/amont` runs the gate (25 checks);
-  after a 2.3.0 `amont install` over the alias, `amont --version` → 2.3.0
-  and `greengate --version` → 3.0.0; 20 commits through the 2.3.1 shim
+  after a 2.3.0 `amont install` over the alias (the 2.x on this machine;
+  2.3.1's `install` copies onto its target the same way), `amont --version`
+  → 2.3.0 and `greengate --version` → 3.0.0; 20 commits through the 2.3.1 shim
   while `greengate install` replaced the binaries 1,747 times → 0
   failures, no temporaries left; `cargo tree -p greengate` package names →
   git-attest, greengate, greengate-runtime, greenharness-quiet,
@@ -354,7 +356,8 @@ is a later ticket.
   `@greenharness/greengate` (bin greengate and amont) and six
   `@greenharness/greengate-<target>`; `test_bump_tap.py` (8),
   `test_release_manifest.py` (4) and `test_publish_crates.sh` pass. The
-  Publish re-run, `standalone` and npm/brew jobs run first on the tag.
+  checks that need a tag (the `standalone` job, a Publish re-run keeping
+  the published assets, the npm, crates and brew jobs) move to Phase 4b.
 - Phase 3 deviations: the manifest goes into `dist/` BEFORE `SHA256SUMS`, so
   `SHA256SUMS` lists it (grh's "Shipping a manifest" contract, which carried
   item 22 contradicted); `publish-npm` is held by the repository variable

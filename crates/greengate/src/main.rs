@@ -156,6 +156,8 @@ const USAGE: &str = concat!(
     "Hook mode (what the shims call): ",
     greengate_runtime::bin!(),
     " --hooks-dir <dir> <hook-name> [args…]\n",
+    "Formerly amont: `amont` runs this binary, and amont.conf, amont.* keys\n",
+    "and AMONT_* variables keep their names.\n",
     "The full manual: https://greenharness.github.io/greengate/\n",
 );
 

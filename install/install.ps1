@@ -132,19 +132,30 @@ try {
     # baked to amont.exe keep running the new build. A copy, never a link: a
     # 2.x `amont install` copies onto its target, and through a link it would
     # overwrite greengate.exe itself.
+    # Set-aside files a running hook kept from an earlier install.
+    Get-ChildItem -Path $BinDir -Filter '*.exe.old-*' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $aside = $null
     $pairs = @(@('greengate.exe', 'amont.exe'), @('greengate-fleet.exe', 'amont-fleet.exe'))
     foreach ($pair in $pairs) {
         $from = Join-Path $src $pair[0]
         if (Test-Path $from) {
             foreach ($exe in $pair) {
                 $to = Join-Path $BinDir $exe
-                # Copy beside the destination and move it into place: replacing
-                # a RUNNING executable in place fails on Windows with a sharing
-                # violation, and a move is atomic, so a half-copied .exe never
-                # exists.
+                # Copy beside the destination, set the old .exe ASIDE, then move
+                # the copy into place. Windows refuses to overwrite or delete a
+                # RUNNING executable (a hook may be running it), but lets it be
+                # renamed; the move itself is atomic, so a half-copied .exe
+                # never exists. The set-aside file is removed when nothing runs
+                # it any more, else on the next install.
                 $staged = "$to.new"
                 Copy-Item -Path $from -Destination $staged -Force
+                if (Test-Path $to) {
+                    $aside = "$to.old-" + [guid]::NewGuid().ToString('N')
+                    Rename-Item -Path $to -NewName (Split-Path $aside -Leaf)
+                }
                 Move-Item -Path $staged -Destination $to -Force
+                if ($aside) { Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue; $aside = $null }
             }
             Write-Ok "installed $(Join-Path $BinDir $pair[0]) (and $($pair[1]), its old name)"
         }

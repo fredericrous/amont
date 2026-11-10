@@ -303,23 +303,32 @@ fn replace_atomically(from: &Path, target: &Path) -> std::io::Result<()> {
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = dir.join(format!(".{file}.tmp.{}", std::process::id()));
-    let written = std::fs::copy(from, &tmp).and_then(|_| make_executable(&tmp));
+    let staged_copy = dir.join(format!(".{file}.tmp.{}", std::process::id()));
+    // Flushed to disk before the rename: after a power loss the target must
+    // be the old binary or the whole new one, never an empty file every shim
+    // points at.
+    let written = std::fs::copy(from, &staged_copy)
+        .and_then(|_| make_executable(&staged_copy))
+        .and_then(|_| std::fs::File::open(&staged_copy)?.sync_all());
     if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+        let _ = std::fs::remove_file(&staged_copy); // the error being returned says what failed
         return Err(e);
     }
     if cfg!(windows) && target.exists() {
         let aside = target.with_extension("old.exe");
         let _ = std::fs::remove_file(&aside); // a leftover from an earlier install
         if let Err(e) = std::fs::rename(target, &aside) {
-            let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+            let _ = std::fs::remove_file(&staged_copy); // the error being returned says what failed
             return Err(e);
         }
     }
-    let renamed = std::fs::rename(&tmp, target);
+    let renamed = std::fs::rename(&staged_copy, target);
     if renamed.is_err() {
-        let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+        let _ = std::fs::remove_file(&staged_copy); // the error being returned says what failed
+        if cfg!(windows) {
+            // Put the old binary back rather than leave no target at all.
+            let _ = std::fs::rename(target.with_extension("old.exe"), target); // best effort; the error below is the report
+        }
     }
     renamed
 }
@@ -327,7 +336,10 @@ fn replace_atomically(from: &Path, target: &Path) -> std::io::Result<()> {
 /// Remove what an interrupted [`replace_atomically`] can leave in `dir`:
 /// `.greengate*.tmp.*` and `.amont*.tmp.*` temporaries, and `*.old.exe` files
 /// renamed aside on Windows. Best effort: a file still in use stays for the
-/// next install.
+/// next install. Only files untouched for [`LEFTOVER_AGE`]: a temporary that
+/// young may be another install's, running now, whose rename would then fail.
+const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
 fn sweep_install_leftovers(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -340,7 +352,13 @@ fn sweep_install_leftovers(dir: &Path) {
         let aside = [BIN, FLEET_BIN, OLD_BIN, OLD_FLEET_BIN]
             .iter()
             .any(|n| name == format!("{n}.old.exe"));
-        if ours || aside {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= LEFTOVER_AGE);
+        if (ours || aside) && stale {
             let _ = std::fs::remove_file(entry.path()); // best effort, see above
         }
     }
@@ -351,19 +369,28 @@ fn sweep_install_leftovers(dir: &Path) {
 /// `greengate-fleet` when that sits in the same directory. Copies, not links:
 /// a 2.x `amont install` copies onto its target, and through a link it would
 /// overwrite greengate itself.
-fn write_aliases(binary: &Path) -> Result<(), String> {
+///
+/// Returns the old names it wrote, for the install's own report.
+fn write_aliases(binary: &Path) -> Result<Vec<&'static str>, String> {
     let dir = binary.parent().unwrap_or_else(|| Path::new("."));
     let pairs = [(BIN, OLD_BIN), (FLEET_BIN, OLD_FLEET_BIN)];
+    let mut written = Vec::new();
     for (new, old) in pairs {
         let from = dir.join(name_for(binary, new));
         if !from.is_file() {
             continue;
         }
         let alias = dir.join(name_for(binary, old));
-        replace_atomically(&from, &alias)
-            .map_err(|e| format!("cannot write the alias {}: {e}", alias.display()))?;
+        replace_atomically(&from, &alias).map_err(|e| {
+            format!(
+                "installed {}, but cannot write its old name {}: {e} — shims baked to {old} keep running the build that was there",
+                from.display(),
+                alias.display()
+            )
+        })?;
+        written.push(old);
     }
-    Ok(())
+    Ok(written)
 }
 
 /// Hook files in `dir` that exist and are NOT ours, each with its reason.
@@ -1067,12 +1094,15 @@ fn install_binary() -> Result<String, String> {
         replace_atomically(&me, &target)
             .map_err(|e| format!("cannot install to {}: {e}", target.display()))?;
     }
-    write_aliases(&target)?;
+    let aliases = write_aliases(&target)?;
     let installed = target.to_string_lossy().into_owned();
     println!("{} installed {}", valid_sign(), highlight(&installed));
-    println!(
-        "    {OLD_BIN} beside it is the same binary under its old name, for shims a 2.x install baked"
-    );
+    if !aliases.is_empty() {
+        println!(
+            "    also as {}: hooks baked to the old name keep working",
+            aliases.join(" and ")
+        );
+    }
     Ok(installed)
 }
 
@@ -2180,13 +2210,23 @@ mod tests {
         let target = dir.join(BIN);
         std::fs::write(&target, "old build").unwrap();
         let before = std::fs::metadata(&target).unwrap().ino();
-        // A stale temporary and an old alias from a 2.x install.
-        std::fs::write(dir.join(format!(".{BIN}.tmp.1")), "x").unwrap();
+        // A stale temporary, a young one (another install, running now),
+        // and an old alias from a 2.x install.
+        let stale = dir.join(format!(".{BIN}.tmp.1"));
+        std::fs::write(&stale, "x").unwrap();
+        let aged = std::process::Command::new("touch")
+            .args(["-t", "200001010000"])
+            .arg(&stale)
+            .status()
+            .unwrap();
+        assert!(aged.success(), "touch -t could not age the leftover");
+        let young = dir.join(format!(".{BIN}.tmp.2"));
+        std::fs::write(&young, "y").unwrap();
         std::fs::write(dir.join(OLD_BIN), "2.x binary").unwrap();
 
         sweep_install_leftovers(&dir);
         replace_atomically(&src, &target).unwrap();
-        write_aliases(&target).unwrap();
+        assert_eq!(write_aliases(&target).unwrap(), vec![OLD_BIN]);
 
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new build");
         // A new inode: the old file was replaced by rename, never written in place.
@@ -2202,7 +2242,11 @@ mod tests {
             std::fs::metadata(&target).unwrap().ino(),
             "the alias is a copy, not a hard link"
         );
-        assert!(!dir.join(format!(".{BIN}.tmp.1")).exists());
+        assert!(!stale.exists(), "a stale leftover was not swept");
+        assert!(
+            young.exists(),
+            "a young temporary, maybe another install's, was swept"
+        );
         // No fleet binary beside it, so no fleet alias either.
         assert!(!dir.join(OLD_FLEET_BIN).exists());
         // A 2.x `amont install` copying onto its target replaces only the alias.

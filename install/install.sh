@@ -100,7 +100,14 @@ main() {
 
     t=$(target)
     v=$(resolve_version)
-    name="greengate-${v}-${t}"
+    # Releases before 3.0.0 shipped `amont-<v>-<t>` with binaries named
+    # amont and amont-fleet; a pinned rollback (AMONT_VERSION=2.3.1) must
+    # still find them, and installs them under both names like any other.
+    case "$v" in
+        [012].*) prefix=amont; hook=amont; fleet=amont-fleet ;;
+        *)       prefix=greengate; hook=greengate; fleet=greengate-fleet ;;
+    esac
+    name="${prefix}-${v}-${t}"
     base="https://github.com/$REPO/releases/download/v${v}"
 
     say "version:  $v"
@@ -109,8 +116,12 @@ main() {
     printf '\n'
 
     tmp=$(mktemp -d)
-    # Clean up on the way out however we leave, including Ctrl-C.
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    # Clean up on the way out however we leave, a half-copied temporary in
+    # $BIN_DIR included; an interrupt exits 130 (143 on TERM), not the status
+    # of whatever it cut short.
+    trap 'rm -rf "$tmp"; rm -f "$BIN_DIR"/.*.tmp.$$' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     say "downloading…"
     fetch_to "$base/${name}.tar.gz" "$tmp/${name}.tar.gz" \
@@ -152,15 +163,17 @@ main() {
     # baked to $BIN_DIR/amont keep running the new build. A copy, never a
     # link: a 2.x `amont install` copies onto its target, and through a link
     # it would overwrite greengate itself.
-    for pair in greengate:amont greengate-fleet:amont-fleet; do
-        b=${pair%%:*}
-        old=${pair#*:}
-        if [ -f "$tmp/$name/$b" ]; then
+    for pair in "$hook:greengate:amont" "$fleet:greengate-fleet:amont-fleet"; do
+        src=${pair%%:*}
+        rest=${pair#*:}
+        b=${rest%%:*}
+        old=${rest#*:}
+        if [ -f "$tmp/$name/$src" ]; then
             for dest in "$b" "$old"; do
                 # Write to a temporary name and rename over the destination:
                 # replacing a RUNNING binary in place fails on some platforms,
                 # and rename is atomic, so a half-copied binary never exists.
-                cp "$tmp/$name/$b" "$BIN_DIR/.$dest.tmp.$$"
+                cp "$tmp/$name/$src" "$BIN_DIR/.$dest.tmp.$$"
                 chmod 755 "$BIN_DIR/.$dest.tmp.$$"
                 mv "$BIN_DIR/.$dest.tmp.$$" "$BIN_DIR/$dest"
             done

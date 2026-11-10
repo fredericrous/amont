@@ -5,12 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Inherited from [workspace.package]: 1.74, amont's commit-path floor, because
+# Inherited from [workspace.package]: 1.74, the commit path's floor (greengate-runtime), because
 # greengate-runtime depends on this crate.
 rust-version.workspace = true
 description = "The quiet-run active entry: one JSON file per running check, for a pane to tail"
 readme = "README.md"
-keywords = ["amont", "git-hooks", "quiet"]
+keywords = ["greenharness", "git-hooks", "quiet"]
 categories = ["development-tools"]
 
 # NO DEPENDENCIES, and that is the condition of its use (decisions ADR-0039,

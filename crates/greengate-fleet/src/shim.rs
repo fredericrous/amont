@@ -145,19 +145,22 @@ fn recover_from(template: &str, installed: &str) -> Option<String> {
 /// the same build as `~/.local/bin/greengate`. Compared as text, never
 /// canonicalised: an alias is a copy, so its canonical path is itself.
 fn same_gate_beside(baked: &str, installed: &str) -> bool {
-    fn split(p: &str) -> (&str, &str) {
-        match p.rfind(['/', '\\']) {
-            Some(i) => (&p[..i], &p[i + 1..]),
-            None => ("", p),
+    fn split(path: &str) -> (&str, &str) {
+        match path.rfind(['/', '\\']) {
+            Some(slash) => (&path[..slash], &path[slash + 1..]),
+            None => ("", path),
         }
     }
     fn is_gate(file: &str) -> bool {
         let stem = file.strip_suffix(".exe").unwrap_or(file);
         stem == greengate_runtime::names::BIN || stem == greengate_runtime::names::OLD_BIN
     }
-    let (bd, bf) = split(baked);
-    let (id, i_f) = split(installed);
-    !bd.is_empty() && bd == id && is_gate(bf) && is_gate(i_f)
+    let (baked_dir, baked_file) = split(baked);
+    let (installed_dir, installed_file) = split(installed);
+    !baked_dir.is_empty()
+        && baked_dir == installed_dir
+        && is_gate(baked_file)
+        && is_gate(installed_file)
 }
 
 /// What is installed at one dispatcher path.

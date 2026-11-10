@@ -15,6 +15,7 @@
 //! `concat!`.
 
 /// The hook binary's name as a literal, for `concat!` in a `&'static str`.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! bin {
     () => {
@@ -23,6 +24,7 @@ macro_rules! bin {
 }
 
 /// The fleet binary's name as a literal, for `concat!` in a `&'static str`.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! fleet_bin {
     () => {

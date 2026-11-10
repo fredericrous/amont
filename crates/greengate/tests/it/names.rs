@@ -16,6 +16,11 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[(&str, usize, &str)] = &[
     ("greengate-fleet/src/attest.rs", 1, "a test's temp dir name"),
     (
+        "greengate/src/main.rs",
+        1,
+        "the --help footer saying greengate was formerly amont",
+    ),
+    (
         "greengate-runtime/src/agents_md.rs",
         13,
         "the frozen AGENTS.md block (3a-1 keeps it byte-stable)",
@@ -94,8 +99,14 @@ fn count(src: &str) -> usize {
                         j += 1;
                     }
                     i = j + 1;
-                } else if b.get(i + 2) == Some(&b'\'') {
-                    i += 3;
+                } else if let Some(width) = src[i + 1..].chars().next().map(char::len_utf8) {
+                    // One char of any UTF-8 width, then the closing quote:
+                    // `'x'`, `'—'`. A lifetime has no closing quote there.
+                    if b.get(i + 1 + width) == Some(&b'\'') {
+                        i += 2 + width;
+                    } else {
+                        i += 1;
+                    }
                 } else {
                     i += 1;
                 }
@@ -166,15 +177,18 @@ fn hits(text: &str) -> usize {
     n
 }
 
-fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Every `.rs` file under `dir`, depth first.
+fn sources(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
     for entry in std::fs::read_dir(dir).expect("readable source dir") {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
-            sources(&path, out);
+            found.extend(sources(&path));
         } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
+            found.push(path);
         }
     }
+    found
 }
 
 #[test]
@@ -186,9 +200,7 @@ fn the_old_name_is_said_only_where_it_is_allowed() {
         if !src.is_dir() {
             continue;
         }
-        let mut files = Vec::new();
-        sources(&src, &mut files);
-        for file in files {
+        for file in sources(&src) {
             if file.ends_with("greengate-runtime/src/names.rs") {
                 continue;
             }
@@ -234,4 +246,43 @@ fn comments_names_read_and_char_literals_are_not() {
     );
     assert_eq!(count(r#"let q = '"'; let s = "fine"; let t = '\''; "#), 0);
     assert_eq!(count(r#"let s = "greenamont land";"#), 0);
+    // A multibyte char literal does not throw the string pairing off.
+    assert_eq!(count("let c = '—'; let s = \"amont land\";"), 1);
+    assert_eq!(
+        count("fn f<'a>(x: &'a str) -> &'a str { \"amont land\" }"),
+        1
+    );
+}
+
+/// The names outside Rust say what `names.rs` says: the manifest grh pins and
+/// the script that writes its release copy. A rename that changed `names.rs`
+/// alone would otherwise publish a manifest under the old name.
+#[test]
+fn the_shipped_manifest_and_release_script_use_the_names_module() {
+    use greengate_runtime::names::{BIN, REPO};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest =
+        std::fs::read_to_string(root.join("greenharness.toml")).expect("greenharness.toml");
+    let line = |key: &str| {
+        manifest
+            .lines()
+            .find(|l| l.starts_with(&format!("{key} = ")))
+            .map(|l| {
+                l.trim_start_matches(&format!("{key} = "))
+                    .trim_matches('"')
+                    .to_string()
+            })
+    };
+    assert_eq!(line("name").as_deref(), Some(BIN), "[extension] name");
+    assert_eq!(line("bin").as_deref(), Some(BIN), "[tool] bin");
+    let script = std::fs::read_to_string(root.join("scripts/release-manifest.py"))
+        .expect("release-manifest.py");
+    assert!(
+        script.contains(&format!("REPO = \"{REPO}\"")),
+        "scripts/release-manifest.py names another repository than names::REPO"
+    );
+    assert!(
+        script.contains(&format!("{BIN}-{{version}}-{{target}}.tar.gz")),
+        "scripts/release-manifest.py reads tarballs under another name than names::BIN"
+    );
 }

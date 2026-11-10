@@ -205,7 +205,10 @@ jobs:
           # command of a line is a FAILING step, so the short form would abort
           # every non-Windows target here.
           if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; fi
-          "$bin" --help | grep -q 'agents-md'
+          # To a file, then grep: `grep -q` closes the pipe at the first
+          # match, and under pipefail the writer's EPIPE fails the step.
+          "$bin" --help > "$RUNNER_TEMP/help.txt"
+          grep -q 'agents-md' "$RUNNER_TEMP/help.txt"
           "$bin" list --json > /dev/null || true
           # Every shipped binary, not just the first one: a packaged asset that
           # cannot execute is the defect `cargo test` structurally cannot see,
@@ -377,7 +380,8 @@ jobs:
           cp "$src/greengate" "$src/greengate-fleet" "$bin/"
           cp "$src/greengate" "$bin/amont"
           export PATH="$bin:$PATH"
-          greengate --help | grep -q 'agents-md'
+          greengate --help > "$RUNNER_TEMP/help.txt"
+          grep -q 'agents-md' "$RUNNER_TEMP/help.txt"
           repo="$RUNNER_TEMP/repo"
           git init -q --template= "$repo"
           (cd "$repo" && greengate list --json) > "$RUNNER_TEMP/list.json"
@@ -454,32 +458,56 @@ jobs:
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
             # A released asset is never replaced (no --clobber): grh pins the
             # manifest's digest, and an installer that checked an archive
-            # once must find the same bytes again. Upload what is missing;
-            # an asset already there must carry the digest this run's
-            # SHA256SUMS names, or the run fails, because a different digest
-            # means this build is not the one that was published.
-            echo "release ${GITHUB_REF_NAME} already exists — uploading only what is missing"
+            # once must find the same bytes again.
+            #
+            # A release whose SHA256SUMS is published is COMPLETE: SHA256SUMS
+            # is uploaded with the archives, and a later job failing is why
+            # anyone re-runs. Its assets are kept as they are, and this run's
+            # build is not compared with them: a `workflow_dispatch` on the
+            # tag rebuilds the archives, and tar records file times, so the
+            # bytes differ while the release is fine. The jobs after this one
+            # read the PUBLISHED assets, never this run's (publish-npm
+            # downloads and checks them; publish-tap reads SHA256SUMS).
+            #
+            # Without SHA256SUMS the publish stopped part-way: upload what is
+            # missing, and refuse an asset that is there with other bytes,
+            # because a half-published set from two builds is not a release.
             gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
               --jq '.assets[] | .name + " " + (.digest // "")' > /tmp/published
-            for f in dist/*; do
-              name=$(basename "$f")
-              line=$(awk -v n="$name" '$1 == n { print $2 }' /tmp/published)
-              if [ -z "$(awk -v n="$name" '$1 == n' /tmp/published)" ]; then
-                echo "uploading $name"
-                gh release upload "${GITHUB_REF_NAME}" "$f"
-                continue
-              fi
-              want="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
-              if [ "$name" = SHA256SUMS ]; then
-                # The published SHA256SUMS must list the same digests.
-                gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --output /tmp/published-sums --clobber
-                cmp -s /tmp/published-sums "$f" || { echo "::error::the published SHA256SUMS differs from this build's"; exit 1; }
-              elif [ -n "$line" ] && [ "$line" != "$want" ]; then
-                echo "::error::$name on the release is $line, this build made $want; a released asset is never replaced"
-                exit 1
-              fi
-              echo "$name is already published with this build's digest"
-            done
+            if awk '$1 == "SHA256SUMS"' /tmp/published | grep -q .; then
+              gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --output /tmp/published-sums --clobber
+              missing=0
+              while read -r _ name; do
+                awk -v n="$name" '$1 == n' /tmp/published | grep -q . \
+                  || { echo "::error::SHA256SUMS lists $name, which the release does not carry"; missing=1; }
+              done < /tmp/published-sums
+              [ "$missing" -eq 0 ] || exit 1
+              echo "release ${GITHUB_REF_NAME} is complete; its published assets are kept"
+            else
+              echo "release ${GITHUB_REF_NAME} exists without SHA256SUMS — uploading what is missing"
+              for f in dist/*; do
+                name=$(basename "$f")
+                [ "$name" = SHA256SUMS ] && continue
+                if ! awk -v n="$name" '$1 == n' /tmp/published | grep -q .; then
+                  echo "uploading $name"
+                  gh release upload "${GITHUB_REF_NAME}" "$f"
+                  continue
+                fi
+                want="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+                have=$(awk -v n="$name" '$1 == n { print $2 }' /tmp/published)
+                if [ -z "$have" ]; then
+                  gh release download "${GITHUB_REF_NAME}" --pattern "$name" --output /tmp/published-asset --clobber
+                  have="sha256:$(sha256sum /tmp/published-asset | cut -d' ' -f1)"
+                fi
+                if [ "$have" != "$want" ]; then
+                  echo "::error::$name on the release is $have, this build made $want; a released asset is never replaced."
+                  echo "::error::Delete the partial release's assets by hand, then re-run, or release the next version."
+                  exit 1
+                fi
+                echo "$name is already published with this build's bytes"
+              done
+              gh release upload "${GITHUB_REF_NAME}" dist/SHA256SUMS
+            fi
           else
             # Notes an upgrader can read, then the generated PR list. Bare
             # --generate-notes published this repository's PR titles as the
@@ -567,10 +595,19 @@ jobs:
       # npm's default registry is registry.npmjs.org already.
       # Trusted publishing needs npm 11.5.1 or later; node 22 ships npm 10.
       - run: npm install -g npm@11.6.2 && npm --version
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+      # The PUBLISHED archives, checked against the published SHA256SUMS,
+      # never this run's build: a resume by `workflow_dispatch` rebuilds
+      # with other bytes, and npm must carry what the release checksummed.
+      - name: Download the published archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist && cd dist
+          gh release download "v${{ needs.guard.outputs.version }}" \
+            --pattern 'greengate-*' --pattern SHA256SUMS
+          grep ' greengate-' SHA256SUMS > greengate.sums
+          sha256sum -c greengate.sums
 
       # Lays out the trees and then REFUSES to hand back a set that would not
       # install: a missing binary, a package.json that is not JSON, or an

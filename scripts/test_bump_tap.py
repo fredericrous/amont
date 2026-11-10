@@ -69,7 +69,8 @@ class BumpTap(unittest.TestCase):
         self.assertIn('version "3.0.0"', text)
         # Only the new archives, with their own digests.
         self.assertEqual(text.count("/greengate-3.0.0-"), 4, text)
-        self.assertNotIn("/amont-", text)
+        self.assertNotIn("/download/v3.0.0/amont-", text)
+        self.assertNotRegex(text, r"releases/download/v[0-9.]+/amont-")
         self.assertEqual(text.count(f'sha256 "{"a" * 64}"'), 4)
         self.assertNotIn("b" * 64, text)
 
@@ -125,6 +126,14 @@ class BumpTap(unittest.TestCase):
         run = self.bump()
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("no greengate checksums parsed", run.stderr)
+
+    def test_the_shipped_formula_bumps(self) -> None:
+        # The file publish-tap actually copies into the tap, not a stand-in.
+        shipped = HERE.parent / "packaging" / "homebrew" / "greengate.rb"
+        self.formula.write_text(shipped.read_text())
+        run = self.bump()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assert_on_new_name(self.formula.read_text())
 
     def test_a_formula_without_a_homepage_is_refused(self) -> None:
         self.formula.write_text(

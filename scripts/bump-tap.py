@@ -25,10 +25,22 @@ Usage: bump-tap.py <version> <SHA256SUMS> <Formula/greengate.rb>
 import pathlib
 import re
 import sys
+from typing import NoReturn
 
 # Where the release assets live. The formula may still name the old owner
 # (`fredericrous/amont`); the patterns below accept either and write this one.
 REPO = "greenharness/greengate"
+
+
+def fail(message: str) -> NoReturn:
+    """Refuse, on stderr, exit 1. Not `assert`: `python -O` strips those."""
+    print(f"bump-tap: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def require(ok: bool, message: str) -> None:
+    if not ok:
+        fail(message)
 
 
 def main() -> None:
@@ -45,24 +57,20 @@ def main() -> None:
         m = re.fullmatch(r"greengate-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
         if not m:
             continue
-        assert m.group(1) == version, (
-            f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?"
-        )
+        require(m.group(1) == version, f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?")
         sums[m.group(2)] = (sha, name)
-    assert sums, f"no greengate checksums parsed from {sums_path}"
+    require(sums, f"no greengate checksums parsed from {sums_path}")
 
     formula = pathlib.Path(formula_path)
     text = formula.read_text()
     text, n_version = re.subn(
         r'version "[0-9.]+"', f'version "{version}"', text, count=1
     )
-    assert n_version == 1, "the formula carries no version line"
+    require(n_version == 1, "the formula carries no version line")
 
     def rewrite(m: "re.Match[str]") -> str:
         target = m.group("target")
-        assert target in sums, (
-            f"the formula wants {target} and this release did not publish it"
-        )
+        require(target in sums, f"the formula wants {target} and this release did not publish it")
         sha, name = sums[target]
         return (
             f'url "https://github.com/{REPO}/releases/'
@@ -76,7 +84,7 @@ def main() -> None:
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
-    assert n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}"
+    require(n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}")
 
     # The repository moved (2026-11-08); a formula still on the old owner's
     # homepage is pointed at the new one, and a current one is left as it is.
@@ -86,10 +94,10 @@ def main() -> None:
         text,
         count=1,
     )
-    assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont or greenharness/greengate"
+    require(n_home == 1, "the formula carries no homepage line naming fredericrous/amont or greenharness/greengate")
 
     stale = set(re.findall(r"(?:amont|greengate)-([0-9.]+)-", text)) - {version}
-    assert not stale, f"stale release versions survived the rewrite: {stale}"
+    require(not stale, f"stale release versions survived the rewrite: {stale}")
 
     formula.write_text(text)
     print(f"formula -> {version} ({n} targets)")

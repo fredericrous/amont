@@ -29,8 +29,10 @@ import hashlib
 import pathlib
 import sys
 import tomllib
+from typing import NoReturn
 
 REPO = "greenharness/greengate"
+USAGE = "usage: release-manifest.py <version> <dist-dir> <greenharness.toml> <out>"
 # The targets grh downloads: the unix tarballs. Windows ships a .zip that
 # grh does not install.
 TARGETS = (
@@ -41,7 +43,7 @@ TARGETS = (
 )
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"release-manifest: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -56,19 +58,26 @@ def sha256_of(path: pathlib.Path) -> str:
 
 def main() -> None:
     if len(sys.argv) != 5:
-        print(__doc__.strip().splitlines()[-2], file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         sys.exit(2)
     version = sys.argv[1].removeprefix("v")
     dist = pathlib.Path(sys.argv[2])
     source = pathlib.Path(sys.argv[3])
     out = pathlib.Path(sys.argv[4])
 
-    text = source.read_text()
-    manifest = tomllib.loads(text)
-    declared = manifest.get("extension", {}).get("version")
+    text = source.read_text(encoding="utf-8")
+    try:
+        manifest = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        fail(f"{source} is not TOML: {e}")
+    extension = manifest.get("extension")
+    if not isinstance(extension, dict):
+        fail(f"{source} has no [extension] table")
+    declared = extension.get("version")
     if declared != version:
         fail(f"{source} declares [extension] version {declared!r}, the release is {version!r}")
-    if "release" in manifest.get("tool", {}):
+    tool = manifest.get("tool", {})
+    if isinstance(tool, dict) and "release" in tool:
         fail(f"{source} already carries [tool.release]; the committed manifest holds no sums")
 
     sums = {}
@@ -93,8 +102,8 @@ def main() -> None:
     if back != {"repo": REPO, "version": version, "sha256": sums}:
         fail(f"the written manifest does not read back as written: {back!r}")
 
-    out.write_text(written)
-    print(f"release-manifest: {out} for {version} ({len(sums)} targets)")
+    out.write_text(written, encoding="utf-8")
+    print(f"release-manifest: {out} for {version} ({len(sums)} targets)", file=sys.stderr)
 
 
 if __name__ == "__main__":

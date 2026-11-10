@@ -85,6 +85,15 @@ class ReleaseManifest(unittest.TestCase):
         run = self.run_script(self.version, with_sums)
         self.assertEqual(run.returncode, 1)
         self.assertIn("already carries [tool.release]", run.stderr)
+        self.assertFalse(self.out.exists())
+
+    def test_a_manifest_that_is_not_toml_is_refused_cleanly(self) -> None:
+        broken = self.dir / "broken.toml"
+        broken.write_text("[extension\nname = ")
+        run = self.run_script(self.version, broken)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("is not TOML", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
 
 
 if __name__ == "__main__":
