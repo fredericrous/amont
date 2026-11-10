@@ -40,12 +40,53 @@ aval = "required"
 amont = "required"
 amont_agent = "required"
 
-[[verification.profiles.default.commands]]
-argv = ["make", "check"]
+# `make check`, one command per gate (relais ADR-0013, `acceptance.adapters`).
+# Each gate runs through `amont run --stamp <gate>`, so amont records its
+# verdict on the candidate's tree, and the person's commit and push of that
+# tree skip it instead of running the suite again. `cargo-test` names both
+# `pre-commit-cargo-test` and `pre-push-cargo-test`, so it stamps both.
+# `AMONT_ON_BUSY=wait`: relais already holds the host slot. The parts of
+# `make check` that are not gates stay plain commands below.
+#
 # A verification worktree starts with an empty `target/`. A cold `make
 # check` took 2995 s on 2026-10-14 under load ~100 on 12 cores, and more
 # than 1200 s even near idle (two relais runs ended baseline_unrunnable).
+# The first command builds cold, so each one keeps the hour.
+[[verification.profiles.default.commands]]
+argv = ["amont", "run", "--stamp", "cargo-fmt"]
+timeout_seconds = 300
+env = { AMONT_ON_BUSY = "wait" }
+
+[[verification.profiles.default.commands]]
+argv = ["amont", "run", "--stamp", "clippy"]
 timeout_seconds = 3600
+env = { AMONT_ON_BUSY = "wait" }
+
+[[verification.profiles.default.commands]]
+argv = ["amont", "run", "--stamp", "cargo-test"]
+timeout_seconds = 3600
+env = { AMONT_ON_BUSY = "wait" }
+
+# `make lint`'s third part, and `make test`'s other parts: none is a gate.
+[[verification.profiles.default.commands]]
+argv = ["python3", "scripts/test_bump_tap.py"]
+timeout_seconds = 300
+
+[[verification.profiles.default.commands]]
+argv = ["./scripts/check-no-deps.sh"]
+timeout_seconds = 300
+
+[[verification.profiles.default.commands]]
+argv = ["cargo", "test", "-p", "amont-runtime", "--lib", "--features", "test-hooks", "--", "capture::"]
+timeout_seconds = 3600
+
+[[verification.profiles.default.commands]]
+argv = ["cargo", "test", "-p", "amont", "--features", "test-hooks", "--test", "it", "--", "quiet_run::"]
+timeout_seconds = 3600
+
+[[verification.profiles.default.commands]]
+argv = ["make", "attest-inputs"]
+timeout_seconds = 1800
 
 # A candidate that touches what the profile's verdict depends on — build
 # manifests, lockfiles, the test tree, fixtures, or a program the profile
