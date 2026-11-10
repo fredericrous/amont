@@ -365,6 +365,14 @@ is a later ticket.
   `NPM_GREENGATE_PUBLISHED`; the formula's source is
   `packaging/homebrew/greengate.rb`, copied into the tap by `publish-tap`.
 
+## Implementation review
+
+- implementation-review: approve after six passes (blocking fixed: short names, an `&mut` out-parameter, status lines and the install report moved to stderr, a discarded flush); 40 candidates ruled; ~370k tokens in all.
+- backend, platform: approve; fixed: the Publish resume keeps a published release and finishes a draft asset by asset, npm reads the published archives, fsync before rename, an age-gated sweep.
+- lang:rust, lang:python, unix: approve; fixed: Windows write handle and mode before `sync_all`, fresh-mtime staging, `fail()` for `assert`, utf-8, rollback archives for `install.sh` < 3.0, signal traps, `install.ps1` restore.
+- tui, architect: approve (tui with one deliberate low: the AGENTS.md offer quotes `amont list --json`, the frozen block's own text); fixed: one-stream report, a short alias line, a `--help` note, the names-agreement test.
+- Carried: the shim's not-found colour off a terminal (next shim-template change); `npm deprecate amont` names `npm uninstall -g amont` (Phase 4b).
+
 ## Outcome
 
 A day after 3.0.0: every shim in the fleet resolves (`git hook run
