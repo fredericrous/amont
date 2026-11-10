@@ -195,7 +195,7 @@ is a later ticket.
   `crates/amont-runtime/src/dispatch.rs`, `crates/amont/tests/it/names.rs`,
   and every crate source printing a name (`rg -l '"amont[ :-]'
   crates/*/src`: `land.rs`, `slot_cmd.rs`, `rehearsal.rs`, …).
-- [ ] Phase 2 — crate and binary renames, the aliases, the shim template
+- [x] Phase 2 — crate and binary renames, the aliases, the shim template
   and the fleet's frozen template: `Cargo.toml` (`[workspace.dependencies]`
   keys and `version = "3.0.0"`), `crates/*/Cargo.toml` (directories renamed
   to `crates/greengate*` and `crates/greenharness-{quiet,slots}`),
@@ -316,6 +316,30 @@ is a later ticket.
   --version` answers (the brief unlink window during the upgrade is
   known); `install.sh` from a scratch HOME installs greengate and the
   aliases; `relais programme check` passes on the map.
+
+## Observed
+
+- Phase 1 (ff41a534): `greengate --version` → `greengate 3.0.0`; usage and
+  errors say `greengate`; the names test is red on a planted file holding
+  `"amont land"`, `"amont: no"` and `"amont-fleet fix"` (count 3), green on
+  the tree.
+- Phase 2 (789e7984, 29d97c66), in a scratch HOME with the built binaries:
+  `greengate install` → `~/.local/bin/greengate` and `amont` (copies, two
+  inodes), shims bake `…/greengate`; a commit through a shim rendered from
+  the 2.3.1 template and baked to `…/amont` runs the gate (25 checks);
+  after a 2.3.0 `amont install` over the alias, `amont --version` → 2.3.0
+  and `greengate --version` → 3.0.0; 20 commits through the 2.3.1 shim
+  while `greengate install` replaced the binaries 1,747 times → 0
+  failures, no temporaries left; `cargo tree -p greengate` package names →
+  git-attest, greengate, greengate-runtime, greenharness-quiet,
+  greenharness-slots (0 starting with `amont`); `check-no-deps.sh` passes;
+  the fleet reads a 2.3.1-rendered shim as ours and an alias bake beside
+  the binary as Current (unit tests, Windows paths included).
+- Phase 2 deviation: `greengate install` writes `amont-fleet` only when
+  `greengate-fleet` sits in the same directory (it copies only itself);
+  `install.sh`/`install.ps1` write both aliases. The frozen shim lives at
+  `crates/greengate-fleet/src/shim-2.3.1` (no `.sh`: shellcheck must not
+  lint a byte-frozen file).
 
 ## Outcome
 
