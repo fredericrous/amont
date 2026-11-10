@@ -486,7 +486,7 @@ fn a_redirect_with_only_stranded_shims_names_the_cleanup() {
     let (code, out) = run_verb(&s, &repo, &["install"]);
     assert_ne!(code, 0, "stranded shims must still refuse:\n{out}");
     assert!(
-        out.contains("amont uninstall"),
+        out.contains("greengate uninstall"),
         "the message must offer the stale-shim cleanup path:\n{out}"
     );
     assert!(
@@ -830,7 +830,11 @@ fn a_binary_already_on_path_is_not_copied() {
     // Stand the binary somewhere that IS on PATH, the way a package would.
     let pkg = s.path("pkg/bin");
     std::fs::create_dir_all(&pkg).expect("mkdir");
-    let placed = pkg.join(if cfg!(windows) { "amont.exe" } else { "amont" });
+    let placed = pkg.join(if cfg!(windows) {
+        "greengate.exe"
+    } else {
+        "greengate"
+    });
     std::fs::copy(env!("CARGO_BIN_EXE_greengate"), &placed).expect("copy");
     #[cfg(unix)]
     {
@@ -848,7 +852,7 @@ fn a_binary_already_on_path_is_not_copied() {
         "did not bake the binary where it already was (baked {baked}):\n{out}"
     );
     assert!(
-        !s.path(".local/bin/amont").exists(),
+        !s.path(".local/bin/greengate").exists() && !s.path(".local/bin/amont").exists(),
         "made a second copy the package manager will never update:\n{out}"
     );
     assert!(
@@ -857,7 +861,7 @@ fn a_binary_already_on_path_is_not_copied() {
     );
 }
 
-/// The Homebrew shape: `bin/amont` is a symlink into a VERSIONED directory.
+/// The Homebrew shape: `bin/greengate` is a symlink into a VERSIONED directory.
 ///
 /// The symlink is the stable name; its target is deleted on the next upgrade.
 /// Baking the resolved path would pin every repository to a version that is
@@ -873,13 +877,13 @@ fn a_symlink_on_path_bakes_the_link_not_its_versioned_target() {
     let bin = s.path("brew/bin");
     std::fs::create_dir_all(&cellar).expect("mkdir");
     std::fs::create_dir_all(&bin).expect("mkdir");
-    let real = cellar.join("amont");
+    let real = cellar.join("greengate");
     std::fs::copy(env!("CARGO_BIN_EXE_greengate"), &real).expect("copy");
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
-    let link = bin.join("amont");
+    let link = bin.join("greengate");
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
     let (code, out) = run_from(&s, &link, &repo, &bin.to_string_lossy());
@@ -891,7 +895,7 @@ fn a_symlink_on_path_bakes_the_link_not_its_versioned_target() {
         "baked the VERSIONED path, which the next upgrade deletes: {baked}"
     );
     assert!(
-        baked.ends_with("brew/bin/amont"),
+        baked.ends_with("brew/bin/greengate"),
         "expected the PATH entry, got {baked}"
     );
 }
@@ -911,10 +915,16 @@ fn a_binary_not_on_path_is_still_copied() {
     let (code, out) = install_on_path(&s, &repo, &inherited);
     assert_eq!(code, 0, "{out}");
 
-    let copied = s.path(".local/bin/amont");
+    let copied = s.path(".local/bin/greengate");
     assert!(
-        copied.exists() || s.path(".local/bin/amont.exe").exists(),
+        copied.exists() || s.path(".local/bin/greengate.exe").exists(),
         "a binary that is not on PATH must still be copied somewhere stable:\n{out}"
+    );
+    // And its old name beside it, a copy, for shims a 2.x install baked.
+    let alias = s.path(".local/bin/amont");
+    assert!(
+        alias.exists() || s.path(".local/bin/amont.exe").exists(),
+        "the amont alias was not written beside it:\n{out}"
     );
 }
 
@@ -930,7 +940,7 @@ fn amont_bin_dir_still_forces_a_copy() {
     let (code, out) = install_with_bin_dir(&s, &repo, &elsewhere);
     assert_eq!(code, 0, "{out}");
     assert!(
-        elsewhere.join("amont").exists() || elsewhere.join("amont.exe").exists(),
+        elsewhere.join("greengate").exists() || elsewhere.join("greengate.exe").exists(),
         "AMONT_BIN_DIR was ignored:\n{out}"
     );
 }
@@ -981,7 +991,11 @@ fn a_build_directory_on_path_is_not_baked() {
         "Signature: 8a477f597d28d172789f06886806bc55\n",
     )
     .expect("write tag");
-    let placed = build.join(if cfg!(windows) { "amont.exe" } else { "amont" });
+    let placed = build.join(if cfg!(windows) {
+        "greengate.exe"
+    } else {
+        "greengate"
+    });
     std::fs::copy(env!("CARGO_BIN_EXE_greengate"), &placed).expect("copy");
     #[cfg(unix)]
     {
@@ -998,7 +1012,7 @@ fn a_build_directory_on_path_is_not_baked() {
         "baked a build directory, which the next rebuild empties: {baked}"
     );
     assert!(
-        s.path(".local/bin/amont").exists() || s.path(".local/bin/amont.exe").exists(),
+        s.path(".local/bin/greengate").exists() || s.path(".local/bin/greengate.exe").exists(),
         "and did not copy it somewhere durable instead:\n{out}"
     );
 }

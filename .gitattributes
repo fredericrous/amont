@@ -15,7 +15,10 @@
 # `templates/hooks/*` below does NOT reach the crate's copy — which is
 # precisely the file that ends up inside the binary.
 templates/hooks/* text eol=lf
-crates/amont-runtime/templates/hooks/* text eol=lf
+crates/greengate-runtime/templates/hooks/* text eol=lf
+# The 2.3.1 shim the fleet recognises, byte for byte (no .sh: it is frozen,
+# not linted).
+crates/greengate-fleet/src/shim-2.3.1 text eol=lf
 *.sh text eol=lf
 
 # The installers people pipe into a shell, for the same reason.
@@ -23,4 +26,4 @@ install/install.sh text eol=lf
 
 # The excerpt fixtures are hashed (MANIFEST.sha256) and the hash is compared
 # with amont-agent's copy: any line-ending conversion would change the bytes.
-crates/amont/tests/fixtures/excerpt/* -text
+crates/greengate/tests/fixtures/excerpt/* -text

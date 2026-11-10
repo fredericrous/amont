@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install the amont binary. Nothing else.
+# Install the greengate binaries (and their old names, amont and
+# amont-fleet, as copies). Nothing else.
 #
 #   curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 #
@@ -56,7 +57,7 @@ target() {
             if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=gnu; fi
             case "$arch" in
                 x86_64|amd64)  echo "x86_64-unknown-linux-$libc" ;;
-                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install amont"
+                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install greengate"
                                echo "aarch64-unknown-linux-gnu" ;;
                 *) die "unsupported architecture: $arch" ;;
             esac
@@ -95,11 +96,11 @@ resolve_version() {
 }
 
 main() {
-    printf '\n  amont installer\n\n'
+    printf '\n  greengate installer\n\n'
 
     t=$(target)
     v=$(resolve_version)
-    name="amont-${v}-${t}"
+    name="greengate-${v}-${t}"
     base="https://github.com/$REPO/releases/download/v${v}"
 
     say "version:  $v"
@@ -145,17 +146,25 @@ main() {
     # Whether this is an upgrade decides what to say at the end: the
     # first-install steps are wrong advice the second time.
     upgrading=0
-    [ -x "$BIN_DIR/amont" ] && upgrading=1
+    { [ -x "$BIN_DIR/greengate" ] || [ -x "$BIN_DIR/amont" ]; } && upgrading=1
     mkdir -p "$BIN_DIR"
-    for b in amont amont-fleet; do
+    # Each binary, then its old name as a COPY of it: shims a 2.x install
+    # baked to $BIN_DIR/amont keep running the new build. A copy, never a
+    # link: a 2.x `amont install` copies onto its target, and through a link
+    # it would overwrite greengate itself.
+    for pair in greengate:amont greengate-fleet:amont-fleet; do
+        b=${pair%%:*}
+        old=${pair#*:}
         if [ -f "$tmp/$name/$b" ]; then
-            # Write to a temporary name and rename over the destination:
-            # replacing a RUNNING binary in place fails on some platforms, and
-            # rename is atomic, so a half-copied amont never exists.
-            cp "$tmp/$name/$b" "$BIN_DIR/.$b.new"
-            chmod 755 "$BIN_DIR/.$b.new"
-            mv "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
-            ok "installed $BIN_DIR/$b"
+            for dest in "$b" "$old"; do
+                # Write to a temporary name and rename over the destination:
+                # replacing a RUNNING binary in place fails on some platforms,
+                # and rename is atomic, so a half-copied binary never exists.
+                cp "$tmp/$name/$b" "$BIN_DIR/.$dest.tmp.$$"
+                chmod 755 "$BIN_DIR/.$dest.tmp.$$"
+                mv "$BIN_DIR/.$dest.tmp.$$" "$BIN_DIR/$dest"
+            done
+            ok "installed $BIN_DIR/$b (and $old, its old name)"
         fi
     done
 
@@ -170,16 +179,16 @@ main() {
         printf '  needs redoing for the checks themselves. What does not update on its\n'
         printf '  own: a repository'"'"'s hook shims when a release changes them, and the\n'
         printf '  generated block in AGENTS.md/CLAUDE.md. One command sees both:\n\n'
-        printf '    amont-fleet fix --root ~/Developer                       # dry run\n'
-        printf '    amont-fleet fix --root ~/Developer --apply --agents-md\n\n'
-        printf '  or, in one repository:  amont install && amont agents-md\n\n'
+        printf '    greengate-fleet fix --root ~/Developer                   # dry run\n'
+        printf '    greengate-fleet fix --root ~/Developer --apply --agents-md\n\n'
+        printf '  or, in one repository:  greengate install && greengate agents-md\n\n'
         return
     fi
     printf '  Nothing is enabled yet, on purpose. To turn the hooks on:\n\n'
-    printf '    cd <your-repo> && amont install     # this repository only\n'
-    printf '    amont list                          # what would run here\n'
-    printf '    amont uninstall                     # and back out again\n\n'
-    printf '  Across many repositories at once:  amont-fleet install --root ~/Developer\n\n'
+    printf '    cd <your-repo> && greengate install # this repository only\n'
+    printf '    greengate list                      # what would run here\n'
+    printf '    greengate uninstall                 # and back out again\n\n'
+    printf '  Across many repositories at once:  greengate-fleet install --root ~/Developer\n\n'
 }
 
 main "$@"

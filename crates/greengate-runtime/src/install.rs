@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::hookfile::{self, HookFile, Refuse, Staged, SwapFailure};
+use crate::names::{BIN, FLEET_BIN, OLD_BIN, OLD_FLEET_BIN};
 use crate::ui::{error_sign, highlight, valid_sign, warning_sign};
 
 /// The token every shim carries until it is baked.
@@ -236,7 +237,7 @@ fn warn_if_unbaked_cannot_resolve(binary: &str) {
         looked.display()
     );
     println!("    Either link it where they look:");
-    println!("      ln -s {} {}", binary, looked.join("amont").display());
+    println!("      ln -s {} {}", binary, looked.join(BIN).display());
     println!("    or set GIT_HOOKS_BIN in the environment git runs hooks with:");
     println!("      export GIT_HOOKS_BIN={binary}");
 }
@@ -267,23 +268,102 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// The name to install under. Windows builds `amont.exe`, and a shim testing
-/// `[ -x .../amont ]` is false for it.
+/// The name to install under. Windows builds `greengate.exe`, and a shim
+/// testing `[ -x .../greengate ]` is false for it.
 fn installed_name() -> String {
     match std::env::current_exe() {
-        Ok(p) => name_for(&p),
-        Err(_) => "amont".to_string(),
+        Ok(p) => name_for(&p, BIN),
+        Err(_) => BIN.to_string(),
     }
 }
 
+/// `name` with the running binary's platform suffix: `greengate`, or the old
+/// name `amont` an alias is written under, each `.exe` on Windows.
+///
 /// Split from `installed_name` so it can be tested on every platform rather
 /// than only the one that produces a `.exe`. A `cfg!(windows)` assertion is
 /// vacuous on the machine most of this is written on.
-fn name_for(exe: &Path) -> String {
+fn name_for(exe: &Path, name: &str) -> String {
     match exe.extension().and_then(|e| e.to_str()) {
-        Some(e) if !e.is_empty() => format!("amont.{e}"),
-        _ => "amont".to_string(),
+        Some(e) if !e.is_empty() => format!("{name}.{e}"),
+        _ => name.to_string(),
     }
+}
+
+/// Write `from`'s bytes to `target` so that `target` is never missing or
+/// half-written: copied to a temporary name in the same directory, made
+/// executable, then `rename(2)`d over the target. A commit that runs a shim
+/// baked to `target` during the install finds the old binary or the new one,
+/// never neither. On Windows a running `.exe` cannot be replaced by rename,
+/// so the existing one is first renamed aside to `<name>.old.exe` (swept on
+/// the next install).
+fn replace_atomically(from: &Path, target: &Path) -> std::io::Result<()> {
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let file = target
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(".{file}.tmp.{}", std::process::id()));
+    let written = std::fs::copy(from, &tmp).and_then(|_| make_executable(&tmp));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+        return Err(e);
+    }
+    if cfg!(windows) && target.exists() {
+        let aside = target.with_extension("old.exe");
+        let _ = std::fs::remove_file(&aside); // a leftover from an earlier install
+        if let Err(e) = std::fs::rename(target, &aside) {
+            let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+            return Err(e);
+        }
+    }
+    let renamed = std::fs::rename(&tmp, target);
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&tmp); // the error being returned says what failed
+    }
+    renamed
+}
+
+/// Remove what an interrupted [`replace_atomically`] can leave in `dir`:
+/// `.greengate*.tmp.*` and `.amont*.tmp.*` temporaries, and `*.old.exe` files
+/// renamed aside on Windows. Best effort: a file still in use stays for the
+/// next install.
+fn sweep_install_leftovers(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ours = [BIN, OLD_BIN]
+            .iter()
+            .any(|n| name.starts_with(&format!(".{n}")) && name.contains(".tmp."));
+        let aside = [BIN, FLEET_BIN, OLD_BIN, OLD_FLEET_BIN]
+            .iter()
+            .any(|n| name == format!("{n}.old.exe"));
+        if ours || aside {
+            let _ = std::fs::remove_file(entry.path()); // best effort, see above
+        }
+    }
+}
+
+/// The old names written beside the binaries as copies (plan "amont ships as
+/// greengate"): `amont` from `greengate`, and `amont-fleet` from
+/// `greengate-fleet` when that sits in the same directory. Copies, not links:
+/// a 2.x `amont install` copies onto its target, and through a link it would
+/// overwrite greengate itself.
+fn write_aliases(binary: &Path) -> Result<(), String> {
+    let dir = binary.parent().unwrap_or_else(|| Path::new("."));
+    let pairs = [(BIN, OLD_BIN), (FLEET_BIN, OLD_FLEET_BIN)];
+    for (new, old) in pairs {
+        let from = dir.join(name_for(binary, new));
+        if !from.is_file() {
+            continue;
+        }
+        let alias = dir.join(name_for(binary, old));
+        replace_atomically(&from, &alias)
+            .map_err(|e| format!("cannot write the alias {}: {e}", alias.display()))?;
+    }
+    Ok(())
 }
 
 /// Hook files in `dir` that exist and are NOT ours, each with its reason.
@@ -479,7 +559,7 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
         None | Some("declared") | Some("everywhere") => {}
         Some(other) => {
             return Err(format!(
-                "amont enroll --conventions takes `declared` or `everywhere`, not {other:?}"
+                "{BIN} enroll --conventions takes `declared` or `everywhere`, not {other:?}"
             ));
         }
     }
@@ -516,7 +596,7 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
             println!("    clones other people's projects, consider:");
             println!(
                 "        {}",
-                highlight("amont enroll --conventions declared")
+                highlight(concat!(crate::bin!(), " enroll --conventions declared"))
             );
         }
     }
@@ -524,10 +604,13 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
     println!();
     println!("Enrolled. Every future `git clone` and `git init` gets the hooks.");
     println!("Repositories cloned before now are untouched — wire them with");
-    println!("    {}   (one repository)", highlight("amont init"));
+    println!(
+        "    {}   (one repository)",
+        highlight(concat!(crate::bin!(), " init"))
+    );
     println!(
         "    {}   (every repository under a root)",
-        highlight("amont-fleet install --root <dir>")
+        highlight(concat!(crate::fleet_bin!(), " install --root <dir>"))
     );
     println!(
         "Undo with {}.",
@@ -569,7 +652,7 @@ fn point_template_dir_at(templates: &std::path::Path) -> Result<(), String> {
              hooks on this machine. Overwriting it would silently disable that.
              Decide which one wins, then either unset it
              (git config --global --unset init.templateDir) and re-run
-             `amont enroll`, or leave enrollment to it."
+             `{BIN} enroll`, or leave enrollment to it."
         )),
     }
 }
@@ -667,7 +750,7 @@ fn init_with(
     match in_snapshot(dir) {
         Ok(true) => {
             eprintln!(
-                "amont init: inside an amont push snapshot — the repository's hooks are left as they are"
+                "{BIN} init: inside a {BIN} push snapshot — the repository's hooks are left as they are"
             );
             return Ok(());
         }
@@ -677,7 +760,7 @@ fn init_with(
         Err(_) if matches!(rh, RepoHooks::Unanswerable { .. }) => {}
         Err(e) => {
             return Err(format!(
-                "{} cannot tell whether this is an amont push snapshot — {e}\n    \
+                "{} cannot tell whether this is a {BIN} push snapshot — {e}\n    \
                  Hooks were NOT installed.",
                 error_sign()
             ))
@@ -733,7 +816,7 @@ fn init_with(
     let written = write_shims(&hooks, &binary, false)
         .map_err(|e| format!("cannot write shims to {}: {e}", hooks.display()))?;
     println!(
-        "{} amont: {} hooks in {}",
+        "{} {BIN}: {} hooks in {}",
         valid_sign(),
         written.len(),
         hooks.display()
@@ -751,7 +834,7 @@ fn init_with(
 fn point_at_setup(settings: &crate::config::Settings) {
     let s = crate::commit_style::Style::resolve(settings);
     println!(
-        "  commit style: gitmoji {}, subject ≤{}, description ≤{} — `amont setup` to change",
+        "  commit style: gitmoji {}, subject ≤{}, description ≤{} — `{BIN} setup` to change",
         s.gitmoji.as_str(),
         s.subject_max,
         s.description_max
@@ -824,7 +907,7 @@ fn offer_trust() {
         }
     } else {
         println!("    Left untrusted. The built-ins still run; these do not.");
-        println!("    Change your mind with `amont trust`.");
+        println!("    Change your mind with `{BIN} trust`.");
     }
 }
 
@@ -871,7 +954,7 @@ fn offer_agents_md(settings: &crate::config::Settings) {
             Err(e) => println!("{} {e}", warning_sign()),
         }
     } else {
-        println!("    Left as-is. Change your mind with `amont agents-md`.");
+        println!("    Left as-is. Change your mind with `{BIN} agents-md`.");
     }
 }
 
@@ -979,13 +1062,17 @@ fn install_binary() -> Result<String, String> {
         (me.canonicalize(), target.canonicalize()),
         (Ok(a), Ok(b)) if a == b
     );
+    sweep_install_leftovers(&dir);
     if !already_there {
-        std::fs::copy(&me, &target)
+        replace_atomically(&me, &target)
             .map_err(|e| format!("cannot install to {}: {e}", target.display()))?;
-        make_executable(&target).map_err(|e| format!("cannot chmod {}: {e}", target.display()))?;
     }
+    write_aliases(&target)?;
     let installed = target.to_string_lossy().into_owned();
     println!("{} installed {}", valid_sign(), highlight(&installed));
+    println!(
+        "    {OLD_BIN} beside it is the same binary under its old name, for shims a 2.x install baked"
+    );
     Ok(installed)
 }
 
@@ -1254,7 +1341,7 @@ pub fn redirected_message(to: &Path, own: &Path) -> String {
             "\n    Or, if the redirect is deliberate, clear our stale shims from {}\n    \
              first: {}",
             own.display(),
-            highlight("amont uninstall")
+            highlight(concat!(crate::bin!(), " uninstall"))
         ));
     }
     msg
@@ -1316,7 +1403,11 @@ fn bake_repo_hooks(binary: &str, force: bool) -> Result<(), String> {
         for (name, what) in &foreign {
             msg.push_str(&format!("\n    {name} — {}", what.describe()));
         }
-        msg.push_str("\n    Look at them first, then `amont install --force`.");
+        msg.push_str(concat!(
+            "\n    Look at them first, then `",
+            crate::bin!(),
+            " install --force`."
+        ));
         return Err(msg);
     }
 
@@ -1352,15 +1443,20 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
     uninstall_repo_hooks()?;
 
     if remove_binary {
-        let target = bin_dir().join(installed_name());
-        match std::fs::remove_file(&target) {
-            Ok(()) => println!(
-                "{} removed {}",
-                valid_sign(),
-                highlight(&target.to_string_lossy())
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("cannot remove {}: {e}", target.display())),
+        // The binary and the alias of its old name: an uninstall that left
+        // `amont` behind would leave every 2.x shim still running it.
+        let me = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(BIN));
+        for name in [BIN, OLD_BIN] {
+            let target = bin_dir().join(name_for(&me, name));
+            match std::fs::remove_file(&target) {
+                Ok(()) => println!(
+                    "{} removed {}",
+                    valid_sign(),
+                    highlight(&target.to_string_lossy())
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("cannot remove {}: {e}", target.display())),
+            }
         }
     }
 
@@ -2051,12 +2147,67 @@ mod tests {
     #[test]
     fn the_installed_name_keeps_the_platform_suffix() {
         assert_eq!(
-            name_for(Path::new("/w/target/release/amont.exe")),
+            name_for(Path::new("/w/target/release/greengate.exe"), BIN),
+            "greengate.exe"
+        );
+        assert_eq!(
+            name_for(Path::new("/w/target/release/greengate.exe"), OLD_BIN),
             "amont.exe"
         );
-        assert_eq!(name_for(Path::new("/u/target/release/amont")), "amont");
+        assert_eq!(
+            name_for(Path::new("/u/target/release/greengate"), BIN),
+            "greengate"
+        );
         // A path that happens to contain a dot elsewhere is not an extension.
-        assert_eq!(name_for(Path::new("/some.dir/amont")), "amont");
+        assert_eq!(name_for(Path::new("/some.dir/greengate"), OLD_BIN), "amont");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_install_replaces_by_rename_and_writes_the_alias_as_a_copy() {
+        use std::os::unix::fs::MetadataExt;
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0); // a leftover temp dir is harmless
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("greengate-install-{}", std::process::id()));
+        let _cleanup = Cleanup(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("built");
+        std::fs::write(&src, "new build").unwrap();
+        let target = dir.join(BIN);
+        std::fs::write(&target, "old build").unwrap();
+        let before = std::fs::metadata(&target).unwrap().ino();
+        // A stale temporary and an old alias from a 2.x install.
+        std::fs::write(dir.join(format!(".{BIN}.tmp.1")), "x").unwrap();
+        std::fs::write(dir.join(OLD_BIN), "2.x binary").unwrap();
+
+        sweep_install_leftovers(&dir);
+        replace_atomically(&src, &target).unwrap();
+        write_aliases(&target).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new build");
+        // A new inode: the old file was replaced by rename, never written in place.
+        assert_ne!(std::fs::metadata(&target).unwrap().ino(), before);
+        let alias = dir.join(OLD_BIN);
+        assert_eq!(std::fs::read_to_string(&alias).unwrap(), "new build");
+        assert!(!std::fs::symlink_metadata(&alias)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_ne!(
+            std::fs::metadata(&alias).unwrap().ino(),
+            std::fs::metadata(&target).unwrap().ino(),
+            "the alias is a copy, not a hard link"
+        );
+        assert!(!dir.join(format!(".{BIN}.tmp.1")).exists());
+        // No fleet binary beside it, so no fleet alias either.
+        assert!(!dir.join(OLD_FLEET_BIN).exists());
+        // A 2.x `amont install` copying onto its target replaces only the alias.
+        std::fs::write(&alias, "2.3.1 overwrite").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new build");
     }
 
     fn hook_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {

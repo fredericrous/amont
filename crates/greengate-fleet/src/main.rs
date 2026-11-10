@@ -59,7 +59,11 @@ const USAGE: &str = concat!(
 
   --root <dir>   where to look for repositories (default: $HOME/Developer when it exists)
   --depth <n>    directory levels to descend  (default: 6)
-  --binary <p>   the binary shims should point at (default: the amont on PATH, else $HOME/.local/bin/amont)
+  --binary <p>   the binary shims should point at (default: the ",
+    greengate_runtime::bin!(),
+    " on PATH, then its old name amont, else $HOME/.local/bin/",
+    greengate_runtime::bin!(),
+    ")
   --agents-md    with fix/install: also roll out the AGENTS.md pointer
   --aval-hook    with fix/install: also re-run `aval hook install` where a
                  repository keeps an .adr.yaml and its session hook is behind
@@ -260,13 +264,22 @@ fn home() -> Option<PathBuf> {
 /// nothing. This is the truthful bake target: shims resolve their baked
 /// path first and PATH last, so baking anything OTHER than the PATH binary
 /// makes the two disagree the day one of them upgrades.
-fn amont_on_path() -> Option<String> {
-    let exe = if cfg!(windows) { "amont.exe" } else { "amont" };
+/// The gate PATH would run: `greengate`, else its old name `amont` (an
+/// alias a 2.x install left, or a 2.x binary not yet upgraded).
+fn gate_on_path() -> Option<String> {
+    use greengate_runtime::names::{BIN, OLD_BIN};
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(exe))
-        .find(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+    [BIN, OLD_BIN].iter().find_map(|name| {
+        let exe = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            (*name).to_string()
+        };
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(&exe))
+            .find(|candidate| candidate.is_file())
+            .map(|candidate| candidate.to_string_lossy().into_owned())
+    })
 }
 
 /// The binary shims should point at: the one PATH would run, else the
@@ -282,7 +295,14 @@ fn amont_on_path() -> Option<String> {
 /// the same failure family as #79 (a wrong path from a missing env var),
 /// just on the write side rather than the delete side.
 fn default_binary(home: Option<&Path>, on_path: Option<String>) -> Option<String> {
-    on_path.or_else(|| home.map(|h| h.join(".local/bin/amont").to_string_lossy().into_owned()))
+    on_path.or_else(|| {
+        home.map(|h| {
+            h.join(".local/bin")
+                .join(greengate_runtime::names::BIN)
+                .to_string_lossy()
+                .into_owned()
+        })
+    })
 }
 
 /// `~/Developer` WHEN IT EXISTS — a convention this tool grew up in, kept
@@ -350,7 +370,7 @@ fn main() -> ExitCode {
     let installed = match args
         .binary
         .clone()
-        .or_else(|| default_binary(home().as_deref(), amont_on_path()))
+        .or_else(|| default_binary(home().as_deref(), gate_on_path()))
     {
         Some(b) => b,
         None => {
@@ -1269,7 +1289,11 @@ mod tests {
         assert_eq!(default_root(Some(home)), None);
         assert_eq!(
             default_binary(Some(home), None),
-            Some(home.join(".local/bin/amont").to_string_lossy().into_owned())
+            Some(
+                home.join(".local/bin/greengate")
+                    .to_string_lossy()
+                    .into_owned()
+            )
         );
     }
 

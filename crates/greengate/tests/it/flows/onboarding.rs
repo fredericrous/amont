@@ -304,7 +304,7 @@ fn the_init_journey() {
 
 /// The binary the installer placed, whichever platform this is.
 fn installed_bin(m: &Machine) -> Option<PathBuf> {
-    ["amont", "amont.exe"]
+    ["greengate", "greengate.exe"]
         .into_iter()
         .map(|n| m.path(".local/bin").join(n))
         .find(|p| p.is_file())
@@ -351,7 +351,7 @@ fn the_install_journey() {
         "install",
         first.contains(bin.to_str().expect("utf8")),
         "shim names {:?}, not the installed {}",
-        first.lines().find(|l| l.contains("amont")),
+        first.lines().find(|l| l.contains("BAKED=")),
         bin.display()
     );
     step!(
@@ -375,7 +375,7 @@ fn the_install_journey() {
     step_eq!("commit", code, 0, "commit failed:\n{out}");
     step!(
         "commit",
-        !out.contains("amont binary not found"),
+        !out.contains("greengate binary not found"),
         "the installed shim could not resolve the binary:\n{out}"
     );
 
@@ -643,7 +643,7 @@ fn the_enroll_journey() {
     step!("enroll", out.contains("future"), "{out}");
     step!(
         "enroll",
-        out.contains("amont init"),
+        out.contains("greengate init"),
         "existing clones get a remedy: {out}"
     );
 
@@ -836,9 +836,11 @@ fn unbaked_shims(m: &Machine) {
     };
     // An amont on the minimal PATH would resolve the shim's last candidate
     // and make the "not found" steps vacuous rather than wrong.
-    let vacuous = MINIMAL_PATH
-        .split(':')
-        .any(|d| Path::new(d).join("amont").exists());
+    let vacuous = MINIMAL_PATH.split(':').any(|d| {
+        ["greengate", "amont"]
+            .iter()
+            .any(|n| Path::new(d).join(n).exists())
+    });
     if vacuous {
         println!("  ! amont on {MINIMAL_PATH} — skipping the not-found steps");
     }
@@ -863,7 +865,7 @@ fn unbaked_shims(m: &Machine) {
         let err = String::from_utf8_lossy(&out.stderr);
         step!(
             "planted file",
-            err.contains("amont binary not found"),
+            err.contains("greengate binary not found"),
             "expected the loud failure, got: {err}"
         );
     }
@@ -894,7 +896,7 @@ fn unbaked_shims(m: &Machine) {
         );
         step!(
             "planted directory",
-            String::from_utf8_lossy(&out.stderr).contains("amont binary not found"),
+            String::from_utf8_lossy(&out.stderr).contains("greengate binary not found"),
             "expected the loud failure"
         );
     }

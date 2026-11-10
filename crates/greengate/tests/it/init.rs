@@ -272,7 +272,7 @@ fn init_in_a_marked_snapshot_leaves_the_shared_hooks_alone() {
 
     let (code, out) = s.init(&wt);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("inside an amont push snapshot"), "{out}");
+    assert!(out.contains("inside a greengate push snapshot"), "{out}");
     assert_eq!(before, hook_bytes(&hooks), "init re-baked from a snapshot");
 }
 
@@ -327,7 +327,7 @@ fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "{text}");
-    assert!(!text.contains("inside an amont push snapshot"), "{text}");
+    assert!(!text.contains("inside a greengate push snapshot"), "{text}");
     let hook = std::fs::read_to_string(other.join(".git/hooks/pre-commit")).expect("baked");
     assert!(hook.contains(env!("CARGO_BIN_EXE_greengate")), "{hook}");
 }

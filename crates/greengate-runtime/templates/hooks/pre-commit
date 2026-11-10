@@ -1,5 +1,5 @@
 #!/bin/sh
-# git-templates hook shim → the amont binary.
+# git-templates hook shim → the greengate binary.
 #
 # One shim serves every hook: it passes its own filename through, so the binary
 # knows which hook to run. Dispatchers (pre-commit, pre-push) and ported leaf
@@ -12,10 +12,10 @@
 # Resolution order matters more than it looks. Git hooks do NOT inherit an
 # interactive shell's PATH: GUI clients (VS Code, Tower, JetBrains) launch git
 # with an environment that often lacks ~/.local/bin or ~/.cargo/bin. A shim that
-# only did `exec amont` would work in the terminal and fail in the GUI. So:
+# only did `exec greengate` would work in the terminal and fail in the GUI. So:
 #   1. $GIT_HOOKS_BIN   — escape hatch; also how `make test` points at target/debug
 #   2. the baked path   — an absolute path written into this shim by
-#                         `amont install`. The placeholder token is NOT
+#                         `greengate install`. The placeholder token is NOT
 #                         spelled out in this comment: substitution is a plain
 #                         global replace, so a comment containing the token gets
 #                         rewritten too, and the explanation turns into a machine
@@ -36,13 +36,15 @@
 #                         the git checkout itself (the usual setup here — the
 #                         XDG path symlinks to the repo) never gets that token
 #                         substituted and would depend on PATH after all.
-#                         Both names are tried: Windows builds amont.exe, and
-#                         `[ -x .../amont ]` is false for it — which left
+#                         greengate first, then its old name amont, the alias
+#                         a 2.x install left; each with and without .exe:
+#                         Windows builds greengate.exe, and `[ -x .../greengate ]`
+#                         is false for it — which left
 #                         Windows with PATH as its ONLY fallback, in exactly the
 #                         GUI-client case this list exists to survive. Windows
 #                         needs no symlink for any of this: point
 #                         init.templateDir straight at the checkout.
-#   4. PATH             — last resort
+#   4. PATH             — last resort, greengate then amont
 # and if none resolve, FAIL LOUDLY. Never skip a check silently: a hook that
 # quietly does nothing is worse than one that is missing.
 set -e
@@ -50,7 +52,7 @@ HOOKS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HOOK_NAME=$(basename -- "$0")
 
 # The baked path, and nothing relative — see 2 above. Absolute means POSIX `/…`
-# or a Windows drive path: `amont install` bakes `C:\Users\…\amont.exe` on
+# or a Windows drive path: `greengate install` bakes `C:\Users\…\greengate.exe` on
 # Git for Windows. An unbaked shim fails this and falls through to 3, which is
 # exactly what it should do.
 BAKED="__AMONT_BIN__"
@@ -63,19 +65,25 @@ if [ -n "$GIT_HOOKS_BIN" ] && [ -x "$GIT_HOOKS_BIN" ]; then
     BIN="$GIT_HOOKS_BIN"
 elif [ -n "$BAKED" ] && [ -x "$BAKED" ]; then
     BIN="$BAKED"
+elif [ -x "$HOME/.local/bin/greengate" ]; then
+    BIN="$HOME/.local/bin/greengate"
+elif [ -x "$HOME/.local/bin/greengate.exe" ]; then
+    BIN="$HOME/.local/bin/greengate.exe"
 elif [ -x "$HOME/.local/bin/amont" ]; then
     BIN="$HOME/.local/bin/amont"
 elif [ -x "$HOME/.local/bin/amont.exe" ]; then
     BIN="$HOME/.local/bin/amont.exe"
+elif command -v greengate > /dev/null 2>&1; then
+    BIN=greengate
 elif command -v amont > /dev/null 2>&1; then
     BIN=amont
 else
-    printf '  \033[38;5;160m✗\033[0m amont binary not found — hooks cannot run.\n' >&2
+    printf '  \033[38;5;160m✗\033[0m greengate binary not found — hooks cannot run.\n' >&2
     printf '    Looked at: $GIT_HOOKS_BIN, the baked path, ~/.local/bin, then PATH.\n' >&2
     printf '    Reinstall it the way it arrived:\n' >&2
     printf '      npm/pnpm repo:  \033[38;5;208mnpm install\033[0m   (prepare re-bakes the hooks)\n' >&2
-    printf '      curl installer: \033[38;5;208mcurl -fsSL https://raw.githubusercontent.com/fredericrous/amont/main/install/install.sh | sh\033[0m\n' >&2
-    printf '      cargo / brew:   \033[38;5;208mcargo install amont\033[0m / \033[38;5;208mbrew install amont\033[0m\n' >&2
+    printf '      curl installer: \033[38;5;208mcurl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh\033[0m\n' >&2
+    printf '      cargo / brew:   \033[38;5;208mcargo install greengate\033[0m / \033[38;5;208mbrew install fredericrous/tap/greengate\033[0m\n' >&2
     exit 1
 fi
 

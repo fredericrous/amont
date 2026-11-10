@@ -113,18 +113,51 @@ pub fn render(binary: &str) -> String {
 /// once re-rendering reproduces the file byte for byte, so a wrong guess is
 /// rejected rather than believed.
 pub fn recover_baked(installed: &str) -> Option<String> {
-    let head = TEMPLATE.split(PLACEHOLDER).next()?;
+    recover_from(TEMPLATE, installed).or_else(|| recover_from(FROZEN_2_3_1, installed))
+}
+
+/// The shim template amont 2.3.1 shipped, byte for byte, kept so a shim it
+/// rendered still reads as ours after the rename to greengate. Without it,
+/// 3.0.0 would report every repository in the fleet Drifted and `fix --apply`
+/// would rewrite them all; rewriting the fleet's shims is the step-4 sweep's
+/// job, not an upgrade's (plan "amont ships as greengate").
+pub const FROZEN_2_3_1: &str = include_str!("shim-2.3.1");
+
+/// [`recover_baked`] against one template.
+fn recover_from(template: &str, installed: &str) -> Option<String> {
+    let head = template.split(PLACEHOLDER).next()?;
     let rest = installed.strip_prefix(head)?;
     // The text that follows the first placeholder is fixed; whatever precedes
     // it is the substitution.
-    let tail = TEMPLATE.split(PLACEHOLDER).nth(1)?;
+    let tail = template.split(PLACEHOLDER).nth(1)?;
     let end = if tail.is_empty() {
         rest.len()
     } else {
         rest.find(tail)?
     };
     let candidate = rest[..end].to_string();
-    (render(&candidate) == installed).then_some(candidate)
+    (greengate_runtime::install::bake(template, &candidate) == installed).then_some(candidate)
+}
+
+/// Whether `baked` names the gate (`greengate` or its alias `amont`, with or
+/// without `.exe`) in the same directory as `installed`. The aliases are
+/// copies beside the binary, so a 2.x shim baked to `~/.local/bin/amont` runs
+/// the same build as `~/.local/bin/greengate`. Compared as text, never
+/// canonicalised: an alias is a copy, so its canonical path is itself.
+fn same_gate_beside(baked: &str, installed: &str) -> bool {
+    fn split(p: &str) -> (&str, &str) {
+        match p.rfind(['/', '\\']) {
+            Some(i) => (&p[..i], &p[i + 1..]),
+            None => ("", p),
+        }
+    }
+    fn is_gate(file: &str) -> bool {
+        let stem = file.strip_suffix(".exe").unwrap_or(file);
+        stem == greengate_runtime::names::BIN || stem == greengate_runtime::names::OLD_BIN
+    }
+    let (bd, bf) = split(baked);
+    let (id, i_f) = split(installed);
+    !bd.is_empty() && bd == id && is_gate(bf) && is_gate(i_f)
 }
 
 /// What is installed at one dispatcher path.
@@ -191,6 +224,10 @@ pub fn bake_state(shims: &[ShimState], installed_binary: &str) -> BakeState {
     let mut baked: Vec<&str> = shims
         .iter()
         .filter_map(|s| match s {
+            // A bake of the alias beside the binary is the binary.
+            ShimState::Ok { baked } if same_gate_beside(baked, installed_binary) => {
+                Some(installed_binary)
+            }
             ShimState::Ok { baked } => Some(baked.as_str()),
             _ => None,
         })
@@ -414,6 +451,69 @@ mod tests {
 
     fn ok(p: &str) -> ShimState {
         ShimState::Ok { baked: p.into() }
+    }
+
+    #[test]
+    fn a_shim_amont_2_3_1_rendered_is_still_ours() {
+        let old = greengate_runtime::install::bake(FROZEN_2_3_1, "/Users/me/.local/bin/amont");
+        assert_ne!(
+            old,
+            render("/Users/me/.local/bin/amont"),
+            "the template did change"
+        );
+        assert_eq!(
+            recover_baked(&old).as_deref(),
+            Some("/Users/me/.local/bin/amont")
+        );
+    }
+
+    #[test]
+    fn an_alias_bake_beside_the_binary_is_current() {
+        let installed = "/Users/me/.local/bin/greengate";
+        assert_eq!(
+            bake_state(&[ok("/Users/me/.local/bin/amont")], installed),
+            BakeState::Current
+        );
+        // Old and new shims side by side in one repository: still one binary.
+        assert_eq!(
+            bake_state(
+                &[ok("/Users/me/.local/bin/amont"), ok(installed)],
+                installed
+            ),
+            BakeState::Current
+        );
+        let win = r"C:\Users\me\.local\bin\greengate.exe";
+        assert_eq!(
+            bake_state(&[ok(r"C:\Users\me\.local\bin\amont.exe")], win),
+            BakeState::Current
+        );
+        // Found as amont on PATH, shims baked to the new name beside it.
+        assert_eq!(
+            bake_state(&[ok(installed)], "/Users/me/.local/bin/amont"),
+            BakeState::Current
+        );
+    }
+
+    #[test]
+    fn a_gate_bake_elsewhere_is_still_stale() {
+        assert_eq!(
+            bake_state(
+                &[ok("/opt/old/bin/amont")],
+                "/Users/me/.local/bin/greengate"
+            ),
+            BakeState::Stale {
+                path: "/opt/old/bin/amont".into()
+            }
+        );
+        assert_eq!(
+            bake_state(
+                &[ok("/Users/me/.local/bin/gh")],
+                "/Users/me/.local/bin/greengate"
+            ),
+            BakeState::Stale {
+                path: "/Users/me/.local/bin/gh".into()
+            }
+        );
     }
 
     #[test]

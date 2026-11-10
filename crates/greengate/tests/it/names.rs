@@ -5,7 +5,7 @@
 //! `amont `, `amont: ` or `amont-fleet`, outside comments. What is left is
 //! data the program reads or writes under the old name until plan 3a-2
 //! (slot holder names, commit-tree messages, config keys in a hint), test
-//! fixtures, and `install.rs`, which Phase 2 rewrites. Each file's count is
+//! fixtures, and the frozen AGENTS.md block and the text that quotes it. Each file's count is
 //! pinned below: a new literal fails here, and a file that drops one fails
 //! too, so the list only shrinks on purpose.
 
@@ -15,11 +15,6 @@ use std::path::{Path, PathBuf};
 /// Per file: how many old-name literals it may hold, and why.
 const ALLOWED: &[(&str, usize, &str)] = &[
     ("greengate-fleet/src/attest.rs", 1, "a test's temp dir name"),
-    (
-        "greengate-fleet/src/main.rs",
-        1,
-        "the --binary default, which Phase 2 changes with the lookup order",
-    ),
     (
         "greengate-runtime/src/agents_md.rs",
         13,
@@ -47,8 +42,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
     (
         "greengate-runtime/src/install.rs",
-        15,
-        "Phase 2 rewrites install",
+        1,
+        "the offer quoting the frozen AGENTS.md block",
     ),
     (
         "greengate-runtime/src/run_stamp.rs",

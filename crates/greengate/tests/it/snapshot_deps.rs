@@ -408,7 +408,7 @@ fn a_snapshot_install_never_rebakes_the_shared_hooks() {
     assert!(logged(&r, "SNAPSHOT-ENV=1"), "{}", stub_log(&r));
     let init_out = std::fs::read_to_string(ctl(&r).join("init.out")).unwrap_or_default();
     assert!(
-        init_out.contains("inside an amont push snapshot"),
+        init_out.contains("inside a greengate push snapshot"),
         "{init_out}"
     );
     let after = baked(&r);
@@ -449,7 +449,7 @@ fn a_prepare_command_in_the_snapshot_never_rebakes_the_shared_hooks() {
     assert_eq!(code, 0, "{out}\n{prepared}");
     assert!(prepared.contains("env=1"), "{prepared}");
     assert_eq!(
-        prepared.matches("inside an amont push snapshot").count(),
+        prepared.matches("inside a greengate push snapshot").count(),
         2,
         "{prepared}"
     );

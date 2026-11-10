@@ -134,7 +134,7 @@ pub fn probe_marker(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Is `dir` inside an amont push snapshot? `Err` when that cannot be told —
+/// Is `dir` inside a greengate push snapshot? `Err` when that cannot be told —
 /// which the caller must treat as "do not write", never as "no".
 pub fn in_push_snapshot(dir: &Path) -> std::io::Result<bool> {
     probe_marker(&snapshot_marker_path(dir)?)
