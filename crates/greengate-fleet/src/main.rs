@@ -297,7 +297,8 @@ fn gate_on_path() -> Option<String> {
 fn default_binary(home: Option<&Path>, on_path: Option<String>) -> Option<String> {
     on_path.or_else(|| {
         home.map(|h| {
-            h.join(".local/bin")
+            h.join(".local")
+                .join("bin")
                 .join(greengate_runtime::names::BIN)
                 .to_string_lossy()
                 .into_owned()
@@ -1290,7 +1291,9 @@ mod tests {
         assert_eq!(
             default_binary(Some(home), None),
             Some(
-                home.join(".local/bin/greengate")
+                home.join(".local")
+                    .join("bin")
+                    .join("greengate")
                     .to_string_lossy()
                     .into_owned()
             )
