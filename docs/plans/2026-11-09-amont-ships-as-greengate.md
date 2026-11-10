@@ -189,7 +189,7 @@ is a later ticket.
   `amont-agent/crates/amont-agent-guard/src/rules/test_output_trimmed.rs`,
   `amont-agent/CHANGELOG.md`; every match on the program `amont` goes
   through one shared `is_gate_program()`, so a later name is one change.
-- [ ] Phase 1 — the names module and every message through it:
+- [x] Phase 1 — the names module and every message through it:
   `crates/amont-runtime/src/names.rs`, `crates/amont-runtime/src/lib.rs`,
   `crates/amont/src/main.rs`, `crates/amont-fleet/src/main.rs`,
   `crates/amont-runtime/src/dispatch.rs`, `crates/amont/tests/it/names.rs`,

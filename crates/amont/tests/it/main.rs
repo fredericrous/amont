@@ -60,6 +60,7 @@ mod land;
 mod large_files;
 mod linters;
 mod merge_conflict;
+mod names;
 mod npm_packaging;
 mod pack_add;
 mod package_lock;
