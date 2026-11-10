@@ -8,6 +8,8 @@ missing here.
 
 ## Unreleased
 
+## v3.0.1
+
 ### Fixed
 
 - The push gate's `cargo test --workspace` runs once per workspace, not once
