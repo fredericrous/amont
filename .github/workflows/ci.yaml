@@ -70,7 +70,7 @@ jobs:
           # Through the API, not raw.githubusercontent.com, which throttles
           # anonymous reads like the release web route (504s on 2026-11-08).
           path=repos/greenharness/greenpiste/contents/tests/fixtures/excerpt/MANIFEST.sha256
-          ours=crates/amont/tests/fixtures/excerpt/MANIFEST.sha256
+          ours=crates/greengate/tests/fixtures/excerpt/MANIFEST.sha256
           for attempt in 1 2 3; do
             rc=0
             timeout 30 gh api "$path?ref=main" -H 'Accept: application/vnd.github.raw' > /tmp/theirs.sha256 || rc=$?
@@ -82,7 +82,7 @@ jobs:
             sleep $((attempt * 5))
           done
           if ! diff -u /tmp/theirs.sha256 "$ours"; then
-            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/amont/tests/it/excerpt_golden.rs"
+            echo "::error::the excerpt fixtures differ from amont-agent's; copy tests/fixtures/excerpt/ from amont-agent and update the pin in crates/greengate/tests/it/excerpt_golden.rs"
             exit 1
           fi
           echo "excerpt fixtures match amont-agent's"
@@ -466,7 +466,7 @@ jobs:
   #
   # This job used to bill itself as a "cheap backstop for the hooks no test file
   # covers (argo-lint, kube-linter, kubeconform, yamllint)". Those four have
-  # been Rust since phase 3 and are covered by crates/amont/tests/it/k8s.rs,
+  # been Rust since phase 3 and are covered by crates/greengate/tests/it/k8s.rs,
   # linters.rs and tool_tables.rs; the comment outlived its subject by three
   # phases. It also dispatched on the shebang across four arms, of which the
   # `*zsh` and `*node` ones could never fire — no hook has been either since the
@@ -1120,7 +1120,7 @@ jobs:
             exit 1
           fi
 
-          # `missing()` in crates/amont/tests/common/mod.rs prints exactly
+          # `missing()` in crates/greengate/tests/common/mod.rs prints exactly
           # `  ! <tool> unavailable — skipping`. Pull the tool name out of that.
           skipped=$(grep -o '! [A-Za-z0-9_.+-]* unavailable — skipping' /tmp/hooks-test.log \
                     | awk '{print $2}' | sort -u || true)

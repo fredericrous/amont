@@ -1,0 +1,1576 @@
+//! The hook binary — argument handling only.
+//!
+//! Everything it does lives in `amont-runtime`. Git invokes exactly five
+//! hook names; the shim passes its own filename through, and the registry maps
+//! that name to a handler.
+//!
+//! ## Why the parsing is one total function
+//!
+//! This file used to walk the arguments with an ad-hoc loop that took the first
+//! non-flag token as the hook name and swept everything after it into `rest` —
+//! and then asked, seven times over, `rest.first() == "install"`,
+//! `rest.first() == "run"`, and so on. `rest` is where GIT'S OWN ARGUMENTS to
+//! the hook live.
+//!
+//! So `amont --hooks-dir d pre-push <remote> <url>`, which is exactly what
+//! the pre-push shim execs, dispatched on the REMOTE NAME. A remote called
+//! `install` ran the full installer — copying the binary, populating the
+//! template directory, baking shims — in the middle of a push. A remote called
+//! `run`, `list`, `trust`, `restore` or `uninstall` was worse in the quiet way:
+//! the branch fired, did something unrelated or nothing at all, and exited 0.
+//! A push with zero checks, reported as a pass. `git remote add install <url>`
+//! is a strange thing to type but not an impossible one, and nothing in the
+//! shim, the hook, or the output would have hinted at the cause.
+//!
+//! The rule that fixes it is one line long: **only position 0 is ever tested
+//! against the subcommand table.** Everything after it is data. That is not
+//! something a reader can verify by scanning a chain of `if`s, so the parse is
+//! a single function returning an [`Invocation`], and the property is a test
+//! (`a_hook_argument_never_names_a_subcommand`) over every spelling the table
+//! holds.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use greengate_runtime::check::Stage;
+use greengate_runtime::names::BIN;
+use greengate_runtime::{pushrefs, registry, ListOptions};
+
+/// What `--help` prints, and what a usage error prints after saying why.
+///
+/// Lifted out of the module doc because it was only ever a doc comment: the
+/// binary's actual `--help` was one line naming `--hooks-dir` and none of the
+/// eight subcommands, printed to stderr, exiting 2. A user asking a program
+/// what it does should not be told they used it wrong.
+const USAGE: &str = concat!(
+    "usage: ",
+    greengate_runtime::bin!(),
+    " <subcommand> | ",
+    greengate_runtime::bin!(),
+    " --hooks-dir <dir> <hook-name> [args…]\n",
+    "\n",
+    "  list           what would run in this repository, and why not\n",
+    "                 [--json] [--stage pre-commit|pre-push] [--pushed]\n",
+    "                 [--all: the inert checks too, one row each]\n",
+    "  install        turn hooks on here: copy the binary if needed, bake the shims\n",
+    "                 [--force] replaces a hook that is not ours\n",
+    "  init           wire up THIS repository only — the verb a package manager\n",
+    "                 calls from `prepare`; never copies a binary, never prompts,\n",
+    "                 never re-bakes from inside a push snapshot\n",
+    "  uninstall      remove OUR six shims and nothing else [--binary: the binary too]\n",
+    "                 [--repo: this repository only; the template dir is left as is;\n",
+    "                  it forgets attestations and revokes amont.conf trust]\n",
+    "  setup          the commit-style questions, current values as defaults\n",
+    "                 [--local|--global] [--dry-run]\n",
+    "  trust          show what amont.conf declares, and accept it\n",
+    "                 [--show: what is trusted] [--revoke: forget it]\n",
+    "  run            rehearse checks without committing: the pre-commit stage,\n",
+    "                 `run pre-push` for the push gate, or one check by name\n",
+    "                 [--all-files] [--hooks-dir <dir>]\n",
+    "                 `run --stamp [<gate>…]` — run the gates on HEAD of a clean\n",
+    "                 worktree and stamp the tree, as the commit and push hooks\n",
+    "                 do, so a later commit or push of that tree skips them\n",
+    "                 (default: every gate the hooks honour a stamp for). Exits 0\n",
+    "                 stamped, 1 a gate failed, 2 refused (dirty tree, unknown\n",
+    "                 gate), 4 a gate was deferred or could not be judged\n",
+    "                 [--quiet | --raw: a captured check's output to a log, one\n",
+    "                 line on a pass (the default when not at a terminal), or\n",
+    "                 the tool's own output as it comes]\n",
+    "  rehearse       run the push gate on a snapshot of HEAD in the background\n",
+    "                 and stamp the tree, so `git push` skips the suite\n",
+    "                 (`git config amont.rehearseOnCommit true` does this after\n",
+    "                 every commit) [--wait: follow it, or run it here if none]\n",
+    "                 [--status] [--stop] [--cluster: send the gates the cluster\n",
+    "                 may run to an Argo Workflow that outlives this machine;\n",
+    "                 the next commit or push collects them]\n",
+    "  cluster collect  turn the finished detached Workflows of this repository\n",
+    "                 into cluster tokens now (every commit and push does it)\n",
+    "  restore        bring back unstaged changes a killed pre-commit left parked\n",
+    "  agents-md      write the agent-guidance block into AGENTS.md, plus the\n",
+    "                 CLAUDE.md signpost pointing at it (both generated, both\n",
+    "                 checked) [--check: report drift only] [--path <file>]\n",
+    "  enroll         the machine-level standing grant: every future clone gets\n",
+    "                 the hooks [--conventions declared|everywhere]\n",
+    "  attest         `attest covered` — print the gate names a VALID signed\n",
+    "                 attestation covers for the tree checked out here (CI's\n",
+    "                 one-liner; prints nothing and exits 0 on any failure)\n",
+    "                 [--signers <file>] [--principal <id>]\n",
+    "                 [--platform <arch-os>|any: which leg is asking; defaults\n",
+    "                 to this machine's, so a matrix leg only skips work that\n",
+    "                 really ran on ITS platform]\n",
+    "                 [--strict: exit 3 when an attestation for this tree was\n",
+    "                 found but its signature did not verify, rather than 0;\n",
+    "                 the rejection is named on stderr either way]\n",
+    "                 `attest check-inputs --require <gate>...` — prove the\n",
+    "                 named gates declare, in .github/attest-inputs, every file\n",
+    "                 the tree tracks (exit 1 uncovered, 2 no usable spec)\n",
+    "                 [--tree <rev>, default HEAD]\n",
+    "\n",
+    "  check          what is wrong with these FILES — no index, no staging, no\n",
+    "                 commit. The content checks only (ban-terms, secrets,\n",
+    "                 merge-conflict, large-files), reported as\n",
+    "                 `file:line:col: severity: message [check]`, which every\n",
+    "                 editor's error parser and every modern terminal already\n",
+    "                 understand. Reads a path list, or one unsaved buffer on\n",
+    "                 stdin. Exits 1 if anything blocking was found.\n",
+    "                 [<path>…] [--stdin-filename <path>] [--format text|json]\n",
+    "\n",
+    "  land           run the push gates on a snapshot of this branch with no\n",
+    "                 connection open, push it, then read the remote back to prove\n",
+    "                 the ref moved. Exits 0 landed, 1 refused (a gate failed, or\n",
+    "                 the push was refused), 3 unreachable or unverified, 4 accepted\n",
+    "                 but the expected tip was not observed (2 is usage)\n",
+    "                 [--force: lease on the tip it just read] [--json: stdout]\n",
+    "                 [--dry-run: resolve the target only; no network, no push]\n",
+    "                 [--tag <name>: land that existing tag instead, never moving\n",
+    "                  one already on the remote; a v* tag gets release audits]\n",
+    "  slot run       run a heavy command in a host slot, queued with every other\n",
+    "                 one on this machine; exits 75 without running it when no\n",
+    "                 slot frees in time [--weight N] [--max-wait S, default 90]\n",
+    "                 [--on-timeout run|exit] -- <command…>\n",
+    "  slots          who holds the host slots, and how many wait [--json]\n",
+    "  stamps         which gates the tree carries a verdict for: stamped (a local\n",
+    "                 token for the gate as it is declared now), attested (a signed\n",
+    "                 note for this platform), deferred, or absent\n",
+    "                 [--json] [--tree <rev>, default HEAD] [<gate>…]\n",
+    "  warm           fill the cache of every cold `tree` gate, so the next commit\n",
+    "                 can prove it within its slack (after a cold commit this\n",
+    "                 runs in the background by itself) [--worker]\n",
+    "  tree-parity    compare each `tree` gate in amont.conf with the workflow\n",
+    "                 steps skipped on it; exits 1 on any drift (CI runs it,\n",
+    "                 never skipped)\n",
+    "\n",
+    "  add            vendor a pack's declarations into amont.conf — a pack is a\n",
+    "                 git repository carrying an `amont.pack` of amont.conf rows.\n",
+    "                 Resolves the revision to a commit id, refuses anything that\n",
+    "                 is not a check, and records the id beside the lines. Nothing\n",
+    "                 is trusted by adding it: the manifest changes, so `",
+    greengate_runtime::bin!(),
+    " trust`\n",
+    "                 must read the commands before any of them can run.\n",
+    "                 <source>[@<rev>]… [--dry-run]\n",
+    "                   github:owner/repo   forgejo:host/owner/repo   <git-url>\n",
+    "\n",
+    "  --help         this text        --version   the binary's version\n",
+    "\n",
+    "Hook mode (what the shims call): ",
+    greengate_runtime::bin!(),
+    " --hooks-dir <dir> <hook-name> [args…]\n",
+    "The full manual: https://greenharness.github.io/greengate/\n",
+);
+
+/// The verbs. Named as a type so the dispatch cannot grow an eighth spelling
+/// that only exists inside an `if`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sub {
+    List,
+    Setup,
+    Install,
+    Init,
+    Uninstall,
+    Run,
+    Trust,
+    Restore,
+    AgentsMd,
+    Enroll,
+    Attest,
+    Check,
+    Add,
+    Rehearse,
+    TreeParity,
+    Warm,
+    Land,
+    Slot,
+    Slots,
+    Stamps,
+    Cluster,
+}
+
+impl Sub {
+    /// This variant's position in [`SUBCOMMANDS`].
+    ///
+    /// The match is exhaustive, so adding a variant will not compile until it
+    /// is given a position, and `the_subcommand_table_is_exhaustive` will not
+    /// pass until that position exists in the table. Together that is the
+    /// forcing function: a new verb cannot reach dispatch without appearing in
+    /// the one table that `subcommand` reads.
+    ///
+    /// `cfg(test)` because dispatch itself has no use for a position — it is
+    /// the exhaustiveness of the `match` that does the work, and that check
+    /// happens whenever the test build compiles, which is every CI run.
+    #[cfg(test)]
+    const fn index(self) -> usize {
+        match self {
+            Sub::List => 0,
+            Sub::Setup => 1,
+            Sub::Install => 2,
+            Sub::Init => 3,
+            Sub::Uninstall => 4,
+            Sub::Run => 5,
+            Sub::Trust => 6,
+            Sub::Restore => 7,
+            Sub::AgentsMd => 8,
+            Sub::Enroll => 9,
+            Sub::Attest => 10,
+            Sub::Check => 11,
+            Sub::Add => 12,
+            Sub::Rehearse => 13,
+            Sub::TreeParity => 14,
+            Sub::Warm => 15,
+            Sub::Land => 16,
+            Sub::Slot => 17,
+            Sub::Slots => 18,
+            Sub::Stamps => 19,
+            Sub::Cluster => 20,
+        }
+    }
+}
+
+/// THE table. One list, read by [`subcommand`] and walked by the tests.
+///
+/// There were previously seven independent string comparisons scattered down
+/// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
+/// fourteen places for the set of verbs to be. This is one.
+const SUBCOMMANDS: [(&str, Sub); 21] = [
+    ("list", Sub::List),
+    ("setup", Sub::Setup),
+    ("install", Sub::Install),
+    ("init", Sub::Init),
+    ("uninstall", Sub::Uninstall),
+    ("run", Sub::Run),
+    ("trust", Sub::Trust),
+    ("restore", Sub::Restore),
+    ("agents-md", Sub::AgentsMd),
+    ("enroll", Sub::Enroll),
+    ("attest", Sub::Attest),
+    ("check", Sub::Check),
+    ("add", Sub::Add),
+    ("rehearse", Sub::Rehearse),
+    ("tree-parity", Sub::TreeParity),
+    ("warm", Sub::Warm),
+    ("land", Sub::Land),
+    ("slot", Sub::Slot),
+    ("slots", Sub::Slots),
+    ("stamps", Sub::Stamps),
+    ("cluster", Sub::Cluster),
+];
+
+/// The only place a string is compared against the verb set.
+fn subcommand(arg: &str) -> Option<Sub> {
+    SUBCOMMANDS
+        .iter()
+        .find(|(name, _)| *name == arg)
+        .map(|(_, sub)| *sub)
+}
+
+/// What the command line asked for. Total: every argv maps to exactly one of
+/// these, including the empty one.
+#[derive(Debug, PartialEq, Eq)]
+enum Invocation {
+    Sub {
+        name: Sub,
+        args: Vec<OsString>,
+    },
+    Hook {
+        hooks_dir: PathBuf,
+        name: String,
+        args: Vec<OsString>,
+    },
+    Help,
+    Version,
+    /// Used wrongly, with the reason. Exit 2 — the binary was invoked wrongly,
+    /// not a hook deciding something.
+    Usage(String),
+}
+
+/// Decide what `argv` (already skipping argv[0]) asks for.
+///
+/// The rules, in order, and the order is the whole design:
+///
+/// 1. nothing at all ⇒ usage error;
+/// 2. `--help`/`-h` first ⇒ help;
+/// 3. **argv[0] names a subcommand ⇒ that subcommand, with argv[1..] passed
+///    through VERBATIM.** Nothing after position 0 is tested against the table
+///    again, ever. That single restriction is what makes a remote named
+///    `install` an ordinary string;
+/// 4. otherwise hook mode. `--hooks-dir <dir>` is consumed only while no hook
+///    name has been taken; the first remaining token is the hook name; and
+///    every token after it goes to the hook untouched.
+///
+/// Rule 4's "only before the name" clause fixes a second, quieter bug: the old
+/// loop matched `--hooks-dir` anywhere, so `amont pre-push --hooks-dir X`
+/// — or a hook invoked with a git-supplied argument that happened to be
+/// `--hooks-dir` — silently ate two of the hook's own arguments and handed the
+/// check a short list. After the name, `--hooks-dir` is just a word.
+fn parse(argv: Vec<OsString>) -> Invocation {
+    let Some(first) = argv.first() else {
+        return Invocation::Usage("no arguments".to_string());
+    };
+    if first == "--help" || first == "-h" {
+        return Invocation::Help;
+    }
+    if first == "--version" || first == "-V" {
+        return Invocation::Version;
+    }
+    if let Some(sub) = first.to_str().and_then(subcommand) {
+        return Invocation::Sub {
+            name: sub,
+            args: argv[1..].to_vec(),
+        };
+    }
+
+    // Help wins over a word we do not know (cli.help.help-and-version), but
+    // only where the answer would be a usage error: a real hook invocation
+    // passes `--help` through to the hook untouched.
+    let wants_help = argv.iter().any(|a| a == "--help" || a == "-h");
+    let mut hooks_dir: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut args: Vec<OsString> = Vec::new();
+    let mut it = argv.into_iter();
+    while let Some(a) = it.next() {
+        if name.is_some() {
+            args.push(a);
+            continue;
+        }
+        if a == "--hooks-dir" {
+            let Some(v) = it.next() else {
+                return Invocation::Usage("--hooks-dir requires a value".to_string());
+            };
+            hooks_dir = Some(PathBuf::from(v));
+            continue;
+        }
+        let Some(s) = a.to_str() else {
+            return Invocation::Usage(format!("hook name is not valid UTF-8: {a:?}"));
+        };
+        name = Some(s.to_owned());
+    }
+
+    match (hooks_dir, name) {
+        (Some(hooks_dir), Some(name)) => Invocation::Hook {
+            hooks_dir,
+            name,
+            args,
+        },
+        _ if wants_help => Invocation::Help,
+        (None, Some(name)) => Invocation::Usage(format!(
+            "{name:?} is not a subcommand, and hook mode needs --hooks-dir <dir> before the hook name"
+        )),
+        _ => Invocation::Usage("no hook name".to_string()),
+    }
+}
+
+/// Die quietly when the reader hangs up, like every other Unix filter.
+///
+/// Rust ignores SIGPIPE at startup, so `amont list | head` panicked with a
+/// backtrace the moment `head` closed the pipe — `println!` hit EPIPE and
+/// EPIPE is a panic. Restoring SIGPIPE's default disposition makes the exit
+/// what a shell user expects (killed by the signal, status 141), and it is
+/// safe here because nothing in this binary writes to a pipe it must outlive.
+/// `extern "C"` rather than a crate: std already links libc, and the commit
+/// path takes no dependencies. Windows has no SIGPIPE; there the pipe-closed
+/// write fails an `Err` path instead of raising a signal, and this is a no-op.
+#[cfg(unix)]
+fn die_on_sigpipe() {
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn die_on_sigpipe() {}
+
+fn main() {
+    die_on_sigpipe();
+    // Settle `AMONT_REHEARSAL` here, on the main thread, before anything can
+    // spawn one. Reading it REMOVES it from the environment — deliberately,
+    // so the test suite a check spawns does not inherit it and believe
+    // itself a rehearsal — and `std::env::remove_var` is not thread-safe:
+    // glibc's `unsetenv` can race any thread reading the environment, which
+    // is every `Command` this process builds. The answer used to be settled
+    // by whichever caller asked first, and `pushed_tree::where_to_run` asks
+    // from inside a check, which `dispatch` runs concurrently. It was safe
+    // only because `dispatch::pre_push` happened to ask on the main thread
+    // first — an ordering nothing stated and nothing tested.
+    let _ = greengate_runtime::rehearsal::in_snapshot();
+    // The same, for the variable `amont land` sets on its own push.
+    greengate_runtime::rehearsal::land_env();
+    greengate_runtime::rehearsal::prestage();
+    greengate_runtime::rehearsal::source_worktree();
+    match parse(std::env::args_os().skip(1).collect()) {
+        Invocation::Help => {
+            print!("{USAGE}");
+            std::process::exit(0);
+        }
+        Invocation::Version => {
+            println!("{BIN} {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        Invocation::Usage(why) => {
+            eprintln!("{BIN}: {why}");
+            eprint!("{USAGE}");
+            std::process::exit(2);
+        }
+        Invocation::Sub { name, args } => std::process::exit(run_sub(name, &args)),
+        Invocation::Hook {
+            hooks_dir,
+            name,
+            args,
+        } => std::process::exit(run_hook(&hooks_dir, &name, &args)),
+    }
+}
+
+/// The flags each verb takes — `flags` stand alone, `valued` consume the next
+/// token. THE allowlist: [`run_sub`] rejects anything else, because a silently
+/// ignored flag does the opposite of what was asked at the worst possible
+/// verb — `amont trust --revok` used to fall through the `--revoke` test and
+/// GRANT trust.
+fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
+    match sub {
+        Sub::List => (&["--json", "--pushed", "--all"], &["--stage"]),
+        Sub::Setup => (&["--local", "--global", "--dry-run"], &[]),
+        Sub::Install => (&["--force"], &[]),
+        Sub::Init | Sub::Restore => (&[], &[]),
+        Sub::Uninstall => (&["--binary", "--repo"], &[]),
+        Sub::Run => (
+            &["--all-files", "--quiet", "--raw", "--stamp"],
+            &["--hooks-dir"],
+        ),
+        Sub::Trust => (&["--show", "--revoke"], &[]),
+        Sub::AgentsMd => (&["--check"], &["--path"]),
+        Sub::Enroll => (&[], &["--conventions"]),
+        Sub::Attest => (
+            &["--require", "--strict"],
+            &["--signers", "--principal", "--platform", "--tree"],
+        ),
+        Sub::Check => (&[], &["--stdin-filename", "--format"]),
+        Sub::Add => (&["--dry-run"], &[]),
+        Sub::Rehearse => (
+            &["--wait", "--status", "--stop", "--worker", "--cluster"],
+            &[],
+        ),
+        Sub::TreeParity => (&[], &[]),
+        Sub::Warm => (&["--worker"], &[]),
+        Sub::Land => (&["--force", "--json", "--dry-run"], &["--tag"]),
+        Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
+        Sub::Slots => (&["--json"], &[]),
+        Sub::Stamps => (&["--json"], &["--tree"]),
+        Sub::Cluster => (&[], &[]),
+    }
+}
+
+/// The first `--flag` the allowlist does not know, skipping the values of the
+/// flags that take one. Positional words are the verb's own business.
+fn unknown_flag(args: &[OsString], flags: &[&str], valued: &[&str]) -> Option<String> {
+    let mut skip_value = false;
+    for a in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let Some(a) = a.to_str() else { continue };
+        if !a.starts_with('-') {
+            continue;
+        }
+        // `--flag=value` names the same flag, with its value inline.
+        if let Some((name, _)) = a.split_once('=') {
+            if valued.contains(&name) {
+                continue;
+            }
+        }
+        if valued.contains(&a) {
+            skip_value = true;
+            continue;
+        }
+        if !flags.contains(&a) {
+            return Some(a.to_string());
+        }
+    }
+    None
+}
+
+/// This verb's spelling in [`SUBCOMMANDS`] — for error messages.
+fn verb_name(sub: Sub) -> &'static str {
+    SUBCOMMANDS
+        .iter()
+        .find(|(_, s)| *s == sub)
+        .map(|(n, _)| *n)
+        .unwrap_or("?")
+}
+
+/// Run a subcommand and return its exit code.
+///
+/// One `match` over the enum rather than seven `if`s, so the compiler is the
+/// thing that notices an unhandled verb.
+fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
+    // Subcommands that never load a manifest read git config alone. An
+    // empty policy is exactly what `policy::current()` used to hand them
+    // when nothing had been installed, so this preserves their behaviour.
+    let settings = greengate_runtime::config::Settings::default();
+    // A help or version request is inert in ANY position, before anything
+    // else looks at the arguments. `amont install --help` used to RUN THE
+    // INSTALLER — copy the binary, populate the template dir, offer trust —
+    // because parse() tested `--help` only at argv[0] and install scanned
+    // only for `--force`. Asking a program what it does must never be a
+    // mutating action.
+    // `amont slot run -- <cmd>`: everything after `--` is the command's own,
+    // and `cargo test --help` there is cargo's question, not amont's.
+    let own = if sub == Sub::Slot {
+        greengate_runtime::slot_cmd::split_at_dashes(args).0
+    } else {
+        args
+    };
+    if own.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return 0;
+    }
+    if own.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{BIN} {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
+    let (flags, valued) = known_flags(sub);
+    if let Some(bad) = unknown_flag(own, flags, valued) {
+        eprintln!("{BIN}: unknown flag {bad:?} for `{}`", verb_name(sub));
+        eprint!("{USAGE}");
+        // A script that parses stdout under `--json` gets a document for the
+        // usage error too, so exit 2 needs no special case on its side.
+        if sub == Sub::Land && args.iter().any(|a| a == "--json") {
+            println!("{}", greengate_runtime::land::usage_json());
+        }
+        return 2;
+    }
+    match sub {
+        // `amont list` — what would run here, and why. Lives in the HOOK
+        // binary rather than the fleet tool because this is the binary
+        // installed everywhere, and the question is asked about the repo you
+        // are standing in.
+        Sub::List => {
+            let stage = match stage_flag(args) {
+                Ok(s) => s,
+                Err(msg) => {
+                    eprintln!("{BIN}: {msg}");
+                    return 2;
+                }
+            };
+            // On stderr, so `--json` stays one document on stdout.
+            if let Some(line) = greengate_runtime::attest_inputs::deprecated_opt_out() {
+                eprintln!("{BIN}: {line}");
+            }
+            greengate_runtime::list_checks(ListOptions {
+                json: args.iter().any(|a| a == "--json"),
+                stage,
+                pushed: args.iter().any(|a| a == "--pushed"),
+                all: args.iter().any(|a| a == "--all"),
+            })
+        }
+        // `amont install` — was a Makefile recipe. It lives here so the
+        // guard that decides whether a directory may be emptied has ONE
+        // implementation, tested on every platform, rather than one in `make`
+        // and another in PowerShell for the Windows users who have no `make`.
+        Sub::Install => report(greengate_runtime::install::run(
+            &settings,
+            args.iter().any(|a| a == "--force"),
+        )),
+        // `amont init` — the verb a package manager calls. Deliberately
+        // flagless: it runs unattended, from a `prepare` script, so there is
+        // nobody to have typed an option and nothing it should be asked to do
+        // beyond wiring this one repository.
+        Sub::Init => report(greengate_runtime::install::init()),
+        // `--repo` is this repository only: the machine's template dir and
+        // global git config stay byte-identical, so an installer that armed
+        // one repository can disarm it without touching anything else.
+        Sub::Uninstall => {
+            let binary = args.iter().any(|a| a == "--binary");
+            if args.iter().any(|a| a == "--repo") {
+                if binary {
+                    eprintln!("{BIN}: uninstall --repo and --binary are mutually exclusive");
+                    return 2;
+                }
+                report(greengate_runtime::install::uninstall_repo())
+            } else {
+                report(greengate_runtime::install::uninstall(binary))
+            }
+        }
+        // `amont setup` — the four commit-style keys, asked once. A separate
+        // verb rather than a prompt inside `install`, which has to stay
+        // answerable by nobody: it runs under `amont-fleet install`, in
+        // provisioning scripts, and never at all for the `init.templateDir`
+        // users whose hooks arrive with a clone.
+        Sub::Setup => report(greengate_runtime::setup::command(args)),
+        Sub::Restore => report(greengate_runtime::staged_only::restore_command(&settings)),
+        Sub::Trust => report(greengate_runtime::trust::command(args)),
+        Sub::Run => run_mode(args),
+        Sub::AgentsMd => agents_md(args),
+        // `amont rehearse` — the push gate on a snapshot of HEAD, in the
+        // background. The verb the post-commit hook spawns (`--worker`) and
+        // the one a person or agent types to start, follow or stop it.
+        Sub::Rehearse => {
+            greengate_runtime::rehearsal::command(args, greengate_runtime::rehearsal::prestage())
+        }
+        // Text against text: no manifest trust needed, nothing executed.
+        // Prints each problem as `file:line: what`, exits 1 if any.
+        Sub::TreeParity => {
+            let root = greengate_runtime::hooks::common::repo_root();
+            let root = std::path::Path::new(&root);
+            let problems = greengate_runtime::hooks::tree_parity::check_repo(root);
+            for p in &problems {
+                println!("{}", greengate_runtime::ui::sanitize(&p.to_string()));
+            }
+            // A built-in test gate's drift is a warning (#288): printed on
+            // stderr, never in the exit code.
+            for p in greengate_runtime::hooks::tree_parity::builtin_drift(root) {
+                eprintln!(
+                    "warning: {}",
+                    greengate_runtime::ui::sanitize(&p.to_string())
+                );
+            }
+            i32::from(!problems.is_empty())
+        }
+        // `--worker` is how a cold commit starts it in the background; the
+        // work is the same either way.
+        Sub::Warm => {
+            let root = greengate_runtime::hooks::common::repo_root();
+            greengate_runtime::tree_lint::warm(std::path::Path::new(&root))
+        }
+        // `amont land` — push the branch, then prove the remote ref moved.
+        Sub::Land => greengate_runtime::land::command(args),
+        // `amont slot run -- <cmd>` and `amont slots` (ADR-0014): the host
+        // slots for any heavy command, and who holds them.
+        Sub::Slot => greengate_runtime::slot_cmd::slot_command(args),
+        Sub::Slots => greengate_runtime::slot_cmd::slots_command(args),
+        Sub::Stamps => stamps_mode(args),
+        // `amont cluster collect` — turn finished detached Workflows into
+        // cluster tokens now (ADR-0017).
+        Sub::Cluster => greengate_runtime::cluster::collect_command(args),
+        // `amont enroll` — the machine-level standing grant: template dir +
+        // `init.templateDir`, optionally scoping the conventions to declared
+        // repositories. One command in the onboarding doc instead of one
+        // `amont init` per clone per person.
+        Sub::Enroll => {
+            let conventions = match flag_value(args, "--conventions") {
+                Ok(v) => v,
+                Err(msg) => {
+                    eprintln!("{BIN}: {msg}");
+                    return 2;
+                }
+            };
+            report(greengate_runtime::install::enroll(conventions.as_deref()))
+        }
+        // `amont attest covered` — CI's verifying one-liner. Prints the gate
+        // names a VALID attestation covers for the tree checked out here, or
+        // nothing. Exits 0 either way: fail-open is the contract, not an
+        // option a workflow author might forget to pass. The only non-zero
+        // exit is usage (a subaction this verb does not have).
+        // `amont check <paths…>` — what is wrong with these FILES.
+        //
+        // Deliberately NOT a flag on `run`. `run` rehearses a commit: it is
+        // index-aware, it holds unstaged work aside, and `restore` exists to
+        // undo that. This answers a question about content, which may not be
+        // staged and — via `--stdin-filename` — may never have been saved.
+        // Sharing a verb would drag all of that machinery into a read-only
+        // lookup, and an editor asking about a buffer would inherit a stash.
+        // `amont add <source>` — vendor a pack's rows into amont.conf.
+        //
+        // A SETUP verb. Nothing here is reachable from a hook: no fetch, no
+        // network, and no new code between `git commit` and a verdict.
+        //
+        // It deliberately does NOT trust what it writes. Vendoring text and
+        // consenting to execute it are different acts, and collapsing them
+        // would hand a remote source the one decision the trust gate exists to
+        // keep local.
+        Sub::Add => {
+            use greengate_runtime::pack;
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            let specs: Vec<&str> = args
+                .iter()
+                .filter_map(|a| a.to_str())
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            if specs.is_empty() {
+                eprintln!("{BIN}: add needs a source (github:owner/repo, forgejo:host/owner/repo, or a git URL)");
+                eprint!("{USAGE}");
+                return 2;
+            }
+
+            // Resolve and read EVERY source before writing anything. A pack
+            // that fails after an earlier one landed would leave a manifest
+            // nobody asked for — the same "refused whole" rule the row parser
+            // applies within a single pack.
+            let scratch = std::env::temp_dir().join(format!("amont-pack-{}", std::process::id()));
+            let mut fetched: Vec<(String, String, Vec<String>)> = Vec::new();
+            for (i, spec) in specs.iter().enumerate() {
+                let outcome = pack::parse_source(spec).and_then(|source| {
+                    let id = pack::resolve(&source)?;
+                    let text = pack::fetch(&source, &id, &scratch.join(i.to_string()))?;
+                    let rows = pack::rows(&text)?;
+                    Ok((source.label, id, rows))
+                });
+                match outcome {
+                    Ok(got) => fetched.push(got),
+                    Err(msg) => {
+                        let _ = std::fs::remove_dir_all(&scratch);
+                        eprintln!("{BIN}: {msg}");
+                        return 1;
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&scratch);
+
+            // Show every command before asking. This is the last point at
+            // which a reader can stop a line entering their manifest, and the
+            // sanitiser is what keeps a hostile pack from painting the
+            // terminal on the way past.
+            for (label, id, rows) in &fetched {
+                println!("{label} @ {} declares:", &id[..7.min(id.len())]);
+                for r in rows {
+                    println!("    {}", greengate_runtime::ui::sanitize(r));
+                }
+            }
+            if dry_run {
+                println!("--dry-run: nothing written");
+                return 0;
+            }
+
+            let root = greengate_runtime::hooks::common::repo_root();
+            let path = std::path::Path::new(&root).join(greengate_runtime::manifest::MANIFEST);
+            let before = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut after = before.clone();
+            for (label, id, rows) in &fetched {
+                match pack::splice(&after, label, id, rows) {
+                    Ok(next) => after = next,
+                    Err(msg) => {
+                        eprintln!("{BIN}: {msg}");
+                        return 1;
+                    }
+                }
+            }
+            if after == before {
+                println!(
+                    "{} already carries exactly this",
+                    greengate_runtime::manifest::MANIFEST
+                );
+                return 0;
+            }
+            // No confirmation prompt here, deliberately. `amont trust` does not
+            // prompt either — running the verb IS the deliberate act, and the
+            // gate that matters comes after: the rows are inert until somebody
+            // reads them. A second yes/no would be friction in front of a
+            // reversible text edit, and `confirm` returns false without a tty,
+            // which would make `add` unusable from a script or a test for no
+            // safety gained. `--dry-run` is there for looking first.
+            if let Err(e) = std::fs::write(&path, &after) {
+                eprintln!("{BIN}: cannot write {}: {e}", path.display());
+                return 1;
+            }
+
+            // The manifest changed, so its fingerprint no longer matches and
+            // every declared check — the new ones and any that were already
+            // there — is inert until somebody reads them. Say so, because a
+            // verb that appears to install checks and silently installs
+            // nothing is worse than one that refuses.
+            println!(
+                "\n{} changed — these commands cannot run until you review them:\n    {BIN} trust",
+                greengate_runtime::manifest::MANIFEST
+            );
+            0
+        }
+        Sub::Check => {
+            let format = match flag_value(args, "--format") {
+                Ok(f) => f,
+                Err(msg) => {
+                    eprintln!("{BIN}: {msg}");
+                    return 2;
+                }
+            };
+            let json = match format.as_deref() {
+                None | Some("text") => false,
+                Some("json") => true,
+                Some(other) => {
+                    eprintln!("{BIN}: unknown --format {other:?} (text or json)");
+                    return 2;
+                }
+            };
+            let stdin_name = match flag_value(args, "--stdin-filename") {
+                Ok(n) => n,
+                Err(msg) => {
+                    eprintln!("{BIN}: {msg}");
+                    return 2;
+                }
+            };
+            // Positional words only: the flags and their values are the
+            // allowlist's business and were validated above.
+            let mut paths: Vec<String> = Vec::new();
+            let mut skip = false;
+            for a in args {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                let Some(a) = a.to_str() else { continue };
+                if a == "--format" || a == "--stdin-filename" {
+                    skip = true;
+                    continue;
+                }
+                if !a.starts_with("--") {
+                    paths.push(a.to_string());
+                }
+            }
+
+            let mut findings = Vec::new();
+            if let Some(name) = &stdin_name {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                if std::io::stdin().read_to_end(&mut buf).is_err() {
+                    eprintln!("{BIN}: could not read stdin");
+                    return 2;
+                }
+                findings.extend(greengate_runtime::content::scan(&settings, name, &buf));
+            } else if paths.is_empty() {
+                eprintln!("{BIN}: check needs a path, or --stdin-filename <path>");
+                eprint!("{USAGE}");
+                return 2;
+            }
+            for p in &paths {
+                match std::fs::read(p) {
+                    Ok(bytes) => {
+                        findings.extend(greengate_runtime::content::scan(&settings, p, &bytes))
+                    }
+                    // Named but unreadable is the caller's mistake, not a
+                    // finding about the file — say so on stderr and keep
+                    // going, so one bad path does not hide the other results.
+                    Err(e) => eprintln!("{BIN}: {p}: {e}"),
+                }
+            }
+
+            if json {
+                println!("{}", greengate_runtime::finding::to_json(&findings));
+            } else {
+                for f in &findings {
+                    println!("{}", f.render());
+                }
+            }
+            // 1 for a blocking finding, the convention every linter follows.
+            // A warning is not a failure: `large-files` warns about a
+            // deliberate asset, and an editor asking what is here must not
+            // get a non-zero exit for an answer it did not treat as fatal.
+            i32::from(
+                findings
+                    .iter()
+                    .any(|f| f.severity == greengate_runtime::check::Severity::Block),
+            )
+        }
+        Sub::Attest => {
+            match args.first().and_then(|a| a.to_str()) {
+                Some("covered") => {}
+                Some("check-inputs") => return attest_check_inputs(&args[1..]),
+                _ => {
+                    eprintln!("{BIN}: attest takes the subactions `covered` and `check-inputs`");
+                    eprint!("{USAGE}");
+                    return 2;
+                }
+            }
+            let (signers, principal, platform) = match (
+                flag_value(args, "--signers"),
+                flag_value(args, "--principal"),
+                flag_value(args, "--platform"),
+            ) {
+                (Ok(s), Ok(p), Ok(pl)) => (s, p, pl),
+                (Err(msg), _, _) | (_, Err(msg), _) | (_, _, Err(msg)) => {
+                    eprintln!("{BIN}: {msg}");
+                    return 2;
+                }
+            };
+            let Some(signers) = signers
+                .map(PathBuf::from)
+                .or_else(greengate_runtime::attest::default_signers)
+            else {
+                return 0; // no allowed_signers anywhere: nothing is covered
+            };
+            // No principal: whoever the signature says, if that key is in the
+            // signers file. Guessing the file's first entry, as this command
+            // once did, silently uncovered every other signer on a team.
+            // Default: this machine's platform. A matrix leg therefore skips
+            // only work that really ran on ITS platform, with no per-leg
+            // configuration — the ubuntu and windows legs of a Rust matrix
+            // simply find nothing covering them and run. `any` is the
+            // deliberate, committed statement that a suite's result does not
+            // depend on where it ran.
+            let want = match platform.as_deref() {
+                Some("any") => None,
+                Some(explicit) => Some(explicit.to_string()),
+                None => Some(greengate_runtime::attest::platform()),
+            };
+            let report = greengate_runtime::attest::covered_report(
+                std::path::Path::new("."),
+                &signers,
+                principal.as_deref(),
+                want.as_deref(),
+                &[],
+            );
+            if let Some(gates) = &report.gates {
+                println!("{gates}");
+            }
+            // Fail-open stays the default. `--strict` lets a caller that
+            // needs evidence tell a rejected attestation from a missing one
+            // (amont#271): exit 3, nothing on stdout.
+            let strict = args.iter().any(|a| a == "--strict");
+            if strict && report.gates.is_none() && !report.rejected.is_empty() {
+                3
+            } else {
+                0
+            }
+        }
+    }
+}
+
+/// `amont attest check-inputs --require <gate>... [--tree <rev>]`: do the
+/// named gates declare, completely, everything the tree tracks? Exit 0 yes,
+/// 1 something is not covered, 2 the spec (or git) cannot answer: a guard
+/// that cannot answer fails, unlike `covered`, whose contract is fail-open.
+fn attest_check_inputs(rest: &[OsString]) -> i32 {
+    let tree = match flag_value(rest, "--tree") {
+        Ok(t) => t.unwrap_or_else(|| "HEAD".to_string()),
+        Err(msg) => {
+            eprintln!("{BIN}: {msg}");
+            return 2;
+        }
+    };
+    let required: Vec<String> = rest
+        .iter()
+        .skip_while(|a| *a != "--require")
+        .skip(1)
+        .map_while(|a| a.to_str().filter(|s| !s.starts_with("--")))
+        .map(String::from)
+        .collect();
+    if required.is_empty() {
+        eprintln!("{BIN}: attest check-inputs needs --require <gate>...");
+        return 2;
+    }
+    match greengate_runtime::attest_inputs::check(&tree, &required) {
+        Err(e) => {
+            eprintln!("{}", e.render(&tree));
+            2
+        }
+        Ok(f) if f.is_empty() => {
+            println!("check-attest-inputs: ok");
+            0
+        }
+        Ok(f) => {
+            eprint!("{}", f.render());
+            1
+        }
+    }
+}
+
+/// The value following `--<flag>`, when present.
+fn flag_value(rest: &[OsString], flag: &str) -> Result<Option<String>, String> {
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        if a == flag {
+            return iter
+                .next()
+                .and_then(|v| v.to_str())
+                .map(|v| Some(v.to_string()))
+                .ok_or_else(|| format!("{flag} requires a value"));
+        }
+    }
+    Ok(None)
+}
+
+/// `Result<(), String>` → an exit code, printing the error. The shape four of
+/// the subcommands share.
+fn report(r: Result<(), String>) -> i32 {
+    match r {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// `amont run [<check>] [--all-files] [--quiet | --raw] [--hooks-dir <dir>]`.
+///
+/// Scans its OWN arguments, which is the same thing it did before — but they
+/// are now unambiguously its own, so the `*a != "run"` clause that used to
+/// stop the verb itself being read as a check name is gone with the ambiguity
+/// that made it necessary.
+fn run_mode(args: &[OsString]) -> i32 {
+    if args.iter().any(|a| a == "--stamp") {
+        return stamp_mode(args);
+    }
+    let all_files = args.iter().any(|a| a == "--all-files");
+    // A named check runs alone; otherwise the whole pre-commit stage.
+    let named = args
+        .iter()
+        .filter_map(|a| a.to_str())
+        .find(|a| !a.starts_with("--"))
+        .map(str::to_owned);
+    // Loaded ahead of the push-ref decision below, which asks the manifest
+    // whether a named check is a pre-push one.
+    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+        &greengate_runtime::hooks::common::repo_root(),
+    ));
+    // INVARIANT: the policy is installed immediately after EVERY
+    // manifest::load, before any config read in the process — check_timeout
+    // and friends cache on first read.
+    let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    // `--quiet` / `--raw` decide `amont.quiet` for this run only; the last
+    // one given wins, like any repeated flag.
+    if let Some(flag) = args.iter().rev().find(|a| *a == "--quiet" || *a == "--raw") {
+        settings.override_quiet(if flag == "--quiet" {
+            greengate_runtime::config::QuietOverride::Quiet
+        } else {
+            greengate_runtime::config::QuietOverride::Raw
+        });
+    }
+    // Resolve a short name to its full id BEFORE the push-ref decision:
+    // `run pytest` must synthesize refs, and an ambiguous `run branch-pattern`
+    // must say so rather than fail on an upstream it was never going to use.
+    let named = match named {
+        Some(n) if greengate_runtime::registry::lookup(&n, &manifest).is_none() => {
+            match greengate_runtime::dispatch::resolve_check_name(&n, &manifest) {
+                greengate_runtime::dispatch::Named2::Resolved(id) => Some(id),
+                greengate_runtime::dispatch::Named2::Unknown => {
+                    eprintln!("{BIN}: unknown check {n:?} — try `{BIN} list`");
+                    return 2;
+                }
+                greengate_runtime::dispatch::Named2::Ambiguous(ids) => {
+                    eprintln!(
+                        "{BIN}: {n:?} names more than one check — pick one: {}",
+                        ids.join(", ")
+                    );
+                    return 2;
+                }
+            }
+        }
+        other => other,
+    };
+    let audits = greengate_runtime::hooks::audit::Ledger::default();
+    let push = if named
+        .as_deref()
+        .is_some_and(|n| needs_synthetic_push_refs(n, &manifest))
+    {
+        // A pre-push check invoked standalone has no real push on the other
+        // end of stdin to read refs from. Left as `::default()`, `.get()`
+        // would either block on a TTY that has nothing coming, or (stdin
+        // redirected from `/dev/null`) read an empty ref list — which every
+        // pre-push check treats as "nothing to check" and passes, silently.
+        // Synthesize the one ref a standalone run can still answer for: what
+        // HEAD would push.
+        match pushrefs::synthetic_from_upstream() {
+            Ok(r) => pushrefs::PushRefs::preloaded(vec![r]),
+            Err(e) => {
+                eprintln!("{BIN}: {e}");
+                return 2;
+            }
+        }
+    } else {
+        pushrefs::PushRefs::default()
+    };
+    let hooks_dir = match hooks_dir_flag(args) {
+        Ok(Some(d)) => d,
+        Ok(None) => PathBuf::from(".git/hooks"),
+        Err(e) => {
+            eprintln!("{BIN}: {e}");
+            return 2;
+        }
+    };
+    let name = named.clone().unwrap_or_else(|| "pre-commit".to_string());
+    let ctx = registry::Ctx {
+        name: &name,
+        args: &[],
+        hooks_dir: &hooks_dir,
+        push: &push,
+        manifest: &manifest,
+        settings: &settings,
+        handed_to_cluster: greengate_runtime::rehearsal::handed_to_cluster(),
+        land: greengate_runtime::rehearsal::land_env(),
+        audits: &audits,
+        source_worktree: greengate_runtime::rehearsal::source_worktree(),
+    };
+    let verdict = match named {
+        // `run_named` lives in the runtime so `registry::lookup` — and the
+        // decision about whether a named check takes the index-fidelity hold —
+        // stay in one place rather than being re-derived here.
+        Some(check) => match greengate_runtime::dispatch::run_named(&ctx, &check, all_files) {
+            greengate_runtime::dispatch::Named::Ran(v) => v,
+            greengate_runtime::dispatch::Named::Unknown => {
+                eprintln!("{BIN}: unknown check {check:?} — try `{BIN} list`");
+                return 2;
+            }
+            greengate_runtime::dispatch::Named::Ambiguous(ids) => {
+                eprintln!(
+                    "{BIN}: {check:?} names more than one check — pick one: {}",
+                    ids.join(", ")
+                );
+                return 2;
+            }
+        },
+        None => greengate_runtime::dispatch::run_all(&ctx, all_files),
+    };
+    verdict.exit_code()
+}
+
+/// The positional words of a verb, skipping the values of its valued flags.
+fn positionals(args: &[OsString], valued: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        let Some(a) = a.to_str() else { continue };
+        if valued.contains(&a) {
+            skip = true;
+            continue;
+        }
+        if !a.starts_with('-') {
+            out.push(a.to_string());
+        }
+    }
+    out
+}
+
+/// The manifest and settings of the repository here, policy installed.
+fn load_here() -> (
+    greengate_runtime::manifest::Manifest,
+    greengate_runtime::config::Settings,
+) {
+    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+        &greengate_runtime::hooks::common::repo_root(),
+    ));
+    let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    (manifest, settings)
+}
+
+/// `amont run --stamp [<gate>…]` (ADR-0015).
+fn stamp_mode(args: &[OsString]) -> i32 {
+    // `--stamp` judges the whole tree and prints its own report: a flag that
+    // would change either is refused, not ignored.
+    for (flag, why) in [
+        ("--all-files", "--stamp always judges the whole tree"),
+        ("--quiet", "--stamp prints its own report"),
+        ("--raw", "--stamp prints its own report"),
+    ] {
+        if args.iter().any(|a| a == flag) {
+            eprintln!("{BIN}: {why}; drop {flag}");
+            return 2;
+        }
+    }
+    if args
+        .iter()
+        .filter_map(|a| a.to_str())
+        .any(|a| a == "--hooks-dir" || a.starts_with("--hooks-dir="))
+    {
+        eprintln!("{BIN}: --stamp runs the gates itself, not through hooks; drop --hooks-dir");
+        return 2;
+    }
+    let (manifest, settings) = load_here();
+    let names = positionals(args, &["--hooks-dir"]);
+    greengate_runtime::run_stamp::stamp(&settings, &manifest, &names)
+}
+
+/// `amont stamps [--json] [--tree <rev>] [<gate>…]` (ADR-0015).
+fn stamps_mode(args: &[OsString]) -> i32 {
+    let tree = match flag_value(args, "--tree") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{BIN}: {msg}");
+            return 2;
+        }
+    };
+    let (manifest, settings) = load_here();
+    let names = positionals(args, &["--tree"]);
+    greengate_runtime::run_stamp::stamps_command(
+        &settings,
+        &manifest,
+        if args.iter().any(|a| a == "--json") {
+            greengate_runtime::run_stamp::Output::Json
+        } else {
+            greengate_runtime::run_stamp::Output::Text
+        },
+        tree.as_deref(),
+        &names,
+    )
+}
+
+/// `amont agents-md [--check] [--path <file>]`.
+fn agents_md(args: &[OsString]) -> i32 {
+    // `amont agents-md` writes the block from the CONFIGURED budgets; it
+    // loads no manifest, so git config alone — the same empty-policy state
+    // the global store held for this path.
+    let settings = greengate_runtime::config::Settings::default();
+    let check_only = args.iter().any(|a| a == "--check");
+    let path = match path_flag(args) {
+        Ok(Some(p)) => p,
+        // Outside a repository there is no root to write into. `repo_root()`
+        // answered "." here, so `amont agents-md` typed from `~` wrote
+        // `./AGENTS.md` into the user's home directory and reported success.
+        Ok(None) => match greengate_runtime::hooks::common::repo_root_checked() {
+            Ok(root) => PathBuf::from(root).join("AGENTS.md"),
+            Err(e) => {
+                eprintln!("{BIN}: {e}");
+                return 2;
+            }
+        },
+        Err(e) => {
+            eprintln!("{BIN}: {e}");
+            return 2;
+        }
+    };
+    if check_only {
+        // Both files are generated, so both are checked; the worst verdict
+        // wins. A signpost left behind by an older amont is exactly the
+        // silent rot this pair exists to make impossible.
+        let pointer_code = pointer_path(&path).map_or(0, |p| {
+            match greengate_runtime::agents_md::check_pointer(&p) {
+                Ok(greengate_runtime::agents_md::CheckResult::Drifted) => {
+                    eprintln!(
+                        "{}: signpost drifted from the generated one — run `{BIN} agents-md`",
+                        p.display()
+                    );
+                    1
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+                // NotPresent is not drift: the signpost is opt-in, exactly
+                // as the block it points at is.
+                Ok(_) => 0,
+            }
+        });
+        let block_code = match greengate_runtime::agents_md::check(&settings, &path) {
+            Ok(greengate_runtime::agents_md::CheckResult::NotPresent) => {
+                println!(
+                    "{}: not present (opt-in — run without --check to add it)",
+                    path.display()
+                );
+                0
+            }
+            Ok(greengate_runtime::agents_md::CheckResult::MatchesGenerated) => {
+                println!("{}: up to date", path.display());
+                0
+            }
+            Ok(greengate_runtime::agents_md::CheckResult::Drifted) => {
+                eprintln!(
+                    "{}: drifted from the generated block — run `{BIN} agents-md`",
+                    path.display()
+                );
+                1
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+        block_code.max(pointer_code)
+    } else {
+        match greengate_runtime::agents_md::write(&settings, &path) {
+            Ok(()) => {
+                println!("wrote {}", path.display());
+                pointer_path(&path).map_or(
+                    0,
+                    |p| match greengate_runtime::agents_md::write_pointer(&p) {
+                        Ok(()) => {
+                            println!("wrote {} (signpost)", p.display());
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            1
+                        }
+                    },
+                )
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        }
+    }
+}
+
+/// Where the CLAUDE.md signpost goes, given where the block went.
+///
+/// `None` when the block IS `CLAUDE.md` — writing a signpost to the file
+/// that already holds the guidance would replace it with a pointer to
+/// itself. Sits beside the block rather than at the repo root so
+/// `--path docs/AGENTS.md` keeps the pair together and the relative
+/// `[AGENTS.md](AGENTS.md)` link in the signpost stays correct.
+fn pointer_path(block: &std::path::Path) -> Option<PathBuf> {
+    if block.file_name()? == "CLAUDE.md" {
+        return None;
+    }
+    Some(block.with_file_name("CLAUDE.md"))
+}
+
+/// Dispatch a git-invoked hook. `args` is whatever git passed, verbatim.
+fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
+    let push = pushrefs::PushRefs::default();
+    let audits = greengate_runtime::hooks::audit::Ledger::default();
+    // The manifest is parsed ONCE, here, at the process boundary — the same
+    // shape as the push refs above it: owned by the entrypoint, lent to
+    // everything downstream through the Ctx. git invokes hooks with the
+    // repository as the working directory, so `repo_root()`'s answer is the
+    // repository this hook is about.
+    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+        &greengate_runtime::hooks::common::repo_root(),
+    ));
+    // INVARIANT: the policy is installed immediately after EVERY
+    // manifest::load, before any config read in the process — check_timeout
+    // and friends cache on first read.
+    let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    let ctx = registry::Ctx {
+        name: hook,
+        args,
+        hooks_dir,
+        push: &push,
+        manifest: &manifest,
+        settings: &settings,
+        handed_to_cluster: greengate_runtime::rehearsal::handed_to_cluster(),
+        land: greengate_runtime::rehearsal::land_env(),
+        audits: &audits,
+        source_worktree: greengate_runtime::rehearsal::source_worktree(),
+    };
+    // THE process boundary: the one place a hook result becomes a number.
+    // Everything above speaks `Verdict`. An unknown name is NOT the usage
+    // error it looks like: nobody hand-types hook mode — the name is a
+    // shim passing its own filename, so a name this binary has never heard
+    // is a shim from a NEWER template. That is age, not misuse, and it
+    // arrives on every commit of every fresh repository, so it must not
+    // fail and must not nag — see `skew`.
+    match registry::lookup(hook, &manifest) {
+        Some(run_hook) => run_hook(&ctx).exit_code(),
+        None => greengate_runtime::skew::absorb_newer_hook(hook),
+    }
+}
+
+/// `--stage <pre-commit|pre-push>` for `list`, ad hoc scanned like every other
+/// flag here — no parsing library, matching `trust.rs`'s `let flag = |f: &str|
+/// args.iter().any(|a| a == f);` idiom.
+fn stage_flag(rest: &[OsString]) -> Result<Option<Stage>, String> {
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        if a == "--stage" {
+            let v = iter
+                .next()
+                .and_then(|v| v.to_str())
+                .ok_or_else(|| "--stage requires a value".to_string())?;
+            return match v {
+                "pre-commit" => Ok(Some(Stage::PreCommit)),
+                "pre-push" => Ok(Some(Stage::PrePush)),
+                other => Err(format!(
+                    "--stage must be `pre-commit` or `pre-push`, got {other:?}"
+                )),
+            };
+        }
+    }
+    Ok(None)
+}
+
+/// `--path <file>` for `agents-md`.
+fn path_flag(rest: &[OsString]) -> Result<Option<PathBuf>, String> {
+    value_flag(rest, "--path")
+}
+
+/// `--hooks-dir <dir>` for `run`, which is the one subcommand that takes it.
+fn hooks_dir_flag(rest: &[OsString]) -> Result<Option<PathBuf>, String> {
+    value_flag(rest, "--hooks-dir")
+}
+
+fn value_flag(rest: &[OsString], flag: &str) -> Result<Option<PathBuf>, String> {
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        if a == flag {
+            let v = iter
+                .next()
+                .ok_or_else(|| format!("{flag} requires a value"))?;
+            return Ok(Some(PathBuf::from(v)));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether `amont run <name>` needs a synthetic push ref list — `name` is
+/// either the `pre-push` entrypoint itself, or an individual check whose own
+/// declared stage is pre-push. Checked here, rather than left to `.get()` to
+/// discover empty, because empty and "nothing to check" are indistinguishable
+/// once a check has already started running.
+fn needs_synthetic_push_refs(name: &str, manifest: &greengate_runtime::manifest::Manifest) -> bool {
+    if name == "pre-push" {
+        return true;
+    }
+    if let Some(c) = registry::one_named(name, manifest) {
+        return c.stage() == Stage::PrePush;
+    }
+    // A SHORT name resolves later, in `run_named` — but the refs decision is
+    // made here, first. Match the same way it will: if any check the name
+    // reaches is a pre-push one, synthesize. For an ambiguous name this may
+    // synthesize refs that go unused; run_named then reports the ambiguity.
+    registry::CHECKS
+        .iter()
+        .any(|c| c.stage == Stage::PrePush && greengate_runtime::skip_suppresses(c.name, name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    /// The bug, stated as a property over the whole verb set: a hook argument
+    /// is data, and no amount of it can name a subcommand.
+    ///
+    /// `amont --hooks-dir d pre-push <remote> <url>` is literally what the
+    /// pre-push shim execs. With a remote named `install` the old dispatch ran
+    /// the FULL INSTALLER mid-push; with one named `run`, `list`, `trust`,
+    /// `restore` or `uninstall` the hook became a no-op that exited 0 — a push
+    /// with no checks, reported as a pass.
+    #[test]
+    fn a_hook_argument_never_names_a_subcommand() {
+        for (spelling, _) in SUBCOMMANDS {
+            let got = parse(argv(&[
+                "--hooks-dir",
+                "/d",
+                "pre-push",
+                spelling,
+                "https://example.test/r.git",
+            ]));
+            assert_eq!(
+                got,
+                Invocation::Hook {
+                    hooks_dir: PathBuf::from("/d"),
+                    name: "pre-push".to_string(),
+                    args: argv(&[spelling, "https://example.test/r.git"]),
+                },
+                "a remote named {spelling:?} hijacked dispatch"
+            );
+
+            // And in the first argument position too — `commit-msg` is handed
+            // a path, `prepare-commit-msg` a path and a source word.
+            let got = parse(argv(&["--hooks-dir", "/d", "commit-msg", spelling]));
+            assert_eq!(
+                got,
+                Invocation::Hook {
+                    hooks_dir: PathBuf::from("/d"),
+                    name: "commit-msg".to_string(),
+                    args: argv(&[spelling]),
+                },
+                "a commit-message file named {spelling:?} hijacked dispatch"
+            );
+        }
+    }
+
+    /// Every variant round-trips through the one table, at its own position.
+    /// Adding a verb will not compile without a position in `Sub::index`, and
+    /// will not pass this without an entry in `SUBCOMMANDS` — which is the
+    /// only place `subcommand` looks.
+    #[test]
+    fn the_subcommand_table_is_exhaustive() {
+        for (i, (spelling, sub)) in SUBCOMMANDS.iter().enumerate() {
+            assert_eq!(sub.index(), i, "{spelling} is at the wrong position");
+            assert_eq!(
+                subcommand(spelling),
+                Some(*sub),
+                "{spelling} does not round-trip"
+            );
+        }
+        // Distinct spellings, or two verbs share a position and one of them is
+        // unreachable.
+        let mut names: Vec<&str> = SUBCOMMANDS.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "a spelling appears twice");
+    }
+
+    /// A subcommand takes everything after it verbatim — including tokens that
+    /// are themselves verb spellings, and including flags it does not know.
+    #[test]
+    fn a_subcommand_passes_its_arguments_through_untouched() {
+        assert_eq!(
+            parse(argv(&["run", "pre-commit-prettier", "--all-files"])),
+            Invocation::Sub {
+                name: Sub::Run,
+                args: argv(&["pre-commit-prettier", "--all-files"]),
+            }
+        );
+        assert_eq!(
+            parse(argv(&["agents-md", "--path", "install"])),
+            Invocation::Sub {
+                name: Sub::AgentsMd,
+                args: argv(&["--path", "install"]),
+            }
+        );
+    }
+
+    /// `--hooks-dir` is consumed only BEFORE the hook name. After it, it is a
+    /// word git handed us — the old loop matched it anywhere and swallowed two
+    /// of the hook's own arguments.
+    #[test]
+    fn hooks_dir_after_the_hook_name_is_an_argument_not_a_flag() {
+        assert_eq!(
+            parse(argv(&[
+                "--hooks-dir",
+                "/d",
+                "pre-push",
+                "--hooks-dir",
+                "origin"
+            ])),
+            Invocation::Hook {
+                hooks_dir: PathBuf::from("/d"),
+                name: "pre-push".to_string(),
+                args: argv(&["--hooks-dir", "origin"]),
+            }
+        );
+    }
+
+    #[test]
+    fn help_and_emptiness_are_their_own_answers() {
+        assert_eq!(parse(argv(&["--help"])), Invocation::Help);
+        assert_eq!(parse(argv(&["-h"])), Invocation::Help);
+        assert!(matches!(parse(argv(&[])), Invocation::Usage(_)));
+        assert!(matches!(
+            parse(argv(&["--hooks-dir"])),
+            Invocation::Usage(_)
+        ));
+        // A hook name with no --hooks-dir is a usage error that says so,
+        // rather than a hook run against a directory nobody named.
+        assert!(matches!(parse(argv(&["pre-push"])), Invocation::Usage(_)));
+    }
+
+    #[test]
+    fn help_wins_over_an_unknown_word_but_not_over_a_hook() {
+        assert_eq!(parse(argv(&["--bogus", "--help"])), Invocation::Help);
+        assert_eq!(parse(argv(&["--bogus", "-h"])), Invocation::Help);
+        assert!(matches!(
+            parse(argv(&["--bogus-flag-for-probe"])),
+            Invocation::Usage(_)
+        ));
+        // A hook's own arguments are the hook's, `--help` included.
+        assert!(matches!(
+            parse(argv(&["--hooks-dir", "/h", "pre-push", "--help"])),
+            Invocation::Hook { .. }
+        ));
+    }
+
+    /// The help text has to actually describe the program. It used to be one
+    /// line naming `--hooks-dir` and none of the verbs.
+    #[test]
+    fn the_usage_block_names_every_subcommand() {
+        for (spelling, _) in SUBCOMMANDS {
+            assert!(USAGE.contains(spelling), "usage never mentions {spelling}");
+        }
+        assert!(USAGE.contains("--hooks-dir"));
+        assert!(USAGE.contains("--stage"));
+    }
+}

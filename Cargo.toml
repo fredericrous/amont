@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/amont", "crates/amont-fleet", "crates/amont-quiet", "crates/amont-runtime", "crates/amont-slots"]
+members = ["crates/greengate", "crates/greengate-fleet", "crates/greenharness-quiet", "crates/greengate-runtime", "crates/greenharness-slots"]
 
-# The floor for the COMMIT PATH — `amont` and `amont-runtime`, which
+# The floor for the COMMIT PATH — `amont` and `greengate-runtime`, which
 # inherit this. Not a guess: 1.73 was run against those two crates and failed
 # with four errors, all of them `E0658: use of unstable library feature
 # 'io_error_other'`, on `std::io::Error::other` in staged_only.rs; 1.74.0
 # compiles them clean. Everything else the source reaches for is older —
 # `OnceLock` and `is_some_and` are 1.70, let-else is 1.65.
 #
-# `amont-fleet` deliberately does NOT inherit it and states a much higher
+# `greengate-fleet` deliberately does NOT inherit it and states a much higher
 # floor of its own; see its manifest for why. Declaring 1.74 workspace-wide
 # would have been a claim nothing could honour.
 #
@@ -20,9 +20,9 @@ rust-version = "1.74"
 
 # Published metadata, shared so the four crates cannot disagree about who they
 # are. `version` is here because they are released together: `amont` depends
-# on `amont-runtime`, and crates.io resolves that by VERSION, not by path, so
+# on `greengate-runtime`, and crates.io resolves that by VERSION, not by path, so
 # a release where the two disagree is a release nobody can install.
-version = "2.3.1"
+version = "3.0.0"
 license = "MIT"
 repository = "https://github.com/greenharness/greengate"
 authors = ["Frederic Rousseau"]
@@ -30,22 +30,22 @@ edition = "2021"
 
 # The one place the inter-crate version is written.
 #
-# `amont` and `amont-fleet` both depend on `amont-runtime`, and
+# `amont` and `greengate-fleet` both depend on `greengate-runtime`, and
 # crates.io resolves that by VERSION while a checkout resolves it by PATH — so
 # a manifest carrying its own literal is a release where the two can disagree,
 # which is a release nobody can install. Bumping [workspace.package] version
 # above is now the whole edit — within a major version: this floor is a caret
 # requirement, so a major release moves it too.
 [workspace.dependencies]
-amont-runtime = { path = "crates/amont-runtime", version = "2.0.0" }
+greengate-runtime = { path = "crates/greengate-runtime", version = "3.0.0" }
 # Released with amont at the workspace version, first in the publish order;
 # amont-agent and relais take it from crates.io (decisions ADR-0039). The
 # floor is the workspace version: cargo requires a path dependency to satisfy
 # its own requirement, so it can name no release later than this checkout.
-amont-quiet = { path = "crates/amont-quiet", version = "2.0.0" }
+greenharness-quiet = { path = "crates/greenharness-quiet", version = "3.0.0" }
 # The host slots (amont ADR-0014, decisions ADR-0049): std-only, the one
-# implementation relais links too. Same floor rule as amont-quiet.
-amont-slots = { path = "crates/amont-slots", version = "2.0.0" }
+# implementation relais links too. Same floor rule as greenharness-quiet.
+greenharness-slots = { path = "crates/greenharness-slots", version = "3.0.0" }
 
 # Shared release posture. The hook binary runs on every commit, so size and
 # start-up cost are features.

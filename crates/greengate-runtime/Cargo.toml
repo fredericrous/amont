@@ -1,0 +1,51 @@
+[package]
+name = "greengate-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Inherited from [workspace.package]: 1.74, the floor this crate actually sets
+# — `std::io::Error::other` in staged_only.rs is the newest std API in the tree.
+rust-version.workspace = true
+description = "The amont hook logic: registry, dispatchers, checks and the trust model"
+readme = "../../README.md"
+keywords = ["git", "git-hooks", "pre-commit", "hooks"]
+categories = ["development-tools"]
+
+# NO DEPENDENCIES — a default to argue against, not a prohibition.
+#
+# The hook binary depends on this crate, so anything added here reaches the
+# commit path transitively, and that path runs on every commit in 96 repos with
+# the developer's credentials. The reason is SUPPLY CHAIN: every transitive
+# crate is code executing in that position. It is NOT that a dependency would
+# recreate the node/zsh problem — those were runtime requirements on PATH, while
+# a crate is compiled in and installs nothing. See scripts/check-no-deps.sh for
+# the full argument, including when it is reasonable to override this.
+#
+# greengate-fleet depends on this crate too and pulls ratatui quite happily,
+# because it is opt-in and does not run on every commit.
+#
+# CI asserts this emptiness — see the `deps` job.
+[features]
+# Failure injection for tests that spawn the binary, which `cfg(test)` cannot
+# reach. Never on in a shipped build: nothing reads the variables without it.
+test-hooks = []
+
+[dependencies]
+# The ONE dependency, argued here as scripts/check-no-deps.sh asks (decisions
+# ADR-0037, ADR-0020): git-attest is the one implementation of the
+# attestation format, which this crate used to copy by hand. It is std-only
+# and ours, so it puts no third party on the commit path: the code it runs
+# there is the code it replaces, moved to where every producer and verifier
+# shares it. The script allows it by name, and only while its own resolved
+# tree stays empty. A caret requirement: Cargo.lock pins the exact version.
+git-attest = "1.6"
+# The second, argued the same way (decisions ADR-0039, ADR-0020): greenharness-quiet
+# is the one implementation of the quiet-run active entry (docs/quiet-runs.md),
+# which amont-agent copied and drifted from in five ways. It is std-only and
+# ours, moved out of this crate's active.rs so the other writers can share it;
+# scripts/check-no-deps.sh allows it by name while its own tree stays empty.
+greenharness-quiet.workspace = true
+greenharness-slots.workspace = true
+
