@@ -290,6 +290,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: python3 scripts/test_bump_tap.py
       - run: python3 -I scripts/test_release_manifest.py
+      - run: python3 -I scripts/test_release_order.py
       - run: sh scripts/test_publish_crates.sh
       # The CPU sampler's macOS and Windows code never compiles on this runner;
       # `make lint-cross` lints it anyway (std only, no linker). The Linux
