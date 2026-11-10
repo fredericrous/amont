@@ -8,6 +8,17 @@ missing here.
 
 ## Unreleased
 
+### Fixed
+
+- A resumed release of an older tag no longer moves what installers read as
+  current. On 2026-11-10 a dispatch of v3.0.0, run to finish its npm publish,
+  rewrote the Homebrew formula back over v3.0.1. The tap job now reads the
+  tap's formula first and leaves a newer one alone; npm publishes an older
+  version under the `backport` dist-tag rather than `latest`; and GitHub does
+  not mark it the latest release. `scripts/release_order.py` answers both
+  questions, with its own tests. A dispatch runs the workflow as it was at
+  the tag, so this protects resumes of releases from the next one on.
+
 ## v3.0.1
 
 ### Fixed

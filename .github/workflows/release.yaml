@@ -38,6 +38,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       dry_run: ${{ steps.v.outputs.dry_run }}
+      newest: ${{ steps.v.outputs.newest }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -76,8 +77,18 @@ jobs:
             echo "::error::Write what the upgrader gets, then tag."
             exit 1
           fi
+          # Is this the newest release? A resume of an OLD tag (a dispatch to
+          # finish a failed publish) must not move a pointer installers read
+          # as current: npm's `latest`, GitHub's latest release, the tap
+          # formula. On 2026-11-10 a resumed v3.0.0 rewrote the tap back over
+          # v3.0.1. Asked of the remote's tags, so a tag pushed after this
+          # checkout still counts.
+          git ls-remote --tags --refs origin 'v*' > /tmp/release-tags
+          newest=$(python3 -I scripts/release_order.py newest "$manifest" < /tmp/release-tags)
+          echo "newest release: $newest"
           echo "version=$manifest" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.target }}
@@ -551,9 +562,11 @@ jobs:
             printf '\n---\n\n' >> "$notes"
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="${GITHUB_REF_NAME}" --jq .body >> "$notes"
+            # An older tag released after a newer one is not the latest.
             gh release create "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
               --notes-file "$notes" \
+              --latest="${{ needs.guard.outputs.newest }}" \
               dist/*
           fi
       - name: Dry run summary
@@ -689,10 +702,15 @@ jobs:
           #
           # Idempotent on "already published" for the same reason publish-crates
           # is: the usual reason to re-run a release is that a LATER step failed.
+          # An older version published after a newer one goes under a
+          # `backport` dist-tag: `npm publish` would otherwise move `latest`
+          # back to it, and `npm i @greenharness/greengate` would install it.
+          if [ "${{ needs.guard.outputs.newest }}" = true ]; then dist_tag=latest; else dist_tag=backport; fi
+          echo "npm dist-tag: $dist_tag"
           publish() {
             local dir="$1"
             echo "→ publishing $(basename "$dir")"
-            if out=$(npm publish --access public --provenance "$dir" 2>&1); then
+            if out=$(npm publish --access public --provenance --tag "$dist_tag" "$dir" 2>&1); then
               printf '%s\n' "$out"
             else
               printf '%s\n' "$out"
@@ -807,6 +825,11 @@ jobs:
   publish-tap:
     name: publish to the homebrew tap
     needs: [guard, standalone, publish]
+    # `current`: the tap names this version once the job is done. `false`
+    # when it already named a newer one and was left alone, so verify-brew
+    # does not expect this version from it.
+    outputs:
+      current: ${{ steps.order.outputs.current }}
     # Keyed on the ref being a TAG exactly as publish-npm is, so a
     # workflow_dispatch against an existing tag can resume this too. The
     # push step's nothing-to-commit path makes that resume a no-op when the
@@ -842,6 +865,24 @@ jobs:
           GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" \
             git clone --depth 1 git@github.com:fredericrous/homebrew-tap.git tap
 
+      # Never lower the tap. A resumed OLD release (a dispatch to finish a
+      # failed publish) re-runs this job, and copying its formula over a
+      # newer one is a downgrade for every `brew upgrade` (2026-11-10:
+      # v3.0.0 over v3.0.1). The tap's own formula is the authority, read
+      # before anything overwrites it.
+      - name: Is the tap already newer
+        id: order
+        run: |
+          set -euo pipefail
+          answer=$(python3 -I scripts/release_order.py tap "$VERSION" tap/Formula/greengate.rb)
+          if [ "$answer" = keep ]; then
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "### Homebrew tap left at a newer version" >> "$GITHUB_STEP_SUMMARY"
+            echo "v$VERSION is older than the formula the tap carries; it was not rewritten." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # The formula is greengate's own (packaging/homebrew/greengate.rb),
       # rewritten from the published SHA256SUMS. The rename amont -> greengate
       # goes in the SAME tap commit, written only now that the assets exist:
@@ -849,6 +890,7 @@ jobs:
       # to greengate, and Formula/amont.rb is removed so the old name cannot
       # be installed beside it.
       - name: Rewrite the formula
+        if: steps.order.outputs.current == 'true'
         run: |
           set -euo pipefail
           cp packaging/homebrew/greengate.rb tap/Formula/greengate.rb
@@ -864,6 +906,7 @@ jobs:
           rm -f tap/Formula/amont.rb
 
       - name: Push
+        if: steps.order.outputs.current == 'true'
         run: |
           set -euo pipefail
           cd tap
@@ -905,7 +948,9 @@ jobs:
   verify-brew:
     name: brew can install what was published
     needs: [guard, publish-tap]
-    if: github.ref_type == 'tag'
+    # Not when the tap was left at a newer version: it would install that,
+    # and the check below expects this run's.
+    if: github.ref_type == 'tag' && needs.publish-tap.outputs.current == 'true'
     # macOS because that is where nearly every brew user of this tool is, and
     # because the bottle-less formula builds from the darwin release asset —
     # the same bytes an actual user downloads.
