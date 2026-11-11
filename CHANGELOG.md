@@ -8,6 +8,8 @@ missing here.
 
 ## Unreleased
 
+## v3.1.0
+
 ### Fixed
 
 - A resumed release of an older tag no longer moves what installers read as
