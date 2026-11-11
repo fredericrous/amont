@@ -6,31 +6,29 @@
 //! through the repository's own hooks, so the gate judges it like any other.
 //! Nothing is pushed: a commit is what a person reviews and lands.
 //!
-//! A repository with uncommitted changes to tracked files is skipped, never
-//! stashed: the commit would carry somebody's work in progress, or the
-//! rename would be mixed into it.
+//! The commit goes only on a branch named [`BRANCH`], checked out by whoever
+//! runs the sweep (one task worktree per repository): never on a default
+//! branch, and never inside somebody's unrelated pull request. A repository
+//! with uncommitted changes to tracked files is skipped, never stashed. A
+//! sweep that fails half-way is undone, so a repository is either renamed
+//! and committed, or left exactly as it was.
 
 use std::path::{Path, PathBuf};
 
-use greengate_runtime::migrate::{old, system_git, tracked};
+use greengate_runtime::migrate::{system_git, tracked, MigrateError};
 use serde::Serialize;
 
 /// The sweep commit's subject.
 /// Short, so a commit-msg hook that prefixes it stays under 50 columns.
 pub const SUBJECT: &str = "chore: rename to greengate names";
 
-/// The generated files that may carry the old marker pair.
-const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];
+/// The only branch the sweep commits on.
+pub const BRANCH: &str = "chore/greengate-names";
 
-/// Does `repo_abs` still commit a 3.x name? Read from the work tree alone:
-/// three `stat`s and two small reads, no spawn.
+/// Does `repo_abs` still commit a 3.x name the rename would change? A
+/// repository that cannot be read is listed, so the sweep reports why.
 pub fn needs(repo_abs: &Path) -> bool {
-    repo_abs.join(old::MANIFEST).exists()
-        || repo_abs.join(old::PACK_FILE).exists()
-        || MARKED.iter().any(|name| {
-            std::fs::read_to_string(repo_abs.join(name))
-                .is_ok_and(|text| text.contains(old::AGENTS_START))
-        })
+    tracked::needs(repo_abs, &system_git).unwrap_or(true)
 }
 
 /// What happened in one repository.
@@ -40,10 +38,10 @@ pub enum Outcome {
     /// The rename was committed; `leftovers` tracked lines still name an old
     /// name and need a person's reading.
     Committed { commit: String, leftovers: usize },
-    /// Nothing was changed, and why.
+    /// Refused before anything changed, and why.
     Skipped { why: String },
-    /// The rename was staged but not committed (a hook refused it, say):
-    /// it stays staged for a person to look at.
+    /// Something failed after the sweep started; whatever it had changed was
+    /// undone, or `why` says what was not.
     Failed { why: String },
 }
 
@@ -65,30 +63,14 @@ fn git(repo_abs: &Path, args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| format!("git {}: {e}", args.join(" ")))
 }
 
-/// The branch checked out at `repo_abs` when it is the default one: the
-/// remote's `HEAD` when known, else `main` or `master`. A detached HEAD is
-/// no branch, so it is not the default one.
-fn on_default_branch(repo_abs: &Path) -> Option<String> {
-    let stdout = |args: &[&str]| -> Option<String> {
-        let out = git(repo_abs, args).ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-    };
-    let branch = stdout(&["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-    let default = stdout(&[
-        "symbolic-ref",
-        "--quiet",
-        "--short",
-        "refs/remotes/origin/HEAD",
-    ])
-    .and_then(|d| d.strip_prefix("origin/").map(str::to_string));
-    let is_default = match default {
-        Some(d) => branch == d,
-        None => branch == "main" || branch == "master",
-    };
-    is_default.then_some(branch)
+/// A git command's stdout when it succeeded, else why it did not.
+fn git_stdout(repo_abs: &Path, args: &[&str]) -> Result<String, String> {
+    let out = git(repo_abs, args)?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(format!("git {}: {}", args.join(" "), tail(&out)))
+    }
 }
 
 /// The last lines of a failed command's output, enough to say why.
@@ -102,90 +84,73 @@ fn tail(out: &std::process::Output) -> String {
     lines[lines.len().saturating_sub(5)..].join("\n")
 }
 
+/// Put the work tree and index back at `HEAD`. Safe here because the sweep
+/// starts only on a tree with no uncommitted tracked change, so everything
+/// it resets is the sweep's own; untracked files are not touched.
+fn undo(repo_abs: &Path, why: String) -> Outcome {
+    match git_stdout(repo_abs, &["reset", "-q", "--hard", "HEAD"]) {
+        Ok(_) => Outcome::Failed {
+            why: format!("{why}\nnothing was kept; fix that, then run the sweep again"),
+        },
+        Err(reset) => Outcome::Failed {
+            why: format!(
+                "{why}\nand the undo failed too ({reset}); the rename may be staged: \
+                 `git status` there"
+            ),
+        },
+    }
+}
+
 /// Rename, stage and commit in `repo_abs`, the top of its work tree.
 pub fn run(repo_abs: &Path) -> Outcome {
-    if let Some(branch) = on_default_branch(repo_abs) {
+    let branch = match git_stdout(repo_abs, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(branch) => branch,
+        Err(_) => "a detached HEAD".to_string(),
+    };
+    if branch != BRANCH {
         return Outcome::Skipped {
             why: format!(
-                "on {branch}, the default branch; run the sweep in a task branch or \
-                 worktree, so the commit lands through a pull request"
+                "on {branch}; the sweep commits only on {BRANCH}: \
+                 `git switch -c {BRANCH} origin/HEAD` there, or a worktree on it"
             ),
         };
     }
-    let dirty = match git(repo_abs, &["status", "--porcelain", "--untracked-files=no"]) {
-        Ok(out) if out.status.success() => !out.stdout.is_empty(),
-        Ok(out) => return Outcome::Skipped { why: tail(&out) },
-        Err(why) => return Outcome::Skipped { why },
-    };
-    if dirty {
-        return Outcome::Skipped {
-            why: "uncommitted changes to tracked files; commit or put them aside first".to_string(),
-        };
+    match git_stdout(repo_abs, &["status", "--porcelain", "--untracked-files=no"]) {
+        Ok(status) if status.is_empty() => {}
+        Ok(_) => {
+            return Outcome::Skipped {
+                why: "uncommitted changes to tracked files; commit or put them aside first"
+                    .to_string(),
+            }
+        }
+        Err(why) => return Outcome::Failed { why },
     }
     let staged = match tracked::migrate_tracked(repo_abs, &system_git) {
         Ok(staged) => staged,
-        Err(why) => {
+        // Checked before anything moves: nothing to undo.
+        Err(refused @ MigrateError::BothCommitted { .. }) => {
             return Outcome::Skipped {
-                why: why.to_string(),
+                why: refused.to_string(),
             }
         }
+        Err(why) => return undo(repo_abs, why.to_string()),
     };
     if !staged.changed() {
         return Outcome::Skipped {
             why: "nothing committed here carries greengate 3.x's names".to_string(),
         };
     }
-    match git(repo_abs, &["commit", "-q", "-m", SUBJECT]) {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            return Outcome::Failed {
-                why: format!(
-                    "the commit was refused; the rename stays staged:\n{}",
-                    tail(&out)
-                ),
-            }
-        }
-        Err(why) => return Outcome::Failed { why },
+    if let Err(why) = git_stdout(repo_abs, &["commit", "-q", "-m", SUBJECT]) {
+        return undo(
+            repo_abs,
+            format!("the commit was refused (its hooks say why):\n{why}"),
+        );
     }
-    match git(repo_abs, &["rev-parse", "--short", "HEAD"]) {
-        Ok(out) if out.status.success() => Outcome::Committed {
-            commit: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    match git_stdout(repo_abs, &["rev-parse", "--short", "HEAD"]) {
+        Ok(commit) => Outcome::Committed {
+            commit,
             leftovers: staged.leftover_count,
         },
-        Ok(out) => Outcome::Failed { why: tail(&out) },
         Err(why) => Outcome::Failed { why },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "greengate-fleet-migrate-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir); // a fresh dir; absent is fine
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn needs_reads_the_work_tree_alone() {
-        let dir = scratch("needs");
-        assert!(!needs(&dir));
-        std::fs::write(dir.join("AGENTS.md"), "# no block\n").unwrap();
-        assert!(!needs(&dir));
-        std::fs::write(
-            dir.join("AGENTS.md"),
-            format!("{}\nx\n{}\n", old::AGENTS_START, old::AGENTS_END),
-        )
-        .unwrap();
-        assert!(needs(&dir));
-        std::fs::remove_file(dir.join("AGENTS.md")).unwrap();
-        std::fs::write(dir.join(old::MANIFEST), "").unwrap();
-        assert!(needs(&dir));
-        let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of a scratch dir
     }
 }

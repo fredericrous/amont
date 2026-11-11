@@ -167,3 +167,36 @@ mod tests {
         assert!(INSTALLER_URL.contains(REPO));
     }
 }
+
+/// greengate 3.x's names: what `migrate` moves, and the committed names
+/// (manifest, pack, markers) read until the fleet sweep. Kept here, beside
+/// the new ones, so no module depends on the migration to know them; the
+/// census (Phase 6) removes the read-only ones.
+pub mod old {
+    /// The config namespace.
+    pub const CONFIG_PREFIX: &str = "amont.";
+    /// The environment variables' prefix.
+    pub const ENV_PREFIX: &str = "AMONT_";
+    /// greenpiste's own keys under that namespace: not greengate's to move.
+    pub const FOREIGN_PREFIX: &str = "amont.agent.";
+    /// greenpiste's own environment variables: not greengate's to move.
+    pub const FOREIGN_ENV_PREFIX: &str = "AMONT_AGENT_";
+    /// The held store, never moved (see `migrate`'s module doc).
+    pub const HELD_STORE: &str = "amont-held";
+    /// The held store's index header, which `greengate restore` still reads.
+    pub const HELD_FORMAT: &str = "amont-held-v1";
+    /// The namespace greengate 3.x's homelab cutover ran in.
+    pub const CLUSTER_NAMESPACE: &str = "amont-gates";
+    /// The folder of state greengate 3.x kept in the common dir.
+    pub const STATE_DIR: &str = "amont";
+    /// The committed manifest before 4.0: read when `greengate.conf` is
+    /// absent, until the fleet sweep has renamed every repository's (the
+    /// census removes that read).
+    pub const MANIFEST: &str = "amont.conf";
+    /// A pack repository's file before 4.0. Read whenever `greengate.pack`
+    /// is absent: a vendored pin at an older revision only ever has this one.
+    pub const PACK_FILE: &str = "amont.pack";
+    /// The AGENTS.md markers before 4.0, read until the sweep.
+    pub const AGENTS_START: &str = "<!-- amont:start -->";
+    pub const AGENTS_END: &str = "<!-- amont:end -->";
+}

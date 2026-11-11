@@ -27,41 +27,15 @@
 //! to put them back. The command is refused until `greengate restore` (which
 //! reads the old store, [`old_held_store`]) has put them back.
 //!
-//! The old spellings live HERE only; the names test exempts this file.
+//! The old spellings live in `names::old` and here; the names test exempts
+//! both files.
 
 use std::path::{Path, PathBuf};
 
 pub mod tracked;
 
-/// greengate 3.x's names, read only to move them.
-pub mod old {
-    /// The config namespace.
-    pub const CONFIG_PREFIX: &str = "amont.";
-    /// The environment variables' prefix.
-    pub const ENV_PREFIX: &str = "AMONT_";
-    /// greenpiste's own keys under that namespace: not greengate's to move.
-    pub const FOREIGN_PREFIX: &str = "amont.agent.";
-    /// greenpiste's own environment variables: not greengate's to move.
-    pub const FOREIGN_ENV_PREFIX: &str = "AMONT_AGENT_";
-    /// The held store, never moved (see the module doc).
-    pub const HELD_STORE: &str = "amont-held";
-    /// The held store's index header, which `greengate restore` still reads.
-    pub const HELD_FORMAT: &str = "amont-held-v1";
-    /// The namespace greengate 3.x's homelab cutover ran in.
-    pub const CLUSTER_NAMESPACE: &str = "amont-gates";
-    /// The folder of state greengate 3.x kept in the common dir.
-    pub const STATE_DIR: &str = "amont";
-    /// The committed manifest before 4.0: read when `greengate.conf` is
-    /// absent, until the fleet sweep has renamed every repository's (the
-    /// census removes that read).
-    pub const MANIFEST: &str = "amont.conf";
-    /// A pack repository's file before 4.0. Read whenever `greengate.pack`
-    /// is absent: a vendored pin at an older revision only ever has this one.
-    pub const PACK_FILE: &str = "amont.pack";
-    /// The AGENTS.md markers before 4.0, read until the sweep.
-    pub const AGENTS_START: &str = "<!-- amont:start -->";
-    pub const AGENTS_END: &str = "<!-- amont:end -->";
-}
+/// greengate 3.x's names, kept beside the new ones in [`crate::names`].
+pub use crate::names::old;
 
 /// One name in a git dir, its 4.0 spelling, and the header line it carries.
 struct Move {
@@ -248,6 +222,9 @@ pub enum MigrateError {
     /// The pending file of the version being left exists but cannot be
     /// read: its runs would be lost all the same, so the move waits.
     PendingUnreadable { path: PathBuf, why: String },
+    /// Both spellings of a committed file are in the work tree
+    /// (`migrate --tracked`): which one is meant is the repository's call.
+    BothCommitted { source: PathBuf, target: PathBuf },
     /// Both spellings of one name exist and are not a log to merge.
     BothExist { source: PathBuf, target: PathBuf },
     /// Another process held the migration lock past its deadline.
@@ -308,6 +285,14 @@ impl std::fmt::Display for MigrateError {
                  `rm -r {}`), then run `{} migrate`",
                 source.display(),
                 target.display(),
+                source.display(),
+                target.display(),
+                n::BIN
+            ),
+            MigrateError::BothCommitted { source, target } => write!(
+                out,
+                "both {} and {} are here; keep the one that is meant, `git rm` the \
+                 other and commit, then run `{} migrate --tracked` again",
                 source.display(),
                 target.display(),
                 n::BIN

@@ -212,7 +212,7 @@ fn parse_index(raw: &[u8]) -> Result<Vec<Held>, String> {
         .first()
         .ok_or_else(|| "held store index is empty".to_string())?;
     // greengate 3.x's store keeps its own header: `restore` puts one back.
-    if *header != FORMAT.as_bytes() && *header != crate::migrate::old::HELD_FORMAT.as_bytes() {
+    if *header != FORMAT.as_bytes() && *header != crate::names::old::HELD_FORMAT.as_bytes() {
         return Err(format!(
             "held store index is not {FORMAT} — refusing to guess at its shape"
         ));
@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn parse_index_reads_a_3x_store() {
         assert_eq!(
-            parse_index(format!("{}\0", crate::migrate::old::HELD_FORMAT).as_bytes())
+            parse_index(format!("{}\0", crate::names::old::HELD_FORMAT).as_bytes())
                 .expect("a 3.x header"),
             Vec::<Held>::new()
         );

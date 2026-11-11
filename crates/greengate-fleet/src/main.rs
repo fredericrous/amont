@@ -241,6 +241,18 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    let ignored = [
+        (agents_md, "--agents-md"),
+        (aval_hook, "--aval-hook"),
+        (remove_unrecognized, "--remove-unrecognized"),
+        (binary.is_some(), "--binary"),
+    ];
+    if let Some((_, flag)) = ignored.iter().find(|(given, _)| migrate && *given) {
+        return Err(format!(
+            "--migrate runs the rename alone, without the hook repair: drop {flag}, \
+             or run it in a separate `fix`"
+        ));
+    }
     if migrate && mode != Mode::Fix {
         return Err("--migrate goes with fix only: `fix --migrate` to see, \
                     `fix --apply --migrate` to commit"

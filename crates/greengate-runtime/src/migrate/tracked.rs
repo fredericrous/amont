@@ -9,7 +9,8 @@
 //! What it does, each step skipped when there is nothing to do:
 //!
 //! - `amont.conf` → `greengate.conf` and `amont.pack` → `greengate.pack`,
-//!   with `git mv` when tracked. The content is unchanged: trust is the
+//!   with `git mv`, when tracked (an untracked one is a local file, left as
+//!   it is). The content is unchanged: trust is the
 //!   content's blob id, so a trusted manifest stays trusted, and the
 //!   `amont:pack:*` markers inside it are still read until the census.
 //! - the AGENTS.md / CLAUDE.md marker pair, old spelling to new; what lies
@@ -22,14 +23,15 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{old, run_git, GitFn, MigrateError};
+use super::{run_git, GitFn, MigrateError};
 use crate::names as n;
+use crate::names::old;
 
 /// The committed files renamed, old name first.
 const FILES: &[(&str, &str)] = &[(old::MANIFEST, n::MANIFEST), (old::PACK_FILE, n::PACK_FILE)];
 
 /// The generated files whose marker pair is rewritten.
-const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];
+pub const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];
 
 /// The attest inputs file, which lists the manifest by name.
 const ATTEST_INPUTS: &str = ".github/attest-inputs";
@@ -60,6 +62,36 @@ impl Staged {
     }
 }
 
+/// Does the work tree at `root` still commit a 3.x name that
+/// [`migrate_tracked`] would change? The same tests it applies, so a
+/// repository listed as due is one it changes.
+pub fn needs(root: &Path, git: &GitFn<'_>) -> Result<bool, MigrateError> {
+    for &(old_name, _) in FILES {
+        if root.join(old_name).exists() && is_tracked(root, old_name, git)? {
+            return Ok(true);
+        }
+    }
+    for &name in MARKED {
+        if read_if_present(&root.join(name))?.is_some_and(|text| swap_markers(&text).is_some()) {
+            return Ok(true);
+        }
+    }
+    Ok(
+        read_if_present(&root.join(ATTEST_INPUTS))?
+            .is_some_and(|text| swap_inputs(&text).is_some()),
+    )
+}
+
+/// The file's text, `None` when it does not exist; any other read error is
+/// an error, never "absent".
+fn read_if_present(path: &Path) -> Result<Option<String>, MigrateError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(super::io("read", path)(e)),
+    }
+}
+
 /// Rename the tracked names in the work tree at `root` (its top level) and
 /// stage them. Refuses, changing nothing, when both spellings of a file
 /// exist.
@@ -68,20 +100,14 @@ pub fn migrate_tracked(root: &Path, git: &GitFn<'_>) -> Result<Staged, MigrateEr
     for &(old_name, new_name) in FILES {
         let (source, target) = (root.join(old_name), root.join(new_name));
         if source.exists() && target.exists() {
-            return Err(MigrateError::BothExist { source, target });
+            return Err(MigrateError::BothCommitted { source, target });
         }
     }
     for &(old_name, new_name) in FILES {
-        let source = root.join(old_name);
-        if !source.exists() {
+        if !root.join(old_name).exists() || !is_tracked(root, old_name, git)? {
             continue;
         }
-        if is_tracked(root, old_name, git)? {
-            in_tree(root, git, &["mv", "--", old_name, new_name])?;
-        } else {
-            let target = root.join(new_name);
-            std::fs::rename(&source, &target).map_err(super::io("rename", &source))?;
-        }
+        in_tree(root, git, &["mv", "--", old_name, new_name])?;
         staged.renamed.push((old_name, new_name));
     }
     for &name in MARKED {
@@ -117,7 +143,7 @@ fn rewrite(
     edit: fn(&str) -> Option<String>,
 ) -> Result<bool, MigrateError> {
     let path: PathBuf = root.join(name);
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Some(text) = read_if_present(&path)? else {
         return Ok(false);
     };
     let Some(edited) = edit(&text) else {

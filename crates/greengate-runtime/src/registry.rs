@@ -283,7 +283,7 @@ pub const CHECKS: &[Builtin] = &[
         stage: Stage::PreCommit,
         // Both names: a commit that renames `amont.conf` to `greengate.conf`
         // touches each, and either may hold the declarations to vet.
-        scope: Scope::named(&[crate::manifest::MANIFEST, crate::migrate::old::MANIFEST])
+        scope: Scope::named(&[crate::manifest::MANIFEST, crate::names::old::MANIFEST])
             .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
@@ -387,9 +387,9 @@ pub const CHECKS: &[Builtin] = &[
         stage: Stage::PreCommit,
         scope: Scope {
             files: hooks::k8s::EXTS,
-            names: &[crate::manifest::MANIFEST, crate::migrate::old::MANIFEST],
+            names: &[crate::manifest::MANIFEST, crate::names::old::MANIFEST],
             dirs: &[],
-            opt_in: &[crate::manifest::MANIFEST, crate::migrate::old::MANIFEST],
+            opt_in: &[crate::manifest::MANIFEST, crate::names::old::MANIFEST],
             not_during: MID_OPERATION,
         },
         severity: Severity::Block,

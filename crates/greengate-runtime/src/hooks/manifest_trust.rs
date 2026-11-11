@@ -26,7 +26,7 @@ use std::path::Path;
 use crate::check::Outcome;
 use crate::hooks::common::{fail, hl, ok, repo_root, staged_files};
 use crate::manifest::{Manifest, MANIFEST};
-use crate::migrate::old;
+use crate::names::old;
 use crate::trust::{self, State};
 
 pub fn run(settings: &crate::config::Settings, manifest: &Manifest) -> Outcome {

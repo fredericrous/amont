@@ -53,8 +53,8 @@ pub const MANIFEST: &str = crate::names::MANIFEST;
 /// exists, else greengate 3.x's `amont.conf` when that exists, else
 /// `greengate.conf` (where a new one would go).
 pub fn manifest_name(root: &Path) -> &'static str {
-    if !root.join(MANIFEST).exists() && root.join(crate::migrate::old::MANIFEST).exists() {
-        crate::migrate::old::MANIFEST
+    if !root.join(MANIFEST).exists() && root.join(crate::names::old::MANIFEST).exists() {
+        crate::names::old::MANIFEST
     } else {
         MANIFEST
     }

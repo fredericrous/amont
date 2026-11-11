@@ -32,7 +32,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn repo(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
-    git(&dir, &["init", "-q", "-b", "task", "."]);
+    git(&dir, &["init", "-q", "-b", "chore/greengate-names", "."]);
     git(&dir, &["config", "user.name", "t"]);
     git(&dir, &["config", "user.email", "t@example.invalid"]);
     git(&dir, &["config", "commit.gpgsign", "false"]);
@@ -86,17 +86,26 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
         &[(OLD_MANIFEST, "pre-commit  a  *  warn  true\n")],
     );
     git(&on_main, &["branch", "-m", "main"]);
+    let feature = repo(
+        &root,
+        "feature",
+        &[(OLD_MANIFEST, "pre-commit  a  *  warn  true\n")],
+    );
+    git(&feature, &["branch", "-m", "feat/unrelated"]);
+    // A local, untracked manifest is not the repository's to rename.
+    let local = repo(&root, "local", &[("README.md", "r\n")]);
+    std::fs::write(local.join(OLD_MANIFEST), "pre-commit  a  *  warn  true\n").unwrap();
     let done = repo(
         &root,
         "done",
         &[("greengate.conf", "pre-commit  a  *  warn  true\n")],
     );
 
-    // The dry run lists the three due, and changes nothing.
+    // The dry run lists the five due, and changes nothing.
     let (code, out) = fleet(&root, &["fix", "--migrate"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("4 repositories"), "{out}");
-    assert!(!out.contains("done"), "{out}");
+    assert!(out.contains("5 repositories"), "{out}");
+    assert!(!out.contains("done") && !out.contains("local"), "{out}");
     assert!(one.join(OLD_MANIFEST).is_file());
 
     let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
@@ -105,9 +114,10 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
     assert!(out.contains("two: committed"), "{out}");
     assert!(out.contains("dirty: skipped: uncommitted changes"), "{out}");
     assert!(
-        out.contains("on-main: skipped: on main, the default branch"),
+        out.contains("on-main: skipped: on main; the sweep commits only on chore/greengate-names"),
         "{out}"
     );
+    assert!(out.contains("feature: skipped: on feat/unrelated"), "{out}");
 
     for dir in [&one, &two] {
         let log = git(dir, &["log", "--format=%s"]);
@@ -128,12 +138,53 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
     assert_eq!(git(&done, &["log", "--format=%s"]), "chore: base\n");
     assert_eq!(git(&on_main, &["log", "--format=%s"]), "chore: base\n");
     assert!(on_main.join(OLD_MANIFEST).is_file());
+    assert_eq!(git(&feature, &["log", "--format=%s"]), "chore: base\n");
+    assert!(local.join(OLD_MANIFEST).is_file() && !local.join("greengate.conf").exists());
 
-    // A second sweep finds only the two it skipped.
+    // A second sweep finds only the three it skipped.
     let (code, out) = fleet(&root, &["fix", "--migrate"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("2 repositories commit"), "{out}");
+    assert!(out.contains("3 repositories commit"), "{out}");
     let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
+}
+
+/// A commit its own hooks refuse is undone: the repository is left exactly
+/// as it was, the run says why and exits 1.
+#[cfg(unix)]
+#[test]
+fn a_refused_commit_is_undone_and_fails_the_sweep() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("greengate-fleet-refused-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root); // a fresh dir; absent is fine
+    std::fs::create_dir_all(&root).unwrap();
+    let refused = repo(
+        &root,
+        "refused",
+        &[(OLD_MANIFEST, "pre-commit  a  *  warn  true\n")],
+    );
+    let hook = refused.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'no renames today' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(&refused, &["config", "core.hooksPath", ".git/hooks"]);
+
+    let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("refused: FAILED"), "{out}");
+    assert!(out.contains("no renames today"), "the hook's reason: {out}");
+    assert!(out.contains("nothing was kept"), "{out}");
+    assert_eq!(git(&refused, &["log", "--format=%s"]), "chore: base\n");
+    assert!(git(&refused, &["status", "--porcelain", "--untracked-files=no"]).is_empty());
+    assert!(refused.join(OLD_MANIFEST).is_file() && !refused.join("greengate.conf").exists());
+    let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
+}
+
+/// Flags of the hook repair would be dropped silently: refused instead.
+#[test]
+fn migrate_refuses_the_flags_it_would_ignore() {
+    let (code, out) = fleet(&std::env::temp_dir(), &["fix", "--migrate", "--agents-md"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("drop --agents-md"), "{out}");
 }
 
 #[test]

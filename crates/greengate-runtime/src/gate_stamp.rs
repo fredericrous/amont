@@ -511,7 +511,7 @@ fn file_inputs(tree: &str, tokens: &[String]) {
 /// gate whose declared inputs cover it, and a scope-only edit then misses.
 fn manifest_is_an_input(tree: &str, spec: &crate::attest_inputs::Spec, gate: &str) -> bool {
     // The name the tree tracks: an unswept tree still has the 3.x one.
-    let tracked = [crate::manifest::MANIFEST, crate::migrate::old::MANIFEST]
+    let tracked = [crate::manifest::MANIFEST, crate::names::old::MANIFEST]
         .into_iter()
         .find(|name| crate::git::succeeds(&["cat-file", "-e", &format!("{tree}:{name}")]));
     tracked.map_or(true, |name| {

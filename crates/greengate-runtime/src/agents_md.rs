@@ -20,8 +20,8 @@ pub const END: &str = crate::names::AGENTS_END;
 /// The 3.x marker pair. A file still carrying it is read as if it held the
 /// new one, and the next write replaces the whole old block with a new one:
 /// the only fallback, removed at the census once the fleet sweep has run.
-const OLD_START: &str = crate::migrate::old::AGENTS_START;
-const OLD_END: &str = crate::migrate::old::AGENTS_END;
+const OLD_START: &str = crate::names::old::AGENTS_START;
+const OLD_END: &str = crate::names::old::AGENTS_END;
 
 /// Does `text` carry a marker of either pair? The opt-in test, answered from
 /// the text alone.

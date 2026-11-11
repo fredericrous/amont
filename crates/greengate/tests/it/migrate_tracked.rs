@@ -129,7 +129,35 @@ fn both_manifests_are_refused_and_nothing_moves() {
     let refused = repo.run(&["migrate", "--tracked"]);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(refused.stderr.contains("both"), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("`git rm` the"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        refused.stderr.contains("git status"),
+        "its own hint: {}",
+        refused.stderr
+    );
     assert!(repo.path(OLD_MANIFEST).is_file() && repo.path("greengate.conf").is_file());
     let status = repo.git(&["status", "--porcelain"]);
     assert!(status.stdout.is_empty(), "nothing staged or changed");
+}
+
+/// `--tracked` with a flag of the local move is a usage error: exit 2, no
+/// migration hint, nothing changed.
+#[test]
+fn tracked_stands_alone() {
+    let repo = Repo::new();
+    repo.stage(OLD_MANIFEST, "pre-commit  a  *  warn  true\n");
+    repo.commit("chore: base");
+    let refused = repo.run(&["migrate", "--tracked", "--reverse"]);
+    assert_eq!(refused.code, 2, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("stands alone"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!refused.stderr.contains("doctor"), "{}", refused.stderr);
+    assert!(repo.path(OLD_MANIFEST).is_file());
 }

@@ -494,7 +494,8 @@ fn sanitize_lines(text: &str) -> String {
 /// `greengate migrate --tracked`: the committed names, renamed and staged in
 /// the work tree `cwd` belongs to; what still names an old one is listed.
 fn migrate_tracked(cwd: &Path) -> Result<(), String> {
-    use greengate_runtime::migrate::{old, system_git, tracked};
+    use greengate_runtime::migrate::{system_git, tracked};
+    use greengate_runtime::names::old;
     let root = greengate_runtime::git::stdout_in(cwd, &["rev-parse", "--show-toplevel"])
         .ok_or("not inside a git work tree")?;
     let root = Path::new(root.trim());
@@ -539,9 +540,27 @@ fn migrate_tracked(cwd: &Path) -> Result<(), String> {
 }
 
 /// `greengate migrate [--reverse] [--global] [--tracked]`.
-fn migrate_command(args: &[OsString]) -> Result<(), String> {
-    migrate_verb(args)
-        .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why)))
+fn migrate_command(args: &[OsString]) -> i32 {
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    if !has("--tracked") {
+        return report(
+            migrate_verb(args)
+                .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why))),
+        );
+    }
+    if has("--reverse") || has("--global") {
+        eprintln!("{BIN}: `--tracked` stands alone: run `{BIN} migrate --tracked` by itself");
+        return 2;
+    }
+    let tracked = std::env::current_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|cwd| migrate_tracked(&cwd));
+    report(tracked.map_err(|why| {
+        format!(
+            "{BIN}: {}\n{BIN}: `git status` shows what the rename staged before it stopped",
+            sanitize_lines(&why)
+        )
+    }))
 }
 
 fn migrate_verb(args: &[OsString]) -> Result<(), String> {
@@ -550,12 +569,6 @@ fn migrate_verb(args: &[OsString]) -> Result<(), String> {
     let reverse = args.iter().any(|a| a == "--reverse");
     let global = args.iter().any(|a| a == "--global");
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    if args.iter().any(|a| a == "--tracked") {
-        if reverse || global {
-            return Err("`--tracked` takes neither `--reverse` nor `--global`".into());
-        }
-        return migrate_tracked(&cwd);
-    }
     let repo = Repo::locate(&cwd);
     if reverse {
         let mut moved = migrate::Moved::default();
@@ -850,7 +863,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // `amont cluster collect` — turn finished detached Workflows into
         // cluster tokens now (ADR-0017).
         Sub::Cluster => greengate_runtime::cluster::collect_command(args),
-        Sub::Migrate => report(migrate_command(args)),
+        Sub::Migrate => migrate_command(args),
         Sub::Doctor => {
             let cwd = std::env::current_dir().unwrap_or_default();
             let found = match greengate_runtime::migrate::leftovers(

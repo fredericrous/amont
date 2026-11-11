@@ -224,14 +224,14 @@ pub fn fetch(source: &Source, id: &str, into: &Path) -> Result<String, String> {
             source.label
         ));
     }
-    [PACK_FILE, crate::migrate::old::PACK_FILE]
+    [PACK_FILE, crate::names::old::PACK_FILE]
         .iter()
         .find_map(|file| crate::git::stdout_in(into, &["show", &format!("FETCH_HEAD:{file}")]))
         .ok_or_else(|| {
             format!(
                 "{}: has no {PACK_FILE} (or {}) at {}",
                 source.label,
-                crate::migrate::old::PACK_FILE,
+                crate::names::old::PACK_FILE,
                 &id[..7.min(id.len())]
             )
         })
