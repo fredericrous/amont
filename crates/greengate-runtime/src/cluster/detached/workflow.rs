@@ -21,9 +21,9 @@ pub(super) const PRIORITY_CLASS: &str = "gate-detached";
 /// `gate-detached` quota allows one pod.
 const CACHE_CLAIM: &str = "gate-cache-detached";
 /// The Secret holding the `greengate-bot` read token, mounted on `fetch` only.
-const TOKEN_SECRET: &str = "amont-bot-read-token";
+const TOKEN_SECRET: &str = crate::names::READ_TOKEN_SECRET;
 const TOKEN_DIR: &str = "/run/secrets/forgejo";
-const EXECUTOR_ACCOUNT: &str = "amont-gate-executor";
+const EXECUTOR_ACCOUNT: &str = crate::names::EXECUTOR_ACCOUNT;
 /// Forgejo accepts only mesh traffic from the pod network: every pod opts in.
 const AMBIENT_KEY: &str = "istio.io/dataplane-mode";
 const AMBIENT_VALUE: &str = "ambient";
@@ -38,7 +38,7 @@ const QUEUE_SLACK_SECS: u64 = 600;
 /// The Workflow's name for a run label: deterministic, so a lost answer to
 /// `create` is reconciled by `get` and never by a second `create`.
 pub(super) fn workflow_name(label: &str) -> String {
-    format!("amont-rh-{label}")
+    format!("{}{label}", crate::names::WORKFLOW_PREFIX)
 }
 
 /// The template of the gate whose DAG task is `task`.
@@ -183,10 +183,11 @@ pub(super) fn workflow_json(plan: &Plan) -> String {
     templates.extend(record.gates.iter().map(|g| template(plan, g)));
     let gates = record.gates.len() as u64;
     let deadline = gates * (config.timeout_secs + GATE_SLACK_SECS) + QUEUE_SLACK_SECS;
+    let managed_by = crate::names::MANAGED_BY;
     format!(
         "{{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\
          \"metadata\":{{\"name\":{name},\
-         \"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_key}:{label}}},\
+         \"labels\":{{\"app.kubernetes.io/managed-by\":\"{managed_by}\",{run_key}:{label}}},\
          \"annotations\":{{\"greengate.dev/tree\":{tree}}}}},\
          \"spec\":{{\"entrypoint\":\"gates\",\"serviceAccountName\":\"default\",\
          \"automountServiceAccountToken\":false,\
@@ -369,7 +370,7 @@ mod tests {
     fn config() -> ClusterConfig {
         ClusterConfig {
             kubeconfig: PathBuf::from("/k"),
-            namespace: "amont-gates".into(),
+            namespace: "greengate-gates".into(),
             slots: 2,
             image: format!("reg/gate:1@sha256:{}", "a".repeat(64)),
             digest: format!("sha256:{}", "a".repeat(64)),
@@ -411,7 +412,7 @@ mod tests {
             "\"podPriorityClassName\":\"gate-detached\"",
             "\"kubernetes.io/hostname\":\"talos-wk-3-gpu\"",
             "\"automountServiceAccountToken\":false",
-            "\"serviceAccountName\":\"amont-gate-executor\"",
+            "\"serviceAccountName\":\"greengate-gate-executor\"",
             "\"serviceAccountName\":\"default\"",
             "\"imagePullSecrets\":[{\"name\":\"forgejo-registry-pull\"}]",
             "\"secondsAfterCompletion\":172800",
@@ -424,7 +425,7 @@ mod tests {
             "\"runAsNonRoot\":true",
             "\"type\":\"RuntimeDefault\"",
             "\"claimName\":\"gate-cache-detached\"",
-            "\"secretName\":\"amont-bot-read-token\"",
+            "\"secretName\":\"greengate-bot-read-token\"",
             "\"greengate.run\":\"7-00000000000000aa-0\"",
             "\"value\":\"git\"",
             "\"memory\":\"3840Mi\"",

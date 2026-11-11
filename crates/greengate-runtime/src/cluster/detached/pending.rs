@@ -504,7 +504,7 @@ pub(in crate::cluster::detached) mod tests {
             name: name.into(),
             uid: Some("uid-1".into()),
             label: "7-00000000000000aa-0".into(),
-            namespace: "amont-gates".into(),
+            namespace: "greengate-gates".into(),
             kubeconfig: PathBuf::from("/k \"quoted\".yaml"),
             tree: "t".repeat(40),
             source: Source {

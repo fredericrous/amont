@@ -36,7 +36,7 @@ cat > "$D/stdin-$n"
 case "$1" in
   create)
     if grep -q '"kind":"Workflow"' "$3"; then
-      wf=$(grep -o '"name":"amont-rh-[^"]*"' "$3" | head -1 | sed 's/.*:"//; s/"$//')
+      wf=$(grep -o '"name":"greengate-rh-[^"]*"' "$3" | head -1 | sed 's/.*:"//; s/"$//')
       a=$(cat "$D/create_wf_n" 2>/dev/null || echo 0); a=$((a+1)); echo "$a" > "$D/create_wf_n"
       mode=$(sed -n "${a}p" "$D/create_wf" 2>/dev/null)
       case "$mode" in
@@ -57,7 +57,7 @@ case "$1" in
       403) echo 'Error from server (Forbidden): jobs.batch "x" is forbidden: exceeded quota: gates' >&2; exit 1 ;;
       down) echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1 ;;
     esac
-    k=$(grep -o '"name":"amont-gate-slot-[0-9]*"' "$3" | head -1 | sed 's/.*-//; s/"//')
+    k=$(grep -o '"name":"greengate-gate-slot-[0-9]*"' "$3" | head -1 | sed 's/.*-//; s/"//')
     if [ -n "$PROBE_AMONT" ]; then
       ls "$GREENHARNESS_SLOT_DIR/holders" > "$D/holders-at-create" 2>/dev/null
       "$PROBE_AMONT" slots --json > "$D/slots-at-create" 2>/dev/null
@@ -413,7 +413,7 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
     );
     assert_eq!(text.matches("running on the cluster").count(), 1, "{text}");
     assert!(
-        !text.contains("amont-gate-slot-"),
+        !text.contains("greengate-gate-slot-"),
         "the Job name goes to the record: {text}"
     );
     let tree = c.staged_tree();
@@ -424,7 +424,7 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
             && note.contains("platform=x86_64-linux")
             && note.contains("image=reg/gate@sha256:observed")
             && note.contains("job=uid-0")
-            && note.contains("name=amont-gate-slot-0")
+            && note.contains("name=greengate-gate-slot-0")
             && note.contains("bundle="),
         "{note}"
     );
@@ -716,7 +716,7 @@ fn every_non_pass_reruns_the_gate_locally() {
         assert!(fields[2].contains(mode.why), "{what}: {log}");
         assert_eq!(c.cluster_note(&c.staged_tree()), "", "{what}");
         assert_said(mode, &text);
-        if c.read("job.json").contains("amont-gate-slot-") {
+        if c.read("job.json").contains("greengate-gate-slot-") {
             assert!(
                 c.read("deletes").contains("delete job"),
                 "{what}: Job removed"
@@ -768,7 +768,7 @@ fn concurrent_gates_each_get_their_own_job() {
     let (code, text) = c.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
     // The fake's call log and Job manifests in the message: this has failed
-    // on CI only ("a runs here: amont-gate-slot-0 is not the Job this run
+    // on CI only ("a runs here: greengate-gate-slot-0 is not the Job this run
     // created"), and never in 30 local runs; the next failure says why.
     assert_eq!(
         c.local_runs(),
@@ -821,7 +821,7 @@ fn the_job_spec_carries_every_required_field() {
         "\"args\":[\"sh\",\"-c\",\"make deps\"]",
         "\"args\":[\"/usr/local/bin/fetch\"]",
         "\"limits\":{\"memory\":\"4Gi\",\"cpu\":\"2\"}",
-        "\"name\":\"amont-gate-slot-0\"",
+        "\"name\":\"greengate-gate-slot-0\"",
         "\"claimName\":\"gate-cache-0\"",
     ] {
         assert!(job.contains(needle), "{needle} missing: {job}");
@@ -1494,7 +1494,7 @@ fn a_job_created_without_a_uid_is_deleted_by_name() {
     assert_eq!(c.local_runs(), 1, "{text}");
     assert!(
         c.read("deletes")
-            .contains("delete job amont-gate-slot-0 --wait=false"),
+            .contains("delete job greengate-gate-slot-0 --wait=false"),
         "deleted by name, without waiting: {}",
         c.read("deletes")
     );
@@ -1676,7 +1676,7 @@ mod interrupted {
         held.ends_by(signal, Duration::from_secs(30));
         let deletes = c.read("deletes");
         assert!(
-            deletes.contains("delete job amont-gate-slot-0 --wait=false"),
+            deletes.contains("delete job greengate-gate-slot-0 --wait=false"),
             "{deletes} / {}",
             held.output()
         );

@@ -918,7 +918,7 @@ mod tests {
     }
 
     fn record_of_the_fixture() -> Pending {
-        let mut record = sample("amont-rh-test");
+        let mut record = sample("greengate-rh-test");
         record.uid = Some("uid-1".into());
         record.label = "label-1".into();
         record.tree = "13b5ee2d54389399fa2738f084a1b653b5844028".into();
@@ -1084,8 +1084,8 @@ mod tests {
         let record = record_of_the_fixture();
         let list = list_for(&record, "Failed", "Failed", |p| {
             p.replace(
-                "\"name\":\"amont-rh-test\",\"namespace\"",
-                "\"namex\":\"amont-rh-test\",\"namespace\"",
+                "\"name\":\"greengate-rh-test\",\"namespace\"",
+                "\"namex\":\"greengate-rh-test\",\"namespace\"",
             )
         });
         let done = collected(record, &list);

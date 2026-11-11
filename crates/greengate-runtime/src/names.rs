@@ -153,6 +153,23 @@ pub const RUN_LABEL: &str = "greengate.run";
 pub const GATE_ANNOTATION: &str = "greengate.dev/gate";
 pub const TREE_ANNOTATION: &str = "greengate.dev/tree";
 
+/// The namespace cluster gates run in, unless `greengate.cluster.namespace`
+/// names another (homelab `apps/greengate-gates`).
+pub const CLUSTER_NAMESPACE: &str = "greengate-gates";
+/// `app.kubernetes.io/managed-by` on every Job and Workflow.
+pub const MANAGED_BY: &str = "greengate";
+/// A cluster Job's name before its slot number.
+pub const JOB_PREFIX: &str = "greengate-gate-slot-";
+/// A detached Workflow's name before its run label.
+pub const WORKFLOW_PREFIX: &str = "greengate-rh-";
+/// The ServiceAccount a detached Workflow's pods run as.
+pub const EXECUTOR_ACCOUNT: &str = "greengate-gate-executor";
+/// The Secret holding the snapshot repository's read token.
+pub const READ_TOKEN_SECRET: &str = "greengate-bot-read-token";
+/// The author and committer of the snapshot commits this tool makes.
+pub const GIT_AUTHOR: &str = "greengate";
+pub const GIT_EMAIL: &str = "greengate@localhost";
+
 /// greengate 3.x's names: what `migrate` moves, and the committed names
 /// (manifest, pack, markers) read until the fleet sweep. Kept here, beside
 /// the new ones, so no module depends on the migration to know them; the
