@@ -165,7 +165,7 @@ fleet's shims are re-baked.
   `amont/crates/greengate-runtime/src/staged_only.rs`,
   `amont/crates/greengate-runtime/src/agents_md.rs`,
   `amont/crates/greengate-fleet/src/fix.rs`.
-- [ ] Phase 4 — Kubernetes and the homelab cutover:
+- [x] Phase 4 — Kubernetes and the homelab cutover:
   `amont/crates/greengate-runtime/src/cluster.rs`,
   `amont/crates/greengate-runtime/src/cluster/detached/workflow.rs`,
   `homelab/kubernetes/homelab/apps/greengate-gates/kustomization.yaml`,
@@ -293,6 +293,23 @@ fleet's shims are re-baked.
   the runtime unit tests appended to the live checkout's `cluster.log`
   (`cluster::log_line` writes to the process's own common dir). It now
   writes nothing under `cfg(test)`.
+- 2026-11-11 (Phase 4) — the second homelab change (remove `amont-gates`,
+  move the Workflow fence to `apps/greengate-gates/`, drop amont-gates'
+  image pin from `build-gate-runner.yaml`) runs after the Outcome check,
+  as the Behaviour says: it is the last step of the cutover, not of this
+  phase. greengate 4.0 code is merged but unreleased until Phase 5.
+- 2026-11-11 (Phase 4) — the detached lane (`rehearse --cluster`, a
+  `greengate-rh-*` Workflow) is proven on the first real repository after
+  the 4.0 install (Phase 5): it pushes a snapshot to that repository's
+  `amont-snapshots` mirror, which a scratch repository has none of. The
+  Job lane is proven now (below).
+- 2026-11-11 (Phase 4) — kept on the old spelling, with the snapshot
+  repository step (a later step, Non-goals): the `refs/amont/cluster/`
+  temp refs and the cache's `amont` subPath. Phase 5 adds one step: the
+  machine's `greengate.cluster.kubeconfig` is repointed to
+  `~/.config/greengate/kube/homelab.yaml` (written today by homelab's
+  `greengate-gates-kubeconfig.sh`) in the install window; `greengate
+  doctor` names a value still under `~/.config/amont/`.
 
 ## Verification
 
@@ -380,6 +397,24 @@ fleet's shims are re-baked.
   cluster gate runs in `greengate-gates` with the new labels and names;
   `auth whoami` with the new kubeconfig names the `greengate-gates` runner;
   `amont-gates` still present after the first PR and removed by the second.
+  Observed, before the push:
+  - homelab#1167 merged and applied: Kustomization `greengate-gates`
+    Ready; ExternalSecret `greengate-bot-read-token` SecretSynced from
+    `secret/greengate-gates/bot-read-token` (Vault push: written 1,
+    updated 0, unchanged 34); `forgejo-registry-pull` reflected; Argo
+    HelmRelease upgraded with `greengate-gates` in workflowNamespaces;
+    `amont-gates` untouched (no Jobs).
+  - `scripts/greengate-gates-kubeconfig.sh` → `auth whoami` names
+    `system:serviceaccount:greengate-gates:greengate-gate-runner`.
+  - A `platform=any` gate in a scratch repository (sandboxed
+    `XDG_CONFIG_HOME` and global config, this branch's binary) → "lint:
+    running on the cluster", Job `greengate-gate-slot-0` in
+    `greengate-gates` completed on `gate-runner:main-6a5cf6b@sha256:01e1…`,
+    `gate-cache-0` bound, the pass recorded with `name=greengate-gate-slot-0`;
+    the live `.git` and `~/.config/greengate` unchanged but the new `kube/`.
+  - Tests: cluster unit 39, `cluster_gates` + `detached_cluster` +
+    `names` + `migrate` 97 (with `doctor_names_a_3x_kubeconfig`), clippy
+    clean, the full suite in each commit's gate.
 - Phase 5: 4.0.0 released and installed; this machine's state migrated (a
   commit and a push in a migrated repository pass); the sweep merged in
   every repository; `migrate --reverse` tested once on a scratch
@@ -406,5 +441,8 @@ has one slot queue, and no held store was lost.
   Fixed in the last deltas: `trust` without `--show` says everything on stderr (listing, heading, verdict, "nothing to do"), `--show` stays data on stdout, `add`'s "already carries" too;
   `staged_nothing()` matches every variant; the halfway undo test fails at the attest-inputs read after the manifest moved, without permission bits, so it holds as root.
   Carried to Phase 5 (backend, medium): a test pinning `trust`'s stream split (accept path: stdout empty, verdict on stderr; `--show` listing on stdout), with the 4.0 CHANGELOG entry that names the move.
+- Phase 4 (amont), round 1: lang:rust, backend, unix, architect approve; implementation-review, tui, platform approve-with-changes —
+  the 3.x kubeconfig hint and a `doctor` line for a 3.x kubeconfig (fixed), comments and a pin reason (fixed), the live run recorded and the detached lane deferred (above).
+  Kept: local alias constants for the names (low, rust/architect). homelab#1167: implementation-review and platform approve after one delta (image pin, a dedicated Vault reader, the fence move named).
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
