@@ -405,7 +405,8 @@ failure it would show.
 - backend: approve-with-changes, then approve. Fixed: refusal path, twin union, shared reasons. Deliberate: no test for the unscoped-twin wording with no line.
 - lang:rust: approve-with-changes three times. Fixed: comments, `Option` line numbers, one `decide`. Deliberate: the `RefCell` in the refusal path, tuple `twins`.
 - tui: approve-with-changes, then approve. Fixed: line endings at 80 columns, wording, `list` row. Deliberate: scope label and fix line never cut.
-- unix, architect: approve on the delta; unix's stream note holds (`say!` prints to stdout). Phase 3, then Phase 4's release, follow.
+- unix, architect: approve on the delta; unix's stream note holds (`say!` prints to stdout).
+- Phase 3 (JS declared roots), two delta rounds, all six seats approve. Fixed: unreadable-workspace warning (width, wording, file), `Trust` enum, plan-first `N of M`, one JSON scanner, one key constant, doc order. Deliberate: `amont.conf` read twice for the untrusted check; `…: …` on a very long head; a comment says "three digits" where the test goes to four. Phase 4's 3.2.0 release follows.
 
 ## Outcome
 
