@@ -616,7 +616,7 @@ enum Uncertain {
     Lost(String),
 }
 
-/// Create the Workflow ONCE, as `amont-gate-runner` (the kubeconfig's user),
+/// Create the Workflow ONCE, as `greengate-gate-runner` (the kubeconfig's user),
 /// and return its UID. A create whose answer is lost is reconciled by `get`
 /// on its deterministic name and never repeated.
 fn create(kube: &Kube, record: &Pending, json: &str) -> Result<String, SubmitError> {

@@ -883,6 +883,30 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
             n::BIN
         ));
     }
+    // The migration copies the kubeconfig path as it is, and 3.x's logs in as
+    // the runner of the namespace 4.0 no longer uses: every cluster gate
+    // would be refused, and quietly run here instead.
+    let kubeconfig = run_git(
+        git,
+        None,
+        &[
+            "config",
+            "--global",
+            "--get",
+            "greengate.cluster.kubeconfig",
+        ],
+    )?
+    .unwrap_or_default();
+    if old_kubeconfig(kubeconfig.trim()) {
+        out.push(format!(
+            "cluster: greengate.cluster.kubeconfig is greengate 3.x's ({}), which logs in \
+             as the old namespace's runner; run homelab's \
+             scripts/greengate-gates-kubeconfig.sh, then \
+             `git config --global greengate.cluster.kubeconfig ~/.config/{}/kube/homelab.yaml`",
+            kubeconfig.trim(),
+            n::STATE_DIR
+        ));
+    }
     if let Some(repo) = Repo::locate(cwd) {
         if repo.common.join(n::REVERSED_MARKER).exists() {
             out.push(format!(
@@ -917,6 +941,12 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
         }
     }
     Ok(out)
+}
+
+/// Is `path` a kubeconfig under greengate 3.x's config folder?
+fn old_kubeconfig(path: &str) -> bool {
+    let folder = format!("/.config/{}/", old::STATE_DIR);
+    path.replace('\\', "/").contains(&folder)
 }
 
 /// git, with `GIT_DIR` set to `dir` when one is given, as [`GitFn`] says.

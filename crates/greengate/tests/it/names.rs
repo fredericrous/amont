@@ -103,7 +103,7 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     (
         "greengate-runtime/src/gate_identity.rs",
         1,
-        "the cluster contract (Phase 4)",
+        "the cluster contract (plan 3a-3)",
     ),
     (
         "greengate-runtime/src/gate_stamp.rs",

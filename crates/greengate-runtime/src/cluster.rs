@@ -402,7 +402,7 @@ fn misconfigured(why: String, key_fix: &str) -> Fallback {
 fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, Fallback> {
     let keys = machine_keys();
     let kubeconfig = key(&keys, "greengate.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
-        "greengate.cluster.kubeconfig is not set: `git config --global greengate.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
+        "greengate.cluster.kubeconfig is not set: `git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml` (homelab scripts/greengate-gates-kubeconfig.sh writes it)",
     ))?;
     let kubeconfig = PathBuf::from(kubeconfig);
     if !kubeconfig.is_file() {

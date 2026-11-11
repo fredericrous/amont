@@ -153,6 +153,11 @@ pub const RUN_LABEL: &str = "greengate.run";
 pub const GATE_ANNOTATION: &str = "greengate.dev/gate";
 pub const TREE_ANNOTATION: &str = "greengate.dev/tree";
 
+// The Kubernetes names below are a contract with homelab's
+// `apps/greengate-gates`, which must define them; only the namespace can be
+// overridden (`greengate.cluster.namespace`). A change to any of them follows
+// the plan's two-change order: homelab adds the new name, then a release.
+
 /// The namespace cluster gates run in, unless `greengate.cluster.namespace`
 /// names another (homelab `apps/greengate-gates`).
 pub const CLUSTER_NAMESPACE: &str = "greengate-gates";
@@ -166,8 +171,10 @@ pub const WORKFLOW_PREFIX: &str = "greengate-rh-";
 pub const EXECUTOR_ACCOUNT: &str = "greengate-gate-executor";
 /// The Secret holding the snapshot repository's read token.
 pub const READ_TOKEN_SECRET: &str = "greengate-bot-read-token";
-/// The author and committer of the snapshot commits this tool makes.
+/// The author and committer name of the commits this tool writes: a cluster
+/// gate's throwaway commit and a detached run's snapshot.
 pub const GIT_AUTHOR: &str = "greengate";
+/// Their email.
 pub const GIT_EMAIL: &str = "greengate@localhost";
 
 /// greengate 3.x's names: what `migrate` moves, and the committed names
