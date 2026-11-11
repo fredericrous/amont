@@ -31,16 +31,40 @@ none, under the admission lock, when:
 
 - **no slot is held:** the floor. The first waiter on an empty host is
   always admitted, whatever its weight up to the cap;
-- **`amont.hostSlots` is unset (automatic):** a free slot exists, the
+- **`greengate.hostSlots` is unset (automatic):** a free slot exists, the
   one-minute load is below the core count, and at least 60 s have passed
   since the last admission, unless the waiter's own process already holds a
   slot (one commit's checks are not spaced apart). The cap is
-  `max(1, cores/2)`;
-- **`amont.hostSlots N`:** N free slots are enough, with no load test and no
+  `max(1, cores/2)`, with `cores` as [Cores](#cores) counts them;
+- **`greengate.hostSlots N`:** N free slots are enough, with no load test and no
   ramp. `0` turns slots off.
 
 The 60 s ramp is the load average's own lag: 10 s after a new holder starts,
 the one-minute load shows only about 15% of it.
+
+A waiter that is not admitted says why, after whom it waits behind:
+`(2 ahead)`, `(slots full 3/3)`, `(load 31.0 >= 6 cores)` or
+`(one new holder per minute)`.
+
+## Cores
+
+One count sizes the cap, the width and the load test (ADR-0021): the
+physical cores, never more than the logical count, which also honours a
+cgroup or affinity limit. macOS reads `hw.physicalcpu`; Linux counts the
+distinct `core_cpus_list` entries in sysfs, then the distinct
+(`physical id`, `core id`) pairs in `/proc/cpuinfo`, and falls back to the
+logical count where neither says (aarch64 VMs). Hyper-threads share a
+core's execution units, so on a 6-core, 12-thread host the count is 6:
+3 automatic slots, each 2 jobs wide.
+
+`greengate.hostCores N` (1 to 1024) replaces the detected count, and
+`GREENGATE_HOST_CORES` overrides it for one process. The slots crate
+resolves both host keys for every client
+(`greenharness_slots::host::resolve`), so greengate and relais always size
+the queue from the same numbers. `greengate slots` names the threads only
+where they differ from the cores, and the override when one set them
+(`6 cores, 12 threads`, `4 cores, 12 threads from greengate.hostCores`);
+`greengate doctor` prints the same on stderr, with each key's source.
 
 ## Who holds a slot
 
@@ -73,7 +97,8 @@ gate and a background rehearsal wait as before.
 A slot bounds how many heavy jobs run, and the width bounds how hard each
 one runs. Left alone, `cargo` builds and its test harness runs on every
 core, so `cap` holders ran `cap × cores` jobs at once. A holder of `weight`
-slots therefore runs `jobs = max(1, weight × cores / cap)` wide. greengate sets
+slots therefore runs `jobs = max(1, weight × cores / cap)` wide, with `cores`
+as [Cores](#cores) counts them. greengate sets
 `MAKEFLAGS=-j{jobs}`, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and
 `NEXTEST_TEST_THREADS` on every heavy hook check and every `greengate slot run`
 command (`amont_slots::bound_width`). relais uses the same formula for its

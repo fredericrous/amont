@@ -6,6 +6,32 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- The host slots count physical cores (ADR-0021). On a machine with
+  hyper-threads the logical count doubled the queue: a 6-core, 12-thread
+  laptop ran 6 slots of 2 jobs, 12 jobs on 6 cores. It now runs 3 slots of 2
+  jobs, and admits a second holder while the load is below 6 rather than 12.
+  Machines without hyper-threads (Apple Silicon, most CI runners) are
+  unchanged. `greengate.hostCores N`, or `GREENGATE_HOST_CORES`, sets the
+  count by hand: `12` restores the old sizing on that laptop.
+- The slots crate now reads `greengate.hostCores` and `greengate.hostSlots`
+  for every client, so relais and greengate size the one queue from the same
+  numbers.
+
+### Added
+
+- A waiter says why it waits, after whom it waits behind: another waiter
+  ahead, slots full, the load at or above the core count, or the
+  one-per-minute ramp.
+- `greengate slots` names the threads where they differ from the cores, and
+  the override when one set the count. `greengate doctor` prints the host
+  sizing and each key's source on stderr.
+- `waits.jsonl` lines carry `"cores"`, and `"cap"` where the sizing is
+  known, so lines from before and after a sizing change can be told apart.
+
 ## v3.2.0
 
 ### Added

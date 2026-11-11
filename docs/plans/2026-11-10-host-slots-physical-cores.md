@@ -199,7 +199,7 @@ links the slots crate, so the crate hardcodes the four names
   tests on canned `/proc/cpuinfo` and sysfs, on zero pairs, and on the
   min with the logical count; `resolve` tests for a repo-scope-only row,
   `abc`, cores 0 and slots 65, each returning a warning and the fallback).
-- [ ] Phase 2 — amont takes its sizing from `HostSizing::from_host()`
+- [x] Phase 2 — amont takes its sizing from `HostSizing::from_host()`
   (its own `greengate.hostSlots` read is removed) and threads it through cap,
   width, admission, `amont slots` and doctor:
   `crates/greengate-runtime/src/host_slots.rs`,
@@ -247,6 +247,13 @@ links the slots crate, so the crate hardcodes the four names
   (4-wide commands, and two sizings on one queue). It fits ADR-0064:
   greengate owns the host slots, and relais reaches them only through
   greengate's crate.
+- 2026-11-11 — Phase 2 choices: amont passes its cached rows to `resolve`
+  (`config::host_rows`, one git spawn); `greengate doctor` prints the sizing
+  on stderr, because its stdout and exit code are the leftover-names
+  contract; the old-names test lives in `greenharness-slots/src/host.rs`,
+  so that is the `ALLOWED_DATA` path; `WaitReason::Load` keeps the load in
+  tenths so `Queue` stays `Eq`. A review-time gap (poll() probed the
+  detected cores, not the waiter's machine) was fixed in e87571eb.
 - 2026-11-11 — the `"cap"` field on wait lines moved into Phase 1 (the
   person's choice): `WaitContext` gains `cap`, `record_wait_sized` carries
   it for `slot run`, and `host_slots.rs` / `slot_cmd.rs` pass it. A handed
