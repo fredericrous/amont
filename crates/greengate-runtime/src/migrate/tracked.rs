@@ -147,40 +147,31 @@ fn swap_markers(text: &str) -> Option<String> {
 /// lines that are not comments; `None` when no token named one. Spacing and
 /// comments are kept byte for byte.
 fn swap_inputs(text: &str) -> Option<String> {
-    let mut changed = false;
-    let lines: Vec<String> = text
-        .split_inclusive('\n')
-        .map(|line| {
-            if line.trim_start().starts_with('#') {
-                return line.to_string();
-            }
-            let mut out = String::with_capacity(line.len());
-            let mut token = String::new();
-            for ch in line.chars() {
-                if ch.is_whitespace() {
-                    out.push_str(respell(&token, &mut changed));
-                    token.clear();
-                    out.push(ch);
-                } else {
-                    token.push(ch);
-                }
-            }
-            out.push_str(respell(&token, &mut changed));
-            out
-        })
-        .collect();
-    changed.then(|| lines.concat())
+    let respelled: String = text.split_inclusive('\n').map(respell_line).collect();
+    (respelled != text).then_some(respelled)
 }
 
-/// `token`'s new spelling when it names an old file, else `token`.
-fn respell<'a>(token: &'a str, changed: &mut bool) -> &'a str {
-    for &(old_name, new_name) in FILES {
-        if token == old_name {
-            *changed = true;
-            return new_name;
-        }
+/// One line of [`swap_inputs`]: a comment as it is, else each token that
+/// names an old file respelled, with the whitespace after it kept.
+fn respell_line(line: &str) -> String {
+    if line.trim_start().starts_with('#') {
+        return line.to_string();
     }
-    token
+    line.split_inclusive(char::is_whitespace)
+        .map(|piece| {
+            let token = piece.trim_end_matches(char::is_whitespace);
+            let gap = &piece[token.len()..];
+            format!("{}{gap}", respelled(token).unwrap_or(token))
+        })
+        .collect()
+}
+
+/// `token`'s new spelling, when it names an old file.
+fn respelled(token: &str) -> Option<&'static str> {
+    FILES
+        .iter()
+        .find(|(old_name, _)| *old_name == token)
+        .map(|(_, new_name)| *new_name)
 }
 
 /// The tracked lines that still name an old file or an `AMONT_` variable,

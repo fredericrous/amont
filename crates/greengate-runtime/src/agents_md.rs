@@ -156,20 +156,29 @@ pub enum MarkerState {
 /// no `start`) still surfaces as `(None, Some(_))` rather than silently
 /// reading as "no markers, nothing to guard against."
 ///
-/// The second value says the range was found under the 3.x pair: the block
+/// The [`Pair`] says whether the range was found under the 3.x pair: the block
 /// that replaces it, or is compared with it, keeps that pair, so a file is
 /// never respelled except by `greengate migrate --tracked`, and an unswept
 /// one does not read as drifted for its markers alone.
-fn marker_range(text: &str) -> Result<Option<(Range<usize>, bool)>, MarkerState> {
+fn marker_range(text: &str) -> Result<Option<(Range<usize>, Pair)>, MarkerState> {
     if let Some(range) = pair_range(text, START, END)? {
-        return Ok(Some((range, false)));
+        return Ok(Some((range, Pair::New)));
     }
-    Ok(pair_range(text, OLD_START, OLD_END)?.map(|range| (range, true)))
+    Ok(pair_range(text, OLD_START, OLD_END)?.map(|range| (range, Pair::Old)))
+}
+
+/// Which marker pair a block was found under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pair {
+    /// greengate 4.0's.
+    New,
+    /// greengate 3.x's, until `migrate --tracked` respells it.
+    Old,
 }
 
 /// `block` as it reads under the pair the file already uses.
-fn in_pair(block: &str, old_pair: bool) -> std::borrow::Cow<'_, str> {
-    if old_pair {
+fn in_pair(block: &str, pair: Pair) -> std::borrow::Cow<'_, str> {
+    if pair == Pair::Old {
         block
             .replacen(START, OLD_START, 1)
             .replacen(END, OLD_END, 1)
@@ -227,10 +236,10 @@ pub fn desired_pointer_content(existing: &str) -> Result<String, MarkerState> {
 /// disagree.
 fn desired_with(existing: &str, block: &str) -> Result<String, MarkerState> {
     match marker_range(existing)? {
-        Some((range, old_pair)) => Ok(format!(
+        Some((range, pair)) => Ok(format!(
             "{}{}{}",
             &existing[..range.start],
-            in_pair(block, old_pair),
+            in_pair(block, pair),
             &existing[range.end..]
         )),
         None if existing.is_empty() => Ok(block.to_string()),
@@ -297,8 +306,8 @@ fn check_with(path: &Path, block: &str) -> Result<CheckResult, String> {
             path.display()
         )),
         Ok(None) => Ok(CheckResult::NotPresent),
-        Ok(Some((range, old_pair))) => {
-            if existing[range] == *in_pair(block, old_pair) {
+        Ok(Some((range, pair))) => {
+            if existing[range] == *in_pair(block, pair) {
                 Ok(CheckResult::MatchesGenerated)
             } else {
                 Ok(CheckResult::Drifted)
@@ -425,7 +434,10 @@ mod tests {
         let before = format!("before\n\n{OLD_START}\nstale\n{OLD_END}\n\nafter\n");
         let got = desired_file_content(&test_settings(), &before).unwrap();
         let block = generate_block(&test_settings());
-        assert_eq!(got, format!("before\n\n{}\nafter\n", in_pair(&block, true)));
+        assert_eq!(
+            got,
+            format!("before\n\n{}\nafter\n", in_pair(&block, Pair::Old))
+        );
         assert!(!got.contains(START), "{got}");
         assert!(has_markers(&before) && has_markers(&got));
         assert!(!has_markers("no block here\n"));

@@ -290,18 +290,18 @@ fn sweep_names(scan: &scan::FleetScan, args: &Args) -> ExitCode {
                 serde_json::to_string_pretty(&paths).unwrap_or_default()
             );
         } else if due.is_empty() {
-            println!("no repository here commits greengate 3.x's names");
+            eprintln!("no repository here commits greengate 3.x's names");
         } else {
             let (noun, verb) = if due.len() == 1 {
                 ("repository", "commits")
             } else {
                 ("repositories", "commit")
             };
-            println!("{} {noun} {verb} greengate 3.x's names:", due.len());
+            eprintln!("{} {noun} {verb} greengate 3.x's names:", due.len());
             for r in &due {
                 println!("  {}", shown(&r.path));
             }
-            println!("run `fix --apply --migrate` to commit the rename in each");
+            eprintln!("run `fix --apply --migrate` to commit the rename in each");
         }
         return ExitCode::SUCCESS;
     }

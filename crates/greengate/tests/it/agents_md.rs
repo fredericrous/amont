@@ -64,16 +64,16 @@ fn replaces_only_the_marked_block() {
 
 #[test]
 fn replaces_a_block_under_the_new_markers() {
-    let r = Repo::new();
-    r.commit("init");
-    r.write(
+    let repo = Repo::new();
+    repo.commit("init");
+    repo.write(
         "AGENTS.md",
         "before\n\n<!-- greengate:start -->\nSTALE CONTENT\n<!-- greengate:end -->\n\nafter\n",
     );
 
-    let (code, _, _) = run_agents_md(&r, &[]);
+    let (code, _, _) = run_agents_md(&repo, &[]);
     assert_eq!(code, 0);
-    let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
+    let content = std::fs::read_to_string(repo.path("AGENTS.md")).expect("read");
     assert!(
         content.starts_with("before\n\n<!-- greengate:start -->"),
         "{content}"

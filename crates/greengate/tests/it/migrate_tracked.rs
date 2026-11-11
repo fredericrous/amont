@@ -13,49 +13,49 @@ const OLD_END: &str = "<!-- amont:end -->";
 
 /// A repository as greengate 3.x left it, its manifest trusted.
 fn swept_3x() -> Repo {
-    let r = Repo::new();
-    r.stage("gate.sh", "printf x >> gate.log\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.stage("gate.sh", "printf x >> gate.log\n");
+    repo.stage(
         OLD_MANIFEST,
         "pre-commit  marks  *.txt  block  sh gate.sh\n",
     );
-    r.stage(
+    repo.stage(
         "AGENTS.md",
         &format!("# P\n\n{OLD_START}\nold block\n{OLD_END}\n"),
     );
-    r.stage(
+    repo.stage(
         ".github/attest-inputs",
         &format!("# names {OLD_MANIFEST}\ncargo-test Cargo.toml {OLD_MANIFEST} src\n"),
     );
-    r.stage(".github/workflows/ci.yml", "env:\n  AMONT_TIMEOUT: 60\n");
-    r.commit("chore: base");
-    let trusted = r.run(&["trust"]);
+    repo.stage(".github/workflows/ci.yml", "env:\n  AMONT_TIMEOUT: 60\n");
+    repo.commit("chore: base");
+    let trusted = repo.run(&["trust"]);
     assert_eq!(trusted.code, 0, "{}", trusted.stderr);
-    r
+    repo
 }
 
-fn gate_runs(r: &Repo) -> usize {
-    std::fs::read_to_string(r.path("gate.log"))
+fn gate_runs(repo: &Repo) -> usize {
+    std::fs::read_to_string(repo.path("gate.log"))
         .map(|log| log.len())
         .unwrap_or(0)
 }
 
-fn pre_commit(r: &Repo) -> crate::common::HookRun {
-    r.hook_at(&r.dir, "pre-commit", &[])
+fn pre_commit(repo: &Repo) -> crate::common::HookRun {
+    repo.hook_at(&repo.dir, "pre-commit", &[])
 }
 
 #[test]
 fn the_committed_names_are_renamed_staged_and_still_trusted() {
-    let r = swept_3x();
+    let repo = swept_3x();
 
     // Unswept, the old manifest is still read and its check runs.
-    r.stage("a.txt", "a\n");
-    let before = pre_commit(&r);
+    repo.stage("a.txt", "a\n");
+    let before = pre_commit(&repo);
     assert_eq!(before.code, 0, "{}{}", before.stdout, before.stderr);
-    assert_eq!(gate_runs(&r), 1, "the unswept manifest's check ran");
-    r.commit("feat: a");
+    assert_eq!(gate_runs(&repo), 1, "the unswept manifest's check ran");
+    repo.commit("feat: a");
 
-    let migrated = r.run(&["migrate", "--tracked"]);
+    let migrated = repo.run(&["migrate", "--tracked"]);
     assert_eq!(migrated.code, 0, "{}", migrated.stderr);
     assert!(
         migrated
@@ -72,7 +72,7 @@ fn the_committed_names_are_renamed_staged_and_still_trusted() {
     );
 
     // Staged as a rename, content unchanged; markers and inputs respelled.
-    let status = r.git(&["diff", "--cached", "--name-status", "-M"]);
+    let status = repo.git(&["diff", "--cached", "--name-status", "-M"]);
     let status = String::from_utf8_lossy(&status.stdout);
     assert!(
         status.contains("R100\tamont.conf\tgreengate.conf"),
@@ -80,18 +80,18 @@ fn the_committed_names_are_renamed_staged_and_still_trusted() {
     );
     assert!(status.contains("M\tAGENTS.md"), "{status}");
     assert!(status.contains("M\t.github/attest-inputs"), "{status}");
-    let agents = std::fs::read_to_string(r.path("AGENTS.md")).unwrap();
+    let agents = std::fs::read_to_string(repo.path("AGENTS.md")).unwrap();
     assert!(
         agents.contains("<!-- greengate:start -->\nold block\n<!-- greengate:end -->"),
         "{agents}"
     );
-    let inputs = std::fs::read_to_string(r.path(".github/attest-inputs")).unwrap();
+    let inputs = std::fs::read_to_string(repo.path(".github/attest-inputs")).unwrap();
     assert_eq!(
         inputs,
         format!("# names {OLD_MANIFEST}\ncargo-test Cargo.toml greengate.conf src\n")
     );
     assert!(
-        std::fs::read_to_string(r.path(".github/workflows/ci.yml"))
+        std::fs::read_to_string(repo.path(".github/workflows/ci.yml"))
             .unwrap()
             .contains("AMONT_TIMEOUT"),
         "a listed leftover is never edited"
@@ -99,18 +99,18 @@ fn the_committed_names_are_renamed_staged_and_still_trusted() {
 
     // The rename commit passes the gate, and the check still runs: trust
     // is the content's blob id, which a rename keeps.
-    r.stage("b.txt", "b\n");
-    let after = pre_commit(&r);
+    repo.stage("b.txt", "b\n");
+    let after = pre_commit(&repo);
     assert_eq!(after.code, 0, "{}{}", after.stdout, after.stderr);
     assert_eq!(
-        gate_runs(&r),
+        gate_runs(&repo),
         2,
         "the renamed manifest's check ran, trusted"
     );
-    r.commit("chore: greengate names");
+    repo.commit("chore: greengate names");
 
     // A second run has nothing to do.
-    let again = r.run(&["migrate", "--tracked"]);
+    let again = repo.run(&["migrate", "--tracked"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
     assert!(
         again.stderr.contains("nothing committed"),
@@ -122,14 +122,14 @@ fn the_committed_names_are_renamed_staged_and_still_trusted() {
 /// Both spellings at once is a hand edit: refused, nothing changed.
 #[test]
 fn both_manifests_are_refused_and_nothing_moves() {
-    let r = Repo::new();
-    r.stage(OLD_MANIFEST, "pre-commit  a  *  warn  true\n");
-    r.stage("greengate.conf", "pre-commit  b  *  warn  true\n");
-    r.commit("chore: base");
-    let refused = r.run(&["migrate", "--tracked"]);
+    let repo = Repo::new();
+    repo.stage(OLD_MANIFEST, "pre-commit  a  *  warn  true\n");
+    repo.stage("greengate.conf", "pre-commit  b  *  warn  true\n");
+    repo.commit("chore: base");
+    let refused = repo.run(&["migrate", "--tracked"]);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(refused.stderr.contains("both"), "{}", refused.stderr);
-    assert!(r.path(OLD_MANIFEST).is_file() && r.path("greengate.conf").is_file());
-    let status = r.git(&["status", "--porcelain"]);
+    assert!(repo.path(OLD_MANIFEST).is_file() && repo.path("greengate.conf").is_file());
+    let status = repo.git(&["status", "--porcelain"]);
     assert!(status.stdout.is_empty(), "nothing staged or changed");
 }
