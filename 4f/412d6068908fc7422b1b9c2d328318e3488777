@@ -1,0 +1,21 @@
+amont-provenance-v1
+commit 4f412d6068908fc7422b1b9c2d328318e3488777
+tree 12a77b016e8eb4286304049f973cbf368961b9ac
+canon 478307c07a0c56094f07d1309b401e89adeabe46
+patch 3573b97e5f66dbfbeb177cbc7d1a2c4d8a457c61
+plan docs/plans/2026-11-10-host-slots-physical-cores.md 2f5dd87c58dcbc6b5842772f8d7115779e2ac9a6344fef5670a39009969c416f
+review reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+code-review backend reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+code-review lang:rust reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+code-review unix reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+code-review tui reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+code-review architect reviewed 086ae1c82920d70a4809b105e563e5a0f98dfdf64e4a041ed9c59ee87fbceffc
+preview not-required
+producer amont-agent 3.28.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBGpx8UDVcCOCpVyNx2Lee4oNRtybbiaELEsk4HZP1DA0Tsr7
++cEA6bmdM+sUbHIH/kwpWsy2YuQvqMKWaGAKUG
+-----END SSH SIGNATURE-----
