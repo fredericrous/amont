@@ -380,8 +380,8 @@ failure it would show.
 6. **Commit cost.**
    - Input: a `Cargo.lock`-only commit here, and a `package.json`-only commit
      in website-builder, timed with 3.0.1 and with the branch.
-   - Expected: commit time grows by the suite's time (written down),
-     and push time shrinks by the same amount.
+   - Expected: commit time grows by the suite's time (not timed here, see
+     below), and push time shrinks by the same amount.
    - Failure it shows: the suite runs at both commit and push.
    - Not timed: the host ran at load 20 to 60 on 12 cores during this work
      (the commit gate's suite took 2,840 s), so a wall-clock comparison would
@@ -411,6 +411,7 @@ failure it would show.
 ## Outcome
 
 - 3.0.1 (cargo once per workspace), 3.1.0 (pairs fire on their twin's files, reasons on a push) and 3.2.0 (`set rootRunsMembers`, the repeat hint) released 2026-11-11; the GitHub assets, crates.io (5 crates) and the tap show 3.2.0, and npm published with dist-tag `latest` (registry listing lags).
+- Observed 2026-11-11 after the v3.2.0 release run concluded `success`: `gh release view v3.2.0` lists the greengate archives for six targets, `greenharness.toml` and `SHA256SUMS`; the crates.io API shows max_version 3.2.0 for all five crates; `brew info fredericrous/tap/greengate` shows stable 3.2.0 and the run's `brew can install what was published` job installed it; `npm view @greenharness/greengate@3.2.0 version` prints 3.2.0 (the listing lagged a few minutes); `git ls-remote --tags` shows v3.0.1 576f0155, v3.1.0 3e46794a, v3.2.0 b8000c84.
 - Open: the 7-day count of silent reruns (Verification 7), and `brew upgrade greengate` locally (the person's).
 
 <!-- panel: repos=amont adds=contract reviewers=architect,backend,lang:rust,po,tui,unix body-sha=7fa7466e087c -->
