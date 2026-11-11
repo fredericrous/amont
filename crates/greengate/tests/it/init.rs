@@ -20,10 +20,11 @@ struct Sandbox(PathBuf);
 
 impl Sandbox {
     fn new(name: &str) -> Self {
-        let d = std::env::temp_dir().join(format!("greengate-init-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).expect("mkdir");
-        Sandbox(d)
+        let scratch_dir =
+            std::env::temp_dir().join(format!("greengate-init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+        std::fs::create_dir_all(&scratch_dir).expect("mkdir");
+        Sandbox(scratch_dir)
     }
     fn path(&self, rel: &str) -> PathBuf {
         rel.split('/').fold(self.0.clone(), |p, c| p.join(c))

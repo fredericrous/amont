@@ -267,9 +267,10 @@ fn busy_budgets(r: &Repo) {
 /// A fresh trace file for one test.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn trace_file(tag: &str) -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("greengate-cpu-trace-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_file(&p);
-    p
+    let trace_path =
+        std::env::temp_dir().join(format!("greengate-cpu-trace-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_file(&trace_path);
+    trace_path
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

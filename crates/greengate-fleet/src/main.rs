@@ -517,7 +517,7 @@ fn main() -> ExitCode {
                 );
             }
         }
-        println!("hook.skip and greengate.severity were left alone, as was any held work.");
+        eprintln!("hook.skip and greengate.severity were left alone, as was any held work.");
         // A shim that is still installed and still running, after the user
         // asked for it to be gone, is not a success.
         return if failed.is_empty() {

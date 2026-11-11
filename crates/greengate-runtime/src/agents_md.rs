@@ -409,36 +409,39 @@ mod tests {
 
     #[test]
     fn check_reports_not_present_for_a_missing_file() {
-        let tmp = std::env::temp_dir().join("greengate-agents-md-test-nonexistent-xyz");
-        let _ = std::fs::remove_file(&tmp);
+        let missing_dir = std::env::temp_dir().join("greengate-agents-md-test-nonexistent-xyz");
+        let _ = std::fs::remove_file(&missing_dir);
         assert_eq!(
-            check(&test_settings(), &tmp).unwrap(),
+            check(&test_settings(), &missing_dir).unwrap(),
             CheckResult::NotPresent
         );
     }
 
     #[test]
     fn check_reports_matches_generated_after_a_write() {
-        let tmp = std::env::temp_dir().join(format!(
+        let scratch_dir = std::env::temp_dir().join(format!(
             "greengate-agents-md-test-{}-match",
             std::process::id()
         ));
-        std::fs::write(&tmp, generate_block(&test_settings())).unwrap();
+        std::fs::write(&scratch_dir, generate_block(&test_settings())).unwrap();
         assert_eq!(
-            check(&test_settings(), &tmp).unwrap(),
+            check(&test_settings(), &scratch_dir).unwrap(),
             CheckResult::MatchesGenerated
         );
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&scratch_dir);
     }
 
     #[test]
     fn check_reports_drifted_for_a_stale_block() {
-        let tmp = std::env::temp_dir().join(format!(
+        let scratch_dir = std::env::temp_dir().join(format!(
             "greengate-agents-md-test-{}-drift",
             std::process::id()
         ));
-        std::fs::write(&tmp, format!("{START}\nstale\n{END}\n")).unwrap();
-        assert_eq!(check(&test_settings(), &tmp).unwrap(), CheckResult::Drifted);
-        let _ = std::fs::remove_file(&tmp);
+        std::fs::write(&scratch_dir, format!("{START}\nstale\n{END}\n")).unwrap();
+        assert_eq!(
+            check(&test_settings(), &scratch_dir).unwrap(),
+            CheckResult::Drifted
+        );
+        let _ = std::fs::remove_file(&scratch_dir);
     }
 }

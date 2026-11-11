@@ -336,41 +336,41 @@ mod tests {
 
     #[test]
     fn finds_the_nearest_module_not_the_repo_root() {
-        let tmp = std::env::temp_dir().join("greengate-go-roots");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let nested = tmp.join("services/api");
+        let scratch_dir = std::env::temp_dir().join("greengate-go-roots");
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let nested = scratch_dir.join("services/api");
         std::fs::create_dir_all(nested.join("cmd")).unwrap();
         std::fs::write(nested.join("go.mod"), "module api\n").unwrap();
-        let root = tmp.to_string_lossy().into_owned();
+        let root = scratch_dir.to_string_lossy().into_owned();
 
         let got = module_roots(&root, ["services/api/cmd/main.go"].into_iter());
         assert_eq!(got, vec![nested.clone()], "should find the nested module");
 
         // A Go file with no go.mod anywhere above it is not a module.
-        std::fs::create_dir_all(tmp.join("scripts")).unwrap();
+        std::fs::create_dir_all(scratch_dir.join("scripts")).unwrap();
         let none = module_roots(&root, ["scripts/loose.go"].into_iter());
         assert!(none.is_empty(), "no module above it: {none:?}");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
     }
 
     #[test]
     fn several_files_in_one_module_yield_one_root() {
-        let tmp = std::env::temp_dir().join("greengate-go-dedupe");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join("pkg")).unwrap();
-        std::fs::write(tmp.join("go.mod"), "module x\n").unwrap();
-        let root = tmp.to_string_lossy().into_owned();
+        let scratch_dir = std::env::temp_dir().join("greengate-go-dedupe");
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+        std::fs::create_dir_all(scratch_dir.join("pkg")).unwrap();
+        std::fs::write(scratch_dir.join("go.mod"), "module x\n").unwrap();
+        let root = scratch_dir.to_string_lossy().into_owned();
         let got = module_roots(&root, ["pkg/a.go", "pkg/b.go", "go.mod"].into_iter());
         assert_eq!(got.len(), 1, "one go invocation, not three: {got:?}");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
     }
 
     #[test]
     fn a_tools_module_without_packages_is_not_vetted_or_tested() {
-        let tmp = std::env::temp_dir().join("greengate-go-tools-module");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let scratch_dir = std::env::temp_dir().join("greengate-go-tools-module");
+        let _ = std::fs::remove_dir_all(&scratch_dir);
         let w = |rel: &str, text: &str| {
-            let p = tmp.join(rel);
+            let p = scratch_dir.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         };
@@ -389,22 +389,22 @@ mod tests {
         // Nor does a nested module's code.
         w("tools/nested/go.mod", "module nested\n");
         w("tools/nested/n.go", "package nested\n");
-        let root = tmp.to_string_lossy().into_owned();
+        let root = scratch_dir.to_string_lossy().into_owned();
         let files = ["tools/go.mod", "tools/go.sum", "internal/x/x.go"];
         assert_eq!(
             module_roots(&root, files.into_iter()),
-            vec![tmp.clone(), tmp.join("tools")],
+            vec![scratch_dir.clone(), scratch_dir.join("tools")],
             "both are modules"
         );
         assert_eq!(
             package_roots(&root, files.into_iter()),
-            vec![tmp.clone()],
+            vec![scratch_dir.clone()],
             "only the module with a package is vetted and tested"
         );
         // A package in any ordinary subdirectory keeps the module.
         w("tools/gen/main.go", "package main\n");
         assert_eq!(package_roots(&root, files.into_iter()).len(), 2);
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
     }
 
     #[test]

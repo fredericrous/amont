@@ -324,10 +324,10 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        let d =
+        let scratch_dir =
             std::env::temp_dir().join(format!("greengate-capture-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        d
+        let _ = fs::remove_dir_all(&scratch_dir);
+        scratch_dir
     }
 
     #[test]

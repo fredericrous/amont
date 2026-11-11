@@ -470,10 +470,10 @@ mod tests {
     /// predictable name is right back to being predictable.
     #[test]
     fn unique_name_does_not_repeat() {
-        let a = unique_name("greengate-push");
-        let b = unique_name("greengate-push");
-        assert_ne!(a, b);
-        assert!(a.starts_with("greengate-push-"));
+        let first_name = unique_name("greengate-push");
+        let second_name = unique_name("greengate-push");
+        assert_ne!(first_name, second_name);
+        assert!(first_name.starts_with("greengate-push-"));
     }
 
     /// The point of the whole fix: something already at the target path is
@@ -635,8 +635,8 @@ mod tests {
                 }
             }
         }
-        let d = std::env::temp_dir().join(unique_name("greengate-probe"));
-        let locked = d.join("locked");
+        let probe_dir = std::env::temp_dir().join(unique_name("greengate-probe"));
+        let locked = probe_dir.join("locked");
         std::fs::create_dir_all(&locked).expect("mkdir");
         let marker = locked.join(MARKER);
         std::fs::write(&marker, "").expect("marker");

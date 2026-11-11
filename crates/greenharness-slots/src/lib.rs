@@ -1066,10 +1066,10 @@ mod tests {
     fn scratch(tag: &str) -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let d =
+        let scratch_dir =
             std::env::temp_dir().join(format!("greengate-slots-{}-{tag}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&d); // best-effort: a fresh scratch dir
-        d
+        let _ = fs::remove_dir_all(&scratch_dir); // best-effort: a fresh scratch dir
+        scratch_dir
     }
 
     /// An idle host, asked by a process that holds no slot: separate
