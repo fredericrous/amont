@@ -223,6 +223,15 @@ fn declared_twin_line(manifest: &crate::manifest::Manifest, name: &str) -> Optio
         .filter(|n| *n > 0)
 }
 
+/// Whether a reason's first line is cut to fit 80 columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineWidth {
+    /// On a terminal: cut the variable part, keep the ending.
+    Cut,
+    /// Piped, in a CI log: every path in full.
+    Whole,
+}
+
 /// The lines that say why a same-named commit-time declaration did not vouch:
 /// the reason, then for a scope gap an indented line naming the `amont.conf`
 /// line to edit. Pure, so the words and their width are tested.
@@ -231,10 +240,10 @@ fn declared_twin_line(manifest: &crate::manifest::Manifest, name: &str) -> Optio
 /// stand for two of them), and only its variable part is cut, so its ending,
 /// `— running it here`, always survives. Piped, nothing is cut: a CI log keeps
 /// every path. Every value from the manifest or the repository is sanitised.
-pub(crate) fn reason_lines(name: &str, why: &WhyNot, terminal: bool) -> Vec<String> {
+pub(crate) fn reason_lines(name: &str, why: &WhyNot, width: LineWidth) -> Vec<String> {
     let name = crate::ui::sanitize(name);
     let first = |prefix: String, variable: String, suffix: &str| -> String {
-        if terminal {
+        if width == LineWidth::Cut {
             let line = crate::tree_lint::fit_line(&format!("  {prefix}"), &variable, suffix);
             line.strip_prefix("  ").unwrap_or(&line).to_string()
         } else {
@@ -316,7 +325,12 @@ pub(crate) fn reason_lines(name: &str, why: &WhyNot, terminal: bool) -> Vec<Stri
 /// Say why a same-named commit-time declaration did not vouch, before the push
 /// runs the gate. Exit codes are untouched: this is a line, not a verdict.
 pub(crate) fn say_why_not(name: &str, why: &WhyNot) {
-    let mut lines = reason_lines(name, why, std::io::stdout().is_terminal()).into_iter();
+    let width = if std::io::stdout().is_terminal() {
+        LineWidth::Cut
+    } else {
+        LineWidth::Whole
+    };
+    let mut lines = reason_lines(name, why, width).into_iter();
     if let Some(head) = lines.next() {
         crate::say!("{} {head}", crate::ui::warning_sign());
     }
@@ -1206,7 +1220,7 @@ mod tests {
     #[test]
     fn every_reason_fits_its_line_and_keeps_its_ending() {
         for why in every_reason("rustfmt.toml") {
-            let head = &reason_lines("cargo-test", &why, false)[0];
+            let head = &reason_lines("cargo-test", &why, LineWidth::Whole)[0];
             assert!(head.chars().count() + 2 <= 80, "{head}");
             assert!(head.ends_with("— running it here"), "{head}");
         }
@@ -1217,7 +1231,7 @@ mod tests {
     fn on_a_terminal_only_the_variable_part_is_cut() {
         let long = "crates/a/very/deep/package/directory/src/components/widgets/Button.stories.tsx";
         for why in every_reason(long) {
-            let head = &reason_lines("cargo-test", &why, true)[0];
+            let head = &reason_lines("cargo-test", &why, LineWidth::Cut)[0];
             assert!(head.chars().count() + 2 <= 80, "{head}");
             assert!(head.ends_with("— running it here"), "{head}");
         }
@@ -1228,7 +1242,7 @@ mod tests {
             WhyNot::NotOptedIn(vec!["marker".into()]),
             WhyNot::Unidentified,
         ] {
-            let head = &reason_lines(name, &why, true)[0];
+            let head = &reason_lines(name, &why, LineWidth::Cut)[0];
             assert!(head.chars().count() + 2 <= 80, "{head}");
             assert!(head.ends_with("— running it here"), "{head}");
         }
@@ -1244,7 +1258,7 @@ mod tests {
             cause: GapCause::Files,
             at: None,
         };
-        assert!(reason_lines("cargo-test", &why, false)[0].contains(long));
+        assert!(reason_lines("cargo-test", &why, LineWidth::Whole)[0].contains(long));
     }
 
     /// Everything the manifest or the repository supplies is sanitised, the
@@ -1252,7 +1266,7 @@ mod tests {
     #[test]
     fn values_from_the_manifest_are_sanitised() {
         let why = WhyNot::NotOptedIn(vec!["mark\u{1b}[31mer".into()]);
-        let head = &reason_lines("cargo-test", &why, false)[0];
+        let head = &reason_lines("cargo-test", &why, LineWidth::Whole)[0];
         assert!(!head.contains('\u{1b}'), "{head:?}");
     }
 }
