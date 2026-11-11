@@ -36,6 +36,8 @@ use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
 mod detached;
+#[cfg(test)]
+pub(crate) use detached::sample_pending_file;
 pub(crate) use detached::{
     collect, lists_live, settled_lines, status_lines, stop_pending, PENDING_FILE,
 };

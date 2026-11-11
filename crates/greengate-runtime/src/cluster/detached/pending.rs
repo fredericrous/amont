@@ -310,6 +310,16 @@ fn parse_gate(v: &Value) -> Option<Gate> {
     })
 }
 
+/// A pending file holding one sample record submitted at `submitted`, as
+/// this version writes it: for the migration's tests, which cannot see
+/// the record type.
+#[cfg(test)]
+pub(crate) fn sample_file(submitted: u64) -> String {
+    let mut record = tests::sample("rh-sample");
+    record.submitted = submitted;
+    render_file(&[record])
+}
+
 pub(super) fn render_file(records: &[Pending]) -> String {
     let body: Vec<String> = records.iter().map(Pending::render).collect();
     format!(

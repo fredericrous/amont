@@ -31,6 +31,8 @@ mod workflow;
 
 pub use collect::collect_command;
 pub(crate) use collect::{collect, lists_live, settled_lines, status_lines, stop_pending};
+#[cfg(test)]
+pub(crate) use pending::sample_file as sample_pending_file;
 pub(crate) use pending::PENDING_FILE;
 
 use pending::{Gate, GateState, Pending, PendingError, RecordPhase, Source, Store};

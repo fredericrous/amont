@@ -257,19 +257,19 @@ impl std::fmt::Display for MigrateError {
             ),
             MigrateError::PendingDetached { path } => write!(
                 out,
-                "{} lists a detached cluster run greengate 3.x submitted, which 4.0 \
-                 cannot collect.\n  once `kubectl get workflows -n {}` no longer shows \
-                 it (or its verdict no longer matters), remove the file:\n  rm {}\n  \
-                 then run the command again",
+                "{} lists a detached cluster run greengate 3.x submitted,\n  \
+                 which 4.0 cannot collect. Once `kubectl get workflows -n {}`\n  \
+                 no longer shows it (or its verdict no longer matters),\n  \
+                 remove the file:\n  rm {}\n  then run the command again",
                 path.display(),
                 old::CLUSTER_NAMESPACE,
                 path.display()
             ),
             MigrateError::PendingUnreadable { path, why } => write!(
                 out,
-                "{} (greengate 3.x's detached cluster runs) cannot be read: {why}.\n  \
-                 if no run in it matters any more, remove it:\n  rm {}\n  then run \
-                 the command again",
+                "{} (greengate 3.x's detached cluster runs)\n  cannot be read: \
+                 {why}.\n  If no run in it matters any more, remove it:\n  rm {}\n  \
+                 then run the command again",
                 path.display(),
                 path.display()
             ),
@@ -352,10 +352,12 @@ pub fn migrate_repo(
 ) -> Result<Moved, MigrateError> {
     let _lock = lock(&repo.common.join(n::MIGRATE_LOCK))?;
     let reversed = repo.common.join(n::REVERSED_MARKER);
-    // Done only when no reverse is half-way: a reverse writes its marker
-    // before it moves anything, so a forward run after a reverse that
-    // stopped moves the state forward again.
-    if direction == Direction::Forward && repo.marker().exists() && !reversed.exists() {
+    // Checked again under the lock: a first run that passed `ensure_repo`'s
+    // check before a reverse took the lock must not undo it. A reverse
+    // writes its marker before it moves anything, so a reverse that stopped
+    // half-way also stands the first run down; `greengate migrate` clears
+    // both markers first, so asked by name it moves everything forward.
+    if direction == Direction::Forward && (repo.marker().exists() || reversed.exists()) {
         return Ok(Moved::default());
     }
     let dirs = repo.git_dirs();
@@ -1135,6 +1137,41 @@ mod tests {
         std::fs::write(&pending, "{\"format\":1,\"records\":[]}\n").unwrap();
         migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
         assert!(gd.join("greengate/cluster-pending").is_file());
+    }
+
+    #[test]
+    fn a_live_3x_run_refuses_the_move_and_an_expired_one_lets_it_through() {
+        let root = scratch("pending-live");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::create_dir_all(gd.join("amont")).unwrap();
+        let pending = gd.join("amont/cluster-pending");
+        std::fs::write(&pending, crate::cluster::sample_pending_file(NOW)).unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        let git = git_in(&root);
+        assert_eq!(
+            migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap_err(),
+            MigrateError::PendingDetached {
+                path: pending.clone()
+            }
+        );
+        // The same file, a week later: the run is past its Workflow's TTL.
+        migrate_repo(&repo, Direction::Forward, &git, NOW + 7 * 86_400).unwrap();
+        assert!(gd.join("greengate/cluster-pending").is_file());
+    }
+
+    #[test]
+    fn a_first_run_stands_down_while_a_reverse_is_marked() {
+        let root = scratch("stand-down");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::write(gd.join("amont-bypasses"), "amont-bypass-v1\n").unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        // The state a reverse leaves: its marker, no done-marker, 3.x names.
+        std::fs::write(repo.common.join(n::REVERSED_MARKER), "").unwrap();
+        let git = git_in(&root);
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        assert!(gd.join("amont-bypasses").is_file(), "the reverse holds");
     }
 
     #[test]

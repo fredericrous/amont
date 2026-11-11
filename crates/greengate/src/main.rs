@@ -457,10 +457,7 @@ fn migrate_first() {
         &greengate_runtime::migrate::system_git,
         now_secs(),
     ) {
-        eprintln!(
-            "{BIN}: {}",
-            greengate_runtime::ui::sanitize(&why.to_string())
-        );
+        eprintln!("{BIN}: {}", sanitize_lines(&why.to_string()));
         eprintln!("{BIN}: {MIGRATE_HINT}");
         std::process::exit(1);
     }
@@ -477,19 +474,25 @@ fn now_secs() -> u64 {
 /// What a migration that stopped says after its reason.
 const MIGRATE_HINT: &str = concat!(
     "the move to greengate's names stopped; what it did not reach keeps\n",
-    "its old name. Run the command again, or `",
+    "its old name. After the step above, run the command again, or\n",
+    "`",
     greengate_runtime::bin!(),
     " doctor` to list what is left."
 );
 
+/// [`greengate_runtime::ui::sanitize`] line by line: a message laid out
+/// over several lines keeps them, and each is cleaned of control bytes.
+fn sanitize_lines(text: &str) -> String {
+    text.lines()
+        .map(greengate_runtime::ui::sanitize)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `greengate migrate [--reverse] [--global]`.
 fn migrate_command(args: &[OsString]) -> Result<(), String> {
-    migrate_verb(args).map_err(|why| {
-        format!(
-            "{BIN}: {}\n{BIN}: {MIGRATE_HINT}",
-            greengate_runtime::ui::sanitize(&why)
-        )
-    })
+    migrate_verb(args)
+        .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why)))
 }
 
 fn migrate_verb(args: &[OsString]) -> Result<(), String> {

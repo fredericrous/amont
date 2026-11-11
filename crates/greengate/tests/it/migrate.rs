@@ -180,3 +180,24 @@ fn asking_for_help_moves_nothing() {
     }
     assert!(!repo.path(".git/greengate-migrated").exists());
 }
+
+#[test]
+fn a_refusal_keeps_its_lines_and_the_rm_line_pastes() {
+    let repo = Repo::new();
+    std::fs::create_dir_all(repo.path(".git/amont")).unwrap();
+    let pending = repo.path(".git/amont/cluster-pending");
+    std::fs::write(&pending, "not json").unwrap();
+    let out = repo.run(&["list"]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(!out.stderr.contains("\\x0a"), "{}", out.stderr);
+    // The binary names the path as the filesystem resolves it.
+    let rm = format!(
+        "  rm {}",
+        std::fs::canonicalize(&pending).unwrap().display()
+    );
+    assert!(
+        out.stderr.lines().any(|line| line == rm),
+        "no line is exactly {rm:?}:\n{}",
+        out.stderr
+    );
+}
