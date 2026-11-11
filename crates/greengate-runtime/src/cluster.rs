@@ -12,7 +12,7 @@
 //! `imageID` — never from the logs. Anything else, a failure of the gate
 //! included, re-runs the gate here, unchanged, and the local outcome is the
 //! verdict: a gate never fails because of the cluster. Each such fallback
-//! appends `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
+//! appends `<epoch> <gate> <reason>` to `greengate/cluster.log` in the common git
 //! directory.
 //!
 //! A pass is recorded under its own identity
@@ -749,7 +749,7 @@ fn warn_unavailable(name: &str, fallback: &Fallback) {
     ));
 }
 
-/// Append `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
+/// Append `<epoch> <gate> <reason>` to `greengate/cluster.log` in the common git
 /// directory. Best-effort: the log is evidence, never a verdict.
 fn log_line(gate: &str, reason: &str) {
     let reason: String = reason
@@ -771,7 +771,7 @@ fn log_line(gate: &str, reason: &str) {
         std::io::Write::write_all(&mut f, line.as_bytes())
     });
     if let Err(e) = written {
-        crate::hooks::common::warn(&format!("could not append to amont/cluster.log: {e}"));
+        crate::hooks::common::warn(&format!("could not append to greengate/cluster.log: {e}"));
     }
 }
 

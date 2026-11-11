@@ -281,6 +281,10 @@ pub fn move_state(dir: &Path, direction: Direction) -> Result<(), String> {
         if !source.exists() {
             continue;
         }
+        if source.is_dir() && target.is_dir() {
+            merge_dirs(&source, &target)?;
+            continue;
+        }
         if target.exists() {
             return Err(format!(
                 "both {} and {} exist; keep one (the newer is {}), then run the command again",
@@ -301,6 +305,62 @@ pub fn move_state(dir: &Path, direction: Direction) -> Result<(), String> {
         })?;
     }
     Ok(())
+}
+
+/// Move what `source` holds into `target`, which already exists (a tool or
+/// a test of the other version wrote there first): a child only in
+/// `source` is moved; a `.log` in both is appended, `source`'s lines first;
+/// any other clash is refused before anything moves. `source` is removed
+/// once empty.
+fn merge_dirs(source: &Path, target: &Path) -> Result<(), String> {
+    let read = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map_err(|e| format!("could not read {}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .collect();
+        out.sort();
+        Ok(out)
+    };
+    let children = read(source)?;
+    for child in &children {
+        let there = target.join(child.file_name().unwrap_or_default());
+        let log = child.extension().is_some_and(|e| e == "log");
+        let both_dirs = child.is_dir() && there.is_dir();
+        if there.exists() && !log && !both_dirs {
+            return Err(format!(
+                "both {} and {} exist; keep one, then run the command again",
+                child.display(),
+                there.display()
+            ));
+        }
+    }
+    for child in children {
+        let there = target.join(child.file_name().unwrap_or_default());
+        if child.is_dir() && there.is_dir() {
+            merge_dirs(&child, &there)?;
+        } else if there.exists() {
+            let mut joined = std::fs::read(&child)
+                .map_err(|e| format!("could not read {}: {e}", child.display()))?;
+            joined.extend(
+                std::fs::read(&there)
+                    .map_err(|e| format!("could not read {}: {e}", there.display()))?,
+            );
+            std::fs::write(&there, joined)
+                .map_err(|e| format!("could not write {}: {e}", there.display()))?;
+            std::fs::remove_file(&child)
+                .map_err(|e| format!("could not remove {}: {e}", child.display()))?;
+        } else {
+            std::fs::rename(&child, &there).map_err(|e| {
+                format!(
+                    "could not move {} to {}: {e}",
+                    child.display(),
+                    there.display()
+                )
+            })?;
+        }
+    }
+    std::fs::remove_dir(source).map_err(|e| format!("could not remove {}: {e}", source.display()))
 }
 
 /// Replace every line of `file` that is exactly `old` with `new`, through a
@@ -807,6 +867,34 @@ mod tests {
         }
         assert!(!may_hold(std::slice::from_ref(&f), Direction::Reverse));
         assert!(!may_hold(&[root.join("absent")], Direction::Forward));
+    }
+
+    #[test]
+    fn a_state_folder_both_versions_wrote_is_merged() {
+        let root = scratch("merge");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::create_dir_all(gd.join("amont/land")).unwrap();
+        std::fs::create_dir_all(gd.join("greengate/logs")).unwrap();
+        std::fs::write(gd.join("amont/cluster.log"), "1 old\n").unwrap();
+        std::fs::write(gd.join("amont/land/r.json"), "{}").unwrap();
+        std::fs::write(gd.join("greengate/cluster.log"), "2 new\n").unwrap();
+        move_state(&gd, Direction::Forward).unwrap();
+        assert!(!gd.join("amont").exists());
+        assert_eq!(
+            std::fs::read_to_string(gd.join("greengate/cluster.log")).unwrap(),
+            "1 old\n2 new\n"
+        );
+        assert!(gd.join("greengate/land/r.json").is_file());
+        assert!(gd.join("greengate/logs").is_dir());
+        // A clash that is not a log is refused, nothing moved.
+        std::fs::create_dir_all(gd.join("amont")).unwrap();
+        std::fs::write(gd.join("amont/cluster-pending"), "a").unwrap();
+        std::fs::write(gd.join("greengate/cluster-pending"), "b").unwrap();
+        assert!(move_state(&gd, Direction::Forward)
+            .unwrap_err()
+            .contains("both"));
+        assert!(gd.join("amont/cluster-pending").is_file());
     }
 
     #[test]
