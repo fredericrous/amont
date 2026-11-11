@@ -455,6 +455,7 @@ has one slot queue, and no held store was lost.
 
 - Phase 5 prep (docs, CHANGELOG, trust test): implementation-review, backend, platform, unix, tui, architect approve-with-changes, then approve on the delta (lang:rust approve);
   fixed: state paths 4.0 really writes, the shim placeholder, the Windows install text, an ordered upgrade and the rollback the code supports, the temporary old-name fallback, the names that stay, doctor last, trust's stdout contract.
+  Deliberate (tui, low): the CHANGELOG's upgrade list and install.md's number the rename step 4 and 5 (install.md splits install and first command in two); both name it in words too, and both end on the same completion condition.
   Kept: the `amont_cmd()` test-harness name; `amont-snapshots` named as kept (a later step); the CHANGELOG's `## Unreleased` becomes `## 4.0.0` in the release commit.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
