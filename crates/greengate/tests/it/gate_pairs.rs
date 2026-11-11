@@ -398,7 +398,7 @@ fn an_unstamped_twin_only_commit_still_makes_the_push_run_the_suite() {
         return;
     }
     let (repo, base) = builtin_paired_repo();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("rustfmt.toml", "max_width = 100\n");
     repo.commit("chore: dodge the gate"); // Repo::commit IS --no-verify
     assert_eq!(runs(&repo), 0, "nothing ran at commit");
@@ -422,7 +422,7 @@ fn a_files_pair_is_not_widened_to_its_twins_files() {
         return;
     }
     let repo = Repo::new();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     repo.stage(
         "Cargo.toml",
@@ -469,7 +469,7 @@ fn a_warn_pair_is_not_widened_to_its_twins_files() {
         return;
     }
     let repo = Repo::new();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     repo.stage(
         "Cargo.toml",
@@ -507,7 +507,11 @@ fn a_warn_pair_overridden_to_block_is_widened() {
         return;
     }
     let repo = Repo::new();
-    repo.git(&["config", "amont.severity.pre-commit-cargo-test", "block"]);
+    repo.git(&[
+        "config",
+        "greengate.severity.pre-commit-cargo-test",
+        "block",
+    ]);
     repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     repo.stage(
         "Cargo.toml",
@@ -578,7 +582,7 @@ fn a_block_pair_overridden_to_warn_is_not_widened() {
         return;
     }
     let repo = Repo::new();
-    repo.git(&["config", "amont.severity.pre-commit-cargo-test", "warn"]);
+    repo.git(&["config", "greengate.severity.pre-commit-cargo-test", "warn"]);
     repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     repo.stage(
         "Cargo.toml",
@@ -606,7 +610,7 @@ fn a_block_pair_overridden_to_warn_is_not_widened() {
 /// why a pair did not vouch.
 fn builtin_repo_with(conf: &str) -> (Repo, String) {
     let repo = Repo::new();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
     repo.stage(
         "Cargo.toml",
@@ -687,7 +691,7 @@ fn a_refused_push_says_why_the_pair_did_not_vouch() {
     }
     let (repo, base) =
         builtin_repo_with("pre-commit  cargo-test  *.rs  block  files node gate.js\n");
-    repo.git(&["config", "--unset", "amont.pushGates"]);
+    repo.git(&["config", "--unset", "greengate.pushGates"]);
     repo.stage("rustfmt.toml", "max_width = 100\n");
     hooked_commit(&repo, "chore: tune rustfmt");
     let (code, out) = push_out(&repo, &base, &head(&repo));
