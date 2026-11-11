@@ -173,7 +173,7 @@ AvalHookState = NoCorpus  // no .adr.yaml — not applicable, and nothing was sp
               | Unknown{why}   // aval answered something it did not promise
 BakeState = Current       // == installed binary path
           | Stale(path)   // points somewhere else — the GUI-client failure mode
-          | Unbaked       // __GREENGATE_BIN__ placeholder intact
+          | Unbaked       // __AMONT_BIN__ placeholder intact
           | Mixed         // shims disagree with each other
 HooksDir  = In{path}      // inside the repo's worktree, or its git common dir
           | Outside{path} // reported, never created, never written to
@@ -295,7 +295,9 @@ false problems out of `pre-commit-cargo-fmt`.
 
 Shim comparison is against the rendered template for the intended binary path,
 not the raw tracked template. A correctly baked shim must never be reported as
-drifted merely because `__GREENGATE_BIN__` was replaced.
+drifted merely because `__AMONT_BIN__` was replaced.
+The placeholder keeps its 3.x spelling until the fleet's shims are re-baked
+(the step after 4.0).
 
 ## Screen 1 — Fleet overview (default)
 

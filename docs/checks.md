@@ -623,7 +623,7 @@ $ git push
 
 With `git config greengate.rehearseOnCommit true`, `post-commit` spawns a
 detached worker — its own process group, output on
-`$GIT_DIR/amont-rehearsal.log`, nothing for git to wait for. The worker
+`$GIT_DIR/greengate-rehearsal.log`, nothing for git to wait for. The worker
 checks out `HEAD` into a throwaway worktree (the `greengate.testPushedTree`
 machinery) and runs the ordinary pre-push dispatcher there, with the branch
 and its upstream as the ref line. The snapshot is what makes this safe while

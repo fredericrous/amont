@@ -612,8 +612,8 @@ The install runs lifecycle scripts, so a `"prepare": "greengate init"` runs
 inside the snapshot — and the snapshot is a linked worktree, sharing the
 repository's hooks directory. To keep that `init` from baking every hook to
 a binary in a temp directory deleted minutes later, the snapshot marks
-itself with an `amont-snapshot` file in its own git admin dir
-(`git rev-parse --git-path amont-snapshot`), and `greengate init` writes nothing
+itself with an `greengate-snapshot` file in its own git admin dir
+(`git rev-parse --git-path greengate-snapshot`), and `greengate init` writes nothing
 where it finds one; if it cannot tell, it fails rather than guess. Both
 halves must be a version carrying this — the greengate that runs the rehearsal
 writes the marker, and the greengate the pushed commit's lockfile installs
@@ -956,7 +956,7 @@ set clusterPrepare pnpm install --frozen-lockfile --prefer-offline --ignore-scri
 ```
 
 ```sh
-git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml
+git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml   # written by the homelab's scripts/greengate-gates-kubeconfig.sh
 git config --global greengate.cluster.image 'forgejo.example/gate-runner:1.2.0@sha256:<64 hex>'
 ```
 
@@ -975,7 +975,7 @@ local outcome is the verdict. That covers a gate failure, `OOMKilled`, a
 deadline, a pod not Running within the start wait, a failed prepare, a tree
 mismatch, every slot taken or refused by the quota, a bundle over the cap,
 `kubectl` missing or failing, and any of the keys below missing. Each
-fallback appends `<epoch> <gate> <reason>` to `amont/cluster.log` in the
+fallback appends `<epoch> <gate> <reason>` to `greengate/cluster.log` in the
 common git directory (`git rev-parse --git-common-dir`). In one hook run,
 once the apiserver has failed, the later gates run here without asking it
 again.
@@ -1015,6 +1015,7 @@ clone, or `set executor local` in the file.
 ### `greengate.rehearse.cluster` — a rehearsal that outlives the laptop
 
 ```sh
+# The snapshot repository keeps its 3.x name, `amont-snapshots`, until a later step.
 git config --global greengate.cluster.snapshotRemote 'git@git.example:amont-snapshots/{repo}.git'
 git config --global greengate.cluster.snapshotFetch  'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}.git'
 git config --global greengate.cluster.mirrorRemote   'git@git.example:amont-snapshots/{repo}-mirror.git'   # optional
@@ -1040,7 +1041,7 @@ The code goes in one of two ways:
   pushed with your own git credentials to `refs/snapshots/<run label>` on
   `greengate.cluster.snapshotRemote`, then read back with `git ls-remote`. A push
   that is not read back submits nothing: the gates run here and
-  `amont/cluster.log` says why.
+  `greengate/cluster.log` says why.
 - **The mirror.** When `git ls-remote <mirrorRemote>` advertises an object equal
   to HEAD, nothing is pushed and the cluster fetches that commit from
   `greengate.cluster.mirror`. Mirror detection is the only thing the laptop does
@@ -1071,7 +1072,7 @@ greengate created and running the image and command it submitted. A Workflow or
 node that says `Succeeded` while `main` exited 1 is no pass. The token written
 is the one worked out at submission: change the command, `clusterPrepare` or the
 image after submitting and the push does not accept the pass, it runs the gate.
-Anything else writes one line in `amont/cluster.log` and nothing more.
+Anything else writes one line in `greengate/cluster.log` and nothing more.
 
 `greengate cluster collect` exits 0 when it asked the cluster (or another collect is
 already running, which it says), and 1 when the cluster was not reached or the
@@ -1080,7 +1081,7 @@ could not be terminated and prints the `kubectl patch` that does it by hand.
 `rehearse --status` also lists the runs that ended since the last look, with the
 gates that did not pass.
 
-The record of what is pending is `$GIT_COMMON_DIR/amont/cluster-pending`;
+The record of what is pending is `$GIT_COMMON_DIR/greengate/cluster-pending`;
 deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are
 pruned by the cluster. Unix only.
 

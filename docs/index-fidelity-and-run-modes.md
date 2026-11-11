@@ -368,11 +368,11 @@ So: **byte-exact copies**. Read the file, put it back. No patch to apply, no
 newline policy to agree about, and binary files need no special case. It costs a
 temporary copy of only the files that have unstaged changes.
 
-The store is `$GIT_DIR/amont-held/`, and its layout is itself the result of an
+The store is `$GIT_DIR/greengate-held/`, and its layout is itself the result of an
 incident:
 
 ```
-$GIT_DIR/amont-held/
+$GIT_DIR/greengate-held/
   index              NUL-delimited, one record per parked path:
                      format tag, then kind + path + (mode | symlink target)
   files/<rel>        the payloads, byte for byte
@@ -426,7 +426,7 @@ Rules, all of which wanted tests and all of which now have them, in
   interrupted.
 - **Restore failure is fatal and loud**: print the STORE'S PATH, do not swallow
   it, block the commit. Not `git stash list` — nothing here is a stash ref, so
-  the work is findable as files on disk under `$GIT_DIR/amont-held/`.
+  the work is findable as files on disk under `$GIT_DIR/greengate-held/`.
 - **Never park when the tree is already mid-operation** — merge, rebase,
   cherry-pick. §3's `GitState` predicate is what answers this, which is why it
   landed first.
@@ -473,7 +473,7 @@ differently:
 
 - **An editor save** is work. The restore compares each held file against the
   content the checkout put there; a file that changed mid-run is KEPT, and the
-  held (pre-commit unstaged) version is parked in `$GIT_DIR/amont-preserved/`
+  held (pre-commit unstaged) version is parked in `$GIT_DIR/greengate-preserved/`
   with a printed pointer. Before this guard existed, the restore overwrote the
   save silently — the one way this module could destroy something.
 - **A fixer** (`greengate.fix true`) rewrites held files as its job, and telling

@@ -1,6 +1,6 @@
 //! What the trust prompt shows is what gets trusted.
 //!
-//! `amont trust` prints a repository's declarations so a person can read
+//! `greengate trust` prints a repository's declarations so a person can read
 //! them before accepting. The names and commands in that listing are chosen by
 //! whoever wrote the repository, and they were printed verbatim — so a
 //! declaration whose name began with `\x1b[8m` (conceal) HID THE NEXT ONE.
@@ -44,6 +44,8 @@ fn a_declaration_cannot_conceal_the_next_one_from_the_trust_prompt() {
     let r = Repo::new();
     r.stage("x.txt", "seed\n");
     r.commit("chore: seed");
+    // The 3.x manifest name: 4.0 still reads it in a repository the sweep has not
+    // renamed, until the census removes that fallback.
     r.stage("amont.conf", &concealing_manifest());
 
     let shown = run(&r, &["trust", "--show"]);
@@ -61,12 +63,14 @@ fn a_declaration_cannot_conceal_the_next_one_from_the_trust_prompt() {
     }
 }
 
-/// `amont list` shows the same declarations, and is read more often.
+/// `greengate list` shows the same declarations, and is read more often.
 #[test]
 fn the_check_listing_does_not_pass_escapes_through_either() {
     let r = Repo::new();
     r.stage("x.txt", "seed\n");
     r.commit("chore: seed");
+    // The 3.x manifest name: 4.0 still reads it in a repository the sweep has not
+    // renamed, until the census removes that fallback.
     r.stage("amont.conf", &concealing_manifest());
 
     let shown = run(&r, &["list"]);

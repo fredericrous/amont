@@ -409,7 +409,7 @@ every repository it disarms, instead of leaving that bookkeeping behind in
 all of them.
 
 What no uninstall ever touches is **work you have not committed**: an
-interrupted run's parked changes stay in `$GIT_DIR/amont-held`, and
+interrupted run's parked changes stay in `$GIT_DIR/greengate-held`, and
 `greengate restore` keeps working after the hooks are gone.
 
 It also takes the shims back out of the template directory, and — if
@@ -446,6 +446,41 @@ greengate-fleet fix --root ~/Developer     # or see what the whole fleet needs
 greengate-fleet fix --apply --root ~/Developer
 ```
 
+### Upgrading from 3.x to 4.0
+
+4.0 reads only greengate's names (see the CHANGELOG), so upgrade in this
+order. The host-slot names switch once, so greengate, relais and greenpiste
+are installed together while no slot is held; installing one alone leaves two
+slot queues on one machine.
+
+1. Wait for the slot directory to be empty (`greengate slots` lists who holds
+   one) and for no `amont` process to be running.
+2. Install greengate 4.0, the matching relais and the matching greenpiste.
+3. Run any `greengate` command in a repository. The first one moves what 3.x
+   left there (state in `.git`, the local `amont.*` keys) and then does what
+   you asked. A 3.x store of parked changes (`.git/amont-held`) stops it:
+   `greengate restore` puts the changes back, then run the command again.
+4. Run `greengate migrate --global` once for the machine's keys, and
+   `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
+   `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
+   under `~/.config/amont/`, with the command that moves each.
+5. Rename each repository's committed names: `greengate migrate --tracked`
+   (alone, it takes no other flag: with `--reverse` or `--global` it exits 2)
+   stages `amont.conf` → `greengate.conf`, `amont.pack` → `greengate.pack` and
+   the `AGENTS.md` / `CLAUDE.md` markers for you to commit. Across a root,
+   `greengate-fleet fix --migrate` lists the repositories that need it, and
+   `greengate-fleet fix --apply --migrate` commits it in each one that is
+   already on a branch named `chore/greengate-names`; a repository on another
+   branch, or with uncommitted changes to tracked files, is skipped and named.
+   4.0 reads the old committed names until a later release drops that
+   fallback.
+
+To go back to 3.x, before installing it: `greengate migrate --reverse` in each
+repository and `greengate migrate --reverse --global` once, then revert each
+sweep commit and point `amont.cluster.kubeconfig` at the 3.x kubeconfig.
+4.0 leaves a reversed repository alone until `greengate migrate` (and
+`greengate migrate --global`) is run again.
+
 ## Windows
 
 Everything works, with one setup difference: there is no symlink.
@@ -459,10 +494,11 @@ The one-liner for this platform is PowerShell:
 irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
-It writes `amont.exe` and `greengate-fleet.exe` into
-`%USERPROFILE%\.local\bin`, which is where the shims look — they try both
-`greengate` and `amont.exe` there, so a binary in that directory resolves
-even in a shim whose path was never baked. CI runs this script on a real
+It writes `greengate.exe` and `greengate-fleet.exe`, each with its
+`amont.exe` / `amont-fleet.exe` copy, into `%USERPROFILE%\.local\bin`, which
+is where the shims look — they try `greengate`, `greengate.exe`, `amont` and
+`amont.exe` there, so a binary in that directory resolves even in a shim whose
+path was never baked. CI runs this script on a real
 Windows runner against a real published release, because a documented install
 path nobody executes is one you find out about from a bug report.
 
