@@ -370,10 +370,10 @@ fleet's shims are re-baked.
     `doctor` after a reverse → exit 1 with `reversed: this repository`.
   - Full suites on c128d8b5: greengate 731, greengate-runtime 808,
     greengate-fleet 168 + 27, all pass; after the last review fixes
-    (wording, `staged_nothing`, status lines to stderr, the halfway test
-    without permission bits) the affected ones again: migrate integration
-    9, trust/add/pack 44, greengate-fleet 168 + 27, runtime migrate 19,
-    all pass, and the full suite once more in the closing commit's gate; `cargo clippy --workspace
+    (wording, `staged_nothing`, `trust`'s talk on stderr, the halfway
+    test without permission bits) the affected ones again: migrate
+    integration 9, trust/flows 47, greengate-fleet 168 + 27, runtime
+    trust/migrate 34, all pass, and the full suite in each commit's gate; `cargo clippy --workspace
     --all-targets -D warnings` clean; after the runs, the live `.git` and
     `~/.config` hold only the two `greengate-reversed` guards.
 - Phase 4: after the homelab PR (applied with no 3.x Job running), a
@@ -403,6 +403,7 @@ has one slot queue, and no held store was lost.
   backend approve (partial failures reported as skips, exit 0 on git errors, a real-hook test, read errors; fixed) · lang:rust approve (`names::old` above the tests, typed branch read; stringly reasons kept) ·
   platform approve (undo a refused sweep, its own branch, untracked files never touched) · unix approve (exit codes, ignored flags refused) · tui (next steps named, the hint only after a move) ·
   architect approve (old names in `names::old`, one `needs`, `staged_nothing` in the runtime; its doc scope to the tracked rename carried to Phase 6).
-  Fixed in the last delta: three pre-existing `trust`/`add` status lines moved to stderr; the halfway undo test provokes its failure without permission bits, so it holds as root.
+  Fixed in the last deltas: `trust` without `--show` says everything on stderr (listing, heading, verdict, "nothing to do"), `--show` stays data on stdout, `add`'s "already carries" too;
+  `staged_nothing()` matches every variant; the halfway undo test fails at the attest-inputs read after the manifest moved, without permission bits, so it holds as root.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
