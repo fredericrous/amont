@@ -281,7 +281,10 @@ pub const CHECKS: &[Builtin] = &[
     Builtin {
         name: "pre-commit-manifest-trust",
         stage: Stage::PreCommit,
-        scope: Scope::named(&[crate::manifest::MANIFEST]).not_during(MID_OPERATION),
+        // Both names: a commit that renames `amont.conf` to `greengate.conf`
+        // touches each, and either may hold the declarations to vet.
+        scope: Scope::named(&[crate::manifest::MANIFEST, crate::names::old::MANIFEST])
+            .not_during(MID_OPERATION),
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Safety,
@@ -384,9 +387,9 @@ pub const CHECKS: &[Builtin] = &[
         stage: Stage::PreCommit,
         scope: Scope {
             files: hooks::k8s::EXTS,
-            names: &[crate::manifest::MANIFEST],
+            names: &[crate::manifest::MANIFEST, crate::names::old::MANIFEST],
             dirs: &[],
-            opt_in: &[crate::manifest::MANIFEST],
+            opt_in: &[crate::manifest::MANIFEST, crate::names::old::MANIFEST],
             not_during: MID_OPERATION,
         },
         severity: Severity::Block,

@@ -30,7 +30,7 @@
 //! holds.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use greengate_runtime::check::Stage;
 use greengate_runtime::names::BIN;
@@ -59,10 +59,10 @@ const USAGE: &str = concat!(
     "                 never re-bakes from inside a push snapshot\n",
     "  uninstall      remove OUR six shims and nothing else [--binary: the binary too]\n",
     "                 [--repo: this repository only; the template dir is left as is;\n",
-    "                  it forgets attestations and revokes amont.conf trust]\n",
+    "                  it forgets attestations and revokes greengate.conf trust]\n",
     "  setup          the commit-style questions, current values as defaults\n",
     "                 [--local|--global] [--dry-run]\n",
-    "  trust          show what amont.conf declares, and accept it\n",
+    "  trust          show what greengate.conf declares, and accept it\n",
     "                 [--show: what is trusted] [--revoke: forget it]\n",
     "  run            rehearse checks without committing: the pre-commit stage,\n",
     "                 `run pre-push` for the push gate, or one check by name\n",
@@ -92,6 +92,9 @@ const USAGE: &str = concat!(
     "                 [--global: read the machine's keys again]\n",
     "                 [--reverse: back to 3.x's names, before a downgrade; 4.0\n",
     "                 then leaves the repository alone until `migrate`]\n",
+    "                 [--tracked: rename the committed names instead —\n",
+    "                 amont.conf, amont.pack, the AGENTS.md markers — and\n",
+    "                 stage them for you to commit]\n",
     "  doctor         list greengate 3.x names still set here: AMONT_*\n",
     "                 variables, amont.* keys, state left in .git; exits 1 when\n",
     "                 any is left (not an error), 0 when none, 2 when it\n",
@@ -146,12 +149,12 @@ const USAGE: &str = concat!(
     "  warm           fill the cache of every cold `tree` gate, so the next commit\n",
     "                 can prove it within its slack (after a cold commit this\n",
     "                 runs in the background by itself) [--worker]\n",
-    "  tree-parity    compare each `tree` gate in amont.conf with the workflow\n",
+    "  tree-parity    compare each `tree` gate in greengate.conf with the workflow\n",
     "                 steps skipped on it; exits 1 on any drift (CI runs it,\n",
     "                 never skipped)\n",
     "\n",
-    "  add            vendor a pack's declarations into amont.conf — a pack is a\n",
-    "                 git repository carrying an `amont.pack` of amont.conf rows.\n",
+    "  add            vendor a pack's declarations into greengate.conf — a pack is a\n",
+    "                 git repository carrying a `greengate.pack` of manifest rows.\n",
     "                 Resolves the revision to a commit id, refuses anything that\n",
     "                 is not a check, and records the id beside the lines. Nothing\n",
     "                 is trusted by adding it: the manifest changes, so `",
@@ -474,10 +477,9 @@ fn now_secs() -> u64 {
 /// What a migration that stopped says after its reason.
 const MIGRATE_HINT: &str = concat!(
     "the move to greengate's names stopped; what it did not reach keeps\n",
-    "its old name. After the step above, run the command again, or\n",
-    "`",
+    "its old name, and `",
     greengate_runtime::bin!(),
-    " doctor` to list what is left."
+    " doctor` lists it."
 );
 
 /// [`greengate_runtime::ui::sanitize`] line by line: a message laid out
@@ -489,10 +491,85 @@ fn sanitize_lines(text: &str) -> String {
         .join("\n")
 }
 
-/// `greengate migrate [--reverse] [--global]`.
-fn migrate_command(args: &[OsString]) -> Result<(), String> {
-    migrate_verb(args)
-        .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why)))
+/// `greengate migrate --tracked`: the committed names, renamed and staged in
+/// the work tree `cwd` belongs to; what still names an old one is listed.
+fn migrate_tracked(cwd: &Path) -> Result<(), String> {
+    use greengate_runtime::migrate::{system_git, tracked};
+    use greengate_runtime::names::old;
+    let root = greengate_runtime::git::stdout_in(cwd, &["rev-parse", "--show-toplevel"])
+        .ok_or("not inside a git work tree")?;
+    let root = Path::new(root.trim());
+    let staged = tracked::migrate_tracked(root, &system_git).map_err(|e| {
+        if e.staged_nothing() {
+            e.to_string()
+        } else {
+            format!(
+                "{e}\n`git status` shows what the rename staged, if anything, before it stopped"
+            )
+        }
+    })?;
+    for (old_name, new_name) in &staged.renamed {
+        eprintln!("renamed {old_name} to {new_name}");
+    }
+    for name in &staged.markers {
+        eprintln!("respelled the generated-block markers in {name}");
+    }
+    if staged.attest_inputs {
+        eprintln!("renamed the manifest in .github/attest-inputs");
+    }
+    if staged.changed() {
+        eprintln!("staged; review with `git diff --cached`, then commit");
+    } else {
+        eprintln!("nothing committed here carries greengate 3.x's names");
+    }
+    if staged.leftover_count > 0 {
+        eprintln!(
+            "{} tracked line(s) still name {}, {} or an {}* variable; \
+             these need reading, not a substitution:",
+            staged.leftover_count,
+            old::MANIFEST,
+            old::PACK_FILE,
+            old::ENV_PREFIX
+        );
+        for line in &staged.leftovers {
+            eprintln!("  {}", greengate_runtime::ui::sanitize(line));
+        }
+        if staged.leftover_count > staged.leftovers.len() {
+            eprintln!(
+                "  … and {} more (`git grep -n -F -e {} -e {} -e {}`)",
+                staged.leftover_count - staged.leftovers.len(),
+                old::MANIFEST,
+                old::PACK_FILE,
+                old::ENV_PREFIX
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `greengate migrate [--reverse] [--global] [--tracked]`.
+fn migrate_command(args: &[OsString]) -> i32 {
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    if !has("--tracked") {
+        return report(
+            migrate_verb(args)
+                .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why))),
+        );
+    }
+    if has("--reverse") || has("--global") {
+        eprintln!("{BIN}: `--tracked` stands alone: run `{BIN} migrate --tracked` by itself");
+        return 2;
+    }
+    let tracked = std::env::current_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|cwd| migrate_tracked(&cwd));
+    report(tracked.map_err(|why| {
+        sanitize_lines(&why)
+            .lines()
+            .map(|line| format!("{BIN}: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }))
 }
 
 fn migrate_verb(args: &[OsString]) -> Result<(), String> {
@@ -596,7 +673,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),
         Sub::Cluster => (&[], &[]),
-        Sub::Migrate => (&["--reverse", "--global"], &[]),
+        Sub::Migrate => (&["--reverse", "--global", "--tracked"], &[]),
         Sub::Doctor => (&[], &[]),
     }
 }
@@ -795,7 +872,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // `amont cluster collect` — turn finished detached Workflows into
         // cluster tokens now (ADR-0017).
         Sub::Cluster => greengate_runtime::cluster::collect_command(args),
-        Sub::Migrate => report(migrate_command(args)),
+        Sub::Migrate => migrate_command(args),
         Sub::Doctor => {
             let cwd = std::env::current_dir().unwrap_or_default();
             let found = match greengate_runtime::migrate::leftovers(
@@ -843,7 +920,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // staged and — via `--stdin-filename` — may never have been saved.
         // Sharing a verb would drag all of that machinery into a read-only
         // lookup, and an editor asking about a buffer would inherit a stash.
-        // `amont add <source>` — vendor a pack's rows into amont.conf.
+        // `greengate add <source>` — vendor a pack's rows into the manifest.
         //
         // A SETUP verb. Nothing here is reachable from a hook: no fetch, no
         // network, and no new code between `git commit` and a verdict.
@@ -907,7 +984,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             }
 
             let root = greengate_runtime::hooks::common::repo_root();
-            let path = std::path::Path::new(&root).join(greengate_runtime::manifest::MANIFEST);
+            let root = std::path::Path::new(&root);
+            let manifest_file = greengate_runtime::manifest::manifest_name(root);
+            let path = root.join(manifest_file);
             let before = std::fs::read_to_string(&path).unwrap_or_default();
             let mut after = before.clone();
             for (label, id, rows) in &fetched {
@@ -920,10 +999,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 }
             }
             if after == before {
-                println!(
-                    "{} already carries exactly this",
-                    greengate_runtime::manifest::MANIFEST
-                );
+                eprintln!("{} already carries exactly this", manifest_file);
                 return 0;
             }
             // No confirmation prompt here, deliberately. `amont trust` does not
@@ -945,7 +1021,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             // nothing is worse than one that refuses.
             println!(
                 "\n{} changed — these commands cannot run until you review them:\n    {BIN} trust",
-                greengate_runtime::manifest::MANIFEST
+                manifest_file
             );
             0
         }

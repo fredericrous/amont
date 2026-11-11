@@ -44,7 +44,21 @@ use crate::check::{Check, Fix, Outcome, Scope, Severity, Stage};
 use crate::hooks::common::Restaged;
 use crate::registry::{Ctx, CHECKS, ENTRYPOINTS};
 
-pub const MANIFEST: &str = "amont.conf";
+/// The manifest's name (`greengate.conf`). A repository not yet swept keeps
+/// greengate 3.x's `amont.conf`, read when `greengate.conf` is absent: see
+/// [`manifest_name`]. Messages name the file actually read.
+pub const MANIFEST: &str = crate::names::MANIFEST;
+
+/// The manifest file `root` declares its checks in: `greengate.conf` when it
+/// exists, else greengate 3.x's `amont.conf` when that exists, else
+/// `greengate.conf` (where a new one would go).
+pub fn manifest_name(root: &Path) -> &'static str {
+    if !root.join(MANIFEST).exists() && root.join(crate::names::old::MANIFEST).exists() {
+        crate::names::old::MANIFEST
+    } else {
+        MANIFEST
+    }
+}
 
 /// Why a line could not be used.
 ///
@@ -934,7 +948,8 @@ impl Check for External {
             ),
             Kind::Unusable { why, .. } => {
                 crate::hooks::common::warn(&format!(
-                    "{MANIFEST}: {} — {}",
+                    "{}: {} — {}",
+                    ctx.manifest.file_name(),
                     crate::ui::highlight(&self.short_name),
                     // Carries repo tokens: `BadStage("…")` quotes the manifest.
                     crate::ui::sanitize(why)
@@ -1070,6 +1085,7 @@ impl Check for External {
                 }
                 self.execute(
                     settings,
+                    ctx.manifest.file_name(),
                     program,
                     args,
                     fix,
@@ -1113,7 +1129,15 @@ impl Check for External {
                     let (run_in, _guard) =
                         crate::pushed_tree::where_to_run(settings, &r.local_oid, &root, &self.id);
                     match self.execute(
-                        settings, program, args, fix, files, runs_on, &matched, &run_in,
+                        settings,
+                        ctx.manifest.file_name(),
+                        program,
+                        args,
+                        fix,
+                        files,
+                        runs_on,
+                        &matched,
+                        &run_in,
                     ) {
                         Outcome::Passed => {}
                         other => return other,
@@ -1163,6 +1187,7 @@ impl External {
     fn execute(
         &self,
         settings: &crate::config::Settings,
+        manifest: &str,
         program: &str,
         args: &[String],
         fix: Fix,
@@ -1250,7 +1275,7 @@ impl External {
             // error that does not exist.
             Err(e) => {
                 crate::hooks::common::warn(&format!(
-                    "{MANIFEST}: {} could not run {} — {}",
+                    "{manifest}: {} could not run {} — {}",
                     crate::ui::highlight(&self.short_name),
                     crate::ui::highlight(program),
                     // The io error's text embeds the program name it tried.
@@ -1506,6 +1531,11 @@ fn tokenise(line: &str) -> Option<([&str; 4], &str)> {
 }
 
 pub fn parse_lines(text: &str) -> Vec<Line> {
+    parse_lines_of(text, MANIFEST)
+}
+
+/// [`parse_lines`] for the file named `manifest`, which positions name.
+pub fn parse_lines_of(text: &str, manifest: &str) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = raw.trim();
@@ -1513,7 +1543,7 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
             continue;
         }
         let lineno = i + 1;
-        let mut parsed = parse_line(lineno, line, &out);
+        let mut parsed = parse_line(manifest, lineno, line, &out);
         // `trim` and `is_whitespace` are Unicode; attest's verifiers read the
         // raw line with ASCII blanks only. A line this parser takes for
         // `planExempt off` that they would read as "on" (a form feed, a
@@ -1524,7 +1554,7 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
         {
             parsed = broken_at(
                 lineno,
-                format!("{MANIFEST}:{lineno}"),
+                format!("{manifest}:{lineno}"),
                 None,
                 ParseError::BadPlanExempt("write it with plain spaces or tabs".to_string()),
             );
@@ -1540,7 +1570,7 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
 /// entries — a line that cannot run does not reserve its name. Before this, a
 /// valid declaration was rejected as "declared twice" for colliding with a
 /// broken one, which pointed the reader at the wrong line entirely.
-fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
+fn parse_line(manifest: &str, lineno: usize, line: &str, earlier: &[Line]) -> Line {
     // `tool` was never a valid stage, so claiming it as a keyword breaks no
     // manifest that ever parsed. Handled before `tokenise`, whose five-column
     // shape a three-token pin does not have.
@@ -1553,7 +1583,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             }),
             _ => broken_at(
                 lineno,
-                format!("{MANIFEST}:{lineno}"),
+                format!("{manifest}:{lineno}"),
                 None,
                 ParseError::BadTool,
             ),
@@ -1576,14 +1606,14 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                 },
                 None => broken_at(
                     lineno,
-                    format!("{MANIFEST}:{lineno}"),
+                    format!("{manifest}:{lineno}"),
                     None,
                     ParseError::BadSeverity(word.to_string()),
                 ),
             },
             _ => broken_at(
                 lineno,
-                format!("{MANIFEST}:{lineno}"),
+                format!("{manifest}:{lineno}"),
                 None,
                 ParseError::BadPolicyLine("severity <check> warn|block"),
             ),
@@ -1600,7 +1630,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             },
             _ => broken_at(
                 lineno,
-                format!("{MANIFEST}:{lineno}"),
+                format!("{manifest}:{lineno}"),
                 None,
                 ParseError::BadPolicyLine("skip <check>"),
             ),
@@ -1609,7 +1639,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     // `tree` was never a valid stage either. Its own shape: it carries a
     // command but decides nothing, so it gets no severity column.
     if line == "tree" || line.starts_with("tree ") || line.starts_with("tree\t") {
-        return parse_tree_line(lineno, line, earlier);
+        return parse_tree_line(manifest, lineno, line, earlier);
     }
     if line == "set" || line.starts_with("set ") || line.starts_with("set\t") {
         // The value is the REST of the line, not a third token. Every key
@@ -1636,7 +1666,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                         {
                             broken_at(
                                 lineno,
-                                format!("{MANIFEST}:{lineno}"),
+                                format!("{manifest}:{lineno}"),
                                 None,
                                 ParseError::BadPlanExempt(format!(
                                     "the value is `on` or `off`, not {value:?}"
@@ -1648,7 +1678,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                         }) {
                             broken_at(
                                 lineno,
-                                format!("{MANIFEST}:{lineno}"),
+                                format!("{manifest}:{lineno}"),
                                 None,
                                 ParseError::BadPlanExempt("it is set twice".to_string()),
                             )
@@ -1688,7 +1718,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                         match (bad, twice) {
                             (Some(why), _) => broken_at(
                                 lineno,
-                                format!("{MANIFEST}:{lineno}"),
+                                format!("{manifest}:{lineno}"),
                                 None,
                                 ParseError::BadBusyPolicy {
                                     key: canonical,
@@ -1697,7 +1727,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                             ),
                             (None, true) => broken_at(
                                 lineno,
-                                format!("{MANIFEST}:{lineno}"),
+                                format!("{manifest}:{lineno}"),
                                 None,
                                 ParseError::BadBusyPolicy {
                                     key: canonical,
@@ -1716,10 +1746,10 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                     Some(canonical)
                         if *canonical == "executor" || *canonical == "clusterPrepare" =>
                     {
-                        parse_cluster_setting(lineno, canonical, value, earlier)
+                        parse_cluster_setting(manifest, lineno, canonical, value, earlier)
                     }
                     Some(canonical) if *canonical == "rootRunsMembers" => {
-                        parse_root_runs_members(lineno, value, earlier)
+                        parse_root_runs_members(manifest, lineno, value, earlier)
                     }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
@@ -1730,7 +1760,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                     },
                     None => broken_at(
                         lineno,
-                        format!("{MANIFEST}:{lineno}"),
+                        format!("{manifest}:{lineno}"),
                         None,
                         ParseError::UnsettableKey(key.to_string()),
                     ),
@@ -1738,7 +1768,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
             }
             None => broken_at(
                 lineno,
-                format!("{MANIFEST}:{lineno}"),
+                format!("{manifest}:{lineno}"),
                 None,
                 ParseError::BadPolicyLine("set <key> <value>"),
             ),
@@ -1751,7 +1781,11 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         None => {
             return broken_at(
                 lineno,
-                name_or_position(tokenise(line).map(|(f, _)| f[1]).unwrap_or(""), lineno),
+                name_or_position(
+                    manifest,
+                    tokenise(line).map(|(f, _)| f[1]).unwrap_or(""),
+                    lineno,
+                ),
                 None,
                 ParseError::MissingFields,
             )
@@ -1759,7 +1793,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
     };
     let [stage_tok, declared, scope_tok, severity_tok] = fields;
     let stage = parse_stage(stage_tok);
-    let name = name_or_position(declared, lineno);
+    let name = name_or_position(manifest, declared, lineno);
     let fail = |why| broken_at(lineno, name.clone(), stage, why);
 
     if declared.is_empty() {
@@ -1901,12 +1935,17 @@ pub(crate) const ROOT_RUNS_KEY: &str = "greengate.rootRunsMembers";
 /// and set once. The value is a comma-separated list of the npm gate's script
 /// names ([`NPM_GATE_SCRIPTS`]), or `none` standing alone; it is stored with
 /// `none` lowercased and the names as written.
-fn parse_root_runs_members(lineno: usize, raw_scripts: &str, earlier: &[Line]) -> Line {
+fn parse_root_runs_members(
+    manifest: &str,
+    lineno: usize,
+    raw_scripts: &str,
+    earlier: &[Line],
+) -> Line {
     const KEY: &str = ROOT_RUNS_KEY;
     let broken = |why: String| {
         broken_at(
             lineno,
-            format!("{MANIFEST}:{lineno}"),
+            format!("{manifest}:{lineno}"),
             None,
             ParseError::BadRootRunsMembers(why),
         )
@@ -1956,6 +1995,7 @@ fn parse_root_runs_members(lineno: usize, raw_scripts: &str, earlier: &[Line]) -
 /// set once (ADR-0016). The executor is stored lowercased; the prepare command
 /// verbatim, since it is a shell command.
 fn parse_cluster_setting(
+    manifest: &str,
     lineno: usize,
     canonical: &'static str,
     value: &str,
@@ -1965,7 +2005,7 @@ fn parse_cluster_setting(
     let bad = |why: String| {
         broken_at(
             lineno,
-            format!("{MANIFEST}:{lineno}"),
+            format!("{manifest}:{lineno}"),
             None,
             ParseError::BadClusterSetting {
                 key: canonical,
@@ -2025,8 +2065,8 @@ fn tree_path_safe(path: &str) -> bool {
         && !path.split('/').any(|seg| seg == "..")
 }
 
-fn parse_tree_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
-    let position = format!("{MANIFEST}:{lineno}");
+fn parse_tree_line(manifest: &str, lineno: usize, line: &str, earlier: &[Line]) -> Line {
+    let position = format!("{manifest}:{lineno}");
     let fail = |name: &str, why| {
         broken_at(
             lineno,
@@ -2151,9 +2191,9 @@ pub fn tree_gates(text: &str) -> Vec<TreeGate> {
         .collect()
 }
 
-fn name_or_position(declared: &str, lineno: usize) -> String {
+fn name_or_position(manifest: &str, declared: &str, lineno: usize) -> String {
     if declared.is_empty() {
-        format!("{MANIFEST}:{lineno}")
+        format!("{manifest}:{lineno}")
     } else {
         declared.to_string()
     }
@@ -2226,7 +2266,12 @@ impl From<Line> for External {
 }
 
 pub fn parse(text: &str) -> Vec<External> {
-    parse_lines(text)
+    parse_of(text, MANIFEST)
+}
+
+/// [`parse`] for the file named `manifest`, which positions name.
+pub fn parse_of(text: &str, manifest: &str) -> Vec<External> {
+    parse_lines_of(text, manifest)
         .into_iter()
         .filter(Line::is_check)
         .map(External::from)
@@ -2235,16 +2280,18 @@ pub fn parse(text: &str) -> Vec<External> {
 
 /// The manifest for `root`, or an empty list. Read once per process.
 pub fn read(root: &Path) -> Vec<External> {
-    std::fs::read_to_string(root.join(MANIFEST))
-        .map(|t| parse(&t))
+    let manifest = manifest_name(root);
+    std::fs::read_to_string(root.join(manifest))
+        .map(|t| parse_of(&t, manifest))
         .unwrap_or_default()
 }
 
 /// The same file, without building the `Scope`s — for a reader that inspects
 /// many repositories and must not leak once per manifest per refresh.
 pub fn read_lines(root: &Path) -> Vec<Line> {
-    std::fs::read_to_string(root.join(MANIFEST))
-        .map(|t| parse_lines(&t))
+    let manifest = manifest_name(root);
+    std::fs::read_to_string(root.join(manifest))
+        .map(|t| parse_lines_of(&t, manifest))
         .unwrap_or_default()
 }
 
@@ -2284,6 +2331,21 @@ pub struct Manifest {
     /// `severity`/`skip` targets that name no check here, with positions —
     /// a typo in committed policy must be loud, not a phantom check.
     pub policy_notes: Vec<String>,
+    /// The file these came from (`greengate.conf`, or an unswept
+    /// repository's `amont.conf`), for messages; empty in a default
+    /// `Manifest`, which [`Manifest::file_name`] reads as `greengate.conf`.
+    pub file: &'static str,
+}
+
+impl Manifest {
+    /// The manifest's file name, for messages.
+    pub fn file_name(&self) -> &'static str {
+        if self.file.is_empty() {
+            MANIFEST
+        } else {
+            self.file
+        }
+    }
 }
 
 /// Read and trust-gate `root`'s manifest.
@@ -2303,21 +2365,24 @@ pub fn load(root: &Path) -> Manifest {
     // Non-UTF-8 yields nothing, as it always has: `parse` takes a `&str`,
     // and a manifest we cannot read as text is one we cannot act on. Not
     // lossy — that would invent a manifest nobody wrote.
-    let declared = root.join(MANIFEST).exists();
-    let Ok(bytes) = std::fs::read(root.join(MANIFEST)) else {
+    let file = manifest_name(root);
+    let declared = root.join(file).exists();
+    let Ok(bytes) = std::fs::read(root.join(file)) else {
         return Manifest {
             declared,
+            file,
             ..Manifest::default()
         };
     };
     let Ok(text) = String::from_utf8(bytes.clone()) else {
         return Manifest {
             declared,
+            file,
             ..Manifest::default()
         };
     };
     let state = crate::trust::state_of(root, &bytes);
-    let lines = parse_lines(&text);
+    let lines = parse_lines_of(&text, file);
     let externals = gate(
         lines
             .iter()
@@ -2353,7 +2418,7 @@ pub fn load(root: &Path) -> Manifest {
     };
     let has_policy = lines.iter().any(|l| matches!(l, Line::Policy { .. }));
     let (policy, policy_notes) = if trusted {
-        crate::policy::Policy::from_lines(&lines)
+        crate::policy::Policy::from_lines_of(&lines, file)
     } else {
         (crate::policy::Policy::default(), Vec::new())
     };
@@ -2374,6 +2439,7 @@ pub fn load(root: &Path) -> Manifest {
         policy,
         policy_withheld,
         policy_notes,
+        file,
     }
 }
 
@@ -2501,17 +2567,17 @@ pub fn load_resolved(root: &Path) -> (Manifest, crate::config::Settings) {
 /// what disagrees. Warn-only, once per hook run, at BOTH stages: skew never
 /// blocks a commit — its cost is a check disagreeing with CI, and the fix is
 /// a human decision — but it stops being invisible, which is the whole point.
-pub fn verify_tool_pins(pins: &[ToolPin]) {
+pub fn verify_tool_pins(pins: &[ToolPin], manifest: &str) {
     for pin in pins {
         match version_of(&pin.program) {
             None => crate::hooks::common::warn(&format!(
-                "{} is pinned to {} in {MANIFEST}, but `{} --version` would not run",
+                "{} is pinned to {} in {manifest}, but `{} --version` would not run",
                 crate::ui::highlight(&pin.program),
                 crate::ui::sanitize(&pin.want),
                 crate::ui::sanitize(&pin.program),
             )),
             Some(v) if !v.contains(&pin.want) => crate::hooks::common::warn(&format!(
-                "{} reports {} — {MANIFEST} pins {}; this machine may disagree with CI",
+                "{} reports {} — {manifest} pins {}; this machine may disagree with CI",
                 crate::ui::highlight(&pin.program),
                 crate::ui::sanitize(&v),
                 crate::ui::sanitize(&pin.want),
@@ -3089,7 +3155,7 @@ mod tests {
     #[test]
     fn a_nameless_line_is_named_after_its_position() {
         let l = one("pre-commit\n");
-        assert_eq!(l.name(), "amont.conf:1");
+        assert_eq!(l.name(), "greengate.conf:1");
         assert_eq!(why(&l), ParseError::MissingFields);
     }
 

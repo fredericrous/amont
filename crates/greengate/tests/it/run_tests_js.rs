@@ -759,7 +759,7 @@ fn a_declared_root_covers_its_members_and_only_them() {
     );
     assert!(
         out.contains(
-            "1 package skipped, covered by the root's test (declared in amont.conf): `node log.js root`"
+            "1 package skipped, covered by the root's test (per amont.conf): `node log.js root`"
         ),
         "{out}"
     );
@@ -788,7 +788,7 @@ fn an_undeclared_root_runs_its_members_and_says_how_to_declare_it() {
         "said once: {out}"
     );
     assert!(
-        out.contains("declare it in amont.conf: set rootRunsMembers test   (or: none)"),
+        out.contains("declare it in greengate.conf: set rootRunsMembers test   (or: none)"),
         "{out}"
     );
     assert!(

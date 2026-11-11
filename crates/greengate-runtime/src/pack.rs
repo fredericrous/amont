@@ -44,8 +44,10 @@ use std::path::Path;
 
 use crate::manifest::{Line, MANIFEST};
 
-/// The file a pack repository must carry, at its root.
-pub const PACK_FILE: &str = "amont.pack";
+/// The file a pack repository must carry, at its root. A revision written
+/// before greengate 4.0 carries `amont.pack` instead, read when this one is
+/// absent: a vendored pin can name such a revision forever.
+pub const PACK_FILE: &str = crate::names::PACK_FILE;
 
 /// Where a pack came from, and which revision of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,13 +224,17 @@ pub fn fetch(source: &Source, id: &str, into: &Path) -> Result<String, String> {
             source.label
         ));
     }
-    crate::git::stdout_in(into, &["show", &format!("FETCH_HEAD:{PACK_FILE}")]).ok_or_else(|| {
-        format!(
-            "{}: has no {PACK_FILE} at {}",
-            source.label,
-            &id[..7.min(id.len())]
-        )
-    })
+    [PACK_FILE, crate::names::old::PACK_FILE]
+        .iter()
+        .find_map(|file| crate::git::stdout_in(into, &["show", &format!("FETCH_HEAD:{file}")]))
+        .ok_or_else(|| {
+            format!(
+                "{}: has no {PACK_FILE} (or {}) at {}",
+                source.label,
+                crate::names::old::PACK_FILE,
+                &id[..7.min(id.len())]
+            )
+        })
 }
 
 /// The rows a pack may contribute, verbatim, or a refusal naming the first

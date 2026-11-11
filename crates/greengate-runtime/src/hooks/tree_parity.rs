@@ -32,7 +32,7 @@ use std::path::Path;
 
 use crate::check::Outcome;
 use crate::hooks::common::{fail, hl, ok, repo_root, warn};
-use crate::manifest::{normalize_command, tree_gates, TreeGate, MANIFEST};
+use crate::manifest::{normalize_command, tree_gates, TreeGate};
 
 /// Where workflows live, per forge.
 pub const WORKFLOW_DIRS: &[&str] = &[".github/workflows", ".forgejo/workflows"];
@@ -312,7 +312,11 @@ fn scalar(raw: &str) -> Result<String, &'static str> {
 }
 
 /// Every problem in `workflows` (path, text) against `gates`.
-pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Problem> {
+pub fn check_texts(
+    manifest: &str,
+    gates: &[TreeGate],
+    workflows: &[(String, String)],
+) -> Vec<Problem> {
     let mut problems = Vec::new();
     let mut seen: Vec<&str> = Vec::new();
     for (file, text) in workflows {
@@ -345,7 +349,7 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
                 }
                 let name = &names[0];
                 let Some(gate) = gates.iter().find(|g| &g.name == name) else {
-                    problems.push(at(format!("`tree-{name}` is not declared in {MANIFEST}")));
+                    problems.push(at(format!("`tree-{name}` is not declared in {manifest}")));
                     continue;
                 };
                 seen.push(&gate.name);
@@ -430,7 +434,7 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
                                 file: file.clone(),
                                 line,
                                 what: format!(
-                                    "`tree-{name}` runs `{got}` here but `{want}` in {MANIFEST}:{}",
+                                    "`tree-{name}` runs `{got}` here but `{want}` in {manifest}:{}",
                                     gate.lineno
                                 ),
                             });
@@ -443,7 +447,7 @@ pub fn check_texts(gates: &[TreeGate], workflows: &[(String, String)]) -> Vec<Pr
     for gate in gates {
         if !seen.contains(&gate.name.as_str()) {
             problems.push(Problem {
-                file: MANIFEST.into(),
+                file: manifest.into(),
                 line: gate.lineno,
                 what: format!(
                     "`tree-{}` is declared but no workflow step is skipped on it",
@@ -629,14 +633,19 @@ fn read_workflows(root: &Path) -> Vec<(String, String)> {
 
 /// Read `root`'s manifest and workflows, and compare them.
 pub fn check_repo(root: &Path) -> Vec<Problem> {
-    let Ok(manifest) = std::fs::read_to_string(root.join(MANIFEST)) else {
+    let Ok(manifest) = std::fs::read_to_string(root.join(crate::manifest::manifest_name(root)))
+    else {
         return Vec::new();
     };
     let gates = tree_gates(&manifest);
     if gates.is_empty() {
         return Vec::new();
     }
-    check_texts(&gates, &read_workflows(root))
+    check_texts(
+        crate::manifest::manifest_name(root),
+        &gates,
+        &read_workflows(root),
+    )
 }
 
 /// The pre-commit check. A built-in test gate's drift warns (#288); a tree
@@ -649,7 +658,7 @@ pub fn run(settings: &crate::config::Settings) -> Outcome {
     for p in &drift {
         warn(&crate::ui::sanitize(&p.to_string()));
     }
-    let declares = std::fs::read_to_string(root.join(MANIFEST))
+    let declares = std::fs::read_to_string(root.join(crate::manifest::manifest_name(root)))
         .map(|t| !tree_gates(&t).is_empty())
         .unwrap_or(false);
     let problems = if declares {
@@ -673,7 +682,7 @@ pub fn run(settings: &crate::config::Settings) -> Outcome {
     fail(&format!(
         "{} tree-gate parity problem(s) — fix the workflow or the {} line; run {} to re-check",
         problems.len(),
-        MANIFEST,
+        crate::manifest::manifest_name(root),
         hl(concat!(crate::bin!(), " tree-parity"))
     ));
     Outcome::Failed
@@ -760,6 +769,7 @@ mod tests {
 
     fn check(manifest: &str, workflow: &str) -> Vec<Problem> {
         check_texts(
+            crate::manifest::MANIFEST,
             &gates(manifest),
             &[(
                 ".forgejo/workflows/ci.yaml".to_string(),

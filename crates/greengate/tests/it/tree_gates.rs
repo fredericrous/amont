@@ -95,7 +95,7 @@ pub(crate) fn workflow(gates: &[(&str, &str)]) -> String {
 fn repo_with(name: &str, tool: &str, command: &str) -> Repo {
     let r = Repo::new();
     r.stage(
-        "amont.conf",
+        "greengate.conf",
         &format!("tree {name} {tool} * attest {command}\n"),
     );
     r.stage(".forgejo/workflows/ci.yaml", &workflow(&[(name, command)]));

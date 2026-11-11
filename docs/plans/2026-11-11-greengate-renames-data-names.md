@@ -159,7 +159,7 @@ fleet's shims are re-baked.
   `amont/crates/greengate-runtime/src/install.rs`,
   `amont/crates/greenharness-slots/src/lib.rs` (published to crates.io before relais's install-window build),
   `amont/crates/greengate/tests/it/names.rs`.
-- [ ] Phase 3 — ledgers, tracked files, markers, fleet migrate:
+- [x] Phase 3 — ledgers, tracked files, markers, fleet migrate:
   `amont/crates/greengate-runtime/src/manifest.rs`,
   `amont/crates/greengate-runtime/src/bypass.rs`,
   `amont/crates/greengate-runtime/src/staged_only.rs`,
@@ -242,6 +242,57 @@ fleet's shims are re-baked.
   the code reads `greengate.rootRunsMembers`. It changes with the 4.0
   release, since until then the published docs describe 3.2.0, which reads
   the `amont.` key (backend, unix, architect).
+- 2026-11-11 (Phase 3) — the tracked rename is never automatic: only
+  `greengate migrate --tracked` (and the fleet sweep through it) renames
+  `amont.conf`/`amont.pack` and respells the AGENTS.md / CLAUDE.md markers.
+  Until then 4.0 reads the old manifest, pack and marker pair, names the
+  file the repository actually has in every message, and regenerates or
+  checks a block under the pair the file already uses, so an unswept
+  repository is not "drifted" for its markers alone. `greengate add` still
+  writes the `amont:pack:*` markers inside the manifest until the census.
+  greengate's own `amont.conf` and markers stay until the sweep.
+- 2026-11-11 (Phase 3) — the fleet sweep (`greengate-fleet fix --apply
+  --migrate`) commits one rename per repository through that repository's
+  own hooks and pushes nothing; it skips a checkout on its default branch
+  and one with uncommitted changes. This amends "lands one commit per
+  repository through the normal land": Phase 5 runs it over per-repository
+  task worktrees and lands each commit by pull request, never on a live
+  checkout's default branch. After review (platform), it commits only on
+  a branch named `chore/greengate-names`, so the rename never rides an
+  unrelated pull request, and a failure after it started (a refused
+  commit included) is undone with `git reset --hard HEAD` on a tree it
+  found clean, then reported as failed (exit 1). An untracked `amont.conf`
+  is a local file and is left alone.
+- 2026-11-11 (Phase 3) — the sweep waits for Phase 4: the homelab gate
+  runner image still pins a 3.x binary, which finds no manifest in a swept
+  tree (platform).
+- 2026-11-11 (Phase 3) — the old spellings moved from `migrate.rs` to
+  `names::old`, so runtime modules no longer depend on the migration to
+  know them (architect). The census (Phase 6) removes the read-only ones
+  and their reads in `manifest.rs` (`manifest_name`), `registry.rs`,
+  `gate_stamp.rs`, `pack.rs`, `hooks/manifest_trust.rs`, `agents_md.rs`,
+  `migrate/tracked.rs` and the fleet's `migrate.rs`; `staged_only.rs`
+  keeps the held store's. `bypass.rs` and `staged_only.rs`, listed for
+  Phase 3, needed no change: their old names are 3.x stores read only to
+  restore them.
+- 2026-11-11 (Phase 3) — the items carried from Phase 2: the `--help` text
+  names `greengate.conf`/`greengate.pack` (done); the hint after a refusal
+  no longer repeats "run the command again" (done); `doctor` reports a
+  reverse that is holding, per repository and global (done); a reverse
+  refuses while a run 4.0 submitted is pending (done); the lock-binding
+  nit stays optional (kept: the lock is held for the whole move either
+  way); the `rm` test's path tail (kept: Windows canonical paths).
+- 2026-11-11 (Phase 3) — incident, recurred by hand: at 15:10 another
+  session ran a branch-built 4.0 `greengate slot run` from inside an amont
+  worktree with only a scratch slot dir. It migrated the live common dir
+  and `~/.config` again, and 3.2.0 hooks lost trust. Repaired by hand
+  (ledgers merged back, keys moved back as a union, markers removed).
+  `greengate-reversed` guards now sit in the live `.git` and in
+  `~/.config/greengate`, so any 4.0 first run stands down until Phase 5's
+  `greengate migrate` / `migrate --global` on purpose. Found beside it:
+  the runtime unit tests appended to the live checkout's `cluster.log`
+  (`cluster::log_line` writes to the process's own common dir). It now
+  writes nothing under `cfg(test)`.
 
 ## Verification
 
@@ -282,6 +333,49 @@ fleet's shims are re-baked.
   markers stages `greengate.conf` and new markers, trust kept; 4.0 reads
   an unswept repository's `amont.conf`; `greengate-fleet fix --apply
   --migrate` on two scratch repositories commits one change each.
+  Observed, before the push:
+  - A 3.x repository (trusted `amont.conf`, old AGENTS.md markers,
+    `.github/attest-inputs` naming the manifest, an `AMONT_` CI setting):
+    its check runs unswept → `migrate --tracked` stages `R100 amont.conf
+    greengate.conf`, respelled markers and inputs, and lists the CI line
+    unedited; the rename commit passes the gate with the check still
+    running, so trust was kept; a second run has nothing to do. Both
+    manifests tracked → refused naming `git rm`, no staging hint, nothing
+    changed. `--tracked --reverse` → exit 2, "stands alone", no hint →
+    `migrate_tracked` passes (3 tests).
+  - Seven scratch repositories on `chore/greengate-names` unless named:
+    manifest, markers only, dirty, on `main`, on `feat/unrelated`, an
+    untracked `amont.conf` plus an untracked old-marker `CLAUDE.md`, one
+    already renamed. The dry run lists five (not the untracked one, not
+    the renamed one); `--apply` commits `chore: rename to greengate
+    names` once in the two clean ones, skips the dirty one and the two on
+    another branch naming `chore/greengate-names`, leaves the untracked
+    files byte for byte; a second dry run lists the three skipped →
+    `the_sweep_commits_once_per_repository_and_skips_dirty_ones` passes.
+  - A pre-commit hook that refuses → exit 1, `FAILED` with the hook's
+    reason and "nothing was kept", log and tracked status unchanged, old
+    manifest back → `a_refused_commit_is_undone_and_fails_the_sweep`; a
+    read-only `AGENTS.md` after the manifest moved → the same undo, exit 1
+    → `a_failure_after_the_rename_started_is_undone`; `--migrate
+    --agents-md` → exit 2 naming the flag →
+    `migrate_refuses_the_flags_it_would_ignore`.
+  - An old-pair block is regenerated under its own pair and checks as
+    current; a new block uses `greengate:start` →
+    `agents_md::tests` and the `agents_md` integration tests pass.
+  - A push gate, a land and a tree gate declared in `greengate.conf`
+    → `push_gates` and `tree_gates` pass; every other fixture still uses
+    `amont.conf`, the unswept case.
+  - A reverse with a live 4.0 detached run → refused naming `cluster
+    collect`, nothing moved → `a_live_4_0_run_refuses_a_reverse`;
+    `doctor` after a reverse → exit 1 with `reversed: this repository`.
+  - Full suites on c128d8b5: greengate 731, greengate-runtime 808,
+    greengate-fleet 168 + 27, all pass; after the last review fixes
+    (wording, `staged_nothing`, `trust`'s talk on stderr, the halfway
+    test without permission bits) the affected ones again: migrate
+    integration 9, trust/flows 47, greengate-fleet 168 + 27, runtime
+    trust/migrate 34, all pass, and the full suite in each commit's gate; `cargo clippy --workspace
+    --all-targets -D warnings` clean; after the runs, the live `.git` and
+    `~/.config` hold only the two `greengate-reversed` guards.
 - Phase 4: after the homelab PR (applied with no 3.x Job running), a
   cluster gate runs in `greengate-gates` with the new labels and names;
   `auth whoami` with the new kubeconfig names the `greengate-gates` runner;
@@ -305,5 +399,12 @@ has one slot queue, and no held store was lost.
   unix approve (`--help` and dry runs migrated, read-only HOME; fixed) · tui approve-with-changes (messages, 80 columns, sanitized line breaks; one wording item carried to Phase 3) ·
   platform approve (homelab selects on no old label) · architect approve (names/migrate seam; pending file read through its owner).
   Kept as deliberate: `sandbox_env(&mut Command)` mirrors `Command`'s builder; `slots`/`doctor` data on stdout.
+- Phase 3, round 1 then two deltas: implementation-review (round 1: tick the phase, file list; delta: verification rows re-recorded, the detached-HEAD read, untracked refusals; fixed) ·
+  backend approve (partial failures reported as skips, exit 0 on git errors, a real-hook test, read errors; fixed) · lang:rust approve (`names::old` above the tests, typed branch read; stringly reasons kept) ·
+  platform approve (undo a refused sweep, its own branch, untracked files never touched) · unix approve (exit codes, ignored flags refused) · tui (next steps named, the hint only after a move) ·
+  architect approve (old names in `names::old`, one `needs`, `staged_nothing` in the runtime; its doc scope to the tracked rename carried to Phase 6).
+  Fixed in the last deltas: `trust` without `--show` says everything on stderr (listing, heading, verdict, "nothing to do"), `--show` stays data on stdout, `add`'s "already carries" too;
+  `staged_nothing()` matches every variant; the halfway undo test fails at the attest-inputs read after the manifest moved, without permission bits, so it holds as root.
+  Carried to Phase 5 (backend, medium): a test pinning `trust`'s stream split (accept path: stdout empty, verdict on stderr; `--show` listing on stdout), with the 4.0 CHANGELOG entry that names the move.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->

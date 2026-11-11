@@ -146,7 +146,7 @@ pub fn read(repo: &Path) -> Vec<SkipEntry> {
             entries.push(SkipEntry {
                 suppresses: suppressed_by(&value),
                 scope: Scope::Other {
-                    origin: "amont.conf".to_string(),
+                    origin: greengate_runtime::manifest::manifest_name(repo).to_string(),
                 },
                 value,
                 joined: false,

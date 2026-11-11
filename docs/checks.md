@@ -519,7 +519,7 @@ push says what it skipped, naming the root's command so a stale declaration
 reads against what it claims:
 
 ```text
-3 packages skipped, covered by the root's test (declared in amont.conf): `pnpm -r test`
+3 packages skipped, covered by the root's test (per greengate.conf): `pnpm -r test`
 ```
 
 When a script ran at the root **and** in a changed member and nothing is

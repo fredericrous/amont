@@ -911,7 +911,7 @@ fn offer_trust() {
     eprintln!(
         "{} {} declares checks and policy that would apply to your commits:",
         warning_sign(),
-        crate::manifest::MANIFEST
+        crate::manifest::manifest_name(root)
     );
     // Read ONCE, then show and fingerprint that same buffer. `confirm()` blocks
     // on a keypress, sometimes for several seconds, and a file rewritten in
@@ -919,13 +919,10 @@ fn offer_trust() {
     // displayed — `record_verified` re-checks this fingerprint once the answer
     // is in. Reading separately to show and to hash would leave the same gap
     // one step earlier: the listing approved need not be the one recorded.
-    let manifest = root.join(crate::manifest::MANIFEST);
+    let manifest_file = crate::manifest::manifest_name(root);
+    let manifest = root.join(manifest_file);
     let Ok(source) = std::fs::read(&manifest) else {
-        eprintln!(
-            "{} could not read {}",
-            warning_sign(),
-            crate::manifest::MANIFEST
-        );
+        eprintln!("{} could not read {manifest_file}", warning_sign());
         return;
     };
     eprint!(
@@ -933,11 +930,7 @@ fn offer_trust() {
         crate::trust::describe_source(&String::from_utf8_lossy(&source))
     );
     let Some(fp) = crate::trust::fingerprint_bytes(root, &source) else {
-        eprintln!(
-            "{} could not hash {}",
-            warning_sign(),
-            crate::manifest::MANIFEST
-        );
+        eprintln!("{} could not hash {manifest_file}", warning_sign());
         return;
     };
     if crate::trust::confirm("    Trust them? (y/N) ") {

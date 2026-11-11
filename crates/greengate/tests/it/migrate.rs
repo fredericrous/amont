@@ -70,6 +70,13 @@ fn a_3x_repository_is_moved_once_and_a_reverse_holds() {
         repo.path(".git/amont-bypasses").is_file(),
         "a reverse is not undone"
     );
+    let holding = repo.run(&["doctor"]);
+    assert_eq!(holding.code, 1, "{}", holding.stderr);
+    assert!(
+        holding.stdout.contains("reversed: this repository"),
+        "doctor says why 4.0 leaves it: {}",
+        holding.stdout
+    );
 
     // Until `migrate` is asked for by name.
     let forward = repo.run(&["migrate"]);

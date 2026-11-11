@@ -229,7 +229,7 @@ fn resolve(
             level: Level::of(severity.as_str()),
             value: severity.as_str().to_string(),
             scope: crate::skips::Scope::Other {
-                origin: "amont.conf".to_string(),
+                origin: greengate_runtime::manifest::manifest_name(repo).to_string(),
             },
         }
     });

@@ -445,9 +445,6 @@ fn tint(on: bool, c: Color) -> Style {
 /// remains the terminal's business; only the slot is chosen here.
 const ACCENT: Color = Color::Cyan;
 
-/// Named once so the pane and its tests cannot drift apart.
-const DECLARED_FILE: &str = greengate_runtime::manifest::MANIFEST;
-
 /// `*` or `*.sh,*.bash`, as the manifest writes it.
 fn scope_of(exts: &[String]) -> String {
     if exts.is_empty() {
@@ -1038,11 +1035,14 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
         // property of the file, and repeating it per row would read as though
         // some of them were running.
         let heading = match repo.trusted {
-            Some(true) => format!("{DECLARED_FILE} (declared here, trusted)"),
+            Some(true) => format!("{} (declared here, trusted)", repo.manifest),
             Some(false) => {
-                format!("{DECLARED_FILE} (declared here — NOT TRUSTED, none of these run)")
+                format!(
+                    "{} (declared here — NOT TRUSTED, none of these run)",
+                    repo.manifest
+                )
             }
-            None => format!("{DECLARED_FILE} (declared here)"),
+            None => format!("{} (declared here)", repo.manifest),
         };
         lines.push(Line::from(heading).style(tint(
             app.color,
@@ -1580,6 +1580,7 @@ mod tests {
             severities: Vec::new(),
             bypasses: crate::bypasses::Bypasses::default(),
             downgrades: crate::downgrades::Downgrades::default(),
+            manifest: greengate_runtime::manifest::MANIFEST,
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,
@@ -2027,7 +2028,7 @@ mod tests {
         let mut app = App::new(scan_with_repos(vec![r]));
         app.mode = Mode::Detail;
         let out = render(&app, 120, 30);
-        assert!(out.contains("amont.conf"), "{out}");
+        assert!(out.contains("greengate.conf"), "{out}");
         assert!(out.contains("shellcheck"), "{out}");
         assert!(out.contains("make lint"), "the command itself: {out}");
         assert!(out.contains("*.sh"), "and what gates it: {out}");
@@ -2119,7 +2120,7 @@ mod tests {
         app.mode = Mode::Detail;
         let out = render(&app, 120, 30);
         assert!(
-            !out.contains("amont.conf"),
+            !out.contains(".conf"),
             "a file that does not exist was mentioned: {out}"
         );
     }

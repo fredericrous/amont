@@ -507,15 +507,16 @@ fn file_inputs(tree: &str, tokens: &[String]) {
 /// May a gate's stamp travel by fingerprint on `tree`? A gate's scope and its
 /// opt-ins live in the manifest, and under a whole-tree key a manifest change
 /// was a tree change; under a fingerprint it is one only if the gate declares
-/// the manifest. So a tree that tracks `amont.conf` offers the route only to a
+/// the manifest. So a tree that tracks its manifest offers the route only to a
 /// gate whose declared inputs cover it, and a scope-only edit then misses.
 fn manifest_is_an_input(tree: &str, spec: &crate::attest_inputs::Spec, gate: &str) -> bool {
-    let tracked = crate::git::succeeds(&[
-        "cat-file",
-        "-e",
-        &format!("{tree}:{}", crate::manifest::MANIFEST),
-    ]);
-    !tracked || crate::attest_inputs::declares(spec, gate, crate::manifest::MANIFEST)
+    // The name the tree tracks: an unswept tree still has the 3.x one.
+    let tracked = [crate::manifest::MANIFEST, crate::names::old::MANIFEST]
+        .into_iter()
+        .find(|name| crate::git::succeeds(&["cat-file", "-e", &format!("{tree}:{name}")]));
+    tracked.map_or(true, |name| {
+        crate::attest_inputs::declares(spec, gate, name)
+    })
 }
 
 /// Does the inputs ref exist here? One spawn that lets a repository nothing

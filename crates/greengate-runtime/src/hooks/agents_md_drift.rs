@@ -37,7 +37,7 @@ pub fn run(settings: &crate::config::Settings) -> Outcome {
 /// Does `path` carry our markers at all? Answered from the file alone, so
 /// the block is never generated for a repository that has not opted in.
 fn has_markers(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|s| s.contains(agents_md::START))
+    std::fs::read_to_string(path).is_ok_and(|s| agents_md::has_markers(&s))
 }
 
 pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {

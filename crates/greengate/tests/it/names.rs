@@ -28,7 +28,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
     (
         "greengate-runtime/src/agents_md.rs",
-        13,
+        10,
         "the frozen AGENTS.md block (3a-1 keeps it byte-stable)",
     ),
     (
@@ -79,11 +79,6 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "greengate-fleet/src/shim.rs",
         5,
         "the old npm packages a shim may name",
-    ),
-    (
-        "greengate-runtime/src/agents_md.rs",
-        2,
-        "the AGENTS.md markers (Phase 3 renames them)",
     ),
     (
         "greengate-runtime/src/attest.rs",
