@@ -1579,6 +1579,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     if gate_before_push && !tips.is_empty() {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         let owed = scoped_push_gates(settings, ctx.manifest, &changed);
+        // Why each owed gate would run, kept from the one `decide` that found
+        // it missing: the reasons are printed ahead of the refusal without
+        // asking the gate a second time.
+        let reasons: std::cell::RefCell<Vec<(String, crate::hooks::run_tests::WhyNot)>> =
+            std::cell::RefCell::new(Vec::new());
         let missing: Vec<&str> = pre_push_checks
             .iter()
             .filter(|c| {
@@ -1596,7 +1601,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     // another reason stays owed.
                     owed.iter().any(|o| o == c.name())
                         && !crate::gate_identity::program_missing(&ctx.manifest.externals, c.name())
-                        && matches!(decide(**c), Decision::Run { .. })
+                        && match decide(**c) {
+                            Decision::Run { unpaired, .. } => {
+                                reasons.borrow_mut().extend(unpaired);
+                                true
+                            }
+                            Decision::Skip(_) => false,
+                        }
                 }
             })
             .map(|c| c.name())
@@ -1608,20 +1619,9 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .unwrap_or_default();
             // Why a pair did not vouch comes BEFORE the refusal: refusing is the
             // default for a bare push, so a refused push is where a silent
-            // "it would have run the suite again" went unexplained. Each gate
-            // is asked again, which costs a few git reads on a path that is
-            // about to stop the push anyway.
-            for check in pre_push_checks
-                .iter()
-                .filter(|c| missing.contains(&c.name()))
-            {
-                if let Decision::Run {
-                    unpaired: Some((name, why)),
-                    ..
-                } = decide(*check)
-                {
-                    crate::hooks::run_tests::say_why_not(&name, &why);
-                }
+            // "it would have run the suite again" went unexplained.
+            for (name, why) in reasons.borrow().iter() {
+                crate::hooks::run_tests::say_why_not(name, why);
             }
             let lines = match land {
                 Some(line) => land_refusal(line, ctx.push.get(), &missing),

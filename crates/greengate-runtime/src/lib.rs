@@ -361,7 +361,7 @@ pub fn gather_checks(
                 manifest::Kind::Runnable {
                     trigger: Some(trigger),
                     ..
-                } => Some(trigger.twin.clone()),
+                } => Some(trigger.twin_ids().join(", ")),
                 manifest::Kind::Runnable { .. } | manifest::Kind::Unusable { .. } => None,
             });
             let effective_scope = check.scope();
@@ -519,14 +519,14 @@ pub fn print_text(listings: &[CheckListing], all: bool) {
                 .collect::<Vec<_>>()
                 .join(", ");
             let read_by = l.scope_twin.as_deref().unwrap_or("its push twin");
-            let line = format!(
-                "      also fires on {paths} (read by {})",
-                ui::sanitize(read_by)
-            );
+            let prefix = "      also fires on ";
+            let suffix = format!(" (read by {})", ui::sanitize(read_by));
+            // Only the paths are cut, on a terminal, so the gate that reads
+            // them stays on the line.
             if std::io::stdout().is_terminal() {
-                println!("{}", tree_lint::fit_line("", &line, ""));
+                println!("{}", tree_lint::fit_line(prefix, &paths, &suffix));
             } else {
-                println!("{line}");
+                println!("{prefix}{paths}{suffix}");
             }
         }
     }

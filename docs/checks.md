@@ -107,7 +107,7 @@ these to decide what it may remove; `unknown` must never be read as absent.
 | `scope_opt_in` | files whose presence opts the repository in |
 | `command` | the command a declared check runs, else `null` |
 | `scope_from_twin` | files a `pre-commit` declaration also fires on because its push twin reads them (`[]` when it is not widened) |
-| `scope_twin` | the push gate whose files those are (`pre-push-cargo-test`), else `null` |
+| `scope_twin` | the push gate or gates whose files those are, comma-separated (`pre-push-cargo-test`), else `null` |
 
 A field named here and absent there — or the reverse — is a bug this page's
 own test fails on, because a reader who guesses a field name gets `null`

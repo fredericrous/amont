@@ -641,13 +641,34 @@ impl Line {
     }
 }
 
-/// What a pre-commit declaration fires on once its push twin's files count
-/// too, and which twin that is: the scope and the id of the gate whose reach
-/// it borrowed (`pre-push-cargo-test`), so a commit can say why it is testing.
+/// What a pre-commit declaration fires on once its push twins' files count
+/// too, and which twins those are: the scope, and the id and scope of each
+/// gate whose reach it borrowed (`pre-push-cargo-test`), so a commit can say
+/// which gate reads the file it is testing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trigger {
     pub scope: Scope,
-    pub twin: String,
+    /// Every push gate whose files it covers: a declared `pre-push` line
+    /// before the built-in gate, each with the scope it acts on.
+    pub twins: Vec<(String, Scope)>,
+}
+
+impl Trigger {
+    /// The id of the first twin that acts on `path`; the first twin when none
+    /// does, which cannot happen for a path the trigger covers beyond the
+    /// declaration's own scope.
+    pub fn twin_for(&self, path: &str) -> &str {
+        self.twins
+            .iter()
+            .find(|(_, twin)| twin.covers(path))
+            .or(self.twins.first())
+            .map_or("its push twin", |(id, _)| id.as_str())
+    }
+
+    /// Every twin's id, in order, for a row that lists them.
+    pub fn twin_ids(&self) -> Vec<&str> {
+        self.twins.iter().map(|(id, _)| id.as_str()).collect()
+    }
 }
 
 /// A check a repository declares, rather than one compiled in.
@@ -664,10 +685,10 @@ pub struct External {
     pub short_name: String,
     pub stage: Stage,
     pub kind: Kind,
-    /// The 1-based line of the manifest that declares it (`0` for a line that
-    /// carries no position): what a message names when it sends a person to
-    /// the line to edit.
-    pub lineno: usize,
+    /// The 1-based line of the manifest that declares it, `None` for a line
+    /// that carries no position: what a message names when it sends a person
+    /// to the line to edit.
+    pub lineno: Option<usize>,
 }
 
 /// Where a declared command runs, and what it reads there. One value, so the
@@ -829,7 +850,7 @@ impl External {
         staged
             .iter()
             .find(|path| trigger.scope.covers(path))
-            .map(|path| (path.as_str(), trigger.twin.as_str()))
+            .map(|path| (path.as_str(), trigger.twin_for(path)))
     }
 
     /// What the `amont.conf` line declares, trusted or not: reading the file
@@ -2071,9 +2092,9 @@ fn broken_at(lineno: usize, name: String, stage: Option<Stage>, why: ParseError)
 impl From<Line> for External {
     fn from(l: Line) -> External {
         let lineno = match &l {
-            Line::Usable(declared) => declared.lineno,
-            Line::Broken { lineno, .. } | Line::Policy { lineno, .. } => *lineno,
-            Line::Tool(_) | Line::Tree(_) => 0,
+            Line::Usable(declared) => Some(declared.lineno),
+            Line::Broken { lineno, .. } | Line::Policy { lineno, .. } => Some(*lineno),
+            Line::Tool(_) | Line::Tree(_) => None,
         };
         let (name, stage, parsed) = l.into_parts();
         let kind = match parsed {
@@ -2331,10 +2352,10 @@ fn attach_twin_scopes(mut externals: Vec<External>) -> Vec<External> {
         let widened = twins
             .iter()
             .fold(*scope, |reach, (_, twin)| reach.union(twin));
-        if let (true, Some((twin_id, _))) = (widened != *scope, twins.first()) {
+        if widened != *scope && !twins.is_empty() {
             *pending_trigger = Some(Box::new(Trigger {
                 scope: widened,
-                twin: twin_id.clone(),
+                twins,
             }));
         }
     }
@@ -3416,7 +3437,7 @@ mod tests {
         let externals = widened("pre-commit  cargo-test  *.rs  block  cargo test\n");
         let trigger = pending(&externals[0]).expect("widened to pre-push-cargo-test's reach");
         assert!(trigger.scope.covers("Cargo.lock") && trigger.scope.covers("src/a.rs"));
-        assert_eq!(trigger.twin, "pre-push-cargo-test");
+        assert_eq!(trigger.twin_ids(), ["pre-push-cargo-test"]);
         let before = externals[0].effective_scope();
         assert!(
             !before.covers("Cargo.lock"),
@@ -3466,7 +3487,7 @@ mod tests {
                 .unwrap();
             let trigger = pending(commit).expect("widened to the declared twin");
             assert!(trigger.scope.covers("notes.md"), "{text}");
-            assert_eq!(trigger.twin, "pre-push-check");
+            assert_eq!(trigger.twin_ids(), ["pre-push-check"]);
         }
     }
 
@@ -3486,8 +3507,14 @@ mod tests {
         let trigger = pending(commit).expect("widened to the JS gate's reach");
         assert!(trigger.scope.covers("App.vue"), "the built-in gate's files");
         assert_eq!(
-            trigger.twin, "pre-push-test",
-            "the declared twin is named first"
+            trigger.twin_ids(),
+            ["pre-push-test", "pre-push-run-tests-js"],
+            "the declared twin first, then the built-in gate"
+        );
+        assert_eq!(
+            trigger.twin_for("App.vue"),
+            "pre-push-run-tests-js",
+            "a file only the built-in gate reads names that gate"
         );
     }
 
@@ -3498,7 +3525,7 @@ mod tests {
         let externals = widened("pre-commit  typecheck  *.ts  block  pnpm typecheck\n");
         let trigger = pending(&externals[0]).expect("widened to the JS gate's reach");
         assert!(trigger.scope.covers("App.vue") && trigger.scope.covers("a.js"));
-        assert_eq!(trigger.twin, "pre-push-run-tests-js");
+        assert_eq!(trigger.twin_ids(), ["pre-push-run-tests-js"]);
         let unrelated = widened("pre-commit  shellcheck  *.sh  block  shellcheck\n");
         assert!(pending(&unrelated[0]).is_none(), "no push twin, no trigger");
     }

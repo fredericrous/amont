@@ -94,13 +94,17 @@ the npm vocabulary (`gated_at_commit`'s `GATE` scripts), run-tests-js's
 scope. Its opt-in stays its own. A commit changing only `Cargo.lock` in this
 repository runs `cargo test --locked` at commit, earns the stamp, and the
 push prints `✓ cargo-test gated at commit instead — not repeating it here`.
-When the commit fires only through its twin's files, it says so first, on one line of 80 columns or less: `cargo-test: Cargo.lock is read by pre-push-cargo-test — testing at commit`.
+When the commit fires only through its twin's files, it says so first, on one line of 80 columns or less: `cargo-test: Cargo.lock is read by pre-push-cargo-test — running it at commit`.
 
 - A `files` declaration is **not** widened: its command receives the matched
   paths as argv, and handing a linter `Cargo.lock` is wrong. Its pair stays
   as narrow as written.
-- `greengate list` shows a widened row's effective scope in a new trailing field and leaves the existing columns unchanged, so parsers keep working, e.g.
-  `*.rs (+ Cargo.toml, Cargo.lock, … from pre-push-cargo-test)`; on a TTY the row is cut at the terminal width, and piped output lists every path with no `…`.
+- `greengate list --json` reports a widened row's extra files in trailing
+  `scope_from_twin` and `scope_twin` fields and leaves the fields before them
+  unchanged, so parsers keep working. The text view prints a continuation line
+  under the row, `also fires on Cargo.toml, Cargo.lock, … (read by
+  pre-push-cargo-test)`: on a terminal only the paths are cut, piped every path
+  is listed. A script reads `--json`, not the indented line.
 
 **A push says why a pair did not vouch.** `PairVerdict::NotPaired` gains a
 reason when a same-named commit declaration exists. The push prints the
@@ -114,10 +118,15 @@ Then it runs the gate.
   - Then an indented line:
     `a files declaration is not widened: add Cargo.lock to amont.conf line <n>`.
   - Past 3 uncovered paths, it names the first 3 and `and N more`.
-- `… is a warn check, which vouches for nothing — running it here`
+- `… is warn-only, so it vouches for nothing — running it here`
 - `… is skipped here (hook.skip) — running it here`
-- `… is not opted in here (needs <marker>) — running it here`
-- `… cannot be identified (its program was not found) — running it here`
+- `… is not opted in (needs <marker>) — running it here`
+- `…: its program was not found — running it here`
+
+On a terminal only the variable part of the first line is cut (so the ending
+`— running it here` always survives); piped, nothing is cut. A bare push that is
+refused before any connection opens (the default) prints the same lines ahead
+of the refusal.
 
 These replace today's silence. With no same-named declaration, there is no
 line, as before. run-tests-js's `candidates` filter (`run_tests.rs:674`) uses
@@ -269,6 +278,13 @@ runners or flags. The repository says what its root scripts do.
 - 2026-11-11 — Phases 1 and 2 land in one commit: the reason lines read the
   state Phase 1 introduces (a scope gap now means a `files` declaration, an
   unscoped twin, or a missed resolve), so neither stands alone.
+- 2026-11-11 — Wording and shape changed during implementation review, none of
+  it the plan's intent: the reason lines are shorter so their ending survives
+  at 80 columns; the commit says `running it at commit` (a typecheck is not
+  "testing"); `list` prints a continuation line and `--json` gains
+  `scope_from_twin` and `scope_twin`; the reasons also print before a refused
+  push; the commit-time line unions every twin (a declared `pre-push` line and
+  the built-in gate); entrypoints load through `manifest::load_resolved`.
 - 2026-11-10 — Name why a pair did not vouch, reversing the deliberate
   silence at run_tests.rs:252-254, because the line says "running it here",
   not partial coverage, so it cannot read as reassurance.

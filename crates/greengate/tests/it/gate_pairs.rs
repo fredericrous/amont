@@ -360,9 +360,9 @@ fn a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_paired_repo();
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    let commit = r.git(&["commit", "-q", "-m", "chore: tune rustfmt"]);
+    let (repo, base) = builtin_paired_repo();
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    let commit = repo.git(&["commit", "-q", "-m", "chore: tune rustfmt"]);
     let said = format!(
         "{}{}",
         String::from_utf8_lossy(&commit.stdout),
@@ -370,7 +370,7 @@ fn a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped() {
     );
     assert!(commit.status.success(), "hooked commit failed: {said}");
     assert_eq!(
-        runs(&r),
+        runs(&repo),
         1,
         "the rustfmt.toml commit ran the commit-time gate"
     );
@@ -379,7 +379,7 @@ fn a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped() {
         "a commit that tests only through its twin's files says why: {said}"
     );
 
-    let (code, out) = push_out(&r, &base, &head(&r));
+    let (code, out) = push_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains("cargo-test") && out.contains("gated at commit instead"),
@@ -397,13 +397,13 @@ fn an_unstamped_twin_only_commit_still_makes_the_push_run_the_suite() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_paired_repo();
-    r.git(&["config", "amont.pushGates", "inline"]);
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    r.commit("chore: dodge the gate"); // Repo::commit IS --no-verify
-    assert_eq!(runs(&r), 0, "nothing ran at commit");
+    let (repo, base) = builtin_paired_repo();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    repo.commit("chore: dodge the gate"); // Repo::commit IS --no-verify
+    assert_eq!(runs(&repo), 0, "nothing ran at commit");
 
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         !out.contains("gated at commit instead"),
         "an unstamped rustfmt.toml commit was reported as gated: {out}"
@@ -421,32 +421,32 @@ fn a_files_pair_is_not_widened_to_its_twins_files() {
     if missing("node") {
         return;
     }
-    let r = Repo::new();
-    r.git(&["config", "amont.pushGates", "inline"]);
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.stage(
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     );
-    r.stage("src/lib.rs", "pub fn f() {}\n");
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage(
+    repo.stage("src/lib.rs", "pub fn f() {}\n");
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage(
         "amont.conf",
         "pre-commit  cargo-test  *.rs  block  files node gate.js\n",
     );
-    r.commit("chore: the commit-time half");
-    trust_and_install(&r);
+    repo.commit("chore: the commit-time half");
+    trust_and_install(&repo);
 
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    hooked_commit(&r, "chore: tune rustfmt");
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&repo, "chore: tune rustfmt");
     assert_eq!(
-        runs(&r),
+        runs(&repo),
         0,
         "a files declaration does not fire on rustfmt.toml"
     );
 
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         !out.contains("gated at commit instead"),
         "a narrow files pair cannot gate a rustfmt.toml push: {out}"
@@ -468,28 +468,28 @@ fn a_warn_pair_is_not_widened_to_its_twins_files() {
     if missing("node") {
         return;
     }
-    let r = Repo::new();
-    r.git(&["config", "amont.pushGates", "inline"]);
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.stage(
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     );
-    r.stage("src/lib.rs", "pub fn f() {}\n");
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage(
+    repo.stage("src/lib.rs", "pub fn f() {}\n");
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage(
         "amont.conf",
         "pre-commit  cargo-test  *.rs  warn  node gate.js\n",
     );
-    r.commit("chore: the commit-time half");
-    trust_and_install(&r);
+    repo.commit("chore: the commit-time half");
+    trust_and_install(&repo);
 
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    hooked_commit(&r, "chore: tune rustfmt");
-    assert_eq!(runs(&r), 0, "a warn declaration is not widened");
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&repo, "chore: tune rustfmt");
+    assert_eq!(runs(&repo), 0, "a warn declaration is not widened");
 
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         out.contains(
             "cargo-test at commit is warn-only, so it vouches for nothing — running it here"
@@ -506,26 +506,26 @@ fn a_warn_pair_overridden_to_block_is_widened() {
     if missing("node") {
         return;
     }
-    let r = Repo::new();
-    r.git(&["config", "amont.severity.pre-commit-cargo-test", "block"]);
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.git(&["config", "amont.severity.pre-commit-cargo-test", "block"]);
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.stage(
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     );
-    r.stage("src/lib.rs", "pub fn f() {}\n");
-    r.commit("chore: base");
-    r.stage(
+    repo.stage("src/lib.rs", "pub fn f() {}\n");
+    repo.commit("chore: base");
+    repo.stage(
         "amont.conf",
         "pre-commit  cargo-test  *.rs  warn  node gate.js\n",
     );
-    r.commit("chore: the commit-time half");
-    trust_and_install(&r);
+    repo.commit("chore: the commit-time half");
+    trust_and_install(&repo);
 
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    hooked_commit(&r, "chore: tune rustfmt");
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&repo, "chore: tune rustfmt");
     assert_eq!(
-        runs(&r),
+        runs(&repo),
         1,
         "the overridden-to-block declaration is widened"
     );
@@ -538,8 +538,10 @@ fn list_shows_what_a_declaration_also_fires_on_because_of_its_twin() {
     if missing("node") {
         return;
     }
-    let (r, _base) = builtin_paired_repo();
-    let json = r.run(&["list", "--json", "--stage", "pre-commit"]).stdout;
+    let (repo, _base) = builtin_paired_repo();
+    let json = repo
+        .run(&["list", "--json", "--stage", "pre-commit"])
+        .stdout;
     let row = json
         .split("{\"id\":\"pre-commit-cargo-test\"")
         .nth(1)
@@ -555,7 +557,7 @@ fn list_shows_what_a_declaration_also_fires_on_because_of_its_twin() {
             && row.contains("rustfmt.toml"),
         "the twin's files are reported beside it: {row}"
     );
-    let text = r.run(&["list", "--stage", "pre-commit"]).stdout;
+    let text = repo.run(&["list", "--stage", "pre-commit"]).stdout;
     assert!(
         text.contains("also fires on")
             && text.contains("Cargo.lock")
@@ -575,26 +577,26 @@ fn a_block_pair_overridden_to_warn_is_not_widened() {
     if missing("node") {
         return;
     }
-    let r = Repo::new();
-    r.git(&["config", "amont.severity.pre-commit-cargo-test", "warn"]);
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.git(&["config", "amont.severity.pre-commit-cargo-test", "warn"]);
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.stage(
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     );
-    r.stage("src/lib.rs", "pub fn f() {}\n");
-    r.commit("chore: base");
-    r.stage(
+    repo.stage("src/lib.rs", "pub fn f() {}\n");
+    repo.commit("chore: base");
+    repo.stage(
         "amont.conf",
         "pre-commit  cargo-test  *.rs  block  node gate.js\n",
     );
-    r.commit("chore: the commit-time half");
-    trust_and_install(&r);
+    repo.commit("chore: the commit-time half");
+    trust_and_install(&repo);
 
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    hooked_commit(&r, "chore: tune rustfmt");
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&repo, "chore: tune rustfmt");
     assert_eq!(
-        runs(&r),
+        runs(&repo),
         0,
         "a block line downgraded to warn is not widened"
     );
@@ -603,20 +605,20 @@ fn a_block_pair_overridden_to_warn_is_not_widened() {
 /// The built-in twin's repository with one commit-time line, for the tests of
 /// why a pair did not vouch.
 fn builtin_repo_with(conf: &str) -> (Repo, String) {
-    let r = Repo::new();
-    r.git(&["config", "amont.pushGates", "inline"]);
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.stage(
+    let repo = Repo::new();
+    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.stage(
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     );
-    r.stage("src/lib.rs", "pub fn f() {}\n");
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage("amont.conf", conf);
-    r.commit("chore: the commit-time half");
-    trust_and_install(&r);
-    (r, base)
+    repo.stage("src/lib.rs", "pub fn f() {}\n");
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage("amont.conf", conf);
+    repo.commit("chore: the commit-time half");
+    trust_and_install(&repo);
+    (repo, base)
 }
 
 /// `hook.skip` switches the commit-time declaration off, so it vouches for
@@ -626,12 +628,12 @@ fn a_skipped_pair_says_it_is_skipped() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs  block  node gate.js\n");
-    r.git(&["config", "--add", "hook.skip", "pre-commit-cargo-test"]);
-    r.stage("src/added.rs", "pub fn g() {}\n");
-    hooked_commit(&r, "feat: skipped at commit");
-    assert_eq!(runs(&r), 0, "hook.skip: nothing ran at commit");
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (repo, base) = builtin_repo_with("pre-commit  cargo-test  *.rs  block  node gate.js\n");
+    repo.git(&["config", "--add", "hook.skip", "pre-commit-cargo-test"]);
+    repo.stage("src/added.rs", "pub fn g() {}\n");
+    hooked_commit(&repo, "feat: skipped at commit");
+    assert_eq!(runs(&repo), 0, "hook.skip: nothing ran at commit");
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         out.contains("cargo-test at commit is skipped here (hook.skip) — running it here"),
         "{out}"
@@ -645,11 +647,12 @@ fn a_pair_that_is_not_opted_in_names_its_marker() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs+marker  block  node gate.js\n");
-    r.stage("src/added.rs", "pub fn g() {}\n");
-    hooked_commit(&r, "feat: no marker here");
-    assert_eq!(runs(&r), 0, "not opted in: nothing ran at commit");
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (repo, base) =
+        builtin_repo_with("pre-commit  cargo-test  *.rs+marker  block  node gate.js\n");
+    repo.stage("src/added.rs", "pub fn g() {}\n");
+    hooked_commit(&repo, "feat: no marker here");
+    assert_eq!(runs(&repo), 0, "not opted in: nothing ran at commit");
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         out.contains("cargo-test at commit is not opted in (needs marker) — running it here"),
         "{out}"
@@ -663,11 +666,11 @@ fn a_pair_whose_program_is_missing_says_it_cannot_be_identified() {
     if missing("node") {
         return;
     }
-    let (r, base) =
+    let (repo, base) =
         builtin_repo_with("pre-commit  cargo-test  *.rs  block  no-such-program-for-this-test\n");
-    r.stage("src/added.rs", "pub fn g() {}\n");
-    r.commit("feat: nothing could run"); // Repo::commit IS --no-verify
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    repo.stage("src/added.rs", "pub fn g() {}\n");
+    repo.commit("feat: nothing could run"); // Repo::commit IS --no-verify
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         out.contains("cargo-test at commit: its program was not found — running it here"),
         "{out}"
@@ -682,11 +685,12 @@ fn a_refused_push_says_why_the_pair_did_not_vouch() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs  block  files node gate.js\n");
-    r.git(&["config", "--unset", "amont.pushGates"]);
-    r.stage("rustfmt.toml", "max_width = 100\n");
-    hooked_commit(&r, "chore: tune rustfmt");
-    let (code, out) = push_out(&r, &base, &head(&r));
+    let (repo, base) =
+        builtin_repo_with("pre-commit  cargo-test  *.rs  block  files node gate.js\n");
+    repo.git(&["config", "--unset", "amont.pushGates"]);
+    repo.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&repo, "chore: tune rustfmt");
+    let (code, out) = push_out(&repo, &base, &head(&repo));
     assert_ne!(code, 0, "the push is refused: {out}");
     assert!(out.contains("push refused"), "{out}");
     let reason = out
@@ -706,10 +710,10 @@ fn a_gate_with_no_pair_says_nothing_about_one() {
     if missing("node") {
         return;
     }
-    let (r, base) = builtin_repo_with("pre-commit  other  *.md  block  node gate.js\n");
-    r.stage("src/added.rs", "pub fn g() {}\n");
-    r.commit("feat: unrelated");
-    let (_code, out) = push_out(&r, &base, &head(&r));
+    let (repo, base) = builtin_repo_with("pre-commit  other  *.md  block  node gate.js\n");
+    repo.stage("src/added.rs", "pub fn g() {}\n");
+    repo.commit("feat: unrelated");
+    let (_code, out) = push_out(&repo, &base, &head(&repo));
     assert!(
         !out.contains("at commit covers") && !out.contains("vouches for nothing"),
         "{out}"
@@ -723,23 +727,27 @@ fn a_declared_twin_later_in_the_file_widens_the_commit_time_line() {
     if missing("node") {
         return;
     }
-    let r = Repo::new();
-    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage(
+    let repo = Repo::new();
+    repo.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage(
         "amont.conf",
         "pre-commit  check  *.txt  block  node gate.js\n\
          pre-push    check  *.txt,*.md  block  node gate.js\n",
     );
-    r.commit("chore: the pair");
-    trust_and_install(&r);
+    repo.commit("chore: the pair");
+    trust_and_install(&repo);
 
-    r.stage("notes.md", "words\n");
-    hooked_commit(&r, "docs: a note");
-    assert_eq!(runs(&r), 1, "the markdown commit ran the commit-time gate");
+    repo.stage("notes.md", "words\n");
+    hooked_commit(&repo, "docs: a note");
+    assert_eq!(
+        runs(&repo),
+        1,
+        "the markdown commit ran the commit-time gate"
+    );
 
-    let (code, out) = push_out(&r, &base, &head(&r));
+    let (code, out) = push_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains("gated at commit instead"),

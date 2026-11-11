@@ -662,22 +662,26 @@ fn a_script_declaration_also_fires_on_the_js_files_its_push_gate_runs_for() {
     if missing("npm") {
         return;
     }
-    let (r, base) = stamped_repo();
-    r.stage("src/legacy.js", "const x = 1;\n");
-    verified_commit(&r, "feat: a js file under a ts declaration");
+    let (repo, base) = stamped_repo();
+    repo.stage("src/legacy.js", "const x = 1;\n");
+    verified_commit(&repo, "feat: a js file under a ts declaration");
     assert_eq!(
-        typecheck_runs(&r),
+        typecheck_runs(&repo),
         1,
         "the commit typechecked the .js file its push twin would have"
     );
 
-    let (code, out) = push_range_out(&r, &base, &head(&r));
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains("typecheck") && out.contains("gated at commit"),
         "{out}"
     );
-    assert_eq!(typecheck_runs(&r), 1, "the push re-ran the script:\n{out}");
+    assert_eq!(
+        typecheck_runs(&repo),
+        1,
+        "the push re-ran the script:\n{out}"
+    );
 }
 
 /// A declaration whose program is not installed has no identity to stamp, so
@@ -687,23 +691,23 @@ fn a_script_declaration_whose_program_is_missing_says_so() {
     if missing("npm") {
         return;
     }
-    let r = Repo::new();
-    r.stage(
+    let repo = Repo::new();
+    repo.stage(
         "package.json",
         r#"{"name":"t","scripts":{"typecheck":"exit 0","test":"exit 0"}}"#,
     );
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage("src/a.ts", "export const x = 1\n");
-    r.commit("feat: a ts file");
-    r.stage(
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage("src/a.ts", "export const x = 1\n");
+    repo.commit("feat: a ts file");
+    repo.stage(
         "amont.conf",
         "pre-commit  typecheck  *.ts  block  no-such-program-for-this-test\n",
     );
-    r.commit("chore: typecheck at commit time");
-    trust_manifest(&r);
+    repo.commit("chore: typecheck at commit time");
+    trust_manifest(&repo);
 
-    let (code, out) = push_range_out(&r, &base, &head(&r));
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains("typecheck at commit: its program was not found — running it here"),
@@ -723,23 +727,23 @@ fn a_files_declaration_that_misses_a_changed_file_says_so() {
     if missing("npm") {
         return;
     }
-    let r = Repo::new();
-    r.stage(
+    let repo = Repo::new();
+    repo.stage(
         "package.json",
         r#"{"name":"t","scripts":{"typecheck":"exit 1","test":"exit 0"}}"#,
     );
-    r.commit("chore: base");
-    let base = head(&r);
-    r.stage("src/legacy.js", "const x = 1;\n");
-    r.commit("feat: a js change the ts scope never saw");
-    r.stage(
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage("src/legacy.js", "const x = 1;\n");
+    repo.commit("feat: a js change the ts scope never saw");
+    repo.stage(
         "amont.conf",
         "pre-commit  typecheck  *.ts  block  files node tc.js\n",
     );
-    r.commit("chore: typecheck at commit time");
-    trust_manifest(&r);
+    repo.commit("chore: typecheck at commit time");
+    trust_manifest(&repo);
 
-    let (code, out) = push_range_out(&r, &base, &head(&r));
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_ne!(code, 0, "the script ran and failed:\n{out}");
     assert!(
         out.contains("typecheck at commit covers *.ts, not src/legacy.js — running it here"),

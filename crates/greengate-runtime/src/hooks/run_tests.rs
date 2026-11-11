@@ -192,13 +192,12 @@ fn scope_gap(
     relevant: &[String],
     twin_line: Option<usize>,
 ) -> WhyNot {
-    let known = |line: usize| Some(line).filter(|n| *n > 0);
     let (cause, at) = if pair.files {
-        (GapCause::Files, known(pair.lineno))
+        (GapCause::Files, pair.lineno)
     } else if push_scope.is_unscoped() {
         (GapCause::UnscopedTwin, twin_line)
     } else {
-        (GapCause::Unresolved, known(pair.lineno))
+        (GapCause::Unresolved, pair.lineno)
     };
     WhyNot::ScopeGap {
         scope: scope_label(&pair.scope),
@@ -219,8 +218,7 @@ fn declared_twin_line(manifest: &crate::manifest::Manifest, name: &str) -> Optio
         .externals
         .iter()
         .find(|e| e.stage == crate::check::Stage::PrePush && e.short_name == name)
-        .map(|e| e.lineno)
-        .filter(|n| *n > 0)
+        .and_then(|e| e.lineno)
 }
 
 /// Whether a reason's first line is cut to fit 80 columns.
@@ -274,6 +272,7 @@ pub(crate) fn reason_lines(name: &str, why: &WhyNot, width: LineWidth) -> Vec<St
                 paths,
                 " — running it here",
             );
+            let at_known = at.is_some();
             let at = match at {
                 Some(line) => format!("{} line {line}", crate::manifest::MANIFEST),
                 None => crate::manifest::MANIFEST.to_string(),
@@ -283,9 +282,12 @@ pub(crate) fn reason_lines(name: &str, why: &WhyNot, width: LineWidth) -> Vec<St
                 GapCause::Files => {
                     format!("    a files declaration is not widened: add {first_path} to {at}")
                 }
-                GapCause::UnscopedTwin => {
+                GapCause::UnscopedTwin if at_known => {
                     format!("    its push twin runs on every change: scope that line in {at}")
                 }
+                GapCause::UnscopedTwin => format!(
+                    "    its push twin runs on every change: declare a scoped pre-push {name} line in {at}"
+                ),
                 GapCause::Unresolved => format!(
                     "    its push twin's files were not applied: a {} bug, please report it",
                     crate::names::BIN
@@ -616,8 +618,8 @@ pub(crate) struct GateDecl {
     /// tree. Such a pair cannot cover a ref by its tip ([`pair_verdict`]).
     pub files: bool,
     /// The 1-based `amont.conf` line that declares it, for a message that
-    /// sends a person to the line to edit (`0` when unknown).
-    pub lineno: usize,
+    /// sends a person to the line to edit.
+    pub lineno: Option<usize>,
 }
 
 /// The extensions this check treats as "JS worth testing". Exported so
@@ -959,7 +961,8 @@ pub fn run(
             let stamps = crate::gate_stamp::stamps_for(&ids);
             for d in candidates {
                 // Complete token or no vouching: a declaration whose program
-                // cannot be identified has every commit counted unstamped.
+                // cannot be identified vouches for nothing, so it says so and
+                // the script runs.
                 let token = declared
                     .iter()
                     .find(|e| e.id == d.id)
