@@ -95,3 +95,43 @@ fn a_parse_error_does_not_carry_the_manifests_escapes() {
         "an escape byte reached the terminal through an error: {shown:?}"
     );
 }
+
+/// `trust` talks to a person, on stderr; `trust --show` answers with data, on
+/// stdout. 4.0 moved the accepting path's listing and verdict off stdout, so
+/// a script reading `trust --show` gets the listing alone, and one reading
+/// `trust` gets nothing to parse by mistake.
+#[test]
+fn trust_talks_on_stderr_and_trust_show_answers_on_stdout() {
+    let r = Repo::new();
+    r.stage("x.txt", "seed\n");
+    r.commit("chore: seed");
+    r.stage("greengate.conf", "pre-commit  first  *  block  /bin/true\n");
+    let streams = |args: &[&str]| {
+        let out = crate::common::amont_cmd()
+            .args(args)
+            .current_dir(&r.dir)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run greengate");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (stdout, stderr) = streams(&["trust"]);
+    assert_eq!(stdout, "", "accepting prints nothing on stdout");
+    assert!(stderr.contains("greengate.conf declares:"), "{stderr}");
+    assert!(stderr.contains("first"), "{stderr}");
+    assert!(stderr.contains("trusted ("), "{stderr}");
+
+    let (stdout, stderr) = streams(&["trust"]);
+    assert_eq!(stdout, "", "nothing to do prints nothing on stdout");
+    assert!(stderr.contains("already trusted"), "{stderr}");
+
+    let (stdout, _) = streams(&["trust", "--show"]);
+    assert!(stdout.starts_with("greengate.conf\n"), "{stdout}");
+    assert!(stdout.contains("first"), "{stdout}");
+    assert!(stdout.contains("trusted here"), "{stdout}");
+}
