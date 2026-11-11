@@ -22,6 +22,9 @@ use crate::json_read::Value;
 /// The layout of the file: an older or newer amont reads a file it did not
 /// write as empty and says so in `cluster.log`.
 const FORMAT: i64 = 1;
+
+/// The pending file's name, in the common dir's state folder.
+pub(crate) const PENDING_FILE: &str = "cluster-pending";
 /// How often a writer polls for the lock.
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
@@ -315,7 +318,7 @@ fn render_file(records: &[Pending]) -> String {
     )
 }
 
-fn parse_file(text: &str) -> Result<Vec<Pending>, String> {
+pub(super) fn parse_file(text: &str) -> Result<Vec<Pending>, String> {
     let doc = crate::json_read::parse(text).ok_or("not JSON")?;
     match doc.get("format") {
         Some(Value::Num(n)) if n == &FORMAT.to_string() => {}
@@ -394,7 +397,7 @@ impl Store {
     }
 
     fn file(&self) -> PathBuf {
-        self.dir.join("cluster-pending")
+        self.dir.join(PENDING_FILE)
     }
 
     /// Is there anything pending? One `stat`.

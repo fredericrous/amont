@@ -43,6 +43,8 @@ pub mod old {
     pub const HELD_FORMAT: &str = "amont-held-v1";
     /// The namespace greengate 3.x's homelab cutover ran in.
     pub const CLUSTER_NAMESPACE: &str = "amont-gates";
+    /// The folder of state greengate 3.x kept in the common dir.
+    pub const STATE_DIR: &str = "amont";
 }
 
 /// One name in a git dir, its 4.0 spelling, and the header line it carries.
@@ -238,6 +240,8 @@ pub enum MigrateError {
     Git { args: String, why: String },
 }
 
+impl std::error::Error for MigrateError {}
+
 impl std::fmt::Display for MigrateError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -250,14 +254,20 @@ impl std::fmt::Display for MigrateError {
             ),
             MigrateError::PendingDetached { path } => write!(
                 out,
-                "{} lists a detached cluster run greengate 3.x submitted; collect it with \
-                 3.x (`amont cluster collect`) or let it expire, then run the command again",
+                "{} lists a detached cluster run greengate 3.x submitted, which 4.0 cannot \
+                 collect; once `kubectl get workflows -n {}` no longer shows it (or its \
+                 verdict no longer matters), remove the file (`rm {}`) and run the command \
+                 again",
+                path.display(),
+                old::CLUSTER_NAMESPACE,
                 path.display()
             ),
             MigrateError::BothExist { source, target } => write!(
                 out,
-                "both {} and {} exist; remove the one you do not need (`rm -r <path>`), \
-                 then run `{} migrate`",
+                "both {} and {} exist; remove the one you do not need (`rm -r {}` or \
+                 `rm -r {}`), then run `{} migrate`",
+                source.display(),
+                target.display(),
                 source.display(),
                 target.display(),
                 n::BIN
@@ -328,12 +338,7 @@ pub fn migrate_repo(
     direction: Direction,
     git: &GitFn<'_>,
 ) -> Result<Moved, MigrateError> {
-    let lock_path = repo.common.join(n::MIGRATE_LOCK);
-    let _lock = greenharness_slots::lock_within(&lock_path, LOCK_DEADLINE)
-        .map_err(io("lock", &lock_path))?
-        .ok_or_else(|| MigrateError::Locked {
-            path: lock_path.clone(),
-        })?;
+    let _lock = lock(&repo.common.join(n::MIGRATE_LOCK))?;
     if direction == Direction::Forward && repo.marker().exists() {
         return Ok(Moved::default());
     }
@@ -348,8 +353,17 @@ pub fn migrate_repo(
         }
     }
     if direction == Direction::Forward {
-        let pending = repo.common.join("amont").join("cluster-pending");
-        if holds_records(&pending) {
+        let pending = repo
+            .common
+            .join(old::STATE_DIR)
+            .join(crate::cluster::detached::PENDING_FILE);
+        // A run that has outlived its Workflow is past collecting; a file
+        // this version cannot read is refused like one that lists a live
+        // run, whose verdict would be lost all the same.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if crate::cluster::detached::lists_live(&pending, now).unwrap_or(true) {
             return Err(MigrateError::PendingDetached { path: pending });
         }
     }
@@ -367,10 +381,18 @@ pub fn migrate_repo(
     match may_hold(&local_files, direction) {
         Some(true) => moved.keys += move_keys(&Scope::Local(repo.common.clone()), direction, git)?,
         Some(false) => {}
-        // A config git cannot read either: the command that follows says
-        // so in its own words. The keys wait, and no marker is written, so
-        // the next run tries again.
-        None => return Ok(moved),
+        // A config git cannot read either: going forward, the command that
+        // follows says so in its own words, the keys wait, and no marker is
+        // written, so the next run tries again. A reverse asked for by name
+        // must not report success over keys it never read.
+        None if direction == Direction::Forward => return Ok(moved),
+        None => {
+            return Err(MigrateError::Io {
+                op: "read",
+                path: repo.common.join("config"),
+                why: "the repository's config cannot be read".into(),
+            })
+        }
     }
     let reversed = repo.common.join(n::REVERSED_MARKER);
     match direction {
@@ -380,9 +402,11 @@ pub fn migrate_repo(
             remove_if_present(&reversed)?;
         }
         Direction::Reverse => {
-            remove_if_present(&repo.marker())?;
+            // The reversed marker first: a crash between the two leaves
+            // both, and the reversal holds.
             std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
                 .map_err(io("write", &reversed))?;
+            remove_if_present(&repo.marker())?;
         }
     }
     Ok(moved)
@@ -395,16 +419,21 @@ fn remove_if_present(path: &Path) -> Result<(), MigrateError> {
     }
 }
 
-/// Whether a 3.x pending file still lists a record: anything but an empty
-/// `"records":[]`. A file that cannot be read counts as holding one.
-fn holds_records(path: &Path) -> bool {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            compact.contains("\"records\":[{")
-        }
-        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+/// The migration lock, waited for at most [`LOCK_DEADLINE`], saying so
+/// once when another process holds it (a silent wait in a hook reads as a
+/// hang).
+fn lock(path: &Path) -> Result<std::fs::File, MigrateError> {
+    if let Some(file) = greenharness_slots::lock_within(path, std::time::Duration::ZERO)
+        .map_err(io("lock", path))?
+    {
+        return Ok(file);
     }
+    eprintln!("{}: waiting for {}", n::BIN, path.display());
+    greenharness_slots::lock_within(path, LOCK_DEADLINE)
+        .map_err(io("lock", path))?
+        .ok_or_else(|| MigrateError::Locked {
+            path: path.to_path_buf(),
+        })
 }
 
 /// Move every name of [`MOVES`] in `dir`, in `direction`; how many moved.
@@ -535,12 +564,13 @@ fn run_git(
     })
 }
 
-/// The NUL-separated values `git config -z` prints for one key.
+/// The values `git config -z --get-all` prints for one key, each ended by
+/// a NUL: an empty value (`git config amont.x ""`) is a value too.
 fn values(raw: &str) -> Vec<String> {
-    raw.split('\0')
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .collect()
+    match raw.strip_suffix('\0') {
+        Some(body) => body.split('\0').map(str::to_string).collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Move the `amont.*` keys of `scope` to `greengate.*` (or back); how many
@@ -616,7 +646,7 @@ fn ensure_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
         return Ok(Moved::default());
     };
     let marker = dir.join(n::MIGRATED_MARKER);
-    if marker.exists() {
+    if marker.exists() || dir.join(n::REVERSED_MARKER).exists() {
         return Ok(Moved::default());
     }
     let Some(holds) = may_hold(&global_config_files(), Direction::Forward) else {
@@ -628,35 +658,39 @@ fn ensure_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
         return Ok(Moved::default());
     }
     std::fs::create_dir_all(&dir).map_err(io("make", &dir))?;
-    let lock_path = dir.join(n::MIGRATE_LOCK);
-    let _lock = greenharness_slots::lock_within(&lock_path, LOCK_DEADLINE)
-        .map_err(io("lock", &lock_path))?
-        .ok_or(MigrateError::Locked { path: lock_path })?;
+    let _lock = lock(&dir.join(n::MIGRATE_LOCK))?;
     if marker.exists() {
         return Ok(Moved::default());
     }
     let mut moved = Moved::default();
     if holds {
-        let mut last = Err(MigrateError::Locked { path: dir.clone() });
-        for _ in 0..50 {
-            last = move_keys(&Scope::Global, Direction::Forward, git);
-            if last.is_ok() {
-                break;
+        // Another git writing `~/.gitconfig` holds its `.lock` for a moment:
+        // retried for up to five seconds. Any other failure is reported at
+        // once.
+        let mut attempts = 0;
+        moved.keys = loop {
+            match move_keys(&Scope::Global, Direction::Forward, git) {
+                Err(MigrateError::Git { why, .. }) if why.contains(".lock") && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                done => break done?,
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        moved.keys = last?;
+        };
     }
     std::fs::write(&marker, format!("{}-v1\n", n::MIGRATED_MARKER))
         .map_err(io("write", &marker))?;
     Ok(moved)
 }
 
-/// Forget that the global keys were moved, so the next [`ensure`] reads
-/// the global config again: `greengate migrate --global`.
+/// Forget that the global keys were moved or reversed, so the next
+/// [`ensure`] reads the global config again: `greengate migrate --global`.
 pub fn forget_global() -> Result<(), MigrateError> {
     match config_dir() {
-        Some(dir) => remove_if_present(&dir.join(n::MIGRATED_MARKER)),
+        Some(dir) => {
+            remove_if_present(&dir.join(n::MIGRATED_MARKER))?;
+            remove_if_present(&dir.join(n::REVERSED_MARKER))
+        }
         None => Ok(()),
     }
 }
@@ -718,8 +752,16 @@ fn global_config_files() -> Vec<PathBuf> {
 /// Move the machine's global keys back: `greengate migrate --reverse
 /// --global`.
 pub fn reverse_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+    // The reversed marker first, as for a repository: until `migrate
+    // --global`, 4.0 leaves the machine's keys under 3.x's names.
+    if let Some(dir) = config_dir() {
+        std::fs::create_dir_all(&dir).map_err(io("make", &dir))?;
+        let reversed = dir.join(n::REVERSED_MARKER);
+        std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
+            .map_err(io("write", &reversed))?;
+        remove_if_present(&dir.join(n::MIGRATED_MARKER))?;
+    }
     let keys = move_keys(&Scope::Global, Direction::Reverse, git)?;
-    forget_global()?;
     Ok(Moved { state: 0, keys })
 }
 
@@ -734,8 +776,9 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 /// What `greengate doctor` reports: the 3.x names still visible from here,
-/// one line each, with the command that moves them.
-pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Vec<String> {
+/// one line each, with the command that moves them. `Err` when git could
+/// not answer: a failure never reads as "nothing left".
+pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateError> {
     let mut out = Vec::new();
     let mut env: Vec<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
@@ -754,29 +797,29 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Vec<String> {
         ));
     }
     let pattern = r"^amont\.";
-    let listed = |dir: Option<&Path>, flag: &str| -> Vec<String> {
-        git(
+    let listed = |dir: Option<&Path>, flag: &str| -> Result<Vec<String>, MigrateError> {
+        let names = run_git(
+            git,
             dir,
             &["config", flag, "--name-only", "--get-regexp", pattern],
-        )
-        .ok()
-        .flatten()
-        .unwrap_or_default()
-        .lines()
-        .filter(|k| !k.starts_with(old::FOREIGN_PREFIX))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+        )?
+        .unwrap_or_default();
+        Ok(names
+            .lines()
+            .filter(|k| !k.starts_with(old::FOREIGN_PREFIX))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(str::to_string)
+            .collect())
     };
-    for key in listed(None, "--global") {
+    for key in listed(None, "--global")? {
         out.push(format!(
             "global config: {key} is ignored by greengate 4.0; `{} migrate --global` moves it",
             n::BIN
         ));
     }
     if let Some(repo) = Repo::locate(cwd) {
-        for key in listed(Some(&repo.common), "--local") {
+        for key in listed(Some(&repo.common), "--local")? {
             out.push(format!(
                 "local config: {key} is ignored by greengate 4.0; `{} migrate` moves it",
                 n::BIN
@@ -801,7 +844,7 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Vec<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// git, with `GIT_DIR` set to `dir` when one is given, as [`GitFn`] says.

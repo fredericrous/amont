@@ -90,3 +90,93 @@ fn a_dry_run_moves_nothing() {
     );
     assert!(!repo.path(".git/greengate-migrated").exists());
 }
+
+/// `repo`'s binary with a config home and global git config of its own,
+/// so a test of the global half sees no other test's marker.
+fn own_home(repo: &Repo, args: &[&str]) -> std::process::Output {
+    let mut cmd = crate::common::amont_cmd();
+    cmd.args(args)
+        .current_dir(&repo.dir)
+        .env("XDG_CONFIG_HOME", repo.path("own-config"))
+        .env("GIT_CONFIG_GLOBAL", repo.path("own-gitconfig"))
+        .stdin(std::process::Stdio::null());
+    cmd.output().expect("run greengate")
+}
+
+fn global(repo: &Repo, key: &str) -> String {
+    let out = std::process::Command::new("git")
+        .args(["config", "--file"])
+        .arg(repo.path("own-gitconfig"))
+        .args(["--get-all", key])
+        .output()
+        .expect("git config --file");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_global_reverse_holds_until_migrate_global() {
+    let repo = Repo::new();
+    std::fs::write(repo.path("own-gitconfig"), "[amont]\n\thostSlots = 3\n").unwrap();
+    let first = own_home(&repo, &["list"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(global(&repo, "greengate.hostSlots"), "3\n");
+
+    let back = own_home(&repo, &["migrate", "--reverse", "--global"]);
+    assert!(
+        back.status.success(),
+        "{}",
+        String::from_utf8_lossy(&back.stderr)
+    );
+    assert_eq!(global(&repo, "amont.hostSlots"), "3\n");
+    let again = own_home(&repo, &["list"]);
+    assert!(again.status.success());
+    assert_eq!(
+        global(&repo, "amont.hostSlots"),
+        "3\n",
+        "a global reverse is not undone"
+    );
+
+    let forward = own_home(&repo, &["migrate", "--global"]);
+    assert!(
+        forward.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forward.stderr)
+    );
+    assert_eq!(global(&repo, "greengate.hostSlots"), "3\n");
+}
+
+#[test]
+fn doctor_names_a_3x_variable_left_set() {
+    let repo = Repo::new();
+    let out = crate::common::amont_cmd()
+        .arg("doctor")
+        .current_dir(&repo.dir)
+        .env("AMONT_TIMEOUT", "5")
+        .env("GIT_CONFIG_GLOBAL", repo.path("fake-gitconfig"))
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("AMONT_TIMEOUT") && stdout.contains("GREENGATE_TIMEOUT"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn asking_for_help_moves_nothing() {
+    let repo = Repo::new();
+    std::fs::write(repo.path(".git/amont-bypasses"), "amont-bypass-v1\n").unwrap();
+    for args in [["list", "--help"], ["list", "--bogus"]] {
+        repo.run(&args);
+        assert!(
+            repo.path(".git/amont-bypasses").is_file(),
+            "{args:?} moved the 3.x state"
+        );
+    }
+    assert!(!repo.path(".git/greengate-migrated").exists());
+}

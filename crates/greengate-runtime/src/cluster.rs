@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
-mod detached;
+pub(crate) mod detached;
 pub(crate) use detached::{collect, settled_lines, status_lines, stop_pending};
 pub use detached::{collect_command, detach, wanted, Ask, Detached};
 

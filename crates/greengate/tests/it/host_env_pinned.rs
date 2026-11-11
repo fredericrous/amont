@@ -83,9 +83,17 @@ fn every_hand_built_start_is_sandboxed() {
     let mut short = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file).expect("read a test source");
-        let starts = text.matches(start.as_str()).count();
-        if starts > 0 && text.matches(sandboxed.as_str()).count() < starts {
-            short.push(file.display().to_string());
+        let lines: Vec<&str> = text.lines().collect();
+        // Each start, on its own: the sandbox call wraps it on the same
+        // line or sits on the line right after it.
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(start.as_str()) {
+                continue;
+            }
+            let next = lines.get(i + 1).copied().unwrap_or_default();
+            if !line.contains(sandboxed.as_str()) && !next.contains(sandboxed.as_str()) {
+                short.push(format!("{}:{}", file.display(), i + 1));
+            }
         }
     }
     assert!(

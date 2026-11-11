@@ -62,11 +62,6 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "a commit-tree message stored in git",
     ),
     (
-        "greengate-runtime/src/migrate.rs",
-        1,
-        "the 3.x command a refusal tells the person to run",
-    ),
-    (
         "greengate-runtime/src/trust.rs",
         2,
         "a --json reason value, unchanged in 3a-1",

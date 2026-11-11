@@ -94,7 +94,8 @@ const USAGE: &str = concat!(
     "                 then leaves the repository alone until `migrate`]\n",
     "  doctor         list greengate 3.x names still set here: AMONT_*\n",
     "                 variables, amont.* keys, state left in .git; exits 1 when\n",
-    "                 any is left (not an error), 0 when none\n",
+    "                 any is left (not an error), 0 when none, 2 when it\n",
+    "                 could not look (git failed)\n",
     "  agents-md      write the agent-guidance block into AGENTS.md, plus the\n",
     "                 CLAUDE.md signpost pointing at it (both generated, both\n",
     "                 checked) [--check: report drift only] [--path <file>]\n",
@@ -433,19 +434,7 @@ fn main() {
             eprint!("{USAGE}");
             std::process::exit(2);
         }
-        Invocation::Sub { name, args } => {
-            // Not before a verb that must work on 3.x state as it is
-            // (restore, uninstall), the migration's own verbs, or a dry run,
-            // which promises to change nothing.
-            let exempt = matches!(
-                name,
-                Sub::Restore | Sub::Uninstall | Sub::Migrate | Sub::Doctor
-            ) || args.iter().any(|a| a == "--dry-run");
-            if !exempt {
-                migrate_first();
-            }
-            std::process::exit(run_sub(name, &args))
-        }
+        Invocation::Sub { name, args } => std::process::exit(run_sub(name, &args)),
         Invocation::Hook {
             hooks_dir,
             name,
@@ -470,16 +459,25 @@ fn migrate_first() {
             "{BIN}: {}",
             greengate_runtime::ui::sanitize(&why.to_string())
         );
-        eprintln!(
-            "{BIN}: moving greengate 3.x's names to greengate's stopped; what it did not reach \
-             keeps its old name, and the next command tries again (`{BIN} doctor` lists what is left)"
-        );
+        eprintln!("{BIN}: {MIGRATE_HINT}");
         std::process::exit(1);
     }
 }
 
+/// What a migration that stopped says after its reason.
+const MIGRATE_HINT: &str = concat!(
+    "the move to greengate's names stopped; what it did not reach keeps its\n",
+    "old name. Run the command again, or `",
+    greengate_runtime::bin!(),
+    " doctor` to list what is left."
+);
+
 /// `greengate migrate [--reverse] [--global]`.
 fn migrate_command(args: &[OsString]) -> Result<(), String> {
+    migrate_verb(args).map_err(|why| format!("{why}\n{BIN}: {MIGRATE_HINT}"))
+}
+
+fn migrate_verb(args: &[OsString]) -> Result<(), String> {
     use greengate_runtime::migrate::{self, Direction, Repo};
     let git = &migrate::system_git;
     let reverse = args.iter().any(|a| a == "--reverse");
@@ -665,6 +663,17 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         }
         return 2;
     }
+    // Only now, once the call is known to do something: not for a help,
+    // version or usage error above, not before a verb that must work on 3.x
+    // state as it is (restore, uninstall), not for the migration's own verbs,
+    // and not for a dry run, which promises to change nothing.
+    let exempt = matches!(
+        sub,
+        Sub::Restore | Sub::Uninstall | Sub::Migrate | Sub::Doctor
+    ) || own.iter().any(|a| a == "--dry-run");
+    if !exempt {
+        migrate_first();
+    }
     match sub {
         // `amont list` — what would run here, and why. Lives in the HOOK
         // binary rather than the fleet tool because this is the binary
@@ -771,10 +780,16 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Migrate => report(migrate_command(args)),
         Sub::Doctor => {
             let cwd = std::env::current_dir().unwrap_or_default();
-            let found = greengate_runtime::migrate::leftovers(
+            let found = match greengate_runtime::migrate::leftovers(
                 &cwd,
                 &greengate_runtime::migrate::system_git,
-            );
+            ) {
+                Ok(found) => found,
+                Err(why) => {
+                    eprintln!("{BIN}: doctor could not look: {why}");
+                    return 2;
+                }
+            };
             for line in &found {
                 println!("{}", greengate_runtime::ui::sanitize(line));
             }

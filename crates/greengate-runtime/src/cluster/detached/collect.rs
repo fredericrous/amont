@@ -217,6 +217,20 @@ fn is_expired(record: &Pending, now: u64) -> bool {
     now > record.submitted + TTL_SECS + EXPIRY_SLACK_SECS
 }
 
+/// Whether the pending file at `path` still lists a run that has not
+/// outlived its Workflow by [`EXPIRY_SLACK_SECS`]: what `collect` would keep.
+/// `Ok(false)` for no file; `Err` for a file this version cannot read.
+pub(crate) fn lists_live(path: &std::path::Path, now: u64) -> Result<bool, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(super::pending::parse_file(&text)?
+        .iter()
+        .any(|record| !is_expired(record, now)))
+}
+
 /// The records grouped by the cluster they live on: one call each.
 fn by_cluster(records: Vec<Pending>) -> Vec<Vec<Pending>> {
     let mut groups: Vec<Vec<Pending>> = Vec::new();
