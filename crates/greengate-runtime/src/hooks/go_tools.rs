@@ -370,9 +370,9 @@ mod tests {
         let scratch_dir = std::env::temp_dir().join("greengate-go-tools-module");
         let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let w = |rel: &str, text: &str| {
-            let p = scratch_dir.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, text).unwrap();
+            let file = scratch_dir.join(rel);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
         };
         w("go.mod", "module op\n");
         w("internal/x/x.go", "package x\n");
