@@ -237,6 +237,11 @@ fleet's shims are re-baked.
   a reverse is holding (backend); the reverse's lock binding (lang:rust,
   optional); a `--reverse` while a 4.0 detached run is pending should refuse
   like the forward run does (platform).
+- 2026-11-11 (Phase 2) — carried into Phase 5's docs: `docs/checks.md` still
+  tells operators `git config amont.rootRunsMembers` (3.2.0, rebased in);
+  the code reads `greengate.rootRunsMembers`. It changes with the 4.0
+  release, since until then the published docs describe 3.2.0, which reads
+  the `amont.` key (backend, unix, architect).
 
 ## Verification
 
