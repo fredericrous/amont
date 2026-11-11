@@ -67,13 +67,60 @@ pub enum Reason {
 /// a push waits at most one `slotWait`.
 static BUSY_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// Both host sizing keys, `greengate.hostCores` and `greengate.hostSlots`,
+/// resolved by the slots crate from the environment and this `Settings`'
+/// cached rows: one implementation, shared with relais, and no extra git
+/// spawn. Each warning is printed once.
+pub fn host_sizing(settings: &crate::config::Settings) -> greenharness_slots::host::HostSizing {
+    let rows = crate::config::host_rows(settings);
+    let mut sizing = greenharness_slots::host::resolve(
+        |name| std::env::var(name).ok(),
+        rows.unwrap_or(&[]),
+        greenharness_slots::cores(),
+    );
+    if rows.is_none() {
+        sizing
+            .warnings
+            .push("git cannot report config scopes; the host sizing defaults are used".to_string());
+    }
+    for warning in &sizing.warnings {
+        say_once(warning);
+    }
+    sizing
+}
+
+/// A sizing warning on stderr, once per process.
+fn say_once(warning: &str) {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static SAID: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let said = SAID.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let fresh = match said.lock() {
+        Ok(mut set) => set.insert(warning.to_string()),
+        Err(_) => true,
+    };
+    if fresh {
+        eprintln!("{} {warning}", crate::ui::warning_sign().trim());
+    }
+}
+
 /// `greengate.hostSlots`, a host key: unset sizes the slots from the machine
 /// (`Sizing::Auto`), N fixes them, `0` turns them off (`None`).
 pub fn sizing(settings: &crate::config::Settings) -> Option<greenharness_slots::Sizing> {
-    match crate::config::host_integer_or(settings, "greengate.hostSlots", -1, 0..=64) {
+    match host_sizing(settings).slots.value {
         0 => None,
         n if n < 0 => Some(greenharness_slots::Sizing::Auto),
-        n => Some(greenharness_slots::Sizing::Fixed(n as u32)),
+        n => Some(greenharness_slots::Sizing::Fixed(
+            u32::try_from(n).unwrap_or(u32::MAX),
+        )),
+    }
+}
+
+/// The machine the slots are sized for: `greengate.hostCores`, else the
+/// detected physical core count.
+pub fn machine(settings: &crate::config::Settings) -> greenharness_slots::Machine {
+    greenharness_slots::Machine {
+        cores: host_sizing(settings).cores.value.max(1),
     }
 }
 
@@ -418,17 +465,19 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
             BusyPolicy::Defer { slot_wait } => slot_wait,
         };
-        let cap = u64::from(sizing.cap());
+        let machine = machine(settings);
+        let slot_cap = sizing.cap_for(machine.cores);
+        let cap = u64::from(slot_cap);
         // Hook checks take one slot; the width is set whether a slot is
         // granted or the check runs unqueued, which happens at peak load.
-        let jobs = greenharness_slots::parallelism(1, greenharness_slots::cores(), sizing.cap());
+        let jobs = greenharness_slots::parallelism(1, machine.cores, slot_cap);
         let sink = crate::live::current_sink();
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, Some((Instant::now(), cap)));
         }
         let started = Instant::now();
         let holder = holder_for(&name);
-        let mut got = wait_for_slot(sizing, holder.clone(), budget);
+        let mut got = wait_for_slot(sizing, machine, holder.clone(), budget);
         if let (BusyPolicy::Defer { .. }, Err(Reason::TimedOut(_))) = (policy, &got) {
             // A sibling check of this process holds a slot: the host is busy
             // with this commit's own work, which is not a reason to defer.
@@ -441,7 +490,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             } else {
                 Duration::ZERO
             };
-            got = wait_for_slot(sizing, holder, rest);
+            got = wait_for_slot(sizing, machine, holder, rest);
         }
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, None);
@@ -464,7 +513,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        record_acquisition(&name, Some(jobs), Some(sizing.cap()), waited, outcome);
+        record_acquisition(&name, Some(jobs), Some(slot_cap), waited, outcome);
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
@@ -564,11 +613,18 @@ pub fn bound(cmd: &mut std::process::Command) {
 /// behind.
 fn wait_for_slot(
     sizing: greenharness_slots::Sizing,
+    machine: greenharness_slots::Machine,
     holder: greenharness_slots::Holder,
     budget: Duration,
 ) -> Result<greenharness_slots::Lease, Reason> {
     let started = Instant::now();
-    let mut waiter = match greenharness_slots::Waiter::new(sizing, 1, holder) {
+    let mut waiter = match greenharness_slots::Waiter::new_in_on(
+        &greenharness_slots::dir(),
+        sizing,
+        1,
+        holder,
+        machine,
+    ) {
         Ok(w) => w,
         Err(e) if e.kind() == std::io::ErrorKind::Other => {
             return Err(Reason::DirUnsafe(e.to_string()))

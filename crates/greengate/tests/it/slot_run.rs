@@ -30,7 +30,9 @@ fn amont(slots: &Path, args: &[&str]) -> Command {
         .current_dir(crate::common::sandbox().join("cwd"))
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", slots)
-        .env("GREENGATE_HOST_SLOTS", "1");
+        .env("GREENGATE_HOST_SLOTS", "1")
+        // Pinned so every width and cap here is the same on any host.
+        .env("GREENGATE_HOST_CORES", cores().to_string());
     cmd
 }
 
@@ -246,8 +248,9 @@ fn var<'a>(env: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
 }
 
+/// The core count the width tests pin through `GREENGATE_HOST_CORES`.
 fn cores() -> u32 {
-    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
+    8
 }
 
 /// A held command runs `weight × cores / cap` wide, through all four keys,

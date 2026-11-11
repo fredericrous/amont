@@ -389,6 +389,23 @@ mod tests {
         assert_eq!(s.warnings.len(), 1);
     }
 
+    /// amont 4.0 reads only the new names: an old git key and an old
+    /// environment variable are both ignored.
+    #[test]
+    fn the_old_names_are_ignored() {
+        let env = |n: &str| (n == "AMONT_HOST_CORES").then(|| "2".to_string());
+        let rows = [row("global", "amont.hostCores", "3")];
+        let s = resolve(env, &rows, 6);
+        assert_eq!(
+            s.cores,
+            Resolved {
+                value: 6,
+                source: Source::Detected
+            }
+        );
+        assert!(s.warnings.is_empty());
+    }
+
     #[test]
     fn cpuinfo_counts_distinct_physical_core_pairs() {
         // Two hyper-threads share each core id: 2 physical packages x 3 cores = 6.

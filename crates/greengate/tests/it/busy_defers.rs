@@ -634,12 +634,15 @@ fn a_heavy_hook_check_is_bounded_held_or_unqueued() {
     );
     repo.commit("chore: base");
     trust(&repo);
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // The core count is pinned, so the expected width does not depend on
+    // the host's physical cores.
+    let cores = 6;
     let expected = format!("{cores} {cores} -j{cores}");
-    let clear: [(&str, &str); 3] = [
+    let clear: [(&str, &str); 4] = [
         ("CARGO_BUILD_JOBS", ""),
         ("RUST_TEST_THREADS", ""),
         ("MAKEFLAGS", ""),
+        ("GREENGATE_HOST_CORES", "6"),
     ];
 
     let slots = slot_dir("width-held");

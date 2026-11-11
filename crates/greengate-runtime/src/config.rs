@@ -393,6 +393,30 @@ pub fn integer_or(
     }
 }
 
+/// The `greengate.*` rows of `git config --show-scope`, as (scope, lowercased
+/// key, value): one scan per `Settings`, shared by every host key read and by
+/// the slots crate's `HostSizing::resolve`. `None` when git cannot report
+/// config scopes.
+pub fn host_rows(settings: &crate::config::Settings) -> Option<&[(String, String, String)]> {
+    settings
+        .host
+        .get_or_init(|| {
+            git::stdout(&["config", "--show-scope", "--get-regexp", r"^greengate\."]).map(|out| {
+                out.lines()
+                    .filter_map(|line| {
+                        let (scope, rest) = line.split_once('\t')?;
+                        let (k, v) = match rest.split_once(' ') {
+                            Some((k, v)) => (k, v),
+                            None => (rest, ""),
+                        };
+                        Some((scope.to_string(), k.to_ascii_lowercase(), v.to_string()))
+                    })
+                    .collect()
+            })
+        })
+        .as_deref()
+}
+
 /// A HOST key: a setting that describes the machine — how many heavy checks
 /// it runs at once, how far its load may stretch a budget — and so is read
 /// from `--global` or `--system` config only (ADR-0009). A value set in a
@@ -450,21 +474,7 @@ pub fn host_integer_or(
             return v;
         }
     }
-    let rows = settings.host.get_or_init(|| {
-        git::stdout(&["config", "--show-scope", "--get-regexp", r"^greengate\."]).map(|out| {
-            out.lines()
-                .filter_map(|line| {
-                    let (scope, rest) = line.split_once('\t')?;
-                    let (k, v) = match rest.split_once(' ') {
-                        Some((k, v)) => (k, v),
-                        None => (rest, ""),
-                    };
-                    Some((scope.to_string(), k.to_ascii_lowercase(), v.to_string()))
-                })
-                .collect()
-        })
-    });
-    let Some(rows) = rows else {
+    let Some(rows) = host_rows(settings) else {
         // A git too old for `--show-scope`: the default, said once.
         complain(key, "git cannot report config scopes", &default.to_string());
         return default;
@@ -507,6 +517,17 @@ pub fn host_env_name(key: &str) -> String {
 
 #[cfg(test)]
 mod host_key_tests {
+    /// The slots crate hardcodes the sizing key names (it sits below this
+    /// crate and cannot call `host_env_name`); they must not drift.
+    #[test]
+    fn the_slots_crate_names_match_host_env_name() {
+        use greenharness_slots::host::{CORES_ENV, CORES_KEY, SLOTS_ENV, SLOTS_KEY};
+        assert_eq!(super::host_env_name(CORES_KEY), CORES_ENV);
+        assert_eq!(super::host_env_name(SLOTS_KEY), SLOTS_ENV);
+        assert!(CORES_KEY.starts_with(crate::names::CONFIG_PREFIX));
+        assert!(SLOTS_KEY.starts_with(crate::names::CONFIG_PREFIX));
+    }
+
     #[test]
     fn a_host_key_names_its_environment_variable() {
         use super::host_env_name;

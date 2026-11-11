@@ -152,14 +152,18 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     };
     // The width this command may run at, held or not: an unqueued run after
     // a timeout happens when the host is busiest, so it is bounded too.
-    let jobs = greenharness_slots::parallelism(weight, greenharness_slots::cores(), sizing.cap());
+    let machine = crate::host_slots::machine(&settings);
+    let slot_cap = sizing.cap_for(machine.cores);
+    let jobs = greenharness_slots::parallelism(weight, machine.cores, slot_cap);
 
     let dir = greenharness_slots::dir();
     let started = Instant::now();
-    let mut waiter = match greenharness_slots::Waiter::new(
+    let mut waiter = match greenharness_slots::Waiter::new_in_on(
+        &dir,
         sizing,
         weight,
         greenharness_slots::Holder::here(SLOT_RUN_HOLDER, &label),
+        machine,
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -197,7 +201,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
                 SLOT_RUN_HOLDER,
                 weight,
                 Some(jobs),
-                sizing.cap(),
+                slot_cap,
                 waited,
                 "unqueued",
             );
@@ -220,7 +224,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         SLOT_RUN_HOLDER,
         weight,
         Some(jobs),
-        sizing.cap(),
+        slot_cap,
         waited,
         "admitted",
     );
@@ -269,6 +273,22 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 /// `amont slots [--json]`.
+/// `6 cores, 12 threads`: the threads only where they differ from the cores
+/// (SMT), and the override that set the cores, when one did.
+pub fn cores_phrase(cores: u32, threads: u32, source: greenharness_slots::host::Source) -> String {
+    use greenharness_slots::host::{Source, CORES_ENV, CORES_KEY};
+    let mut phrase = format!("{cores} cores");
+    if threads != cores {
+        phrase.push_str(&format!(", {threads} threads"));
+    }
+    match source {
+        Source::Env => phrase.push_str(&format!(" from {CORES_ENV}")),
+        Source::Global | Source::System => phrase.push_str(&format!(" from {CORES_KEY}")),
+        Source::Detected => {}
+    }
+    phrase
+}
+
 pub fn slots_command(args: &[OsString]) -> i32 {
     if let Some(bad) = args.iter().find(|a| *a != "--json") {
         eprintln!("{BIN}: slots: unknown argument {:?}", bad.to_string_lossy());
@@ -284,7 +304,12 @@ pub fn slots_command(args: &[OsString]) -> i32 {
         }
         return 0;
     };
-    let status = match greenharness_slots::status(sizing) {
+    let host = crate::host_slots::host_sizing(&settings);
+    let machine = greenharness_slots::Machine {
+        cores: host.cores.value.max(1),
+    };
+    let status = match greenharness_slots::status_in_on(&greenharness_slots::dir(), sizing, machine)
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{BIN}: cannot read the host slots: {e}");
@@ -294,9 +319,13 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     let held = status.holders.len() + status.unknown;
     let mode = match sizing {
         greenharness_slots::Sizing::Auto => format!(
-            "auto: load {}, {} cores",
+            "auto: load {}, {}",
             greenharness_slots::load1().map_or("?".to_string(), |l| format!("{l:.1}")),
-            greenharness_slots::cores()
+            cores_phrase(
+                machine.cores,
+                greenharness_slots::logical_cores(),
+                host.cores.source
+            )
         ),
         greenharness_slots::Sizing::Fixed(n) => format!("greengate.hostSlots {n}"),
     };
@@ -339,6 +368,21 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_cores_phrase_names_threads_and_overrides_only_when_they_matter() {
+        use greenharness_slots::host::Source;
+        assert_eq!(cores_phrase(6, 12, Source::Detected), "6 cores, 12 threads");
+        assert_eq!(cores_phrase(10, 10, Source::Detected), "10 cores");
+        assert_eq!(
+            cores_phrase(4, 12, Source::Env),
+            "4 cores, 12 threads from GREENGATE_HOST_CORES"
+        );
+        assert_eq!(
+            cores_phrase(4, 12, Source::Global),
+            "4 cores, 12 threads from greengate.hostCores"
+        );
     }
 
     #[test]
