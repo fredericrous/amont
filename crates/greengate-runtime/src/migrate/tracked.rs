@@ -31,7 +31,7 @@ use crate::names::old;
 const FILES: &[(&str, &str)] = &[(old::MANIFEST, n::MANIFEST), (old::PACK_FILE, n::PACK_FILE)];
 
 /// The generated files whose marker pair is rewritten.
-pub const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];
+const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];
 
 /// The attest inputs file, which lists the manifest by name.
 const ATTEST_INPUTS: &str = ".github/attest-inputs";
@@ -72,14 +72,25 @@ pub fn needs(root: &Path, git: &GitFn<'_>) -> Result<bool, MigrateError> {
         }
     }
     for &name in MARKED {
-        if read_if_present(&root.join(name))?.is_some_and(|text| swap_markers(&text).is_some()) {
+        if tracked_needs_edit(root, name, git, swap_markers)? {
             return Ok(true);
         }
     }
-    Ok(
-        read_if_present(&root.join(ATTEST_INPUTS))?
-            .is_some_and(|text| swap_inputs(&text).is_some()),
-    )
+    tracked_needs_edit(root, ATTEST_INPUTS, git, swap_inputs)
+}
+
+/// Is `name` tracked, and would `edit` change it? An untracked file is a
+/// local one, never the rename's to touch.
+fn tracked_needs_edit(
+    root: &Path,
+    name: &str,
+    git: &GitFn<'_>,
+    edit: fn(&str) -> Option<String>,
+) -> Result<bool, MigrateError> {
+    let Some(text) = read_if_present(&root.join(name))? else {
+        return Ok(false);
+    };
+    Ok(edit(&text).is_some() && is_tracked(root, name, git)?)
 }
 
 /// The file's text, `None` when it does not exist; any other read error is
@@ -99,7 +110,8 @@ pub fn migrate_tracked(root: &Path, git: &GitFn<'_>) -> Result<Staged, MigrateEr
     let mut staged = Staged::default();
     for &(old_name, new_name) in FILES {
         let (source, target) = (root.join(old_name), root.join(new_name));
-        if source.exists() && target.exists() {
+        // An untracked old file is a local one, left as it is: no conflict.
+        if source.exists() && target.exists() && is_tracked(root, old_name, git)? {
             return Err(MigrateError::BothCommitted { source, target });
         }
     }
@@ -134,8 +146,9 @@ fn is_tracked(root: &Path, name: &str, git: &GitFn<'_>) -> Result<bool, MigrateE
     Ok(in_tree(root, git, &["ls-files", "--", name])?.is_some_and(|out| !out.trim().is_empty()))
 }
 
-/// Rewrite `name` under `root` with `edit`, when the file exists and `edit`
-/// changes it; a tracked file is staged. Whether it was rewritten.
+/// Rewrite and stage `name` under `root` with `edit`, when the file is
+/// tracked and `edit` changes it; an untracked one is never touched, since
+/// nothing could put it back. Whether it was rewritten.
 fn rewrite(
     root: &Path,
     name: &str,
@@ -149,10 +162,11 @@ fn rewrite(
     let Some(edited) = edit(&text) else {
         return Ok(false);
     };
-    std::fs::write(&path, edited).map_err(super::io("write", &path))?;
-    if is_tracked(root, name, git)? {
-        in_tree(root, git, &["add", "--", name])?;
+    if !is_tracked(root, name, git)? {
+        return Ok(false);
     }
+    std::fs::write(&path, edited).map_err(super::io("write", &path))?;
+    in_tree(root, git, &["add", "--", name])?;
     Ok(true)
 }
 

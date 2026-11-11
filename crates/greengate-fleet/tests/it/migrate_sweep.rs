@@ -95,6 +95,8 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
     // A local, untracked manifest is not the repository's to rename.
     let local = repo(&root, "local", &[("README.md", "r\n")]);
     std::fs::write(local.join(OLD_MANIFEST), "pre-commit  a  *  warn  true\n").unwrap();
+    let local_block = format!("{OLD_START}\nmine\n{OLD_END}\n");
+    std::fs::write(local.join("CLAUDE.md"), &local_block).unwrap();
     let done = repo(
         &root,
         "done",
@@ -114,10 +116,13 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
     assert!(out.contains("two: committed"), "{out}");
     assert!(out.contains("dirty: skipped: uncommitted changes"), "{out}");
     assert!(
-        out.contains("on-main: skipped: on main; the sweep commits only on chore/greengate-names"),
+        out.contains("on-main: skipped: on main, not chore/greengate-names"),
         "{out}"
     );
-    assert!(out.contains("feature: skipped: on feat/unrelated"), "{out}");
+    assert!(
+        out.contains("feature: skipped: on feat/unrelated, not"),
+        "{out}"
+    );
 
     for dir in [&one, &two] {
         let log = git(dir, &["log", "--format=%s"]);
@@ -140,6 +145,11 @@ fn the_sweep_commits_once_per_repository_and_skips_dirty_ones() {
     assert!(on_main.join(OLD_MANIFEST).is_file());
     assert_eq!(git(&feature, &["log", "--format=%s"]), "chore: base\n");
     assert!(local.join(OLD_MANIFEST).is_file() && !local.join("greengate.conf").exists());
+    assert_eq!(
+        std::fs::read_to_string(local.join("CLAUDE.md")).unwrap(),
+        local_block,
+        "an untracked file is never rewritten"
+    );
 
     // A second sweep finds only the three it skipped.
     let (code, out) = fleet(&root, &["fix", "--migrate"]);
@@ -179,11 +189,44 @@ fn a_refused_commit_is_undone_and_fails_the_sweep() {
     let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
 }
 
+/// A failure half-way through the rename (the manifest already moved, then
+/// AGENTS.md cannot be written) is undone the same way: exit 1, the tree as
+/// it was.
+#[cfg(unix)]
+#[test]
+fn a_failure_after_the_rename_started_is_undone() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("greengate-fleet-halfway-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root); // a fresh dir; absent is fine
+    std::fs::create_dir_all(&root).unwrap();
+    let block = format!("{OLD_START}\nblock\n{OLD_END}\n");
+    let halfway = repo(
+        &root,
+        "halfway",
+        &[
+            (OLD_MANIFEST, "pre-commit  a  *  warn  true\n"),
+            ("AGENTS.md", &block),
+        ],
+    );
+    let agents = halfway.join("AGENTS.md");
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("halfway: FAILED"), "{out}");
+    assert!(out.contains("nothing was kept"), "{out}");
+    assert_eq!(git(&halfway, &["log", "--format=%s"]), "chore: base\n");
+    assert!(git(&halfway, &["status", "--porcelain", "--untracked-files=no"]).is_empty());
+    assert!(halfway.join(OLD_MANIFEST).is_file() && !halfway.join("greengate.conf").exists());
+    let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
+}
+
 /// Flags of the hook repair would be dropped silently: refused instead.
 #[test]
 fn migrate_refuses_the_flags_it_would_ignore() {
     let (code, out) = fleet(&std::env::temp_dir(), &["fix", "--migrate", "--agents-md"]);
-    assert_ne!(code, 0, "{out}");
+    assert_eq!(code, 2, "a usage error: {out}");
     assert!(out.contains("drop --agents-md"), "{out}");
 }
 

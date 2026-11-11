@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 pub mod tracked;
 
 /// greengate 3.x's names, kept beside the new ones in [`crate::names`].
-pub use crate::names::old;
+use crate::names::old;
 
 /// One name in a git dir, its 4.0 spelling, and the header line it carries.
 struct Move {

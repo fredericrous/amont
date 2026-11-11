@@ -84,13 +84,31 @@ fn tail(out: &std::process::Output) -> String {
     lines[lines.len().saturating_sub(5)..].join("\n")
 }
 
+/// The branch checked out, `None` on a detached HEAD (`symbolic-ref
+/// --quiet` exits 1 and says nothing); any other failure is an error.
+fn current_branch(repo_abs: &Path) -> Result<Option<String>, String> {
+    let out = git(repo_abs, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    if out.status.success() {
+        return Ok(Some(
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        ));
+    }
+    if out.status.code() == Some(1) && out.stderr.is_empty() {
+        return Ok(None);
+    }
+    Err(format!("git symbolic-ref HEAD: {}", tail(&out)))
+}
+
 /// Put the work tree and index back at `HEAD`. Safe here because the sweep
 /// starts only on a tree with no uncommitted tracked change, so everything
 /// it resets is the sweep's own; untracked files are not touched.
 fn undo(repo_abs: &Path, why: String) -> Outcome {
     match git_stdout(repo_abs, &["reset", "-q", "--hard", "HEAD"]) {
         Ok(_) => Outcome::Failed {
-            why: format!("{why}\nnothing was kept; fix that, then run the sweep again"),
+            why: format!(
+                "{why}\nnothing was kept; fix that, then run `{} fix --apply --migrate` again",
+                greengate_runtime::names::FLEET_BIN
+            ),
         },
         Err(reset) => Outcome::Failed {
             why: format!(
@@ -103,15 +121,15 @@ fn undo(repo_abs: &Path, why: String) -> Outcome {
 
 /// Rename, stage and commit in `repo_abs`, the top of its work tree.
 pub fn run(repo_abs: &Path) -> Outcome {
-    let branch = match git_stdout(repo_abs, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+    let branch = match current_branch(repo_abs) {
         Ok(branch) => branch,
-        Err(_) => "a detached HEAD".to_string(),
+        Err(why) => return Outcome::Failed { why },
     };
-    if branch != BRANCH {
+    if branch.as_deref() != Some(BRANCH) {
         return Outcome::Skipped {
             why: format!(
-                "on {branch}; the sweep commits only on {BRANCH}: \
-                 `git switch -c {BRANCH} origin/HEAD` there, or a worktree on it"
+                "on {}, not {BRANCH}: `git switch -c {BRANCH} <default branch>` there",
+                branch.as_deref().unwrap_or("a detached HEAD")
             ),
         };
     }
@@ -151,6 +169,8 @@ pub fn run(repo_abs: &Path) -> Outcome {
             commit,
             leftovers: staged.leftover_count,
         },
-        Err(why) => Outcome::Failed { why },
+        Err(why) => Outcome::Failed {
+            why: format!("committed, but its id could not be read: {why}"),
+        },
     }
 }

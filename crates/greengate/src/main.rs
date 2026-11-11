@@ -499,7 +499,13 @@ fn migrate_tracked(cwd: &Path) -> Result<(), String> {
     let root = greengate_runtime::git::stdout_in(cwd, &["rev-parse", "--show-toplevel"])
         .ok_or("not inside a git work tree")?;
     let root = Path::new(root.trim());
-    let staged = tracked::migrate_tracked(root, &system_git).map_err(|e| e.to_string())?;
+    let staged = tracked::migrate_tracked(root, &system_git).map_err(|e| match e {
+        // Refused before anything moved: its own next step, nothing staged.
+        refused @ greengate_runtime::migrate::MigrateError::BothCommitted { .. } => {
+            refused.to_string()
+        }
+        other => format!("{other}\n`git status` shows what the rename staged before it stopped"),
+    })?;
     for (old_name, new_name) in &staged.renamed {
         eprintln!("renamed {old_name} to {new_name}");
     }
@@ -556,10 +562,11 @@ fn migrate_command(args: &[OsString]) -> i32 {
         .map_err(|e| e.to_string())
         .and_then(|cwd| migrate_tracked(&cwd));
     report(tracked.map_err(|why| {
-        format!(
-            "{BIN}: {}\n{BIN}: `git status` shows what the rename staged before it stopped",
-            sanitize_lines(&why)
-        )
+        sanitize_lines(&why)
+            .lines()
+            .map(|line| format!("{BIN}: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }))
 }
 

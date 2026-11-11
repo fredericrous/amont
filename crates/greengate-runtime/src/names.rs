@@ -153,21 +153,6 @@ pub const RUN_LABEL: &str = "greengate.run";
 pub const GATE_ANNOTATION: &str = "greengate.dev/gate";
 pub const TREE_ANNOTATION: &str = "greengate.dev/tree";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_macros_and_the_constants_agree() {
-        assert_eq!(BIN, PRODUCT);
-        assert_eq!(FLEET_BIN, concat!(bin!(), "-fleet"));
-        assert_eq!(CRATE, BIN);
-        assert!(NPM_PACKAGE.ends_with(BIN));
-        assert!(BREW_FORMULA.ends_with(BIN));
-        assert!(INSTALLER_URL.contains(REPO));
-    }
-}
-
 /// greengate 3.x's names: what `migrate` moves, and the committed names
 /// (manifest, pack, markers) read until the fleet sweep. Kept here, beside
 /// the new ones, so no module depends on the migration to know them; the
@@ -199,4 +184,19 @@ pub mod old {
     /// The AGENTS.md markers before 4.0, read until the sweep.
     pub const AGENTS_START: &str = "<!-- amont:start -->";
     pub const AGENTS_END: &str = "<!-- amont:end -->";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_macros_and_the_constants_agree() {
+        assert_eq!(BIN, PRODUCT);
+        assert_eq!(FLEET_BIN, concat!(bin!(), "-fleet"));
+        assert_eq!(CRATE, BIN);
+        assert!(NPM_PACKAGE.ends_with(BIN));
+        assert!(BREW_FORMULA.ends_with(BIN));
+        assert!(INSTALLER_URL.contains(REPO));
+    }
 }

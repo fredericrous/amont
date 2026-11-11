@@ -135,8 +135,8 @@ fn both_manifests_are_refused_and_nothing_moves() {
         refused.stderr
     );
     assert!(
-        refused.stderr.contains("git status"),
-        "its own hint: {}",
+        !refused.stderr.contains("git status"),
+        "refused before anything moved, so no staging hint: {}",
         refused.stderr
     );
     assert!(repo.path(OLD_MANIFEST).is_file() && repo.path("greengate.conf").is_file());
