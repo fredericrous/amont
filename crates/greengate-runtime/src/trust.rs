@@ -117,7 +117,7 @@ pub enum State {
 
 /// Decide whether `repo`'s manifest may run.
 pub fn state(repo: &Path) -> State {
-    let manifest = repo.join(crate::manifest::MANIFEST);
+    let manifest = repo.join(crate::manifest::manifest_name(repo));
     if !manifest.is_file() {
         return State::NoManifest;
     }
@@ -154,7 +154,7 @@ fn verdict(repo: &Path, current: &str) -> State {
 
 /// Record the manifest as it stands now.
 pub fn record(repo: &Path) -> Result<String, String> {
-    let manifest = repo.join(crate::manifest::MANIFEST);
+    let manifest = repo.join(crate::manifest::manifest_name(repo));
     let fp = fingerprint(repo, &manifest)
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
     record_verified(repo, &fp)?;
@@ -172,13 +172,13 @@ pub fn record(repo: &Path) -> Result<String, String> {
 /// Callers fingerprint what they show BEFORE asking, and pass that same
 /// value here — verified again, not merely assumed, once the answer is in.
 pub fn record_verified(repo: &Path, fp: &str) -> Result<(), String> {
-    let manifest = repo.join(crate::manifest::MANIFEST);
+    let manifest = repo.join(crate::manifest::manifest_name(repo));
     let now = fingerprint(repo, &manifest)
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
     if now != fp {
         return Err(format!(
             "{} changed since it was shown — nothing was trusted; run `{BIN} trust` again to review it",
-            crate::manifest::MANIFEST
+            crate::manifest::manifest_name(repo)
         ));
     }
     // Already accepted — adding it again would grow the list for nothing.
@@ -250,7 +250,8 @@ pub fn why(state: State) -> Option<&'static str> {
 /// a prompt that trains people to press y.
 pub fn describe(repo: &Path) -> String {
     describe_source(
-        &std::fs::read_to_string(repo.join(crate::manifest::MANIFEST)).unwrap_or_default(),
+        &std::fs::read_to_string(repo.join(crate::manifest::manifest_name(repo)))
+            .unwrap_or_default(),
     )
 }
 
@@ -450,7 +451,11 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
 
     if flag("--revoke") {
         revoke(root)?;
-        println!("{} amont.conf is no longer trusted here", valid_sign());
+        println!(
+            "{} {} is no longer trusted here",
+            valid_sign(),
+            crate::manifest::manifest_name(root)
+        );
         return Ok(());
     }
 
@@ -461,7 +466,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
 
     if flag("--show") {
-        println!("{}", crate::manifest::MANIFEST);
+        println!("{}", crate::manifest::manifest_name(root));
         print!("{}", describe(root));
         println!(
             "    {}",
@@ -482,12 +487,13 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     // One read: the bytes shown are the bytes fingerprinted, and
     // `record_verified` then confirms they are still the bytes on disk. Read
     // twice, and the listing somebody approved need not be what got recorded.
-    let manifest = root.join(crate::manifest::MANIFEST);
+    let manifest_file = crate::manifest::manifest_name(root);
+    let manifest = root.join(manifest_file);
     let source =
         std::fs::read(&manifest).map_err(|e| format!("cannot read {}: {e}", manifest.display()))?;
     let fp = fingerprint_bytes(root, &source)
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
-    println!("{} declares:", crate::manifest::MANIFEST);
+    println!("{manifest_file} declares:");
     print!("{}", describe_source(&String::from_utf8_lossy(&source)));
     record_verified(root, &fp)?;
     println!("{} trusted ({fp})", valid_sign());

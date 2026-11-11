@@ -36,9 +36,11 @@ fn preserves_unrelated_existing_content_when_appending() {
     assert_eq!(code, 0);
     let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
     assert!(content.starts_with("# My Project\n\nSome existing notes.\n"));
-    assert!(content.contains("<!-- amont:start -->"));
+    assert!(content.contains("<!-- greengate:start -->"));
 }
 
+/// A block a 3.x binary wrote, under the old marker pair, is regenerated
+/// under that pair: only `greengate migrate --tracked` respells markers.
 #[test]
 fn replaces_only_the_marked_block() {
     let r = Repo::new();
@@ -53,6 +55,33 @@ fn replaces_only_the_marked_block() {
     let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
     assert!(content.starts_with("before\n\n"));
     assert!(content.ends_with("\n\nafter\n"));
+    assert!(!content.contains("STALE CONTENT"));
+    assert!(content.contains("<!-- amont:start -->"), "{content}");
+    assert!(!content.contains("greengate:start"), "{content}");
+    let (code, _, stderr) = run_agents_md(&r, &["--check"]);
+    assert_eq!(code, 0, "not drifted for its markers alone: {stderr}");
+}
+
+#[test]
+fn replaces_a_block_under_the_new_markers() {
+    let r = Repo::new();
+    r.commit("init");
+    r.write(
+        "AGENTS.md",
+        "before\n\n<!-- greengate:start -->\nSTALE CONTENT\n<!-- greengate:end -->\n\nafter\n",
+    );
+
+    let (code, _, _) = run_agents_md(&r, &[]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
+    assert!(
+        content.starts_with("before\n\n<!-- greengate:start -->"),
+        "{content}"
+    );
+    assert!(
+        content.ends_with("<!-- greengate:end -->\n\nafter\n"),
+        "{content}"
+    );
     assert!(!content.contains("STALE CONTENT"));
 }
 

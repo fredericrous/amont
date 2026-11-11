@@ -62,6 +62,7 @@ mod linters;
 mod load_sites;
 mod merge_conflict;
 mod migrate;
+mod migrate_tracked;
 mod names;
 mod npm_packaging;
 mod pack_add;

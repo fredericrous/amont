@@ -286,7 +286,7 @@ fn announce_policy_state(settings: &crate::config::Settings, manifest: &crate::m
         println!(
             "{} {} policy not applied: {why}",
             warning_sign(),
-            highlight(crate::manifest::MANIFEST),
+            highlight(manifest.file_name()),
         );
     }
     for note in &manifest.policy_notes {
@@ -370,7 +370,7 @@ pub fn pre_commit(ctx: &Ctx) -> Verdict {
     crate::cluster::collect_if_declared(ctx.manifest);
     // Before anything runs: a pinned tool at the wrong version makes every
     // verdict below it suspect, and the warning costs one --version per pin.
-    crate::manifest::verify_tool_pins(&ctx.manifest.pins);
+    crate::manifest::verify_tool_pins(&ctx.manifest.pins, ctx.manifest.file_name());
     announce_policy_state(ctx.settings, ctx.manifest);
     let in_progress = crate::git_states_in_progress();
     let checks = selected_during(ctx.settings, Stage::PreCommit, &in_progress, ctx.manifest);
@@ -1315,7 +1315,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     if !crate::rehearsal::in_snapshot() {
         crate::cluster::collect_if_declared(ctx.manifest);
     }
-    crate::manifest::verify_tool_pins(&ctx.manifest.pins);
+    crate::manifest::verify_tool_pins(&ctx.manifest.pins, ctx.manifest.file_name());
     announce_policy_state(ctx.settings, ctx.manifest);
     // NB: no CHERRY_PICK_HEAD check here — the zsh pre-push had none either.
     let severities = Overrides::read(settings);

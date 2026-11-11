@@ -17,6 +17,7 @@ mod checks;
 mod downgrades;
 mod fix;
 mod gates;
+mod migrate;
 mod progress;
 mod scan;
 mod severities;
@@ -69,6 +70,11 @@ const USAGE: &str = concat!(
                  repository keeps an .adr.yaml and its session hook is behind
                  the aval on PATH. Reports, never edits, a .gitignore that
                  would drop the hook's files.
+  --migrate      with fix: rename the committed greengate 3.x names
+                 (amont.conf, amont.pack, the AGENTS.md markers) in each
+                 repository that has them, one commit each through its own
+                 hooks; nothing is pushed. Only this, no hook repair.
+                 Skips a repository with uncommitted changes.
   --remove-unrecognized
                  ALSO delete pre-commit-* / pre-push-* files this tool did not
                  write. Off by default, and read the sentence below first.
@@ -136,6 +142,8 @@ struct Args {
     /// hooks other people wrote, in repositories this tool may never have
     /// touched, and the long spelling is there to be read before it is used.
     remove_unrecognized: bool,
+    /// `fix --migrate`: the committed-names sweep, instead of the hook plan.
+    migrate: bool,
 }
 
 /// A numeric flag value, or a usage error naming the flag. Shared by every
@@ -161,6 +169,7 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
     let mut agents_md = false;
     let mut aval_hook = false;
     let mut remove_unrecognized = false;
+    let mut migrate = false;
     let mut thresholds = greengate_runtime::gate_evidence::Thresholds::default();
 
     let mut it = argv.iter().peekable();
@@ -224,12 +233,18 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
             "--agents-md" => agents_md = true,
             "--aval-hook" => aval_hook = true,
             "--remove-unrecognized" => remove_unrecognized = true,
+            "--migrate" => migrate = true,
             "--binary" => {
                 binary = Some(it.next().ok_or("--binary needs a path")?.clone());
             }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other:?}")),
         }
+    }
+    if migrate && mode != Mode::Fix {
+        return Err("--migrate goes with fix only: `fix --migrate` to see, \
+                    `fix --apply --migrate` to commit"
+            .to_string());
     }
     // Resolved last, so it only runs when no explicit `--root` makes it moot.
     let root = match root {
@@ -253,7 +268,97 @@ fn parse(argv: &[String], home: Option<&Path>) -> Result<Args, String> {
         agents_md,
         aval_hook,
         remove_unrecognized,
+        migrate,
     })
+}
+
+/// `fix --migrate`: list the repositories that still commit a greengate 3.x
+/// name, and with `--apply` commit the rename in each. A linked worktree or a
+/// submodule is left to the repository that owns its hooks: one commit per
+/// repository, on the branch its main checkout has out.
+fn sweep_names(scan: &scan::FleetScan, args: &Args) -> ExitCode {
+    let due: Vec<&scan::Repo> = scan
+        .repos
+        .iter()
+        .filter(|r| r.shares_hooks_with.is_none() && migrate::needs(&args.root.join(&r.path)))
+        .collect();
+    if !args.apply {
+        if args.json {
+            let paths: Vec<&Path> = due.iter().map(|r| r.path.as_path()).collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&paths).unwrap_or_default()
+            );
+        } else if due.is_empty() {
+            println!("no repository here commits greengate 3.x's names");
+        } else {
+            let (noun, verb) = if due.len() == 1 {
+                ("repository", "commits")
+            } else {
+                ("repositories", "commit")
+            };
+            println!("{} {noun} {verb} greengate 3.x's names:", due.len());
+            for r in &due {
+                println!("  {}", shown(&r.path));
+            }
+            println!("run `fix --apply --migrate` to commit the rename in each");
+        }
+        return ExitCode::SUCCESS;
+    }
+    let mut reports: Vec<migrate::Report> = Vec::with_capacity(due.len());
+    let mut steps = progress::Steps::start("migrating", due.len());
+    for r in &due {
+        steps.step(&r.path);
+        let report = migrate::Report {
+            repo: r.path.clone(),
+            outcome: migrate::run(&args.root.join(&r.path)),
+        };
+        if !args.json {
+            steps.interrupt(&migrate_line(&report));
+        }
+        reports.push(report);
+    }
+    steps.finish();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&reports).unwrap_or_default()
+        );
+    }
+    let failed = reports
+        .iter()
+        .any(|r| matches!(r.outcome, migrate::Outcome::Failed { .. }));
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn migrate_line(report: &migrate::Report) -> String {
+    let repo = shown(&report.repo);
+    match &report.outcome {
+        migrate::Outcome::Committed {
+            commit,
+            leftovers: 0,
+        } => {
+            format!("{repo}: committed {commit}")
+        }
+        migrate::Outcome::Committed { commit, leftovers } => format!(
+            "{repo}: committed {commit}; {leftovers} tracked line(s) still name an old \
+             name (`greengate migrate --tracked` there lists them)"
+        ),
+        migrate::Outcome::Skipped { why } => {
+            format!("{repo}: skipped: {}", greengate_runtime::ui::sanitize(why))
+        }
+        migrate::Outcome::Failed { why } => format!(
+            "{repo}: FAILED: {}",
+            why.lines()
+                .map(greengate_runtime::ui::sanitize)
+                .collect::<Vec<_>>()
+                .join("\n    ")
+        ),
+    }
 }
 
 fn home() -> Option<PathBuf> {
@@ -525,6 +630,10 @@ fn main() -> ExitCode {
         } else {
             ExitCode::from(1)
         };
+    }
+
+    if args.migrate {
+        return sweep_names(&scan, &args);
     }
 
     if args.mode == Mode::Fix || args.mode == Mode::Install {

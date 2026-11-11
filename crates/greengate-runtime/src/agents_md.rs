@@ -14,8 +14,20 @@
 use std::ops::Range;
 use std::path::Path;
 
-pub const START: &str = "<!-- amont:start -->";
-pub const END: &str = "<!-- amont:end -->";
+pub const START: &str = crate::names::AGENTS_START;
+pub const END: &str = crate::names::AGENTS_END;
+
+/// The 3.x marker pair. A file still carrying it is read as if it held the
+/// new one, and the next write replaces the whole old block with a new one:
+/// the only fallback, removed at the census once the fleet sweep has run.
+const OLD_START: &str = crate::migrate::old::AGENTS_START;
+const OLD_END: &str = crate::migrate::old::AGENTS_END;
+
+/// Does `text` carry a marker of either pair? The opt-in test, answered from
+/// the text alone.
+pub fn has_markers(text: &str) -> bool {
+    text.contains(START) || text.contains(OLD_START)
+}
 
 /// The block, START and END inclusive, always ending in exactly one newline.
 ///
@@ -143,14 +155,43 @@ pub enum MarkerState {
 /// at all (searching from `start`'s position finds nothing, because there is
 /// no `start`) still surfaces as `(None, Some(_))` rather than silently
 /// reading as "no markers, nothing to guard against."
-fn marker_range(text: &str) -> Result<Option<Range<usize>>, MarkerState> {
-    let start = text.find(START);
-    let end = text.find(END);
+///
+/// The second value says the range was found under the 3.x pair: the block
+/// that replaces it, or is compared with it, keeps that pair, so a file is
+/// never respelled except by `greengate migrate --tracked`, and an unswept
+/// one does not read as drifted for its markers alone.
+fn marker_range(text: &str) -> Result<Option<(Range<usize>, bool)>, MarkerState> {
+    if let Some(range) = pair_range(text, START, END)? {
+        return Ok(Some((range, false)));
+    }
+    Ok(pair_range(text, OLD_START, OLD_END)?.map(|range| (range, true)))
+}
+
+/// `block` as it reads under the pair the file already uses.
+fn in_pair(block: &str, old_pair: bool) -> std::borrow::Cow<'_, str> {
+    if old_pair {
+        block
+            .replacen(START, OLD_START, 1)
+            .replacen(END, OLD_END, 1)
+            .into()
+    } else {
+        block.into()
+    }
+}
+
+/// [`marker_range`] for one marker pair.
+fn pair_range(
+    text: &str,
+    start_marker: &str,
+    end_marker: &str,
+) -> Result<Option<Range<usize>>, MarkerState> {
+    let start = text.find(start_marker);
+    let end = text.find(end_marker);
 
     match (start, end) {
         (None, None) => Ok(None),
-        (Some(s), Some(e)) if e >= s + START.len() => {
-            let mut range_end = e + END.len();
+        (Some(s), Some(e)) if e >= s + start_marker.len() => {
+            let mut range_end = e + end_marker.len();
             if text[range_end..].starts_with('\n') {
                 range_end += 1; // swallow exactly one trailing newline
             }
@@ -186,10 +227,10 @@ pub fn desired_pointer_content(existing: &str) -> Result<String, MarkerState> {
 /// disagree.
 fn desired_with(existing: &str, block: &str) -> Result<String, MarkerState> {
     match marker_range(existing)? {
-        Some(range) => Ok(format!(
+        Some((range, old_pair)) => Ok(format!(
             "{}{}{}",
             &existing[..range.start],
-            block,
+            in_pair(block, old_pair),
             &existing[range.end..]
         )),
         None if existing.is_empty() => Ok(block.to_string()),
@@ -219,8 +260,8 @@ fn write_with(path: &Path, block: &str) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let content = desired_with(&existing, block).map_err(|_| {
         format!(
-            "{}: has an unpaired amont marker — fix or remove it by hand, \
-             then re-run `amont agents-md`",
+            "{}: has an unpaired greengate marker — fix or remove it by hand, \
+             then re-run `greengate agents-md`",
             path.display()
         )
     })?;
@@ -252,12 +293,12 @@ fn check_with(path: &Path, block: &str) -> Result<CheckResult, String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     match marker_range(&existing) {
         Err(_) => Err(format!(
-            "{}: has an unpaired amont marker — fix or remove it by hand",
+            "{}: has an unpaired greengate marker — fix or remove it by hand",
             path.display()
         )),
         Ok(None) => Ok(CheckResult::NotPresent),
-        Ok(Some(range)) => {
-            if &existing[range] == block {
+        Ok(Some((range, old_pair))) => {
+            if existing[range] == *in_pair(block, old_pair) {
                 Ok(CheckResult::MatchesGenerated)
             } else {
                 Ok(CheckResult::Drifted)
@@ -374,6 +415,39 @@ mod tests {
         assert!(got.ends_with("\n\nafter\n"));
         assert!(got.contains(&generate_block(&test_settings())));
         assert!(!got.contains("stale"));
+    }
+
+    /// A 3.x block, under the old pair, is regenerated under that same pair:
+    /// only `migrate --tracked` respells a file's markers. What surrounds it
+    /// is untouched, and the result reads as current, not drifted.
+    #[test]
+    fn an_old_marker_block_is_regenerated_under_its_own_pair() {
+        let before = format!("before\n\n{OLD_START}\nstale\n{OLD_END}\n\nafter\n");
+        let got = desired_file_content(&test_settings(), &before).unwrap();
+        let block = generate_block(&test_settings());
+        assert_eq!(got, format!("before\n\n{}\nafter\n", in_pair(&block, true)));
+        assert!(!got.contains(START), "{got}");
+        assert!(has_markers(&before) && has_markers(&got));
+        assert!(!has_markers("no block here\n"));
+        let dir = std::env::temp_dir().join(format!("agents-md-old-pair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("AGENTS.md");
+        std::fs::write(&file, &got).unwrap();
+        assert_eq!(
+            check(&test_settings(), &file).unwrap(),
+            CheckResult::MatchesGenerated,
+            "an unswept file is not drifted for its markers"
+        );
+        let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of a scratch dir
+    }
+
+    /// One old marker alone is as unpaired as one new marker alone.
+    #[test]
+    fn an_unpaired_old_marker_is_refused() {
+        assert_eq!(
+            desired_file_content(&test_settings(), &format!("{OLD_START}\nno end\n")),
+            Err(MarkerState::Malformed)
+        );
     }
 
     #[test]

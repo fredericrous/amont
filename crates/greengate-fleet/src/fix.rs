@@ -692,6 +692,7 @@ mod tests {
             severities: Vec::new(),
             bypasses: crate::bypasses::Bypasses::default(),
             downgrades: crate::downgrades::Downgrades::default(),
+            manifest: greengate_runtime::manifest::MANIFEST,
             declared: Vec::new(),
             trusted: None,
             agents_md: AgentsMdState::Missing,

@@ -18,6 +18,7 @@
 mod common;
 
 mod flows;
+mod migrate_sweep;
 mod parity;
 mod scan;
 mod uninstall;

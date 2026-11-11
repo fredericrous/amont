@@ -151,7 +151,10 @@ pub(crate) enum WhyNot {
         scope: String,
         uncovered: Vec<String>,
         cause: GapCause,
-        /// The 1-based `amont.conf` line to edit, when it is known.
+        /// The manifest file the line is in (`greengate.conf`, or an
+        /// unswept repository's `amont.conf`).
+        file: &'static str,
+        /// The 1-based manifest line to edit, when it is known.
         at: Option<usize>,
     },
     /// It is a warn check, which vouches for nothing.
@@ -189,6 +192,7 @@ fn not_opted_in(scope: &crate::check::Scope) -> WhyNot {
 /// words on both paths. `twin_line` is the `amont.conf` line of a DECLARED
 /// push twin that acts on every change, the line to scope.
 fn scope_gap(
+    file: &'static str,
     pair: &GateDecl,
     push_scope: &crate::check::Scope,
     relevant: &[String],
@@ -209,6 +213,7 @@ fn scope_gap(
             .cloned()
             .collect(),
         cause,
+        file,
         at,
     }
 }
@@ -255,6 +260,7 @@ pub(crate) fn reason_lines(name: &str, why: &WhyNot, width: LineWidth) -> Vec<St
             scope,
             uncovered,
             cause,
+            file,
             at,
         } => {
             let shown: Vec<String> = uncovered
@@ -276,8 +282,8 @@ pub(crate) fn reason_lines(name: &str, why: &WhyNot, width: LineWidth) -> Vec<St
             );
             let at_known = at.is_some();
             let at = match at {
-                Some(line) => format!("{} line {line}", crate::manifest::MANIFEST),
-                None => crate::manifest::MANIFEST.to_string(),
+                Some(line) => format!("{file} line {line}"),
+                None => (*file).to_string(),
             };
             let first_path = shown.first().map(String::as_str).unwrap_or("it");
             let fix = match cause {
@@ -468,6 +474,7 @@ pub(crate) fn pair_verdict(
             // and never as partial coverage, which would read as
             // reassurance: it names what the declaration misses.
             return PairVerdict::NotPaired(Some(scope_gap(
+                manifest.file_name(),
                 &pair,
                 push_scope,
                 &relevant,
@@ -867,7 +874,12 @@ pub(crate) enum Trust {
 /// declaring that the root already runs them: a repeat, if it does, and what to
 /// do. Pure, so the words and their width are tested: the first line carries the
 /// sign, so it fits 78 columns, and so does every other line.
-pub(crate) fn repeat_hint_lines(script: &str, members: usize, trust: Trust) -> Vec<String> {
+pub(crate) fn repeat_hint_lines(
+    script: &str,
+    members: usize,
+    trust: Trust,
+    manifest: &str,
+) -> Vec<String> {
     let plural = if members == 1 { "" } else { "s" };
     let mut lines = vec![format!(
         "{} ran at the root and in {members} package{plural} — a repeat if the root runs them",
@@ -875,13 +887,11 @@ pub(crate) fn repeat_hint_lines(script: &str, members: usize, trust: Trust) -> V
     )];
     match trust {
         Trust::Counted => lines.push(format!(
-            "    declare it in {}: set rootRunsMembers {script}   (or: none)",
-            crate::manifest::MANIFEST
+            "    declare it in {manifest}: set rootRunsMembers {script}   (or: none)"
         )),
         Trust::Withheld => {
             lines.push(format!(
-                "    {} is not trusted: its rootRunsMembers line does not count",
-                crate::manifest::MANIFEST
+                "    {manifest} is not trusted: its rootRunsMembers line does not count"
             ));
             lines.push(format!("    run: {} trust", crate::names::BIN));
         }
@@ -901,6 +911,7 @@ const MIN_COMMAND_COLUMNS: usize = 12;
 /// the root's command so a declaration gone stale reads against what it claims.
 /// On a terminal only the command is cut, so the count and the cause survive.
 pub(crate) fn skip_summary_line(
+    manifest: &str,
     skipped: usize,
     script: &str,
     command: Option<&str>,
@@ -908,9 +919,8 @@ pub(crate) fn skip_summary_line(
 ) -> String {
     let plural = if skipped == 1 { "" } else { "s" };
     let head = format!(
-        "{skipped} package{plural} skipped, covered by the root's {} (declared in {})",
-        crate::ui::sanitize(script),
-        crate::manifest::MANIFEST
+        "{skipped} package{plural} skipped, covered by the root's {} (per {manifest})",
+        crate::ui::sanitize(script)
     );
     let Some(command) = command else {
         return head;
@@ -1133,7 +1143,13 @@ pub fn run(
                 Some(not_opted_in(&d.scope))
             } else if !d.scope.covers_all(&js_changed) {
                 let js_scope = crate::check::Scope::files(JS_EXTS);
-                Some(scope_gap(d, &js_scope, &js_changed, None))
+                Some(scope_gap(
+                    manifest.file_name(),
+                    d,
+                    &js_scope,
+                    &js_changed,
+                    None,
+                ))
             } else {
                 None
             };
@@ -1229,6 +1245,7 @@ pub fn run(
         // repository declares run every member: a changed member the workspace
         // covers is not run again for them. Read from the pushed tree, like
         // the packages themselves.
+        let manifest_file = crate::manifest::manifest_name(std::path::Path::new(&where_));
         let root_pkg = if folders.iter().any(|f| f.is_empty()) {
             std::fs::read_to_string(format!("{where_}/package.json")).ok()
         } else {
@@ -1313,7 +1330,7 @@ pub fn run(
                 .and_then(|pkg| script_command(pkg, script));
             crate::say!(
                 "{}",
-                skip_summary_line(count, script, command.as_deref(), width)
+                skip_summary_line(manifest_file, count, script, command.as_deref(), width)
             );
         }
 
@@ -1346,7 +1363,8 @@ pub fn run(
             for (script, members) in ran_in_members {
                 if ran_at_root.contains(&script) && !hinted.contains(&script) {
                     hinted.push(script);
-                    let mut lines = repeat_hint_lines(script, members, trust).into_iter();
+                    let mut lines =
+                        repeat_hint_lines(script, members, trust, manifest_file).into_iter();
                     if let Some(head) = lines.next() {
                         crate::say!("{} {head}", crate::ui::warning_sign());
                     }
@@ -1517,6 +1535,7 @@ mod tests {
                 scope: "*.rs".into(),
                 uncovered: vec![path.into()],
                 cause: GapCause::Files,
+                file: crate::manifest::MANIFEST,
                 at: Some(3),
             },
             WhyNot::Warn,
@@ -1568,6 +1587,7 @@ mod tests {
             scope: "*.rs".into(),
             uncovered: vec![long.into()],
             cause: GapCause::Files,
+            file: crate::manifest::MANIFEST,
             at: None,
         };
         assert!(reason_lines("cargo-test", &why, LineWidth::Whole)[0].contains(long));
@@ -1612,7 +1632,7 @@ mod tests {
     #[test]
     fn the_repeat_hint_fits_its_line_and_names_the_fix() {
         for script in crate::manifest::NPM_GATE_SCRIPTS {
-            let lines = repeat_hint_lines(script, 30, Trust::Counted);
+            let lines = repeat_hint_lines(script, 30, Trust::Counted, crate::manifest::MANIFEST);
             assert!(lines[0].chars().count() + 2 <= 80, "{}", lines[0]);
             assert!(lines[0].contains("a repeat if the root runs them"));
             assert!(
@@ -1624,9 +1644,9 @@ mod tests {
                 assert!(line.chars().count() <= 80, "{line}");
             }
         }
-        let one = repeat_hint_lines("test", 1, Trust::Counted);
+        let one = repeat_hint_lines("test", 1, Trust::Counted, crate::manifest::MANIFEST);
         assert!(one[0].contains("in 1 package —"), "{}", one[0]);
-        let withheld = repeat_hint_lines("test", 2, Trust::Withheld);
+        let withheld = repeat_hint_lines("test", 2, Trust::Withheld, crate::manifest::MANIFEST);
         assert!(withheld[1].contains("is not trusted"), "{}", withheld[1]);
         assert!(withheld[2].contains("trust"), "{}", withheld[2]);
         for line in &withheld[1..] {
@@ -1642,13 +1662,26 @@ mod tests {
         for script in crate::manifest::NPM_GATE_SCRIPTS {
             // A count of any width still fits: three digits cost a column.
             for count in [1, 30, 100, 1000] {
-                let line = skip_summary_line(count, script, Some("pnpm -r test"), LineWidth::Cut);
+                let line = skip_summary_line(
+                    crate::manifest::MANIFEST,
+                    count,
+                    script,
+                    Some("pnpm -r test"),
+                    LineWidth::Cut,
+                );
                 assert!(line.chars().count() <= LINE_COLUMNS, "{line}");
             }
-            let head = skip_summary_line(30, script, None, LineWidth::Cut);
+            let head =
+                skip_summary_line(crate::manifest::MANIFEST, 30, script, None, LineWidth::Cut);
             assert!(head.chars().count() <= 80, "{head}");
             assert!(head.contains("30 packages skipped"), "{head}");
-            let cut = skip_summary_line(30, script, Some(&"x".repeat(200)), LineWidth::Cut);
+            let cut = skip_summary_line(
+                crate::manifest::MANIFEST,
+                30,
+                script,
+                Some(&"x".repeat(200)),
+                LineWidth::Cut,
+            );
             assert!(cut.chars().count() <= 80, "{cut}");
             assert!(cut.contains("covered by the root's"), "{cut}");
             // Every gate script's head leaves no room for the command, so the
@@ -1656,7 +1689,8 @@ mod tests {
             assert!(cut.ends_with(": …"), "{cut}");
         }
         assert!(
-            skip_summary_line(1, "test", None, LineWidth::Whole).starts_with("1 package skipped")
+            skip_summary_line(crate::manifest::MANIFEST, 1, "test", None, LineWidth::Whole)
+                .starts_with("1 package skipped")
         );
     }
 

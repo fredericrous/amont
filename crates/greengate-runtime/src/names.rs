@@ -118,6 +118,17 @@ pub const HELD_FORMAT: &str = "greengate-held-v1";
 /// keeps the notes format (`amont-gate-v1`), which plan 3a-3 renames.
 pub const GATE_MARKER: &str = "greengate-gate";
 
+/// The committed manifest a repository declares its checks in.
+pub const MANIFEST: &str = "greengate.conf";
+
+/// The file a pack repository declares its rows in.
+pub const PACK_FILE: &str = "greengate.pack";
+
+/// The markers around the block greengate generates in AGENTS.md and the
+/// CLAUDE.md pointer.
+pub const AGENTS_START: &str = "<!-- greengate:start -->";
+pub const AGENTS_END: &str = "<!-- greengate:end -->";
+
 /// The `list --json` envelope. greenpiste and relais read it and the old
 /// `amont-list-v1` alike, from greenpiste 3.30.0 and relais 0.54.0.
 pub const LIST_FORMAT: &str = "greengate-list-v1";

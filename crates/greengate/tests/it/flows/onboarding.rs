@@ -389,7 +389,7 @@ fn the_install_journey() {
     let agents = read(&repo.join("AGENTS.md"));
     step!(
         "agents-md",
-        agents.contains("<!-- amont:start -->"),
+        agents.contains("<!-- greengate:start -->"),
         "{agents}"
     );
     step!(

@@ -26,10 +26,15 @@ use std::path::Path;
 use crate::check::Outcome;
 use crate::hooks::common::{fail, hl, ok, repo_root, staged_files};
 use crate::manifest::{Manifest, MANIFEST};
+use crate::migrate::old;
 use crate::trust::{self, State};
 
 pub fn run(settings: &crate::config::Settings, manifest: &Manifest) -> Outcome {
-    if !staged_files(&[]).iter().any(|f| f == MANIFEST) {
+    // Either spelling: an unswept repository still commits the 3.x one.
+    if !staged_files(&[])
+        .iter()
+        .any(|f| f == MANIFEST || f == old::MANIFEST)
+    {
         return Outcome::Inert;
     }
     let root = repo_root();
@@ -46,7 +51,10 @@ pub fn run_in(settings: &crate::config::Settings, manifest: &Manifest, root: &Pa
         State::Trusted | State::NoManifest => {
             ok(
                 settings,
-                "amont.conf is trusted as staged; its checks gate this commit",
+                &format!(
+                    "{} is trusted as staged; its checks gate this commit",
+                    manifest.file_name()
+                ),
             );
             Outcome::Passed
         }
@@ -57,9 +65,10 @@ pub fn run_in(settings: &crate::config::Settings, manifest: &Manifest, root: &Pa
                 .map(|e| e.short_name.as_str())
                 .collect();
             fail(&format!(
-                "this commit changes {MANIFEST}, and the {} check(s) it declares ({}) \
+                "this commit changes {}, and the {} check(s) it declares ({}) \
                  cannot gate it: {}. Review it with {}, accept it, and commit again \
                  — otherwise this commit goes through with them unrun.",
+                manifest.file_name(),
                 names.len(),
                 names.join(", "),
                 match state {

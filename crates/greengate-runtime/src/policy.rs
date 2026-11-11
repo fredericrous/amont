@@ -63,6 +63,12 @@ impl Policy {
     /// manufactures a check named after itself, and a phantom
     /// `pre-commit-clipy` helps nobody.
     pub fn from_lines(lines: &[Line]) -> (Policy, Vec<String>) {
+        Policy::from_lines_of(lines, crate::manifest::MANIFEST)
+    }
+
+    /// [`Policy::from_lines`] for the file named `manifest`, which the notes
+    /// name.
+    pub fn from_lines_of(lines: &[Line], manifest: &str) -> (Policy, Vec<String>) {
         let mut policy = Policy::default();
         let mut notes = Vec::new();
         let names_something = |target: &str| {
@@ -95,8 +101,7 @@ impl Policy {
                     PolicyLine::Set { .. } => unreachable!("set lines have no target"),
                 };
                 notes.push(format!(
-                    "{}:{lineno}: {kind} {target:?} names no check here",
-                    crate::manifest::MANIFEST
+                    "{manifest}:{lineno}: {kind} {target:?} names no check here"
                 ));
                 continue;
             }
@@ -166,7 +171,7 @@ mod tests {
         assert!(p.severities.is_empty());
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].contains("names no check here"), "{notes:?}");
-        assert!(notes[0].contains("amont.conf:2"), "{notes:?}");
+        assert!(notes[0].contains("greengate.conf:2"), "{notes:?}");
     }
 
     /// A typo is a note with a position, never a phantom check.
@@ -177,7 +182,7 @@ mod tests {
         assert!(p.is_empty());
         assert_eq!(
             notes,
-            vec!["amont.conf:1: severity \"clipy\" names no check here"]
+            vec!["greengate.conf:1: severity \"clipy\" names no check here"]
         );
     }
 

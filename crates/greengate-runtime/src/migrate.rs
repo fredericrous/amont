@@ -31,12 +31,18 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod tracked;
+
 /// greengate 3.x's names, read only to move them.
 pub mod old {
     /// The config namespace.
     pub const CONFIG_PREFIX: &str = "amont.";
+    /// The environment variables' prefix.
+    pub const ENV_PREFIX: &str = "AMONT_";
     /// greenpiste's own keys under that namespace: not greengate's to move.
     pub const FOREIGN_PREFIX: &str = "amont.agent.";
+    /// greenpiste's own environment variables: not greengate's to move.
+    pub const FOREIGN_ENV_PREFIX: &str = "AMONT_AGENT_";
     /// The held store, never moved (see the module doc).
     pub const HELD_STORE: &str = "amont-held";
     /// The held store's index header, which `greengate restore` still reads.
@@ -45,6 +51,16 @@ pub mod old {
     pub const CLUSTER_NAMESPACE: &str = "amont-gates";
     /// The folder of state greengate 3.x kept in the common dir.
     pub const STATE_DIR: &str = "amont";
+    /// The committed manifest before 4.0: read when `greengate.conf` is
+    /// absent, until the fleet sweep has renamed every repository's (the
+    /// census removes that read).
+    pub const MANIFEST: &str = "amont.conf";
+    /// A pack repository's file before 4.0. Read whenever `greengate.pack`
+    /// is absent: a vendored pin at an older revision only ever has this one.
+    pub const PACK_FILE: &str = "amont.pack";
+    /// The AGENTS.md markers before 4.0, read until the sweep.
+    pub const AGENTS_START: &str = "<!-- amont:start -->";
+    pub const AGENTS_END: &str = "<!-- amont:end -->";
 }
 
 /// One name in a git dir, its 4.0 spelling, and the header line it carries.
@@ -226,8 +242,11 @@ pub enum MigrateError {
     /// A detached cluster run 3.x submitted is still pending: its Workflow
     /// carries 3.x's label, which 4.0 cannot collect.
     PendingDetached { path: PathBuf },
-    /// 3.x's pending file exists but this version cannot read it: its runs
-    /// would be lost all the same, so the move waits.
+    /// A reverse, while a detached cluster run 4.0 submitted is pending:
+    /// 3.x cannot collect it.
+    PendingForDowngrade { path: PathBuf },
+    /// The pending file of the version being left exists but cannot be
+    /// read: its runs would be lost all the same, so the move waits.
     PendingUnreadable { path: PathBuf, why: String },
     /// Both spellings of one name exist and are not a log to merge.
     BothExist { source: PathBuf, target: PathBuf },
@@ -265,9 +284,19 @@ impl std::fmt::Display for MigrateError {
                 old::CLUSTER_NAMESPACE,
                 path.display()
             ),
+            MigrateError::PendingForDowngrade { path } => write!(
+                out,
+                "{} lists a detached cluster run greengate 4.0 submitted,\n  \
+                 which 3.x cannot collect. Collect it first (`{} cluster collect`),\n  \
+                 or, if its verdict no longer matters, remove the file:\n  rm {}\n  \
+                 then run the command again",
+                path.display(),
+                n::BIN,
+                path.display()
+            ),
             MigrateError::PendingUnreadable { path, why } => write!(
                 out,
-                "{} (greengate 3.x's detached cluster runs)\n  cannot be read: \
+                "{} (detached cluster runs)\n  cannot be read: \
                  {why}.\n  If no run in it matters any more, remove it:\n  rm {}\n  \
                  then run the command again",
                 path.display(),
@@ -370,18 +399,26 @@ pub fn migrate_repo(
             return Err(MigrateError::HeldStore { path });
         }
     }
-    if direction == Direction::Forward {
-        let pending = repo
-            .common
-            .join(old::STATE_DIR)
-            .join(crate::cluster::PENDING_FILE);
-        // A run that has outlived its Workflow is past collecting; a file
-        // this version cannot read is refused too, with its reason.
-        match crate::cluster::lists_live(&pending, now) {
-            Ok(false) => {}
-            Ok(true) => return Err(MigrateError::PendingDetached { path: pending }),
-            Err(why) => return Err(MigrateError::PendingUnreadable { path: pending, why }),
+    // A detached run is collected only by the version that submitted it
+    // (its Workflow carries that version's label): forward, 3.x's pending
+    // runs wait; reverse, 4.0's. A run that has outlived its Workflow is
+    // past collecting; a file this version cannot read is refused too, with
+    // its reason.
+    let state_dir = match direction {
+        Direction::Forward => old::STATE_DIR,
+        Direction::Reverse => n::STATE_DIR,
+    };
+    let pending = repo
+        .common
+        .join(state_dir)
+        .join(crate::cluster::PENDING_FILE);
+    match crate::cluster::lists_live(&pending, now) {
+        Ok(false) => {}
+        Ok(true) if direction == Direction::Forward => {
+            return Err(MigrateError::PendingDetached { path: pending })
         }
+        Ok(true) => return Err(MigrateError::PendingForDowngrade { path: pending }),
+        Err(why) => return Err(MigrateError::PendingUnreadable { path: pending, why }),
     }
     if direction == Direction::Reverse {
         // The markers first: a reverse that stops half-way must not leave
@@ -799,11 +836,11 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
     let mut out = Vec::new();
     let mut env: Vec<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
-        .filter(|k| k.starts_with("AMONT_") && !k.starts_with("AMONT_AGENT_"))
+        .filter(|k| k.starts_with(old::ENV_PREFIX) && !k.starts_with(old::FOREIGN_ENV_PREFIX))
         .collect();
     env.sort();
     for k in env {
-        let rest = &k["AMONT_".len()..];
+        let rest = &k[old::ENV_PREFIX.len()..];
         let new = match rest {
             "HOST_SLOT" => greenharness_slots::HELD_ENV.to_string(),
             "SLOT_DIR" => greenharness_slots::DIR_ENV.to_string(),
@@ -829,6 +866,13 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
             .map(str::to_string)
             .collect())
     };
+    if config_dir().is_some_and(|dir| dir.join(n::REVERSED_MARKER).exists()) {
+        out.push(format!(
+            "reversed: the global keys were moved back to greengate 3.x's names; \
+             greengate 4.0 leaves them until `{} migrate --global`",
+            n::BIN
+        ));
+    }
     for key in listed(None, "--global")? {
         out.push(format!(
             "global config: {key} is ignored by greengate 4.0; `{} migrate --global` moves it",
@@ -836,6 +880,13 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
         ));
     }
     if let Some(repo) = Repo::locate(cwd) {
+        if repo.common.join(n::REVERSED_MARKER).exists() {
+            out.push(format!(
+                "reversed: this repository was moved back to greengate 3.x's names; \
+                 greengate 4.0 leaves it until `{} migrate`",
+                n::BIN
+            ));
+        }
         for key in listed(Some(&repo.common), "--local")? {
             out.push(format!(
                 "local config: {key} is ignored by greengate 4.0; `{} migrate` moves it",
@@ -1158,6 +1209,34 @@ mod tests {
         // The same file, a week later: the run is past its Workflow's TTL.
         migrate_repo(&repo, Direction::Forward, &git, NOW + 7 * 86_400).unwrap();
         assert!(gd.join("greengate/cluster-pending").is_file());
+    }
+
+    /// The other way round: 3.x cannot collect a run 4.0 submitted, so a
+    /// reverse waits for it, and moves nothing meanwhile.
+    #[test]
+    fn a_live_4_0_run_refuses_a_reverse() {
+        let root = scratch("pending-reverse");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::create_dir_all(gd.join(n::STATE_DIR)).unwrap();
+        let pending = gd.join(n::STATE_DIR).join(crate::cluster::PENDING_FILE);
+        std::fs::write(&pending, crate::cluster::sample_pending_file(NOW)).unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        let git = git_in(&root);
+        let err = migrate_repo(&repo, Direction::Reverse, &git, NOW).unwrap_err();
+        assert_eq!(
+            err,
+            MigrateError::PendingForDowngrade {
+                path: pending.clone()
+            }
+        );
+        assert!(err.to_string().contains("cluster collect"), "{err}");
+        assert!(pending.is_file() && !gd.join(n::REVERSED_MARKER).exists());
+        migrate_repo(&repo, Direction::Reverse, &git, NOW + 7 * 86_400).unwrap();
+        assert!(gd
+            .join(old::STATE_DIR)
+            .join(crate::cluster::PENDING_FILE)
+            .is_file());
     }
 
     #[test]

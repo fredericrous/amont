@@ -86,8 +86,10 @@ fn gated(sev: &str, exit: i32) -> (Repo, String, std::path::PathBuf) {
     // What a rehearsal or `run --stamp` diffs against when the branch has no
     // upstream: the remote's default branch, here at the base commit.
     r.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    // greengate 4.0's own manifest name; the other fixtures keep the 3.x
+    // one, which an unswept repository still commits.
     r.stage(
-        "amont.conf",
+        "greengate.conf",
         &format!("pre-push    suite  *.txt  {sev}  node gate.js\n"),
     );
     r.commit("chore: the gate");
@@ -315,7 +317,7 @@ fn land_fixture(exit: i32) -> (crate::land::Fx, std::path::PathBuf) {
         ),
     );
     fx.r.stage(
-        "amont.conf",
+        "greengate.conf",
         "pre-push    suite  *.txt  block  node gate.js\n",
     );
     fx.r.commit("chore: the gate");

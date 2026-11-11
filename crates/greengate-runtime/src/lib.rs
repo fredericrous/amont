@@ -317,7 +317,7 @@ pub fn gather_checks(
             // like one that is disabled, and neither must look like one
             // whose declaration could not be read.
             let (status, reason) = if let Some(w) = unusable_why {
-                (Status::Unusable, format!("{} {w}", manifest::MANIFEST))
+                (Status::Unusable, format!("{} {w}", manifest.file_name()))
             } else if skipped {
                 // Which source? Policy skips read differently from machine
                 // skips — the legend and the fleet detail pane echo this

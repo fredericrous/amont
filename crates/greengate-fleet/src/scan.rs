@@ -136,12 +136,16 @@ pub struct Repo {
     /// the hooks detected the signal on every commit and threw it away.
     pub bypasses: crate::bypasses::Bypasses,
     pub downgrades: crate::downgrades::Downgrades,
-    /// Checks this repo declares in `amont.conf`. Invisible to the fleet
+    /// The manifest's file name here: `greengate.conf`, or `amont.conf` in a
+    /// repository the fleet sweep has not renamed yet — the census counts
+    /// the second.
+    pub manifest: &'static str,
+    /// Checks this repo declares in its manifest. Invisible to the fleet
     /// view until now: a repo could be running a command on every commit that
     /// no dashboard column mentioned, and a manifest line nobody can parse is a
     /// check that silently is not running.
     pub declared: Vec<DeclaredCheck>,
-    /// Whether this repo's `amont.conf` is trusted here. `None` when there
+    /// Whether this repo's manifest is trusted here. `None` when there
     /// is no manifest — which is almost every repo, and must read differently
     /// from "declared something and it is not running".
     pub trusted: Option<bool>,
@@ -880,6 +884,7 @@ fn inspect(
         severities: severities::read(repo),
         bypasses: common_dir.map(crate::bypasses::read).unwrap_or_default(),
         downgrades: common_dir.map(crate::downgrades::read).unwrap_or_default(),
+        manifest: greengate_runtime::manifest::manifest_name(repo),
         declared: declared_checks(repo),
         trusted: match greengate_runtime::trust::state(repo) {
             greengate_runtime::trust::State::NoManifest => None,
