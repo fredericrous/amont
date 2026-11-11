@@ -911,6 +911,10 @@ fn a_declared_root_with_an_unreadable_workspace_runs_the_members_and_says_so() {
         out.contains("rootRunsMembers is declared, but its workspace globs are not understood"),
         "{out}"
     );
+    assert!(
+        out.contains("running every member; check the workspace globs in package.json"),
+        "{out}"
+    );
     assert!(!out.contains("skipped, covered by"), "{out}");
 }
 

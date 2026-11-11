@@ -923,7 +923,7 @@ pub(crate) fn skip_summary_line(
         LineWidth::Cut
             if head.chars().count() + COMMAND_FRAME + MIN_COMMAND_COLUMNS > LINE_COLUMNS =>
         {
-            format!("{head}: …")
+            crate::tree_lint::fit_line("", &head, ": …")
         }
         LineWidth::Cut => crate::tree_lint::fit_line(&format!("{head}: `"), &command, "`"),
         LineWidth::Whole => format!("{head}: `{command}`"),
@@ -937,7 +937,7 @@ pub(crate) fn unreadable_workspace_lines(file: &str) -> Vec<String> {
     vec![
         "rootRunsMembers is declared, but its workspace globs are not understood".to_string(),
         format!(
-            "    running every member; write plain globs in {}",
+            "    running every member; check the workspace globs in {}",
             crate::ui::sanitize(file)
         ),
     ]
@@ -1640,6 +1640,11 @@ mod tests {
     #[test]
     fn the_skip_summary_fits_its_line() {
         for script in crate::manifest::NPM_GATE_SCRIPTS {
+            // A count of any width still fits: three digits cost a column.
+            for count in [1, 30, 100, 1000] {
+                let line = skip_summary_line(count, script, Some("pnpm -r test"), LineWidth::Cut);
+                assert!(line.chars().count() <= LINE_COLUMNS, "{line}");
+            }
             let head = skip_summary_line(30, script, None, LineWidth::Cut);
             assert!(head.chars().count() <= 80, "{head}");
             assert!(head.contains("30 packages skipped"), "{head}");
