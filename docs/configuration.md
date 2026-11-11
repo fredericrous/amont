@@ -612,7 +612,7 @@ The install runs lifecycle scripts, so a `"prepare": "greengate init"` runs
 inside the snapshot — and the snapshot is a linked worktree, sharing the
 repository's hooks directory. To keep that `init` from baking every hook to
 a binary in a temp directory deleted minutes later, the snapshot marks
-itself with an `greengate-snapshot` file in its own git admin dir
+itself with a `greengate-snapshot` file in its own git admin dir
 (`git rev-parse --git-path greengate-snapshot`), and `greengate init` writes nothing
 where it finds one; if it cannot tell, it fails rather than guess. Both
 halves must be a version carrying this — the greengate that runs the rehearsal
@@ -956,7 +956,7 @@ set clusterPrepare pnpm install --frozen-lockfile --prefer-offline --ignore-scri
 ```
 
 ```sh
-git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml   # written by the homelab's scripts/greengate-gates-kubeconfig.sh
+git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml   # the file your cluster tooling writes (the homelab: scripts/greengate-gates-kubeconfig.sh)
 git config --global greengate.cluster.image 'forgejo.example/gate-runner:1.2.0@sha256:<64 hex>'
 ```
 

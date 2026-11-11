@@ -23,9 +23,12 @@ To upgrade, in this order (the full steps are in
 2. Install greengate 4.0 with the matching relais and greenpiste.
 3. Run any `greengate` command in a repository: it moves that repository.
    Then `greengate migrate --global` for the machine's keys.
-4. Run `greengate doctor`. It exits 1 and names what is left, with the
-   command that moves it, until it exits 0.
-5. Rename each repository's committed names (below).
+4. Rename each repository's committed names with `greengate migrate
+   --tracked` (or across a root, `greengate-fleet fix --apply --migrate`; see
+   below).
+5. Run `greengate doctor`. It exits 1 and names what is left (environment,
+   keys, state, a 3.x kubeconfig), with the command that moves it, until it
+   exits 0. It does not look at the committed names: step 4 does.
 
 What changes:
 

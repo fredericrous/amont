@@ -460,10 +460,7 @@ slot queues on one machine.
    left there (state in `.git`, the local `amont.*` keys) and then does what
    you asked. A 3.x store of parked changes (`.git/amont-held`) stops it:
    `greengate restore` puts the changes back, then run the command again.
-4. Run `greengate migrate --global` once for the machine's keys, and
-   `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
-   `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
-   under `~/.config/amont/`, with the command that moves each.
+4. Run `greengate migrate --global` once for the machine's keys.
 5. Rename each repository's committed names: `greengate migrate --tracked`
    (alone, it takes no other flag: with `--reverse` or `--global` it exits 2)
    stages `amont.conf` → `greengate.conf`, `amont.pack` → `greengate.pack` and
@@ -474,6 +471,11 @@ slot queues on one machine.
    branch, or with uncommitted changes to tracked files, is skipped and named.
    4.0 reads the old committed names until a later release drops that
    fallback.
+6. Run `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
+   `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
+   under `~/.config/amont/`, with the command that moves each. It does not
+   check the committed names (step 5 does); when it exits 0, the upgrade is
+   done.
 
 To go back to 3.x, before installing it: `greengate migrate --reverse` in each
 repository and `greengate migrate --reverse --global` once, then revert each
