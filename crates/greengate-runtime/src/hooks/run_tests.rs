@@ -8,7 +8,7 @@
 //! is new, so everything it carries is in range.
 
 use super::common::program;
-use super::json_scan::string_end;
+use super::json_scan::{string_end, top_level_value};
 use crate::check::Outcome;
 use crate::git;
 use std::io::IsTerminal;
@@ -674,75 +674,7 @@ pub fn defines_script(pkg_json: &str, script: &str) -> bool {
 /// document object, outside any array) AND its next non-space byte is `:` —
 /// `{"name": "scripts"}` is a value, not the key.
 fn scripts_object(pkg_json: &str) -> Option<&str> {
-    let bytes = pkg_json.as_bytes();
-    let mut depth = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                let start = i + 1;
-                let close = string_end(bytes, start)?;
-                let content = &pkg_json[start..close];
-                i = close + 1;
-                if depth != 1 {
-                    continue;
-                }
-                let mut j = i;
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= bytes.len() || bytes[j] != b':' {
-                    continue; // a value, not a key
-                }
-                if content != "scripts" {
-                    continue;
-                }
-                let mut k = j + 1;
-                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                    k += 1;
-                }
-                // The one top-level "scripts" key exists but is not an
-                // object: there are no scripts, and no later impostor may
-                // answer instead.
-                if k >= bytes.len() || bytes[k] != b'{' {
-                    return None;
-                }
-                let end = object_end(bytes, k)?;
-                return Some(&pkg_json[k..=end]);
-            }
-            b'{' | b'[' => {
-                depth += 1;
-                i += 1;
-            }
-            b'}' | b']' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// Index of the `}` matching the `{` at `open`, string-aware.
-fn object_end(bytes: &[u8], open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = string_end(bytes, i + 1)?,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+    top_level_value(pkg_json, "scripts").filter(|value| value.starts_with('{'))
 }
 
 /// Tracked `package.json` paths, as directories relative to the repo root.
@@ -785,8 +717,7 @@ pub fn packages_to_test(pkg_dirs: &[String], changed_dirs: &[String]) -> Vec<Str
         .collect()
 }
 
-/// The key `set rootRunsMembers` stores its value under.
-const ROOT_RUNS_KEY: &str = "amont.rootRunsMembers";
+use crate::manifest::ROOT_RUNS_KEY;
 
 /// What a repository says about which of its ROOT package's scripts already run
 /// every workspace member (`set rootRunsMembers`).
@@ -959,6 +890,13 @@ pub(crate) fn repeat_hint_lines(script: &str, members: usize, trust: Trust) -> V
     lines
 }
 
+/// A terminal line is cut to this many columns.
+const LINE_COLUMNS: usize = 80;
+/// The `: ` and the two backticks around the root's command on the summary line.
+const COMMAND_FRAME: usize = 4;
+/// Fewer columns than this are not worth showing of a command.
+const MIN_COMMAND_COLUMNS: usize = 12;
+
 /// The one line that says how many members a declared root script skipped, so
 /// tests that did not run are never silent: the count, what covers them, and
 /// the root's command so a declaration gone stale reads against what it claims.
@@ -981,11 +919,29 @@ pub(crate) fn skip_summary_line(
     let command = crate::ui::sanitize(command);
     match width {
         // No room for even a few characters of the command: the count and the
-        // cause are what must survive, so the command goes.
-        LineWidth::Cut if head.chars().count() + 3 + 1 + 12 > 80 => head,
+        // cause are what must survive, so the command goes, and a `…` says
+        // there was one.
+        LineWidth::Cut
+            if head.chars().count() + COMMAND_FRAME + MIN_COMMAND_COLUMNS > LINE_COLUMNS =>
+        {
+            format!("{head}: …")
+        }
         LineWidth::Cut => crate::tree_lint::fit_line(&format!("{head}: `"), &command, "`"),
         LineWidth::Whole => format!("{head}: `{command}`"),
     }
+}
+
+/// What the push says when a script is declared to cover the members but the
+/// workspace cannot be confirmed: the members run, and the globs are what to
+/// look at. Pure, so the width is tested: the first line carries the sign.
+pub(crate) fn unreadable_workspace_lines(file: &str) -> Vec<String> {
+    vec![
+        "rootRunsMembers is declared, but its workspace globs are not understood".to_string(),
+        format!(
+            "    running every member; write plain globs in {}",
+            crate::ui::sanitize(file)
+        ),
+    ]
 }
 
 /// The line said before a script runs in a package, so a second run of the same
@@ -1293,10 +1249,21 @@ pub fn run(
         // and the person is told why a declared line seems to do nothing.
         if !covering.is_empty() && members.is_none() && !said_unreadable {
             said_unreadable = true;
-            crate::say!(
-                "{} rootRunsMembers is declared, but the workspace could not be read — running the members",
-                crate::ui::warning_sign()
-            );
+            let file = if std::path::Path::new(&where_)
+                .join("pnpm-workspace.yaml")
+                .is_file()
+            {
+                "pnpm-workspace.yaml"
+            } else {
+                "package.json"
+            };
+            let mut lines = unreadable_workspace_lines(file).into_iter();
+            if let Some(head) = lines.next() {
+                crate::say!("{} {head}", crate::ui::warning_sign());
+            }
+            for rest in lines {
+                crate::say!("{rest}");
+            }
         }
         let coverage = RootCoverage { covering, members };
 
@@ -1680,10 +1647,23 @@ mod tests {
             let cut = skip_summary_line(30, script, Some(&"x".repeat(200)), LineWidth::Cut);
             assert!(cut.chars().count() <= 80, "{cut}");
             assert!(cut.contains("covered by the root's"), "{cut}");
+            assert!(cut.ends_with(": …") || cut.ends_with("…`"), "{cut}");
         }
         assert!(
             skip_summary_line(1, "test", None, LineWidth::Whole).starts_with("1 package skipped")
         );
+    }
+
+    /// The unreadable-workspace lines fit 80 columns, the first with its sign,
+    /// and name the file read.
+    #[test]
+    fn the_unreadable_workspace_lines_fit_and_name_the_file() {
+        for file in ["package.json", "pnpm-workspace.yaml"] {
+            let lines = unreadable_workspace_lines(file);
+            assert!(lines[0].chars().count() + 2 <= 80, "{}", lines[0]);
+            assert!(lines[1].chars().count() <= 80, "{}", lines[1]);
+            assert!(lines[1].contains(file), "{}", lines[1]);
+        }
     }
 
     /// The announcement counts a run, names its place, and sanitises the folder.

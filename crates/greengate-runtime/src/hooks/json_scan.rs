@@ -19,7 +19,7 @@ pub(super) fn string_end(bytes: &[u8], from: usize) -> Option<usize> {
 }
 
 /// Index of the `shut` matching the `open` at `from`, string-aware.
-pub(super) fn bracket_end(bytes: &[u8], from: usize, open: u8, shut: u8) -> Option<usize> {
+fn bracket_end(bytes: &[u8], from: usize, open: u8, shut: u8) -> Option<usize> {
     let (mut depth, mut i) = (0usize, from);
     while i < bytes.len() {
         match bytes[i] {

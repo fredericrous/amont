@@ -265,6 +265,11 @@ runners or flags. The repository says what its root scripts do.
 - 2026-11-11 — Phase 3 review fix pass: the summary line drops the parentheses
   around the command and cuts only the command on a terminal; `N of M` counts only
   the packages that run; a declared line on an unreadable workspace says so once.
+- 2026-11-11 — The hint of a withheld file gets a third line (`run: greengate trust`)
+  and is said only when the untrusted file carries a `rootRunsMembers` line; a
+  declared line whose workspace globs are not understood says so in two lines and
+  runs the members. Delta review: `amont.conf` is read again for the untrusted
+  check, deliberate (one message, no new loader state).
 - 2026-11-11 — `rootRunsMembers` is a cross-repository contract: renaming it costs
   edits in every repository that declares it, and greengate 3.1 and earlier warn on
   the key.
@@ -352,14 +357,13 @@ failure it would show.
      `1 package skipped, covered by the root's test (declared in amont.conf)`, and
      the member's own `npm run test` does not run.
    - Failure it shows: the member's `npm run test` runs after the root's.
-   - Observed (2026-11-11): a fixture built from website-builder's real
-     `pnpm-workspace.yaml` and its 30 real package manifests (apps/builder-api
-     and packages/blob-store changed; the scripts replaced by loggers, since its
-     real suite needs installs), with `set rootRunsMembers test` trusted. The
-     push printed `2 packages skipped, covered by the root's test (declared in
-     amont.conf): \`node log.cjs root\`` and the log shows `root`
-     only. (The root's real command is `pnpm -r --workspace-concurrency=2
-     test`, which the summary line would have shown.)
+   - Observed (2026-11-11, re-run on the fix-pass binary): a fixture with
+     website-builder's real `pnpm-workspace.yaml` and 22 package manifests
+     (apps/builder-api and packages/blob-store changed; scripts replaced by
+     loggers), `set rootRunsMembers test` trusted. The push printed `2 packages
+     skipped, covered by the root's test (declared in amont.conf): \`node
+     log.cjs root\`` and `npm run test: 1 of 1, in the root`; the log shows
+     `root` only.
 5. **JS undeclared root, the same copy without the line.**
    - Input: the same touch.
    - Expected: the root and the member both run, and the hint prints once

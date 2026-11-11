@@ -908,7 +908,7 @@ fn a_declared_root_with_an_unreadable_workspace_runs_the_members_and_says_so() {
     assert_eq!(code, 0, "{out}");
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
     assert!(
-        out.contains("rootRunsMembers is declared, but the workspace could not be read"),
+        out.contains("rootRunsMembers is declared, but its workspace globs are not understood"),
         "{out}"
     );
     assert!(!out.contains("skipped, covered by"), "{out}");

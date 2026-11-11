@@ -1897,8 +1897,12 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
 /// and set once. The value is a comma-separated list of the npm gate's script
 /// names ([`NPM_GATE_SCRIPTS`]), or `none` standing alone; it is stored with
 /// `none` lowercased and the names as written.
+/// The key `set rootRunsMembers` stores its value under: the parser, the
+/// hook and the tests name it from here.
+pub(crate) const ROOT_RUNS_KEY: &str = "amont.rootRunsMembers";
+
 fn parse_root_runs_members(lineno: usize, raw_scripts: &str, earlier: &[Line]) -> Line {
-    const KEY: &str = "amont.rootRunsMembers";
+    const KEY: &str = ROOT_RUNS_KEY;
     let broken = |why: String| {
         broken_at(
             lineno,

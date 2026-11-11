@@ -383,4 +383,14 @@ mod tests {
         assert!(members.covers("a/z") && members.covers("a/b/c/z"));
         assert!(!members.covers("pkg") && !members.covers("axx/lib") && !members.covers("a/b"));
     }
+
+    /// A name after `*` is an alias, so the file is unreadable; a bare glob is
+    /// not, and a plain `- **` is deliberately refused as a glob later.
+    #[test]
+    fn an_alias_is_a_reference_and_a_glob_is_not() {
+        assert!(is_yaml_reference("  - *-utils"));
+        assert!(is_yaml_reference("  - *pkg"));
+        assert!(!is_yaml_reference("  - packages/*"));
+        assert!(!is_yaml_reference("  - '*'"));
+    }
 }
