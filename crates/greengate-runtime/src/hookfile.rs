@@ -640,7 +640,7 @@ pub fn stage(dest: &Path, body: &str, exec: bool) -> io::Result<Staged> {
     let staged = dir.join(format!(".greengate-tmp-{}-{name}", std::process::id()));
     // Remove first: a leftover from a killed run could be a symlink, and
     // `fs::write` would follow it.
-    let _ = std::fs::remove_file(&staged);
+    let _ = std::fs::remove_file(&staged); // best-effort: a scratch path; absent or left behind is harmless
     std::fs::write(&staged, body)?;
     set_mode(&staged, exec)?;
     Ok(Staged {

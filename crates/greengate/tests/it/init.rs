@@ -22,7 +22,7 @@ impl Sandbox {
     fn new(name: &str) -> Self {
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-init-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(&scratch_dir).expect("mkdir");
         Sandbox(scratch_dir)
     }

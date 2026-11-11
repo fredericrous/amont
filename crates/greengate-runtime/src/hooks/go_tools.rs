@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn finds_the_nearest_module_not_the_repo_root() {
         let scratch_dir = std::env::temp_dir().join("greengate-go-roots");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let nested = scratch_dir.join("services/api");
         std::fs::create_dir_all(nested.join("cmd")).unwrap();
         std::fs::write(nested.join("go.mod"), "module api\n").unwrap();
@@ -350,25 +350,25 @@ mod tests {
         std::fs::create_dir_all(scratch_dir.join("scripts")).unwrap();
         let none = module_roots(&root, ["scripts/loose.go"].into_iter());
         assert!(none.is_empty(), "no module above it: {none:?}");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn several_files_in_one_module_yield_one_root() {
         let scratch_dir = std::env::temp_dir().join("greengate-go-dedupe");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(scratch_dir.join("pkg")).unwrap();
         std::fs::write(scratch_dir.join("go.mod"), "module x\n").unwrap();
         let root = scratch_dir.to_string_lossy().into_owned();
         let got = module_roots(&root, ["pkg/a.go", "pkg/b.go", "go.mod"].into_iter());
         assert_eq!(got.len(), 1, "one go invocation, not three: {got:?}");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn a_tools_module_without_packages_is_not_vetted_or_tested() {
         let scratch_dir = std::env::temp_dir().join("greengate-go-tools-module");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let w = |rel: &str, text: &str| {
             let p = scratch_dir.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -404,7 +404,7 @@ mod tests {
         // A package in any ordinary subdirectory keeps the module.
         w("tools/gen/main.go", "package main\n");
         assert_eq!(package_roots(&root, files.into_iter()).len(), 2);
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]

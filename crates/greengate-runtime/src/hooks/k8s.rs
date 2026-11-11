@@ -396,7 +396,7 @@ mod tests {
         }
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-loadrestrictor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let shared = scratch_dir.join("shared");
         let overlay = scratch_dir.join("overlay");
         std::fs::create_dir_all(&shared).unwrap();
@@ -419,13 +419,13 @@ mod tests {
             validate_root(&test_settings(), &root, "overlay", None),
             "a kustomization built from ../shared must validate — kustomize-controller renders it"
         );
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn walks_up_to_the_nearest_kustomization_root() {
         let scratch_dir = std::env::temp_dir().join("greengate-kustomize-test");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let base = scratch_dir.join("kubernetes/app/base");
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("kustomization.yaml"), "resources: []").unwrap();
@@ -437,6 +437,6 @@ mod tests {
         // nothing above it → no root, and therefore nothing to validate
         let none = kustomization_roots(&root, &["kubernetes/loose/deploy.yaml".into()]);
         assert!(none.is_empty());
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 }

@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn finds_the_nearest_manifest_not_the_repo_root() {
         let scratch_dir = std::env::temp_dir().join("greengate-cargo-roots");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let nested = scratch_dir.join("services/engine");
         std::fs::create_dir_all(nested.join("src")).unwrap();
         std::fs::write(nested.join("Cargo.toml"), "[package]\n").unwrap();
@@ -664,19 +664,19 @@ mod tests {
         std::fs::create_dir_all(scratch_dir.join("scripts")).unwrap();
         let none = cargo_roots(&root, ["scripts/loose.rs"].into_iter());
         assert!(none.is_empty(), "no manifest above it: {none:?}");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn several_files_in_one_crate_yield_one_root() {
         let scratch_dir = std::env::temp_dir().join("greengate-cargo-dedupe");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(scratch_dir.join("src")).unwrap();
         std::fs::write(scratch_dir.join("Cargo.toml"), "[package]\n").unwrap();
         let root = scratch_dir.to_string_lossy().into_owned();
         let got = cargo_roots(&root, ["src/a.rs", "src/b.rs", "Cargo.toml"].into_iter());
         assert_eq!(got.len(), 1, "one cargo invocation, not three: {got:?}");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn the_nearest_pin_above_the_manifest_wins() {
         let scratch_dir = std::env::temp_dir().join("greengate-toolchain-pin");
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let nested = scratch_dir.join("services/engine");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(scratch_dir.join("rust-toolchain"), "1.85.0\n").unwrap();
@@ -732,7 +732,7 @@ mod tests {
             (file, pin.as_str()),
             (nested.join("rust-toolchain.toml"), "1.94.1")
         );
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
     /// Source alone: the package, no `--workspace`. A manifest, lockfile,
     /// lint config or pin staged, or a file set that is not the index:

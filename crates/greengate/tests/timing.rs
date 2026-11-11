@@ -269,7 +269,7 @@ fn busy_budgets(r: &Repo) {
 fn trace_file(tag: &str) -> std::path::PathBuf {
     let trace_path =
         std::env::temp_dir().join(format!("greengate-cpu-trace-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_file(&trace_path);
+    let _ = std::fs::remove_file(&trace_path); // best-effort: a scratch path; absent or left behind is harmless
     trace_path
 }
 

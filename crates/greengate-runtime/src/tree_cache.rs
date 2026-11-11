@@ -608,7 +608,7 @@ mod tests {
         );
         assert!(typed);
         assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     /// Every sampled file is asked, where eslint runs: one typed file among
@@ -619,7 +619,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-typed-mix-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let bin = scratch_dir.join("node_modules/.bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(scratch_dir.join("src")).unwrap();
@@ -654,7 +654,7 @@ mod tests {
         );
         assert!(typed, "one typed file must make the namespace typed");
         assert!(ns.join(TYPED).exists());
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[cfg(unix)]
@@ -684,7 +684,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-typed-text-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(scratch_dir.join("node_modules/.bin")).unwrap();
         std::fs::write(scratch_dir.join("a.js"), "").unwrap();
         std::fs::write(
@@ -705,7 +705,7 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         ));
         assert!(ns.join(TYPED).exists(), "the text check remembers typed");
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     /// #290: an unstaged edit to an eslint config means the working tree is
@@ -717,7 +717,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-typed-dirty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(scratch_dir.join("node_modules/.bin")).unwrap();
         std::fs::write(scratch_dir.join("a.js"), "").unwrap();
         std::fs::write(
@@ -744,7 +744,7 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         ));
         assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     /// The uv version probe never syncs: `.venv` is untouched and no lock
@@ -761,7 +761,7 @@ mod tests {
         }
         let probe_dir =
             std::env::temp_dir().join(format!("greengate-uv-probe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&probe_dir);
+        let _ = std::fs::remove_dir_all(&probe_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(&probe_dir).unwrap();
         std::fs::write(
             probe_dir.join("pyproject.toml"),
@@ -776,7 +776,7 @@ mod tests {
             .unwrap_or(false);
         if !made {
             eprintln!("uv venv failed — skipping");
-            let _ = std::fs::remove_dir_all(probe_dir);
+            let _ = std::fs::remove_dir_all(probe_dir); // best-effort: a scratch path; absent or left behind is harmless
             return;
         }
         let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -811,7 +811,7 @@ mod tests {
                 })
         }
         assert!(!holds(&venv, "six"), "the probe installed a dependency");
-        let _ = std::fs::remove_dir_all(probe_dir);
+        let _ = std::fs::remove_dir_all(probe_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     /// Past the cap the sample is not the tree: typed, nothing remembered.
@@ -821,7 +821,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-typed-cap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         std::fs::create_dir_all(scratch_dir.join("node_modules/.bin")).unwrap();
         let mut paths = Vec::new();
         for i in 0..=MAX_TYPED_SAMPLE {
@@ -843,7 +843,7 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         ));
         assert!(!ns.join(TYPED).exists() && !ns.join(UNTYPED).exists());
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     /// Alphabetical order must not hide a typed block: twelve untyped files
@@ -854,7 +854,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-typed-many-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         let bin = scratch_dir.join("node_modules/.bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(scratch_dir.join("scripts")).unwrap();
@@ -898,7 +898,7 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicBool::new(false),
         ));
-        let _ = std::fs::remove_dir_all(scratch_dir);
+        let _ = std::fs::remove_dir_all(scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]

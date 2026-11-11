@@ -326,7 +326,7 @@ mod tests {
     fn scratch(tag: &str) -> PathBuf {
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-capture-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&scratch_dir);
+        let _ = fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
         scratch_dir
     }
 
