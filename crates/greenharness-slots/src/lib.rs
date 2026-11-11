@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub mod host;
+
 /// Exported to the command a slot holder runs; an amont (or a wrapper)
 /// started under it does not queue again for the slot its parent holds.
 pub const HELD_ENV: &str = "GREENHARNESS_HOST_SLOT";
@@ -75,10 +77,93 @@ impl Sizing {
 }
 
 /// Logical cores this process may run on.
-pub fn cores() -> u32 {
+pub fn logical_cores() -> u32 {
     std::thread::available_parallelism()
         .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
         .unwrap_or(1)
+}
+
+/// The cores a heavy job should count: physical where the OS reports them,
+/// never more than the logical count (which also honours a cgroup or affinity
+/// limit). Hyper-threads share a core, so 6 physical cores with 12 threads
+/// count 6 here; the width and the load test follow from that.
+pub fn cores() -> u32 {
+    let logical = logical_cores();
+    physical_cores_os()
+        .map_or(logical, |p| p.min(logical))
+        .max(1)
+}
+
+/// The physical core count the OS reports, if it reports one.
+#[cfg(target_os = "macos")]
+fn physical_cores_os() -> Option<u32> {
+    use std::ffi::{c_char, c_void, CString};
+    extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *mut c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    let name = CString::new("hw.physicalcpu").ok()?;
+    let mut value: i32 = 0;
+    let mut len = std::mem::size_of::<i32>();
+    // SAFETY: `name` is a valid NUL-terminated string; `value` and `len` are
+    // a writable i32 and its size, as sysctlbyname's oldp/oldlenp contract wants.
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut i32).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && value > 0).then(|| u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+/// The physical core count from sysfs first (one `core_cpus_list` per CPU),
+/// then `/proc/cpuinfo`. Neither reports a count on some hosts (aarch64 VMs),
+/// so the caller falls back to the logical count.
+#[cfg(target_os = "linux")]
+fn physical_cores_os() -> Option<u32> {
+    let lists: Vec<String> = fs::read_dir("/sys/devices/system/cpu")
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with("cpu") && n[3..].chars().all(|c| c.is_ascii_digit()) && n.len() > 3
+        })
+        .filter_map(|e| fs::read_to_string(e.path().join("topology/core_cpus_list")).ok())
+        .collect();
+    host::physical_from_core_lists(lists.iter().map(String::as_str)).or_else(|| {
+        fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|text| host::physical_from_cpuinfo(&text))
+    })
+}
+
+/// No physical count is read on other platforms: the logical count stands.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn physical_cores_os() -> Option<u32> {
+    None
+}
+
+/// The machine a sizing is computed for: its core count, passed explicitly so
+/// the cap, the width and the admission load test all see the same number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Machine {
+    pub cores: u32,
+}
+
+impl Machine {
+    /// This machine, as [`cores`] reports it.
+    pub fn detect() -> Machine {
+        Machine { cores: cores() }
+    }
 }
 
 /// The variables that bound how wide a heavy job runs. A holder that ran at
@@ -474,6 +559,18 @@ impl Waiter {
     /// lock, so no visible ticket is ever unlocked, and cleanup (which removes
     /// visible tickets whose lock is free) can never take a live one.
     pub fn new_in(dir: &Path, sizing: Sizing, weight: u32, holder: Holder) -> io::Result<Waiter> {
+        Waiter::new_in_on(dir, sizing, weight, holder, Machine::detect())
+    }
+
+    /// [`Waiter::new_in`] for a given machine: the width is computed from
+    /// `machine.cores` and the sizing's cap on it.
+    pub fn new_in_on(
+        dir: &Path,
+        sizing: Sizing,
+        weight: u32,
+        holder: Holder,
+        machine: Machine,
+    ) -> io::Result<Waiter> {
         safe_dir(dir).map_err(io::Error::other)?;
         let queue = dir.join("queue");
         let nanos = SystemTime::now()
@@ -491,7 +588,11 @@ impl Waiter {
         let weight = weight.max(1);
         let mut holder = holder;
         if holder.jobs.is_none() {
-            holder.jobs = Some(parallelism(weight, cores(), sizing.cap()));
+            holder.jobs = Some(parallelism(
+                weight,
+                machine.cores,
+                sizing.cap_for(machine.cores),
+            ));
         }
         Ok(Waiter {
             dir: dir.to_path_buf(),
@@ -672,6 +773,31 @@ pub fn record_wait_jobs(
     );
 }
 
+/// [`record_wait_jobs`] with the slot cap the waiter was sized against:
+/// the line gains `"cap"`.
+pub fn record_wait_sized(
+    dir: &Path,
+    tool: &str,
+    weight: u32,
+    jobs: Option<u32>,
+    cap: u32,
+    waited_ms: u128,
+    outcome: &str,
+) {
+    record_wait_named(
+        dir,
+        tool,
+        WaitContext {
+            cap: Some(cap),
+            ..WaitContext::default()
+        },
+        weight,
+        jobs,
+        waited_ms,
+        outcome,
+    );
+}
+
 /// What the runtime knows about where an acquisition happened.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WaitContext<'a> {
@@ -679,6 +805,10 @@ pub struct WaitContext<'a> {
     pub name: Option<&'a str>,
     /// Where the acquisition happened.
     pub place: WaitPlace,
+    /// The slot cap the waiter was sized against, when the caller knows it;
+    /// written as `"cap"` so lines from before and after a sizing change can
+    /// be told apart.
+    pub cap: Option<u32>,
 }
 
 /// Where an acquisition happened: a plain push, a push rehearsal in a
@@ -705,6 +835,9 @@ pub fn record_wait_named(
 ) {
     let load = load1().map_or("null".to_string(), |l| format!("{l:.2}"));
     let jobs = jobs.map_or(String::new(), |j| format!(",\"jobs\":{j}"));
+    let cap = context
+        .cap
+        .map_or(String::new(), |c| format!(",\"cap\":{c}"));
     let name = context
         .name
         .map_or(String::new(), |n| format!(",\"name\":\"{}\"", escape(n)));
@@ -720,10 +853,11 @@ pub fn record_wait_named(
         WaitPlace::Prestage => (",\"rehearsal\":true", ",\"prestage\":true"),
     };
     let line = format!(
-        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
+        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs}{cap},\"cores\":{},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
         now_ms(),
         escape(tool),
         std::process::id(),
+        cores(),
         escape(outcome)
     );
     if let Ok(mut f) = OpenOptions::new()
@@ -1438,6 +1572,25 @@ mod tests {
         assert_eq!(get("RUST_TEST_THREADS").as_deref(), Some("2"));
     }
 
+    /// On a four-core machine a weight-2 waiter under automatic sizing gets
+    /// cap 2 and so 2 x 4 / 2 = 4 jobs, from the machine it was given, not
+    /// from the host it runs on.
+    #[test]
+    fn a_waiter_sizes_from_the_machine_it_is_given() {
+        let d = scratch("machine");
+        let w = Waiter::new_in_on(
+            &d,
+            Sizing::Auto,
+            2,
+            Holder::here("t", "a"),
+            Machine { cores: 4 },
+        )
+        .unwrap();
+        assert_eq!(w.holder.jobs, Some(4));
+        drop(w);
+        let _ = fs::remove_dir_all(&d);
+    }
+
     /// A waiter's record carries the width its weight buys.
     #[test]
     fn a_waiters_record_carries_its_width() {
@@ -1562,6 +1715,7 @@ mod tests {
             WaitContext {
                 name: Some("cargo-test"),
                 place: WaitPlace::Prestage,
+                cap: Some(3),
             },
             1,
             Some(3),

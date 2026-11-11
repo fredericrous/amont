@@ -464,7 +464,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        record_acquisition(&name, Some(jobs), waited, outcome);
+        record_acquisition(&name, Some(jobs), Some(sizing.cap()), waited, outcome);
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
@@ -505,7 +505,7 @@ fn take_handed(handed: Parked, name: &str) -> bool {
             "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
-    record_acquisition(name, jobs, Duration::ZERO, "handed");
+    record_acquisition(name, jobs, None, Duration::ZERO, "handed");
     CURRENT.with(|current| {
         let mut current = current.borrow_mut();
         current.held = Some(lease);
@@ -516,7 +516,13 @@ fn take_handed(handed: Parked, name: &str) -> bool {
 }
 
 /// One line of `waits.jsonl` for the check `name`, with where it ran.
-fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: &str) {
+fn record_acquisition(
+    name: &str,
+    jobs: Option<u32>,
+    cap: Option<u32>,
+    waited: Duration,
+    outcome: &str,
+) {
     let short = crate::short_name(name);
     greenharness_slots::record_wait_named(
         &greenharness_slots::dir(),
@@ -530,6 +536,7 @@ fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: 
             } else {
                 greenharness_slots::WaitPlace::Push
             },
+            cap,
         },
         1,
         jobs,

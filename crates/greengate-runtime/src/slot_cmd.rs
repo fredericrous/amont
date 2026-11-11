@@ -192,11 +192,12 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let waited = started.elapsed().as_millis();
     let Some(lease) = lease else {
         if run_on_timeout {
-            greenharness_slots::record_wait_jobs(
+            greenharness_slots::record_wait_sized(
                 &dir,
                 SLOT_RUN_HOLDER,
                 weight,
                 Some(jobs),
+                sizing.cap(),
                 waited,
                 "unqueued",
             );
@@ -214,11 +215,12 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         );
         return BUSY_EXIT;
     };
-    greenharness_slots::record_wait_jobs(
+    greenharness_slots::record_wait_sized(
         &dir,
         SLOT_RUN_HOLDER,
         weight,
         Some(jobs),
+        sizing.cap(),
         waited,
         "admitted",
     );

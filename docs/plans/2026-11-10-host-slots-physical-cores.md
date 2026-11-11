@@ -191,7 +191,7 @@ links the slots crate, so the crate hardcodes the four names
 
 ## Phases
 
-- [ ] Phase 1 — physical core count and override in the slots crate:
+- [x] Phase 1 — physical core count and override in the slots crate:
   `crates/greenharness-slots/src/lib.rs` (`cores()`,
   `platform::physical_cores()`, `HostSizing::from_host()` with sources,
   `Machine { cores }` read by `cap_for`,
@@ -247,6 +247,10 @@ links the slots crate, so the crate hardcodes the four names
   (4-wide commands, and two sizings on one queue). It fits ADR-0064:
   greengate owns the host slots, and relais reaches them only through
   greengate's crate.
+- 2026-11-11 — the `"cap"` field on wait lines moved into Phase 1 (the
+  person's choice): `WaitContext` gains `cap`, `record_wait_sized` carries
+  it for `slot run`, and `host_slots.rs` / `slot_cmd.rs` pass it. A handed
+  slot writes no cap.
 - 2026-11-11 — the rename merged (greengate 4.0.0, #453), so the keys are
   `greengate.hostCores` / `greengate.hostSlots` and the variables
   `GREENGATE_HOST_CORES` / `GREENGATE_HOST_SLOTS`. Read those only, with no
