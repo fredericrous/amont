@@ -137,7 +137,7 @@ fleet's shims are re-baked.
 
 ## Phases
 
-- [ ] Phase 1 — consumers read both (config and markers; the slot names wait for the install window): `amont-agent/src/suppressions.rs`,
+- [x] Phase 1 — consumers read both (config and markers; the slot names wait for the install window): `amont-agent/src/suppressions.rs`,
   `amont-agent/crates/amont-agent-guard/src/guidance.rs`,
   `amont-agent/crates/amont-agent-guard/src/rules/heavy_build_unqueued.rs`,
   `amont-agent/crates/amont-agent-guard/src/rules/suppressions_override.rs`,
