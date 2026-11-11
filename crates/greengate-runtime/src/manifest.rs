@@ -1895,7 +1895,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
 
 /// The key `set rootRunsMembers` stores its value under: the parser, the
 /// hook and the tests name it from here.
-pub(crate) const ROOT_RUNS_KEY: &str = "amont.rootRunsMembers";
+pub(crate) const ROOT_RUNS_KEY: &str = "greengate.rootRunsMembers";
 
 /// `set rootRunsMembers test,typecheck` or `set rootRunsMembers none`: strict
 /// and set once. The value is a comma-separated list of the npm gate's script
@@ -3619,7 +3619,7 @@ mod tests {
                 what: PolicyLine::Set { key, value },
                 ..
             } => {
-                assert_eq!(key, "amont.rootRunsMembers");
+                assert_eq!(key, "greengate.rootRunsMembers");
                 Ok(value.clone())
             }
             broken => Err(why(broken)),

@@ -327,7 +327,7 @@ mod tests {
     /// does not get members from its `package.json`.
     #[test]
     fn a_pnpm_root_reads_only_its_workspace_file() {
-        let dir = std::env::temp_dir().join(format!("amont-js-ws-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-js-ws-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir is harmless
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("package.json"), r#"{"workspaces":["pkg/*"]}"#).unwrap();

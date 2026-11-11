@@ -834,19 +834,19 @@ fn a_local_setting_can_remove_a_declared_name_and_never_add_one() {
     }
     // Committed `test`, local `none`: the removal counts, so the members run.
     let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers test\n");
-    repo.git(&["config", "amont.rootRunsMembers", "none"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "none"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Committed `none`, local `test`: nothing is added, so the members run.
     let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers none\n");
-    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Nothing committed, local `test`: still nothing declared, so it hints.
     let (repo, base) = workspace_repo(ROOT_TEST, "");
-    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
     assert!(out.contains("a repeat if the root runs them"), "{out}");
