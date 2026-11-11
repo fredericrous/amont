@@ -652,6 +652,109 @@ fn a_push_outside_the_declared_scope_runs_the_full_gate() {
     );
 }
 
+/// The npm push gate runs its scripts for `.js`, `.jsx`, `.vue` and `.ts`
+/// alike, and a commit-time declaration named for one of those scripts stands
+/// in for it, so it fires on all of them: a `.js` commit under a `*.ts`
+/// declaration is typechecked at commit, earns the stamp, and the push does
+/// not run the script again.
+#[test]
+fn a_script_declaration_also_fires_on_the_js_files_its_push_gate_runs_for() {
+    if missing("npm") {
+        return;
+    }
+    let (repo, base) = stamped_repo();
+    repo.stage("src/legacy.js", "const x = 1;\n");
+    verified_commit(&repo, "feat: a js file under a ts declaration");
+    assert_eq!(
+        typecheck_runs(&repo),
+        1,
+        "the commit typechecked the .js file its push twin would have"
+    );
+
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("typecheck") && out.contains("gated at commit"),
+        "{out}"
+    );
+    assert_eq!(
+        typecheck_runs(&repo),
+        1,
+        "the push re-ran the script:\n{out}"
+    );
+}
+
+/// A declaration whose program is not installed has no identity to stamp, so
+/// the push says that, instead of blaming the commits for carrying no record.
+#[test]
+fn a_script_declaration_whose_program_is_missing_says_so() {
+    if missing("npm") {
+        return;
+    }
+    let repo = Repo::new();
+    repo.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"exit 0","test":"exit 0"}}"#,
+    );
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage("src/a.ts", "export const x = 1\n");
+    repo.commit("feat: a ts file");
+    repo.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts  block  no-such-program-for-this-test\n",
+    );
+    repo.commit("chore: typecheck at commit time");
+    trust_manifest(&repo);
+
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("typecheck at commit: its program was not found — running it here"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("no record of it"),
+        "re-committing would not help, so it must not say so: {out}"
+    );
+}
+
+/// A `files` declaration is handed the matched paths, so it is never widened:
+/// a push whose files it does not cover says what it misses and where to fix
+/// it, in the words the pair gates use, then runs the script.
+#[test]
+fn a_files_declaration_that_misses_a_changed_file_says_so() {
+    if missing("npm") {
+        return;
+    }
+    let repo = Repo::new();
+    repo.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"exit 1","test":"exit 0"}}"#,
+    );
+    repo.commit("chore: base");
+    let base = head(&repo);
+    repo.stage("src/legacy.js", "const x = 1;\n");
+    repo.commit("feat: a js change the ts scope never saw");
+    repo.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts  block  files node tc.js\n",
+    );
+    repo.commit("chore: typecheck at commit time");
+    trust_manifest(&repo);
+
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_ne!(code, 0, "the script ran and failed:\n{out}");
+    assert!(
+        out.contains("typecheck at commit covers *.ts, not src/legacy.js — running it here"),
+        "{out}"
+    );
+    assert!(
+        out.contains("a files declaration is not widened: add src/legacy.js to amont.conf line 1"),
+        "{out}"
+    );
+}
+
 /// The declared command runs at the repo ROOT. A monorepo sub-package's gate
 /// is a different command in a different directory, and no root declaration
 /// has judged it — so it is never skipped on the root's account.

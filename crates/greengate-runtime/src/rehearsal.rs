@@ -762,8 +762,7 @@ fn plan(prestage: Option<&crate::pushrefs::PushRef>) -> Result<Plan, String> {
         Some(line) => line.clone(),
         None => crate::pushrefs::synthetic_from_upstream()?,
     };
-    let manifest = crate::manifest::load(repo);
-    let settings = crate::config::Settings::new(manifest.policy.clone());
+    let (manifest, settings) = crate::manifest::load_resolved(repo);
     let changed = crate::pushrefs::changed_files(std::slice::from_ref(&push_ref));
     let mut gates = crate::dispatch::scoped_push_gates(&settings, &manifest, &changed);
     // Audits are owed whatever the range touches, until a fresh record

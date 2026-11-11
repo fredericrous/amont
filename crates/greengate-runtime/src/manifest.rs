@@ -249,6 +249,9 @@ pub struct Declared {
     pub heavy: bool,
     /// Where the command may run, and what it may read there: see [`RunsOn`].
     pub runs_on: RunsOn,
+    /// The 1-based line of the manifest that declares it, for a message that
+    /// sends a person to the line to edit.
+    pub lineno: usize,
     pub name: String,
     pub stage: Stage,
     pub severity: Severity,
@@ -638,6 +641,36 @@ impl Line {
     }
 }
 
+/// What a pre-commit declaration fires on once its push twins' files count
+/// too, and which twins those are: the scope, and the id and scope of each
+/// gate whose reach it borrowed (`pre-push-cargo-test`), so a commit can say
+/// which gate reads the file it is testing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trigger {
+    pub scope: Scope,
+    /// Every push gate whose files it covers: a declared `pre-push` line
+    /// before the built-in gate, each with the scope it acts on.
+    pub twins: Vec<(String, Scope)>,
+}
+
+impl Trigger {
+    /// The id of the first twin that acts on `path`; the first twin when none
+    /// does, which cannot happen for a path the trigger covers beyond the
+    /// declaration's own scope.
+    pub fn twin_for(&self, path: &str) -> &str {
+        self.twins
+            .iter()
+            .find(|(_, twin)| twin.covers(path))
+            .or(self.twins.first())
+            .map_or("its push twin", |(id, _)| id.as_str())
+    }
+
+    /// Every twin's id, in order, for a row that lists them.
+    pub fn twin_ids(&self) -> Vec<&str> {
+        self.twins.iter().map(|(id, _)| id.as_str()).collect()
+    }
+}
+
 /// A check a repository declares, rather than one compiled in.
 pub struct External {
     /// `<trigger>-<name>` — what `hook.skip` and `amont.severity.<key>`
@@ -652,6 +685,10 @@ pub struct External {
     pub short_name: String,
     pub stage: Stage,
     pub kind: Kind,
+    /// The 1-based line of the manifest that declares it, `None` for a line
+    /// that carries no position: what a message names when it sends a person
+    /// to the line to edit.
+    pub lineno: Option<usize>,
 }
 
 /// Where a declared command runs, and what it reads there. One value, so the
@@ -689,6 +726,20 @@ pub enum Kind {
         /// See [`RunsOn`]. A `Runnable` exists only for a trusted manifest
         /// (`gate`), so `AnyPlatform` is always the trusted declaration.
         runs_on: RunsOn,
+        /// What this pre-commit declaration would fire on if its push twin's
+        /// files counted too: its own scope united with the twin's. Computed
+        /// at load (`attach_twin_scopes`), and NOT applied until
+        /// [`Manifest::resolve_triggers`] has judged the declaration blocking:
+        /// until then [`External::effective_scope`] is the declaration's own,
+        /// so a caller that forgets the resolve behaves as before the twin
+        /// existed — narrow, and the push runs the suite.
+        pending_trigger: Option<Box<Trigger>>,
+        /// The pending trigger, once resolved for a declaration that blocks.
+        /// What the declaration fires on at commit and is judged on at push.
+        /// Boxed, like the pending one: most declarations carry neither, and
+        /// two inline scopes made this variant several times the size of
+        /// `Unusable`.
+        trigger: Option<Box<Trigger>>,
     },
     Unusable {
         why: String,
@@ -750,6 +801,58 @@ fn index_env(
 }
 
 impl External {
+    /// The scope this declaration fires on and is judged on: its resolved
+    /// trigger when it has one (its own scope united with its push twin's),
+    /// else the scope as written. `Scope::ALWAYS` for an unusable one.
+    pub fn effective_scope(&self) -> Scope {
+        match &self.kind {
+            Kind::Runnable {
+                trigger: Some(t), ..
+            } => t.scope,
+            Kind::Runnable { scope, .. } => *scope,
+            Kind::Unusable { .. } => Scope::ALWAYS,
+        }
+    }
+
+    /// Whether this is a commit-time declaration that blocks and is not
+    /// switched off: the ones whose runs earn stamps. The ONE predicate
+    /// `blocking_commit_decls` and [`Manifest::resolve_triggers`] share, so the
+    /// two cannot disagree about which declarations count, and it lives on the
+    /// type it judges, not in a hook that depends on this module.
+    pub fn blocks_at_commit(
+        &self,
+        severities: &crate::registry::Overrides,
+        skips: &[String],
+    ) -> bool {
+        matches!(self.kind, Kind::Runnable { .. })
+            && self.stage == Stage::PreCommit
+            && severities.of(self) == Severity::Block
+            && !skips
+                .iter()
+                .any(|skip| crate::skip_suppresses(&self.id, skip))
+    }
+
+    /// The first staged path this declaration tests only because its push
+    /// twin reads it, with that twin's id; `None` when its own scope touches
+    /// the staged set (or it was not widened).
+    fn twin_only_path<'a>(&'a self, staged: &'a [String]) -> Option<(&'a str, &'a str)> {
+        let Kind::Runnable {
+            scope,
+            trigger: Some(trigger),
+            ..
+        } = &self.kind
+        else {
+            return None;
+        };
+        if scope.touches(staged) {
+            return None;
+        }
+        staged
+            .iter()
+            .find(|path| trigger.scope.covers(path))
+            .map(|path| (path.as_str(), trigger.twin_for(path)))
+    }
+
     /// What the `amont.conf` line declares, trusted or not: reading the file
     /// applies nothing, so a reader may be told what it says. `None` for a
     /// line that did not parse.
@@ -772,10 +875,7 @@ impl Check for External {
     /// scope is a question with no answer, and computing one here keeps the
     /// DATA from carrying a value that means nothing.
     fn scope(&self) -> Scope {
-        match &self.kind {
-            Kind::Runnable { scope, .. } => *scope,
-            Kind::Unusable { .. } => Scope::ALWAYS,
-        }
+        self.effective_scope()
     }
     fn severity(&self) -> Severity {
         match &self.kind {
@@ -802,9 +902,9 @@ impl Check for External {
 
     fn run(&self, ctx: &Ctx) -> Outcome {
         let settings = ctx.settings;
+        let effective = self.effective_scope();
         let (scope, program, args, fix, files, docs_skip, runs_on) = match &self.kind {
             Kind::Runnable {
-                scope,
                 program,
                 args,
                 fix,
@@ -812,7 +912,9 @@ impl Check for External {
                 docs_skip,
                 runs_on,
                 ..
-            } => (scope, program, args, *fix, *files, *docs_skip, *runs_on),
+            } => (
+                &effective, program, args, *fix, *files, *docs_skip, *runs_on,
+            ),
             Kind::Unusable { why, .. } => {
                 crate::hooks::common::warn(&format!(
                     "{MANIFEST}: {} — {}",
@@ -900,6 +1002,17 @@ impl Check for External {
                 let Some(matched) = files_to_judge(scope, files, &staged) else {
                     return Outcome::Inert;
                 };
+                // Fired only through the files its push twin reads: say so,
+                // so a lockfile commit that starts testing is not a mystery.
+                // The basename only: the line stays within 80 columns.
+                if let Some((path, twin)) = self.twin_only_path(&staged) {
+                    crate::say!(
+                        "{}: {} is read by {} — running it at commit",
+                        crate::ui::highlight(&self.short_name),
+                        crate::ui::sanitize(path.rsplit('/').next().unwrap_or(path)),
+                        crate::ui::sanitize(twin),
+                    );
+                }
                 // A blocking gate that already ran clean against exactly this
                 // staged tree is not run again: the attempt that ran it never
                 // reached post-commit (commit-msg refused the subject, the
@@ -1747,6 +1860,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                 reads_index: wants_index,
             }
         },
+        lineno,
         name: declared.to_string(),
         stage,
         severity,
@@ -1977,6 +2091,11 @@ fn broken_at(lineno: usize, name: String, stage: Option<Stage>, why: ParseError)
 
 impl From<Line> for External {
     fn from(l: Line) -> External {
+        let lineno = match &l {
+            Line::Usable(declared) => Some(declared.lineno),
+            Line::Broken { lineno, .. } | Line::Policy { lineno, .. } => Some(*lineno),
+            Line::Tool(_) | Line::Tree(_) => None,
+        };
         let (name, stage, parsed) = l.into_parts();
         let kind = match parsed {
             Ok(d) => Kind::Runnable {
@@ -2008,6 +2127,8 @@ impl From<Line> for External {
                 docs_skip: d.docs_skip,
                 heavy: d.heavy,
                 runs_on: d.runs_on,
+                pending_trigger: None,
+                trigger: None,
             },
             Err(why) => Kind::Unusable {
                 why,
@@ -2020,6 +2141,7 @@ impl From<Line> for External {
             short_name: name,
             stage,
             kind,
+            lineno,
         }
     }
 }
@@ -2126,6 +2248,7 @@ pub fn load(root: &Path) -> Manifest {
             .collect(),
         state,
     );
+    let externals = attach_twin_scopes(externals);
     let trusted = state == crate::trust::State::Trusted;
     let pins = if trusted {
         lines
@@ -2173,6 +2296,126 @@ pub fn load(root: &Path) -> Manifest {
         policy_withheld,
         policy_notes,
     }
+}
+
+/// Give each pre-commit declaration its push twin's reach, as a PENDING
+/// trigger: what it would fire on if the files its twin acts on counted too.
+///
+/// A commit-time declaration stands in for a push gate of the same short name
+/// (`pre-commit cargo-test *.rs` for the built-in `pre-push-cargo-test`), but
+/// its own patterns are usually narrower than the twin's: a commit changing
+/// only `Cargo.lock` fired neither, earned no stamp, and the push ran the whole
+/// suite again, silently. The twin is a declared `pre-push` line of the same
+/// name (the manifest's own, so one later in the file counts too), else the
+/// built-in gate ([`crate::registry::push_twin_scope`]).
+///
+/// Left alone: a `files` declaration (its command is handed the matched paths,
+/// and handing a linter `Cargo.lock` is wrong), a twin with no patterns (it
+/// acts on every change, and widening to that would run the suite on every
+/// docs commit), and a declaration the twin adds nothing to.
+fn attach_twin_scopes(mut externals: Vec<External>) -> Vec<External> {
+    let declared: Vec<(String, String, Scope)> = externals
+        .iter()
+        .filter_map(|ext| match &ext.kind {
+            Kind::Runnable { scope, .. } if ext.stage == Stage::PrePush => {
+                Some((ext.short_name.clone(), ext.id.clone(), *scope))
+            }
+            Kind::Runnable { .. } | Kind::Unusable { .. } => None,
+        })
+        .collect();
+    for ext in externals.iter_mut().filter(|e| e.stage == Stage::PreCommit) {
+        let External {
+            short_name, kind, ..
+        } = ext;
+        let Kind::Runnable {
+            scope,
+            files: false,
+            pending_trigger,
+            ..
+        } = kind
+        else {
+            continue;
+        };
+        // Every twin it stands in for: a declared `pre-push` line of its name
+        // and the built-in gate of that name can both be in play, and the
+        // commit-time line must cover what either acts on. A twin that acts on
+        // every change is not followed.
+        let mut twins: Vec<(String, Scope)> = declared
+            .iter()
+            .filter(|(name, _, _)| name.as_str() == short_name.as_str())
+            .map(|(_, id, twin)| (id.clone(), *twin))
+            .collect();
+        if let Some((id, twin)) = crate::registry::push_twin_scope(short_name) {
+            twins.push((id.to_string(), twin));
+        }
+        twins.retain(|(_, twin)| !twin.is_unscoped());
+        let widened = twins
+            .iter()
+            .fold(*scope, |reach, (_, twin)| reach.union(twin));
+        if widened != *scope && !twins.is_empty() {
+            *pending_trigger = Some(Box::new(Trigger {
+                scope: widened,
+                twins,
+            }));
+        }
+    }
+    externals
+}
+
+impl Manifest {
+    /// Apply each pending trigger to the declarations that block: the ones
+    /// [`External::blocks_at_commit`] says earn stamps,
+    /// settings, overrides and `hook.skip` included. A warn declaration
+    /// vouches for nothing, so it is never widened.
+    ///
+    /// `load` has no settings, so every entrypoint that builds checks calls
+    /// this once, right after it builds its [`crate::config::Settings`]. A
+    /// caller that forgets leaves every trigger pending, which is the
+    /// declaration's own scope: the narrow side, where the worst outcome is a
+    /// suite run at push, never a stamp for work that did not run.
+    pub fn resolve_triggers(&mut self, settings: &crate::config::Settings) {
+        let any_pending = self.externals.iter().any(|ext| {
+            matches!(
+                ext.kind,
+                Kind::Runnable {
+                    pending_trigger: Some(_),
+                    ..
+                }
+            )
+        });
+        if !any_pending {
+            return;
+        }
+        let skips = crate::configured_skips(settings);
+        let severities = crate::registry::Overrides::read(settings);
+        for ext in &mut self.externals {
+            let blocks = ext.blocks_at_commit(&severities, &skips);
+            if let Kind::Runnable {
+                pending_trigger,
+                trigger,
+                ..
+            } = &mut ext.kind
+            {
+                *trigger = if blocks {
+                    pending_trigger.clone()
+                } else {
+                    None
+                };
+            }
+        }
+    }
+}
+
+/// [`load`], then the [`crate::config::Settings`] built from its policy, then
+/// the triggers resolved: the three steps every entrypoint that BUILDS checks
+/// takes, once, in the one order that is right. A caller that only reads the
+/// manifest's pins or tree gates, or its policy, calls [`load`] and says it
+/// builds no check.
+pub fn load_resolved(root: &Path) -> (Manifest, crate::config::Settings) {
+    let mut manifest = load(root);
+    let settings = crate::config::Settings::new(manifest.policy.clone());
+    manifest.resolve_triggers(&settings);
+    (manifest, settings)
 }
 
 /// Check every trusted pin against the tool actually on this machine, and say
@@ -3171,5 +3414,119 @@ mod tests {
                 "{odd:?} must be loud"
             );
         }
+    }
+
+    fn widened(text: &str) -> Vec<External> {
+        attach_twin_scopes(parse(text))
+    }
+
+    fn pending(ext: &External) -> Option<&Trigger> {
+        match &ext.kind {
+            Kind::Runnable {
+                pending_trigger, ..
+            } => pending_trigger.as_deref(),
+            Kind::Unusable { .. } => None,
+        }
+    }
+
+    /// A declaration named for a built-in push gate borrows that gate's reach,
+    /// pending until `resolve_triggers` has judged it blocking: until then its
+    /// effective scope is the one it wrote.
+    #[test]
+    fn a_declaration_borrows_its_builtin_twins_reach_once_resolved_not_before() {
+        let externals = widened("pre-commit  cargo-test  *.rs  block  cargo test\n");
+        let trigger = pending(&externals[0]).expect("widened to pre-push-cargo-test's reach");
+        assert!(trigger.scope.covers("Cargo.lock") && trigger.scope.covers("src/a.rs"));
+        assert_eq!(trigger.twin_ids(), ["pre-push-cargo-test"]);
+        let before = externals[0].effective_scope();
+        assert!(
+            !before.covers("Cargo.lock"),
+            "pending is not applied: the narrow side"
+        );
+    }
+
+    /// The command of a `files` declaration is handed the matched paths, so
+    /// widening it would hand a linter `Cargo.lock`.
+    #[test]
+    fn a_files_declaration_is_never_widened() {
+        let externals = widened("pre-commit  cargo-test  *.rs  block  files cargo test\n");
+        assert!(pending(&externals[0]).is_none());
+    }
+
+    /// A twin that acts on every change would turn the commit-time gate into
+    /// one that runs the suite on every docs commit.
+    #[test]
+    fn an_unscoped_twin_does_not_widen() {
+        let externals = widened(
+            "pre-commit  check  *.rs  block  make check\n\
+             pre-push    check  *  block  make check\n",
+        );
+        assert!(pending(&externals[0]).is_none());
+    }
+
+    #[test]
+    fn a_twin_that_adds_nothing_leaves_no_trigger() {
+        let externals = widened(
+            "pre-commit  check  *.rs  block  make check\n\
+             pre-push    check  *.rs  block  make check\n",
+        );
+        assert!(pending(&externals[0]).is_none());
+    }
+
+    /// The order of the lines is not the pairing's business.
+    #[test]
+    fn a_declared_twin_is_found_before_or_after_the_commit_line() {
+        for text in [
+            "pre-commit  check  *.txt  block  x\npre-push  check  *.txt,*.md  block  x\n",
+            "pre-push  check  *.txt,*.md  block  x\npre-commit  check  *.txt  block  x\n",
+        ] {
+            let externals = widened(text);
+            let commit = externals
+                .iter()
+                .find(|e| e.stage == Stage::PreCommit)
+                .unwrap();
+            let trigger = pending(commit).expect("widened to the declared twin");
+            assert!(trigger.scope.covers("notes.md"), "{text}");
+            assert_eq!(trigger.twin_ids(), ["pre-push-check"]);
+        }
+    }
+
+    /// A declared `pre-push` line of the same name does not replace the
+    /// built-in gate that also runs: the commit-time line covers what either
+    /// acts on, so a `.vue` push is not left to a gap nobody can explain.
+    #[test]
+    fn a_declared_twin_and_the_builtin_gate_both_count() {
+        let externals = widened(
+            "pre-commit  test  *.ts  block  pnpm test\n\
+             pre-push    test  *.ts  block  pnpm test\n",
+        );
+        let commit = externals
+            .iter()
+            .find(|e| e.stage == Stage::PreCommit)
+            .unwrap();
+        let trigger = pending(commit).expect("widened to the JS gate's reach");
+        assert!(trigger.scope.covers("App.vue"), "the built-in gate's files");
+        assert_eq!(
+            trigger.twin_ids(),
+            ["pre-push-test", "pre-push-run-tests-js"],
+            "the declared twin first, then the built-in gate"
+        );
+        assert_eq!(
+            trigger.twin_for("App.vue"),
+            "pre-push-run-tests-js",
+            "a file only the built-in gate reads names that gate"
+        );
+    }
+
+    /// The npm push gate runs the scripts it names, whatever the repository
+    /// calls the commit-time line that stands in for one.
+    #[test]
+    fn a_gate_script_pairs_with_the_js_push_gate() {
+        let externals = widened("pre-commit  typecheck  *.ts  block  pnpm typecheck\n");
+        let trigger = pending(&externals[0]).expect("widened to the JS gate's reach");
+        assert!(trigger.scope.covers("App.vue") && trigger.scope.covers("a.js"));
+        assert_eq!(trigger.twin_ids(), ["pre-push-run-tests-js"]);
+        let unrelated = widened("pre-commit  shellcheck  *.sh  block  shellcheck\n");
+        assert!(pending(&unrelated[0]).is_none(), "no push twin, no trigger");
     }
 }

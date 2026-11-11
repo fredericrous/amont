@@ -19,6 +19,30 @@ missing here.
   questions, with its own tests. A dispatch runs the workflow as it was at
   the tag, so this protects resumes of releases from the next one on.
 
+### Changed
+
+- A blocking commit-time declaration now also fires at commit on the files its
+  push twin reads. `pre-commit cargo-test *.rs` stands in for the built-in
+  `pre-push-cargo-test`, which also runs for `Cargo.toml`, `Cargo.lock`,
+  `rustfmt.toml` and the toolchain pin; a commit changing only one of those
+  fired neither side, earned no stamp, and the push ran the whole suite again
+  without saying why (2026-11-10: a land that held for two hours). The twin is
+  the built-in of that short name, a `pre-push` line of the same name, or, for
+  `typecheck`, `test:unit` and `test`, the npm push gate. A `files` declaration,
+  a `warn` one, and one whose twin has no patterns are left as written. The
+  commit says so when it tests only through its twin's files
+  (`cargo-test: Cargo.lock is read by pre-push-cargo-test — running it at commit`).
+- When a same-named commit-time declaration does not vouch for a push, the push
+  now says why before it runs the gate: what the declaration covers and what it
+  misses (with the `amont.conf` line to edit), that it is a `warn` check, that
+  `hook.skip` switched it off, which opt-in marker is missing, or that its
+  program was not found. These were silent, a refused push included. Exit codes
+  are unchanged.
+- `greengate list --json` gains trailing `scope_from_twin` and `scope_twin`
+  fields, and the text view a continuation line under a widened row.
+  `scope_files` and the fields before them are as they were; read `--json`, not
+  the indented lines.
+
 ## v3.0.1
 
 ### Fixed

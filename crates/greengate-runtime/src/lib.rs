@@ -92,6 +92,7 @@ pub mod vocabulary;
 pub(crate) mod waves;
 
 use crate::names::BIN;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -233,6 +234,15 @@ pub struct CheckListing {
     /// command to show, and an `Unusable` external never got far enough to
     /// have one.
     pub command: Option<String>,
+    /// The files a pre-commit declaration fires on only because its push twin
+    /// reads them (`Manifest::resolve_triggers`): the patterns of its
+    /// effective scope that `scope_files` does not list. Empty for every other
+    /// row. A trailing field, so a reader of the columns before it is not
+    /// disturbed.
+    pub scope_from_twin: Vec<String>,
+    /// The id of the push gate whose files `scope_from_twin` lists
+    /// (`pre-push-cargo-test`); `None` when the row is not widened.
+    pub scope_twin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +351,32 @@ pub fn gather_checks(
                 manifest::Kind::Unusable { .. } => None,
             });
 
+            // `scope_files` stays what the declaration says; what its push twin
+            // adds is reported beside it, in `scope_from_twin`.
+            let own_scope = match external.map(|e| &e.kind) {
+                Some(manifest::Kind::Runnable { scope, .. }) => *scope,
+                Some(manifest::Kind::Unusable { .. }) | None => check.scope(),
+            };
+            let scope_twin = external.and_then(|e| match &e.kind {
+                manifest::Kind::Runnable {
+                    trigger: Some(trigger),
+                    ..
+                } => Some(trigger.twin_ids().join(", ")),
+                manifest::Kind::Runnable { .. } | manifest::Kind::Unusable { .. } => None,
+            });
+            let effective_scope = check.scope();
+            let scope_from_twin: Vec<String> = effective_scope
+                .files
+                .iter()
+                .chain(effective_scope.names.iter())
+                .chain(effective_scope.dirs.iter())
+                .filter(|t| {
+                    !own_scope.files.contains(t)
+                        && !own_scope.names.contains(t)
+                        && !own_scope.dirs.contains(t)
+                })
+                .map(|t| t.to_string())
+                .collect();
             let declared_severity = check.severity();
             let effective_severity = overrides.of(check);
             let severity_source = overrides
@@ -364,17 +400,16 @@ pub fn gather_checks(
                 fix: check.fix(),
                 status,
                 reason,
-                scope_files: {
-                    let scope = check.scope();
-                    scope
-                        .files
-                        .iter()
-                        .chain(scope.names.iter())
-                        .map(|s| s.to_string())
-                        .collect()
-                },
-                scope_opt_in: check.scope().opt_in.iter().map(|s| s.to_string()).collect(),
+                scope_files: own_scope
+                    .files
+                    .iter()
+                    .chain(own_scope.names.iter())
+                    .map(|s| s.to_string())
+                    .collect(),
+                scope_opt_in: own_scope.opt_in.iter().map(|s| s.to_string()).collect(),
                 command,
+                scope_from_twin,
+                scope_twin,
             });
         }
     }
@@ -473,6 +508,27 @@ pub fn print_text(listings: &[CheckListing], all: bool) {
             Source::Builtin => short_name,
         };
         println!("  {glyph} {label:<26} {}", ui::sanitize(&l.reason));
+        // A declaration that also fires on its push twin's files says which,
+        // and why: piped, every path in full; on a terminal, cut to the
+        // 80 columns the rest of this output keeps.
+        if !l.scope_from_twin.is_empty() {
+            let paths = l
+                .scope_from_twin
+                .iter()
+                .map(|t| ui::sanitize(t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let read_by = l.scope_twin.as_deref().unwrap_or("its push twin");
+            let prefix = "      also fires on ";
+            let suffix = format!(" (read by {})", ui::sanitize(read_by));
+            // Only the paths are cut, on a terminal, so the gate that reads
+            // them stays on the line.
+            if std::io::stdout().is_terminal() {
+                println!("{}", tree_lint::fit_line(prefix, &paths, &suffix));
+            } else {
+                println!("{prefix}{paths}{suffix}");
+            }
+        }
     }
 
     let runs = listings.iter().filter(|l| l.status == Status::Runs).count();
@@ -645,6 +701,8 @@ pub fn print_json(
                 json::string_array_field("scope_files", &l.scope_files),
                 json::string_array_field("scope_opt_in", &l.scope_opt_in),
                 json::opt_string_field("command", l.command.as_deref()),
+                json::string_array_field("scope_from_twin", &l.scope_from_twin),
+                json::opt_string_field("scope_twin", l.scope_twin.as_deref()),
             ])
         })
         .collect();
@@ -778,12 +836,13 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     };
     // Loaded HERE, with the repository this command is standing in — the
     // owned-manifest shape every entrypoint now follows. See manifest::load.
-    let manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
     // The policy is OWNED here and borrowed downstream. The invariant that
     // used to be a comment — install immediately after load, before any
     // config read — is now the borrow checker's: nothing downstream can read
-    // configuration without being handed this.
-    let settings = crate::config::Settings::new(manifest.policy.clone());
+    // configuration without being handed this. `load_resolved` also resolves
+    // the commit-time triggers.
+    let (manifest, settings) =
+        manifest::load_resolved(std::path::Path::new(&hooks::common::repo_root()));
     let listings = gather_checks(&settings, opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
     let downgrades = downgrade::read();

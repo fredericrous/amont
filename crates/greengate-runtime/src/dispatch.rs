@@ -1192,6 +1192,9 @@ enum Decision {
     Skip(Skip),
     Run {
         unstamped_pair: Option<(String, usize)>,
+        /// A same-named commit-time declaration that did not vouch, and why:
+        /// the push says so before it runs the gate.
+        unpaired: Option<(String, crate::hooks::run_tests::WhyNot)>,
     },
 }
 
@@ -1480,6 +1483,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         if crate::hooks::audit::is_audit(check.name()) {
             return Decision::Run {
                 unstamped_pair: None,
+                unpaired: None,
             };
         }
         if stamped_push_gate(check)
@@ -1536,6 +1540,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let Some((name, push_scope)) = pairing else {
             return Decision::Run {
                 unstamped_pair: None,
+                unpaired: None,
             };
         };
         match crate::hooks::run_tests::pair_verdict(
@@ -1556,9 +1561,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             crate::hooks::run_tests::PairVerdict::Unstamped(n) => Decision::Run {
                 unstamped_pair: Some((name.to_string(), n)),
+                unpaired: None,
             },
-            crate::hooks::run_tests::PairVerdict::NotPaired => Decision::Run {
+            crate::hooks::run_tests::PairVerdict::NotPaired(why) => Decision::Run {
                 unstamped_pair: None,
+                unpaired: why.map(|why| (name.to_string(), why)),
             },
         }
     };
@@ -1572,6 +1579,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     if gate_before_push && !tips.is_empty() {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         let owed = scoped_push_gates(settings, ctx.manifest, &changed);
+        // Why each owed gate would run, kept from the one `decide` that found
+        // it missing: the reasons are printed ahead of the refusal without
+        // asking the gate a second time.
+        let reasons: std::cell::RefCell<Vec<(String, crate::hooks::run_tests::WhyNot)>> =
+            std::cell::RefCell::new(Vec::new());
         let missing: Vec<&str> = pre_push_checks
             .iter()
             .filter(|c| {
@@ -1589,7 +1601,13 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                     // another reason stays owed.
                     owed.iter().any(|o| o == c.name())
                         && !crate::gate_identity::program_missing(&ctx.manifest.externals, c.name())
-                        && matches!(decide(**c), Decision::Run { .. })
+                        && match decide(**c) {
+                            Decision::Run { unpaired, .. } => {
+                                reasons.borrow_mut().extend(unpaired);
+                                true
+                            }
+                            Decision::Skip(_) => false,
+                        }
                 }
             })
             .map(|c| c.name())
@@ -1599,6 +1617,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .first()
                 .map(|t| t.chars().take(8).collect())
                 .unwrap_or_default();
+            // Why a pair did not vouch comes BEFORE the refusal: refusing is the
+            // default for a bare push, so a refused push is where a silent
+            // "it would have run the suite again" went unexplained.
+            for (name, why) in reasons.borrow().iter() {
+                crate::hooks::run_tests::say_why_not(name, why);
+            }
             let lines = match land {
                 Some(line) => land_refusal(line, ctx.push.get(), &missing),
                 None => push_refusal(
@@ -1740,6 +1764,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             Decision::Run {
                 unstamped_pair: Some((name, n)),
+                ..
             } => {
                 // `amont.unstampedPush refuse`: never run a suite with
                 // the remote's connection held open — say how to earn
@@ -1776,7 +1801,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             Decision::Run {
                 unstamped_pair: None,
-            } => {}
+                unpaired,
+            } => {
+                if let Some((name, why)) = unpaired {
+                    crate::hooks::run_tests::say_why_not(&name, &why);
+                }
+            }
         }
         let sub = Ctx {
             name: check.name(),
