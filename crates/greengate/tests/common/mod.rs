@@ -138,6 +138,13 @@ impl Repo {
     /// very suite that is running it. The slot and load fixtures use
     /// [`Repo::hook_watched_unpinned`], which sets neither.
     pub fn pin_host_env(cmd: &mut Command) {
+        // The developer's machine state stays out of reach: greengate 4.0's
+        // first run migrates the GLOBAL config and writes a marker under
+        // `$XDG_CONFIG_HOME/greengate`. A fixture that names its own
+        // `GIT_CONFIG_GLOBAL` sets it after this, and wins.
+        let sandbox = sandbox();
+        cmd.env("XDG_CONFIG_HOME", sandbox.join("config"));
+        cmd.env("GIT_CONFIG_GLOBAL", sandbox.join("gitconfig"));
         cmd.env("GREENGATE_IDLE_LOAD_SCALE", "1");
         cmd.env("GREENHARNESS_HOST_SLOT", "held");
         // amont's own gate sets FORCE_COLOR for the tools it runs on a
@@ -257,6 +264,10 @@ impl Repo {
             cmd.env_remove("GREENHARNESS_HOST_SLOT");
             cmd.env_remove("GREENGATE_IDLE_LOAD_SCALE");
         }
+        // Pinned or not, the developer's global config and config home stay
+        // out of reach (see `pin_host_env`).
+        cmd.env("XDG_CONFIG_HOME", sandbox().join("config"));
+        cmd.env("GIT_CONFIG_GLOBAL", sandbox().join("gitconfig"));
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -443,7 +454,24 @@ pub fn amont_cmd() -> Command {
     let mut cmd = Command::new(bin());
     Repo::strip_git_env_impl(&mut cmd);
     Repo::pin_host_env(&mut cmd);
+    // Outside any repository unless the fixture says where: the binary's
+    // first run migrates the repository it stands in, and a test that set no
+    // `current_dir` stood in THIS checkout and migrated it (2026-11-11).
+    cmd.current_dir(sandbox().join("cwd"));
     cmd
+}
+
+/// A per-process directory no test owns: an empty global git config, a
+/// config home, and a working directory outside every repository.
+pub fn sandbox() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("greengate-sandbox-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("config")).expect("sandbox config home");
+        std::fs::create_dir_all(dir.join("cwd")).expect("sandbox cwd");
+        std::fs::write(dir.join("gitconfig"), "").expect("sandbox gitconfig");
+        dir
+    })
 }
 
 /// True when a tool the case genuinely needs is absent — and it SAYS SO.

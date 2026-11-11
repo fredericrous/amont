@@ -981,6 +981,12 @@ fn waits(slots: &Path) -> Vec<serde_json::Value> {
 fn outside_waiter(slots: &Path, script: &str) -> Child {
     Command::new(env!("CARGO_BIN_EXE_greengate"))
         .args(["slot", "run", "--", "sh", "-c", script])
+        .current_dir(crate::common::sandbox().join("cwd"))
+        .env("XDG_CONFIG_HOME", crate::common::sandbox().join("config"))
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            crate::common::sandbox().join("gitconfig"),
+        )
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", slots)
         .env("GREENGATE_HOST_SLOTS", "1")
@@ -1140,6 +1146,12 @@ fn a_failing_gate_after_a_handoff_frees_the_slot() {
     assert!(leftovers.is_empty(), "a who file stayed: {leftovers:?}");
     let status = Command::new(env!("CARGO_BIN_EXE_greengate"))
         .args(["slots", "--json"])
+        .current_dir(crate::common::sandbox().join("cwd"))
+        .env("XDG_CONFIG_HOME", crate::common::sandbox().join("config"))
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            crate::common::sandbox().join("gitconfig"),
+        )
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", &slots)
         .env("GREENGATE_HOST_SLOTS", "1")
