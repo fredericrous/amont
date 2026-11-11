@@ -11,6 +11,7 @@ pub mod common;
 pub mod go_tools;
 pub mod hadolint;
 pub mod helm;
+pub mod js_workspace;
 pub mod k8s;
 pub mod large_files;
 pub mod lint_js;

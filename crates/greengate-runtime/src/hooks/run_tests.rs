@@ -25,7 +25,7 @@ use std::process::{Command, Stdio};
 /// running it again on push is the same pure repetition. `typecheck` is the one
 /// people move: push is too late to hear about a type error you introduced an
 /// hour ago.
-const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
+const GATE: [&str; 3] = crate::manifest::NPM_GATE_SCRIPTS;
 
 /// Whether `name` is one of the scripts the npm push gate runs ([`GATE`]).
 pub(crate) fn is_gate_script(name: &str) -> bool {
@@ -724,7 +724,7 @@ fn scripts_object(pkg_json: &str) -> Option<&str> {
 }
 
 /// Index of the closing quote of the string whose content starts at `from`.
-fn string_end(bytes: &[u8], from: usize) -> Option<usize> {
+pub(super) fn string_end(bytes: &[u8], from: usize) -> Option<usize> {
     let mut escaped = false;
     for (i, &c) in bytes.iter().enumerate().skip(from) {
         if escaped {
@@ -799,6 +799,96 @@ pub fn packages_to_test(pkg_dirs: &[String], changed_dirs: &[String]) -> Vec<Str
         .collect()
 }
 
+/// What a repository says about which of its ROOT package's scripts already run
+/// every workspace member (`set rootRunsMembers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RootDeclaration {
+    /// Nothing declared: a root and a member that both ran a script may be a
+    /// repeat, and the push says how to declare it.
+    Unset,
+    /// These scripts run every member from the root; none at all for `none`.
+    Declared(Vec<String>),
+}
+
+/// The committed declaration, held to what a local `git config` may do to it:
+/// remove names, or set `none`, and never add one. A machine that could add a
+/// name would skip members' tests that no committed, trusted line vouches for.
+/// A local `none` with nothing committed only silences the hint.
+pub(crate) fn root_declaration(settings: &crate::config::Settings) -> RootDeclaration {
+    const KEY: &str = "amont.rootRunsMembers";
+    let names = |raw: &str| -> Vec<String> {
+        if raw.trim().eq_ignore_ascii_case("none") {
+            return Vec::new();
+        }
+        raw.split(',')
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    };
+    let committed = settings.policy().settings.get(KEY).map(|raw| names(raw));
+    // Local config when there is one, else the committed line itself.
+    let effective = crate::config::string_value(settings, KEY).map(|raw| names(&raw));
+    match (committed, effective) {
+        (Some(committed), Some(effective)) => RootDeclaration::Declared(
+            committed
+                .into_iter()
+                .filter(|name| effective.contains(name))
+                .collect(),
+        ),
+        (Some(committed), None) => RootDeclaration::Declared(committed),
+        (None, Some(effective)) if effective.is_empty() => RootDeclaration::Declared(Vec::new()),
+        (None, _) => RootDeclaration::Unset,
+    }
+}
+
+/// The command `script` runs, as `package.json` writes it, when it is a plain
+/// string: what a stale declaration would be read against. `None` for a script
+/// that is absent or written with an escape.
+pub fn script_command(pkg_json: &str, script: &str) -> Option<String> {
+    let body = scripts_object(pkg_json)?;
+    let needle = format!("\"{script}\"");
+    let mut from = 0;
+    while let Some(i) = body[from..].find(&needle) {
+        let at = from + i;
+        let after = body[at + needle.len()..].trim_start();
+        if let Some(value) = after.strip_prefix(':') {
+            let value = value.trim_start().strip_prefix('"')?;
+            let close = string_end(value.as_bytes(), 0)?;
+            let command = &value[..close];
+            return (!command.contains('\\')).then(|| command.to_string());
+        }
+        from = at + needle.len();
+    }
+    None
+}
+
+/// The two lines that say a script ran at the root and in members with nothing
+/// declaring that the root already runs them: a repeat, if it does, and the
+/// line to add. Pure, so the words and their width are tested. `untrusted`
+/// when `amont.conf` has policy it withholds, so a line there does not count.
+pub(crate) fn repeat_hint_lines(script: &str, members: usize, untrusted: bool) -> Vec<String> {
+    let plural = if members == 1 { "" } else { "s" };
+    let how = if untrusted {
+        format!(
+            "    {} is not trusted, so a set rootRunsMembers line there does not count: {} trust",
+            crate::manifest::MANIFEST,
+            crate::names::BIN
+        )
+    } else {
+        format!(
+            "    declare it in {}: set rootRunsMembers {script}   (or: none)",
+            crate::manifest::MANIFEST
+        )
+    };
+    vec![
+        format!(
+            "{} ran at the root and in {members} package{plural} — a repeat if the root runs them",
+            crate::ui::sanitize(script)
+        ),
+        how,
+    ]
+}
+
 /// The GATE, minus what a `pre-commit` declaration already covers.
 ///
 /// Split from `run_gate` so the rule can be tested without a package on disk
@@ -810,22 +900,47 @@ pub fn gate_for(pkg_json: &str, already: &[&str]) -> Vec<&'static str> {
         .collect()
 }
 
-/// True when the gate passed (or there was none to run).
+/// The scripts `run_gate` ran, or `None` when one failed.
+type Ran = Option<Vec<&'static str>>;
+
+/// Where in this push's list of packages a gate run is: for its announcement.
+#[derive(Clone, Copy)]
+struct Place {
+    nth: usize,
+    of: usize,
+}
+
+/// Run the gate's scripts in one package. `Some` with the scripts that ran
+/// when it passed (or had none to run), `None` when one failed.
 fn run_gate(
     settings: &crate::config::Settings,
     root: &str,
     folder: &str,
     already: &[&str],
-) -> bool {
+    place: Place,
+) -> Ran {
     let dir = if folder.is_empty() {
         root.to_string()
     } else {
         format!("{root}/{folder}")
     };
     let Ok(pkg) = std::fs::read_to_string(format!("{dir}/package.json")) else {
-        return true;
+        return Some(Vec::new());
     };
+    let mut ran = Vec::new();
     for script in gate_for(&pkg, already) {
+        // Said before it runs, one line per script, so a second run of the
+        // same script reads as a second run and not as the first one stalling.
+        crate::say!(
+            "npm run {script}: {} of {}, in {}",
+            place.nth,
+            place.of,
+            if folder.is_empty() {
+                "the root"
+            } else {
+                folder
+            }
+        );
         // Same hazard as cargo test: git exports GIT_DIR to hooks, and a JS
         // test that shells out to git would then operate on this repo rather
         // than its own fixture.
@@ -835,26 +950,27 @@ fn run_gate(
             .stdin(Stdio::null());
         super::common::strip_git_env(&mut cmd);
         match super::common::status_streamed(settings, &mut cmd, super::common::Retry::Once) {
-            Ok(super::common::Ran::Status(status)) if status.success() => {}
+            Ok(super::common::Ran::Status(status)) if status.success() => ran.push(script),
             Ok(super::common::Ran::TimedOut(budget)) => {
                 super::common::say_timed_out(script, budget);
-                return false;
+                return None;
             }
             // The gate's own exit code is not propagated: git only
             // distinguishes zero from non-zero, and npm's codes said nothing
             // the message above has not already said.
-            Ok(_) | Err(_) => return false,
+            Ok(_) | Err(_) => return None,
         }
     }
-    true
+    Some(ran)
 }
 
 pub fn run(
     settings: &crate::config::Settings,
     refs: &[crate::pushrefs::PushRef],
-    declared: &[crate::manifest::External],
+    manifest: &crate::manifest::Manifest,
     gate: &str,
 ) -> Outcome {
+    let declared = manifest.externals.as_slice();
     // An all-zero oid, of whatever length this repo's hash is (sha1 or sha256).
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
@@ -882,6 +998,10 @@ pub fn run(
     let mut announced: Vec<String> = Vec::new();
     let mut warned: Vec<String> = Vec::new();
     let mut said_why: Vec<String> = Vec::new();
+    // What the repository declares about its root scripts, read once; and the
+    // scripts whose repeat hint has been said, once per script per push.
+    let root_declaration = root_declaration(settings);
+    let mut hinted: Vec<&'static str> = Vec::new();
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -1036,15 +1156,125 @@ pub fn run(
         }
 
         let already_strs: Vec<&str> = already.iter().map(String::as_str).collect();
-        for folder in folders {
-            // Root only: the declared command runs at the repo root.
-            let already_here: &[&str] = if folder.is_empty() {
-                &already_strs
+
+        // The root's scripts that run in THIS push, and of those the ones the
+        // repository declares run every member: a changed member the workspace
+        // covers is not run again for them. Read from the pushed tree, like
+        // the packages themselves.
+        let root_pkg = if folders.iter().any(|f| f.is_empty()) {
+            std::fs::read_to_string(format!("{where_}/package.json")).ok()
+        } else {
+            None
+        };
+        let root_runs: Vec<&'static str> = root_pkg
+            .as_deref()
+            .map(|pkg| gate_for(pkg, &already_strs))
+            .unwrap_or_default();
+        let covering: Vec<&'static str> = match &root_declaration {
+            RootDeclaration::Declared(names) => root_runs
+                .iter()
+                .copied()
+                .filter(|script| names.iter().any(|name| name == script))
+                .collect(),
+            RootDeclaration::Unset => Vec::new(),
+        };
+        let members = if covering.is_empty() {
+            None
+        } else {
+            super::js_workspace::members_of(std::path::Path::new(&where_))
+        };
+        let covered_here = |folder: &str| -> Vec<&'static str> {
+            let covered = !folder.is_empty() && members.as_ref().is_some_and(|m| m.covers(folder));
+            if covered {
+                covering.clone()
             } else {
-                &[]
+                Vec::new()
+            }
+        };
+        // One line per script for all the members it skips, naming the root's
+        // command so a declaration gone stale reads against what it claims.
+        for &script in &covering {
+            let skipped = folders
+                .iter()
+                .filter(|folder| covered_here(folder).contains(&script))
+                .filter(|folder| {
+                    std::fs::read_to_string(format!("{where_}/{folder}/package.json"))
+                        .is_ok_and(|pkg| defines_script(&pkg, script))
+                })
+                .count();
+            if skipped == 0 {
+                continue;
+            }
+            let command = root_pkg
+                .as_deref()
+                .and_then(|pkg| script_command(pkg, script));
+            let plural = if skipped == 1 { "" } else { "s" };
+            let head = format!("{skipped} package{plural} covered by the root's {script}, ");
+            let tail = format!(
+                "declared in {} — not repeating {}",
+                crate::manifest::MANIFEST,
+                if skipped == 1 { "it" } else { "them" }
+            );
+            let line = match command {
+                Some(command) if std::io::stdout().is_terminal() => crate::tree_lint::fit_line(
+                    &format!("{head}`"),
+                    &crate::ui::sanitize(&command),
+                    &format!("`, {tail}"),
+                ),
+                Some(command) => format!("{head}`{}`, {tail}", crate::ui::sanitize(&command)),
+                None => format!("{head}{tail}"),
             };
-            if !run_gate(settings, &where_, &folder, already_here) {
+            // Always said, quiet or not: a line that says tests were NOT run is
+            // exactly the kind this project does not let get hidden.
+            crate::say!("{line}");
+        }
+
+        let total = folders.len();
+        let mut ran_in_members: Vec<(&'static str, usize)> = Vec::new();
+        let mut ran_at_root: Vec<&'static str> = Vec::new();
+        for (index, folder) in folders.into_iter().enumerate() {
+            // The root's own `already` is what the declared commit-time
+            // command covers; a covered member's is what the root runs.
+            let skip: Vec<&str> = if folder.is_empty() {
+                already_strs.clone()
+            } else {
+                covered_here(&folder)
+            };
+            let place = Place {
+                nth: index + 1,
+                of: total,
+            };
+            let Some(ran) = run_gate(settings, &where_, &folder, &skip, place) else {
                 return Outcome::Failed;
+            };
+            for script in ran {
+                if folder.is_empty() {
+                    ran_at_root.push(script);
+                } else if let Some((_, count)) =
+                    ran_in_members.iter_mut().find(|(name, _)| *name == script)
+                {
+                    *count += 1;
+                } else {
+                    ran_in_members.push((script, 1));
+                }
+            }
+        }
+        // A script that ran at the root AND in members, with nothing declared,
+        // may be a repeat: said once per script, with the line to add.
+        if root_declaration == RootDeclaration::Unset {
+            for (script, members) in ran_in_members {
+                if ran_at_root.contains(&script) && !hinted.contains(&script) {
+                    hinted.push(script);
+                    let mut lines =
+                        repeat_hint_lines(script, members, manifest.policy_withheld.is_some())
+                            .into_iter();
+                    if let Some(head) = lines.next() {
+                        crate::say!("{} {head}", crate::ui::warning_sign());
+                    }
+                    for rest in lines {
+                        crate::say!("{rest}");
+                    }
+                }
             }
         }
     }
@@ -1271,5 +1501,58 @@ mod tests {
         let why = WhyNot::NotOptedIn(vec!["mark\u{1b}[31mer".into()]);
         let head = &reason_lines("cargo-test", &why, LineWidth::Whole)[0];
         assert!(!head.contains('\u{1b}'), "{head:?}");
+    }
+
+    /// What a declaration is read against: the root script's command, when it
+    /// is a plain string.
+    #[test]
+    fn a_scripts_command_is_read_when_it_is_a_plain_string() {
+        let pkg = r#"{"name":"r","scripts":{"build":"tsc","test":"pnpm -r --workspace-concurrency=2 test"}}"#;
+        assert_eq!(
+            script_command(pkg, "test").as_deref(),
+            Some("pnpm -r --workspace-concurrency=2 test")
+        );
+        assert_eq!(script_command(pkg, "typecheck"), None, "absent");
+        let escaped = r#"{"scripts":{"test":"echo \"x\""}}"#;
+        assert_eq!(
+            script_command(escaped, "test"),
+            None,
+            "an escape is not guessed at"
+        );
+        let elsewhere = r#"{"dependencies":{"test":"1.0.0"},"scripts":{}}"#;
+        assert_eq!(
+            script_command(elsewhere, "test"),
+            None,
+            "only the scripts object"
+        );
+    }
+
+    /// The repeat hint's first line fits 80 columns with the sign, for every
+    /// script the gate runs, and names the line to add; untrusted, it says why a
+    /// line there would not count.
+    #[test]
+    fn the_repeat_hint_fits_its_line_and_names_the_fix() {
+        for script in crate::manifest::NPM_GATE_SCRIPTS {
+            let lines = repeat_hint_lines(script, 30, false);
+            assert!(lines[0].chars().count() + 2 <= 80, "{}", lines[0]);
+            assert!(lines[0].contains("a repeat if the root runs them"));
+            assert!(
+                lines[1].contains(&format!("set rootRunsMembers {script}")),
+                "{}",
+                lines[1]
+            );
+        }
+        let one = repeat_hint_lines("test", 1, false);
+        assert!(one[0].contains("in 1 package —"), "{}", one[0]);
+        let untrusted = repeat_hint_lines("test", 2, true);
+        assert!(untrusted[1].contains("is not trusted"), "{}", untrusted[1]);
+        assert!(!untrusted[1].contains("declare it in"), "{}", untrusted[1]);
+    }
+
+    /// A local `git config` is held to the committed line.
+    #[test]
+    fn nothing_declared_is_unset() {
+        let settings = crate::config::Settings::default();
+        assert_eq!(root_declaration(&settings), RootDeclaration::Unset);
     }
 }

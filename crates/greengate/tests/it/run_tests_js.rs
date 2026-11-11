@@ -684,6 +684,189 @@ fn a_script_declaration_also_fires_on_the_js_files_its_push_gate_runs_for() {
     );
 }
 
+// A workspace root whose own `test` script runs every member. The fixture's
+// scripts only LOG who ran, so the log says exactly which packages the push
+// ran: `ran.log` beside `log.js`, one line per run.
+
+/// A workspace of `packages/a` and `packages/b`, plus `tools/x` outside the
+/// workspace globs, with the root `test` defined or not, and `conf` committed
+/// as `amont.conf` when it is not empty. Returns the base to push from, with
+/// a `.ts` change in `packages/a` and in `tools/x` committed after it.
+fn workspace_repo(root_defines_test: bool, conf: &str) -> (Repo, String) {
+    let repo = Repo::new();
+    repo.stage(
+        "log.js",
+        "require('fs').appendFileSync(__dirname + '/ran.log', process.argv[2] + '\\n')\n",
+    );
+    let root_scripts = if root_defines_test {
+        r#""test":"node log.js root""#
+    } else {
+        ""
+    };
+    repo.stage(
+        "package.json",
+        &format!(r#"{{"name":"root","workspaces":["packages/*"],"scripts":{{{root_scripts}}}}}"#),
+    );
+    for (dir, name, up) in [
+        ("packages/a", "a", "../.."),
+        ("packages/b", "b", "../.."),
+        ("tools/x", "x", "../.."),
+    ] {
+        repo.stage(
+            &format!("{dir}/package.json"),
+            &format!(r#"{{"name":"{name}","scripts":{{"test":"node {up}/log.js {name}"}}}}"#),
+        );
+    }
+    repo.commit("chore: the workspace");
+    let base = head(&repo);
+    repo.stage("packages/a/src/x.ts", "export const a = 1\n");
+    repo.stage("tools/x/src/y.ts", "export const x = 1\n");
+    repo.commit("feat: change a member and a package outside the workspace");
+    if !conf.is_empty() {
+        repo.stage("amont.conf", conf);
+        repo.commit("chore: declare");
+        trust_manifest(&repo);
+    }
+    (repo, base)
+}
+
+fn ran(repo: &Repo) -> Vec<String> {
+    std::fs::read_to_string(repo.dir.join("ran.log"))
+        .map(|log| log.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// What a repository declares, and the workspace's globs say, decides which
+/// members the push skips: the root's `test` runs once, and `packages/a` (in the
+/// globs) is covered, while `tools/x` (outside them) still runs.
+#[test]
+fn a_declared_root_covers_its_members_and_only_them() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    let (repo, base) = workspace_repo(true, "set rootRunsMembers test\n");
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        ran(&repo),
+        ["root", "x"],
+        "a is covered, x is outside the globs:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "1 package covered by the root's test, `node log.js root`, declared in amont.conf — not repeating it"
+        ),
+        "{out}"
+    );
+    assert!(
+        !out.contains("a repeat if the root runs them"),
+        "declared: no hint:\n{out}"
+    );
+}
+
+/// With nothing declared the push cannot know the root runs its members, so it
+/// runs both, once, and says how to declare it: the one place it guesses, out
+/// loud, and `if`.
+#[test]
+fn an_undeclared_root_runs_its_members_and_says_how_to_declare_it() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    let (repo, base) = workspace_repo(true, "");
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+    assert_eq!(
+        out.matches("test ran at the root and in 2 packages — a repeat if the root runs them")
+            .count(),
+        1,
+        "said once: {out}"
+    );
+    assert!(
+        out.contains("declare it in amont.conf: set rootRunsMembers test   (or: none)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("npm run test: 1 of 3, in the root"),
+        "each run is announced: {out}"
+    );
+}
+
+/// `none` says the root runs no members, and silences the hint.
+#[test]
+fn a_root_declared_to_run_no_members_stops_the_hint() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    let (repo, base) = workspace_repo(true, "set rootRunsMembers none\n");
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+    assert!(!out.contains("a repeat if the root runs them"), "{out}");
+}
+
+/// The root has to run the script in THIS push for its members to be covered:
+/// a root with no `test` runs nothing, so nothing covers the members.
+#[test]
+fn a_declared_script_the_root_does_not_define_skips_nothing() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    let (repo, base) = workspace_repo(false, "set rootRunsMembers test\n");
+    let (code, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(ran(&repo), ["a", "x"], "{out}");
+    assert!(!out.contains("covered by the root's"), "{out}");
+}
+
+/// A local `git config` may only take names out of the committed line, never
+/// put one in: a machine that could add `test` would skip members' tests that
+/// no committed, trusted line vouches for.
+#[test]
+fn a_local_setting_can_remove_a_declared_name_and_never_add_one() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    // Committed `test`, local `none`: the removal counts, so the members run.
+    let (repo, base) = workspace_repo(true, "set rootRunsMembers test\n");
+    repo.git(&["config", "amont.rootRunsMembers", "none"]);
+    let (_, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+
+    // Committed `none`, local `test`: nothing is added, so the members run.
+    let (repo, base) = workspace_repo(true, "set rootRunsMembers none\n");
+    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    let (_, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+
+    // Nothing committed, local `test`: still nothing declared, so it hints.
+    let (repo, base) = workspace_repo(true, "");
+    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    let (_, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+    assert!(out.contains("a repeat if the root runs them"), "{out}");
+}
+
+/// A `set rootRunsMembers` line in an `amont.conf` nobody trusted does not
+/// count, and the hint says so rather than asking for a line already there.
+#[test]
+fn an_untrusted_declaration_does_not_count_and_the_hint_says_why() {
+    if missing("npm") || missing("node") {
+        return;
+    }
+    let (repo, base) = workspace_repo(true, "");
+    repo.stage("amont.conf", "set rootRunsMembers test\n");
+    repo.commit("chore: declare, untrusted");
+    let (_, out) = push_range_out(&repo, &base, &head(&repo));
+    assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
+    assert!(
+        out.contains(
+            "amont.conf is not trusted, so a set rootRunsMembers line there does not count"
+        ),
+        "{out}"
+    );
+}
+
 /// A declaration whose program is not installed has no identity to stamp, so
 /// the push says that, instead of blaming the commits for carrying no record.
 #[test]

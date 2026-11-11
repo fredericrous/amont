@@ -91,6 +91,11 @@ pub enum ParseError {
         key: &'static str,
         why: String,
     },
+    /// `set rootRunsMembers` other than a comma-separated list of the npm
+    /// gate's script names or `none`, or set twice. Strict like the busy
+    /// policy: a list that silently meant something else would skip a member's
+    /// tests that nothing ran.
+    BadRootRunsMembers(String),
     /// A `pre-push` line asked to rewrite files.
     ///
     /// Refused HERE, beside `NameTaken` and `Duplicate`, rather than as a
@@ -161,6 +166,7 @@ impl std::fmt::Display for ParseError {
             ParseError::BadPolicyLine(usage) => write!(f, "a policy line is `{usage}`"),
             ParseError::BadPlanExempt(why) => write!(f, "set planExempt: {why}"),
             ParseError::BadBusyPolicy { key, why } => write!(f, "set {key}: {why}"),
+            ParseError::BadRootRunsMembers(why) => write!(f, "set rootRunsMembers: {why}"),
             ParseError::UnsettableKey(k) => write!(
                 f,
                 "set {k:?} is not a policy-settable key — see docs/custom-checks.md"
@@ -437,6 +443,11 @@ pub enum PolicyLine {
     Set { key: String, value: String },
 }
 
+/// The scripts the npm push gate (`pre-push-run-tests-js`) runs, cheapest
+/// first. Defined here, where `set rootRunsMembers` validates against it, so the
+/// manifest does not depend on a hook; the gate reads it back from here.
+pub const NPM_GATE_SCRIPTS: [&str; 3] = ["typecheck", "test:unit", "test"];
+
 /// The keys `set` may reach, in canonical spelling. Deliberately absent:
 /// `fix` (a committed file must not change what already-trusted commands may
 /// DO to your working tree — a different consent than "I read these
@@ -507,6 +518,12 @@ pub const SETTABLE: &[&str] = &[
     // that gate; strict like `planExempt`: exactly `wait` or `defer`, and a
     // whole number of seconds for `slotWait`, each once.
     "onBusy",
+    // Which of the npm gate's scripts a repository's ROOT package already runs
+    // for every workspace member, so the push does not run them again in each
+    // changed member. Policy, strict and set once; a comma-separated list of
+    // the gate's script names, or `none`. A local `git config` may only remove
+    // names from it, never add one (`hooks::run_tests::root_declaration`).
+    "rootRunsMembers",
     "slotWait",
     // How long a heavy `warn` gate of land's pre-stage waits for a slot
     // before it runs unqueued (ADR-0013): a whole number of seconds, once.
@@ -1701,6 +1718,9 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                     {
                         parse_cluster_setting(lineno, canonical, value, earlier)
                     }
+                    Some(canonical) if *canonical == "rootRunsMembers" => {
+                        parse_root_runs_members(lineno, value, earlier)
+                    }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
                             key: format!("amont.{canonical}"),
@@ -1871,6 +1891,61 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
         program,
         args: argv.collect(),
     })
+}
+
+/// `set rootRunsMembers test,typecheck` or `set rootRunsMembers none`: strict
+/// and set once. The value is a comma-separated list of the npm gate's script
+/// names ([`NPM_GATE_SCRIPTS`]), or `none` standing alone; it is stored with
+/// `none` lowercased and the names as written.
+fn parse_root_runs_members(lineno: usize, value: &str, earlier: &[Line]) -> Line {
+    const KEY: &str = "amont.rootRunsMembers";
+    let broken = |why: String| {
+        broken_at(
+            lineno,
+            format!("{MANIFEST}:{lineno}"),
+            None,
+            ParseError::BadRootRunsMembers(why),
+        )
+    };
+    let twice = earlier
+        .iter()
+        .any(|l| matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. } if key == KEY));
+    if twice {
+        return broken("it is set twice".to_string());
+    }
+    let items: Vec<&str> = value.split(',').map(str::trim).collect();
+    if items.iter().any(|item| item.is_empty()) {
+        return broken(
+            "the value is script names separated by commas, or `none`; an empty name is neither"
+                .to_string(),
+        );
+    }
+    if items.iter().any(|item| item.eq_ignore_ascii_case("none")) {
+        return if items.len() == 1 {
+            Line::Policy {
+                what: PolicyLine::Set {
+                    key: KEY.to_string(),
+                    value: "none".to_string(),
+                },
+                lineno,
+            }
+        } else {
+            broken("`none` stands alone, not beside script names".to_string())
+        };
+    }
+    if let Some(unknown) = items.iter().find(|item| !NPM_GATE_SCRIPTS.contains(item)) {
+        return broken(format!(
+            "{unknown:?} is not a script the gate runs ({})",
+            NPM_GATE_SCRIPTS.join(", ")
+        ));
+    }
+    Line::Policy {
+        what: PolicyLine::Set {
+            key: KEY.to_string(),
+            value: items.join(","),
+        },
+        lineno,
+    }
 }
 
 /// `set executor cluster|local` or `set clusterPrepare <command>`: strict and
@@ -3528,5 +3603,56 @@ mod tests {
         assert_eq!(trigger.twin_ids(), ["pre-push-run-tests-js"]);
         let unrelated = widened("pre-commit  shellcheck  *.sh  block  shellcheck\n");
         assert!(pending(&unrelated[0]).is_none(), "no push twin, no trigger");
+    }
+
+    fn root_runs_members(text: &str) -> Result<String, ParseError> {
+        let lines = parse_lines(text);
+        match lines.last().expect("a line") {
+            Line::Policy {
+                what: PolicyLine::Set { key, value },
+                ..
+            } => {
+                assert_eq!(key, "amont.rootRunsMembers");
+                Ok(value.clone())
+            }
+            broken => Err(why(broken)),
+        }
+    }
+
+    /// The scripts a root declares it runs for every member: the npm gate's
+    /// names, comma-separated, or `none`; nothing else, and once.
+    #[test]
+    fn root_runs_members_is_strict_and_set_once() {
+        assert_eq!(
+            root_runs_members("set rootRunsMembers test, typecheck\n"),
+            Ok("test,typecheck".to_string())
+        );
+        assert_eq!(
+            root_runs_members("set rootRunsMembers test:unit\n"),
+            Ok("test:unit".to_string())
+        );
+        assert_eq!(
+            root_runs_members("set rootRunsMembers NONE\n"),
+            Ok("none".to_string())
+        );
+        for bad in [
+            "set rootRunsMembers tests",
+            "set rootRunsMembers lint",
+            "set rootRunsMembers none,test",
+            "set rootRunsMembers test,",
+            "set rootRunsMembers test,,typecheck",
+        ] {
+            assert!(
+                matches!(
+                    root_runs_members(bad),
+                    Err(ParseError::BadRootRunsMembers(_))
+                ),
+                "{bad:?} must be loud"
+            );
+        }
+        let twice = parse_lines("set rootRunsMembers test\nset rootRunsMembers none\n");
+        assert!(
+            matches!(why(&twice[1]), ParseError::BadRootRunsMembers(why) if why == "it is set twice")
+        );
     }
 }

@@ -230,7 +230,7 @@ runners or flags. The repository says what its root scripts do.
     `a_stamped_tip_cannot_cover_files_outside_the_pairs_scope` also asserts
     its line, plus one test per reason.
   - `crates/greengate/tests/it/run_tests_js.rs`: the JS wording.
-- [ ] Phase 3 — a declared root covers its members, and a possible repeat
+- [x] Phase 3 — a declared root covers its members, and a possible repeat
   is announced.
   - `crates/greengate-runtime/src/manifest.rs`: `rootRunsMembers` joins the
     `set` allowlist: policy, strict, once, like `onBusy`; a comma-separated
@@ -285,6 +285,12 @@ runners or flags. The repository says what its root scripts do.
   `scope_from_twin` and `scope_twin`; the reasons also print before a refused
   push; the commit-time line unions every twin (a declared `pre-push` line and
   the built-in gate); entrypoints load through `manifest::load_resolved`.
+- 2026-11-11 — Phase 3 changes found while implementing it: the summary line of
+  skipped members goes through `say!`, not the quiet-suppressible success
+  helper, because a line that says tests were not run must not be hideable; the
+  workspace globs match `<glob>/package.json`, so `libs/**` also covers `libs`;
+  a stale `target/debug/greengate` once made the real-layout check look broken,
+  so that check rebuilds the binary first.
 - 2026-11-10 — Name why a pair did not vouch, reversing the deliberate
   silence at run_tests.rs:252-254, because the line says "running it here",
   not partial coverage, so it cannot read as reassurance.
@@ -338,6 +344,14 @@ failure it would show.
      `1 package covered by the root's test (declared in amont.conf)`, and
      the member's own `npm run test` does not run.
    - Failure it shows: the member's `npm run test` runs after the root's.
+   - Observed (2026-11-11): a fixture built from website-builder's real
+     `pnpm-workspace.yaml` and its 30 real package manifests (apps/builder-api
+     and packages/blob-store changed; the scripts replaced by loggers, since its
+     real suite needs installs), with `set rootRunsMembers test` trusted. The
+     push printed `2 packages covered by the root's test, \`node log.cjs root\`,
+     declared in amont.conf — not repeating them` and the log shows `root`
+     only. (The root's real command is `pnpm -r --workspace-concurrency=2
+     test`, which the summary line would have shown.)
 5. **JS undeclared root, the same copy without the line.**
    - Input: the same touch.
    - Expected: the root and the member both run, and the hint prints once
@@ -345,6 +359,12 @@ failure it would show.
      `set rootRunsMembers none` the hint is gone.
    - Failure it shows: a silent repeat, or a hint on every push after it
      was silenced.
+   - Observed (2026-11-11): the same fixture without the line. `npm run test`
+     ran 1 of 3 in the root, 2 of 3 in apps/builder-api, 3 of 3 in
+     packages/blob-store, and the hint printed once: `test ran at the root and
+     in 2 packages — a repeat if the root runs them`, then `declare it in
+     amont.conf: set rootRunsMembers test   (or: none)`. `none` is covered by
+     `run_tests_js::a_root_declared_to_run_no_members_stops_the_hint`.
 6. **Commit cost.**
    - Input: a `Cargo.lock`-only commit here, and a `package.json`-only commit
      in website-builder, timed with 3.0.1 and with the branch.
