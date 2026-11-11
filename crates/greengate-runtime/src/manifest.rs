@@ -1897,7 +1897,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
 /// and set once. The value is a comma-separated list of the npm gate's script
 /// names ([`NPM_GATE_SCRIPTS`]), or `none` standing alone; it is stored with
 /// `none` lowercased and the names as written.
-fn parse_root_runs_members(lineno: usize, value: &str, earlier: &[Line]) -> Line {
+fn parse_root_runs_members(lineno: usize, raw_scripts: &str, earlier: &[Line]) -> Line {
     const KEY: &str = "amont.rootRunsMembers";
     let broken = |why: String| {
         broken_at(
@@ -1913,7 +1913,7 @@ fn parse_root_runs_members(lineno: usize, value: &str, earlier: &[Line]) -> Line
     if twice {
         return broken("it is set twice".to_string());
     }
-    let items: Vec<&str> = value.split(',').map(str::trim).collect();
+    let items: Vec<&str> = raw_scripts.split(',').map(str::trim).collect();
     if items.iter().any(|item| item.is_empty()) {
         return broken(
             "the value is script names separated by commas, or `none`; an empty name is neither"

@@ -689,17 +689,16 @@ fn a_script_declaration_also_fires_on_the_js_files_its_push_gate_runs_for() {
 // ran: `ran.log` beside `log.js`, one line per run.
 
 /// A workspace of `packages/a` and `packages/b`, plus `tools/x` outside the
-/// workspace globs, with the root `test` defined or not, and `conf` committed
+/// workspace globs, with the root's `scripts` body given, and `conf` committed
 /// as `amont.conf` when it is not empty. Returns the base to push from, with
 /// a `.ts` change in `packages/a` and in `tools/x` committed after it.
-fn workspace_repo(root_defines_test: bool, conf: &str) -> (Repo, String) {
-    let root_scripts = if root_defines_test {
-        r#""test":"node log.js root""#
-    } else {
-        ""
-    };
+fn workspace_repo(root_scripts: &str, conf: &str) -> (Repo, String) {
     workspace_repo_with(root_scripts, r#"["packages/*"]"#, conf)
 }
+
+/// A root whose `test` logs `root`, and one that defines no scripts at all.
+const ROOT_TEST: &str = r#""test":"node log.js root""#;
+const ROOT_NO_SCRIPTS: &str = "";
 
 /// The same workspace with the root's `scripts` body and its `workspaces` value
 /// (JSON) given.
@@ -750,7 +749,7 @@ fn a_declared_root_covers_its_members_and_only_them() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(true, "set rootRunsMembers test\n");
+    let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers test\n");
     let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert_eq!(
@@ -778,7 +777,7 @@ fn an_undeclared_root_runs_its_members_and_says_how_to_declare_it() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(true, "");
+    let (repo, base) = workspace_repo(ROOT_TEST, "");
     let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
@@ -804,7 +803,7 @@ fn a_root_declared_to_run_no_members_stops_the_hint() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(true, "set rootRunsMembers none\n");
+    let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers none\n");
     let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
@@ -818,7 +817,7 @@ fn a_declared_script_the_root_does_not_define_skips_nothing() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(false, "set rootRunsMembers test\n");
+    let (repo, base) = workspace_repo(ROOT_NO_SCRIPTS, "set rootRunsMembers test\n");
     let (code, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(code, 0, "{out}");
     assert_eq!(ran(&repo), ["a", "x"], "{out}");
@@ -834,19 +833,19 @@ fn a_local_setting_can_remove_a_declared_name_and_never_add_one() {
         return;
     }
     // Committed `test`, local `none`: the removal counts, so the members run.
-    let (repo, base) = workspace_repo(true, "set rootRunsMembers test\n");
+    let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers test\n");
     repo.git(&["config", "amont.rootRunsMembers", "none"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Committed `none`, local `test`: nothing is added, so the members run.
-    let (repo, base) = workspace_repo(true, "set rootRunsMembers none\n");
+    let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers none\n");
     repo.git(&["config", "amont.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Nothing committed, local `test`: still nothing declared, so it hints.
-    let (repo, base) = workspace_repo(true, "");
+    let (repo, base) = workspace_repo(ROOT_TEST, "");
     repo.git(&["config", "amont.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
@@ -860,7 +859,7 @@ fn an_untrusted_declaration_does_not_count_and_the_hint_says_why() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(true, "");
+    let (repo, base) = workspace_repo(ROOT_TEST, "");
     repo.stage("amont.conf", "set rootRunsMembers test\n");
     repo.commit("chore: declare, untrusted");
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
@@ -878,7 +877,7 @@ fn a_withheld_file_without_the_line_gets_the_ordinary_hint() {
     if missing("npm") || missing("node") {
         return;
     }
-    let (repo, base) = workspace_repo(true, "");
+    let (repo, base) = workspace_repo(ROOT_TEST, "");
     repo.stage("amont.conf", "set onBusy wait\n");
     repo.commit("chore: an untrusted file without the line");
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
@@ -901,7 +900,7 @@ fn a_declared_root_with_an_unreadable_workspace_runs_the_members_and_says_so() {
         return;
     }
     let (repo, base) = workspace_repo_with(
-        r#""test":"node log.js root""#,
+        ROOT_TEST,
         r#"["packages/{a,b}"]"#,
         "set rootRunsMembers test\n",
     );
