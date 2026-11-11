@@ -206,6 +206,31 @@ fn doctor_names_a_3x_kubeconfig() {
     );
 }
 
+/// Doctor names the host sizing and where it came from, on stderr, without
+/// changing its leftover-names stdout or exit code.
+#[test]
+fn doctor_names_the_host_sizing_and_its_source() {
+    let repo = Repo::new();
+    let out = crate::common::amont_cmd()
+        .arg("doctor")
+        .current_dir(&repo.dir)
+        .env("GREENGATE_HOST_CORES", "4")
+        .env("GREENGATE_HOST_SLOTS", "2")
+        .env("GIT_CONFIG_GLOBAL", repo.path("fake-gitconfig"))
+        .output()
+        .expect("run doctor");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("host slots: 4 cores (GREENGATE_HOST_CORES)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("slots 2 (GREENGATE_HOST_SLOTS)"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("host slots"));
+}
+
 #[test]
 fn asking_for_help_moves_nothing() {
     let repo = Repo::new();

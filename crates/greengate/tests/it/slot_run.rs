@@ -30,7 +30,9 @@ fn amont(slots: &Path, args: &[&str]) -> Command {
         .current_dir(crate::common::sandbox().join("cwd"))
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", slots)
-        .env("GREENGATE_HOST_SLOTS", "1");
+        .env("GREENGATE_HOST_SLOTS", "1")
+        // Pinned so every width and cap here is the same on any host.
+        .env("GREENGATE_HOST_CORES", cores().to_string());
     cmd
 }
 
@@ -246,8 +248,9 @@ fn var<'a>(env: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
 }
 
+/// The core count the width tests pin through `GREENGATE_HOST_CORES`.
 fn cores() -> u32 {
-    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
+    8
 }
 
 /// A held command runs `weight × cores / cap` wide, through all four keys,
@@ -255,9 +258,9 @@ fn cores() -> u32 {
 #[test]
 fn a_held_command_is_bounded_to_its_share_of_the_cores() {
     let slots = slot_dir("width");
-    for weight in [1u32, 3] {
+    // 8 cores pinned, 4 slots: weight 1 runs 2 wide, weight 3 runs 6 wide.
+    for (weight, jobs) in [(1u32, 2u32), (3, 6)] {
         let env = env_under(&slots, "4", &["--weight", &weight.to_string()], &[]);
-        let jobs = (weight * cores() / 4).max(1);
         assert_eq!(
             var(&env, "CARGO_BUILD_JOBS"),
             Some(jobs.to_string().as_str()),
@@ -310,7 +313,7 @@ fn a_preset_width_wins_and_an_empty_one_does_not() {
             ("MAKEFLAGS", "--no-print-directory"),
         ],
     );
-    let jobs = (cores() / 4).max(1);
+    let jobs = 2; // 8 cores pinned, 4 slots, weight 1
     assert_eq!(var(&env, "CARGO_BUILD_JOBS"), Some("9"), "{env}");
     assert_eq!(
         var(&env, "RUST_TEST_THREADS"),

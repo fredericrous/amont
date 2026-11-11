@@ -820,14 +820,16 @@ too, the extended silence budget bounds it, so nothing waits forever.
 Settable from `amont.conf` (`set lockWait 900`): how long a workspace's cold
 build holds its lock is the project's to know.
 
-## Host keys: `amont.idleLoadScale` and `amont.hostSlots`
+## Host keys: `amont.idleLoadScale`, `greengate.hostSlots` and `greengate.hostCores`
 
-These two describe the machine, not the repository, so they are read from
+These describe the machine, not the repository, so they are read from
 `--global` or `--system` git config only. A value set in a repository is
 ignored, with one warning naming the key and `--global`; `amont.conf`
 cannot set them. Precedence, highest first: the environment variable
-(`AMONT_IDLE_LOAD_SCALE`, `AMONT_HOST_SLOTS`), then `--global`, then
-`--system`, then the default.
+(`AMONT_IDLE_LOAD_SCALE`, `GREENGATE_HOST_SLOTS`, `GREENGATE_HOST_CORES`),
+then `--global`, then `--system`, then the default. An invalid environment
+value is warned about and the next source is read; an invalid git value is
+warned about and the default is used.
 
 ### `amont.idleLoadScale` — how far a loaded host stretches the silence budget
 
@@ -868,11 +870,11 @@ first served. A held slot is released when the check ends, and by the kernel
 if greengate dies. An greengate started by a check that holds a slot
 (`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
 
-Unset, the count follows the machine (ADR-0014): at most half the cores
-(`max(1, cores/2)`). A free slot is taken only while the one-minute load is
-below the core count, and at most one new holder is admitted every 60 s. The
-first waiter on an empty host always gets one. A number fixes the count,
-with no load test.
+Unset, the count follows the machine (ADR-0021): at most half the physical
+cores (`max(1, cores/2)`, see [`greengate.hostCores`](#greengatehostcores--the-core-count-the-slots-are-sized-from)).
+A free slot is taken only while the one-minute load is below the core count,
+and at most one new holder is admitted every 60 s. The first waiter on an
+empty host always gets one. A number fixes the count, with no load test.
 
 Each holder is also bounded in width: a heavy check or `greengate slot run`
 command runs `max(1, weight × cores / cap)` jobs, through `MAKEFLAGS`,
@@ -885,6 +887,20 @@ hooks: relais's verification commands, and any command run as
 `greengate slot run -- <command>`. A waiter says whom it waits behind
 (`queued behind relais: cargo test (amont-wt-x, 4m)`), and `greengate slots`
 lists the holders. The protocol is [docs/host-slots.md](host-slots.md).
+
+### `greengate.hostCores` — the core count the slots are sized from
+
+```sh
+git config --global greengate.hostCores 12   # default: the physical cores; 1 to 1024
+```
+
+The cap, each holder's width and the admission load test all use one core
+count: the physical cores, never more than the logical count. On a 6-core,
+12-thread laptop that is 6: 3 automatic slots of 2 jobs, admitted while the
+load is below 6. A number replaces it, for a machine where another count
+suits better; `12` there restores the sizing from before ADR-0021.
+`GREENGATE_HOST_CORES` overrides it for one process. relais reads the same
+key through the slots crate. See [docs/host-slots.md](host-slots.md#cores).
 
 ### `amont.onBusy` — what a heavy check does on a busy host
 

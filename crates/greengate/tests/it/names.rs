@@ -125,6 +125,11 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         1,
         "the doctor's usage line naming AMONT_*",
     ),
+    (
+        "greenharness-slots/src/host.rs",
+        2,
+        "a test that the old host-key names are ignored",
+    ),
 ];
 
 /// The three spellings of the old name as the tool's own.

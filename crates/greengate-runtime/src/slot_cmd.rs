@@ -137,7 +137,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     // queue for the slot the parent holds.
     let nested = std::env::var_os(greenharness_slots::HELD_ENV).is_some_and(|v| !v.is_empty());
     let settings = crate::config::Settings::default();
-    let sizing = crate::host_slots::sizing(&settings);
+    let (sizing, machine) = crate::host_slots::sizing_and_machine(&settings);
     let (Some(sizing), false, true) = (sizing, nested, greenharness_slots::SUPPORTED) else {
         return spawn(
             program,
@@ -152,14 +152,17 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     };
     // The width this command may run at, held or not: an unqueued run after
     // a timeout happens when the host is busiest, so it is bounded too.
-    let jobs = greenharness_slots::parallelism(weight, greenharness_slots::cores(), sizing.cap());
+    let slot_cap = sizing.cap_for(machine.cores);
+    let jobs = greenharness_slots::parallelism(weight, machine.cores, slot_cap);
 
     let dir = greenharness_slots::dir();
     let started = Instant::now();
-    let mut waiter = match greenharness_slots::Waiter::new(
+    let mut waiter = match greenharness_slots::Waiter::new_in_on(
+        &dir,
         sizing,
         weight,
         greenharness_slots::Holder::here(SLOT_RUN_HOLDER, &label),
+        machine,
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -190,23 +193,32 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     };
     drop(waiter);
     let waited = started.elapsed().as_millis();
+    // Every line of this run names the cap and cores it was sized for.
+    let record = |outcome: &str| {
+        greenharness_slots::record_wait_named(
+            &dir,
+            SLOT_RUN_HOLDER,
+            greenharness_slots::WaitContext {
+                cap: Some(slot_cap),
+                cores: Some(machine.cores),
+                ..greenharness_slots::WaitContext::default()
+            },
+            weight,
+            Some(jobs),
+            waited,
+            outcome,
+        );
+    };
     let Some(lease) = lease else {
         if run_on_timeout {
-            greenharness_slots::record_wait_jobs(
-                &dir,
-                SLOT_RUN_HOLDER,
-                weight,
-                Some(jobs),
-                waited,
-                "unqueued",
-            );
+            record("unqueued");
             eprintln!(
                 "{BIN}: no host slot freed in {}s; running unqueued (--on-timeout run)",
                 max_wait.as_secs()
             );
             return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
-        greenharness_slots::record_wait(&dir, SLOT_RUN_HOLDER, weight, waited, "timeout");
+        record("timeout");
         eprintln!(
             "{BIN}: no host slot freed in {}s; `{label}` did not run (exit {BUSY_EXIT}). \
              Retry the same command later, or let CI run it.",
@@ -214,14 +226,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         );
         return BUSY_EXIT;
     };
-    greenharness_slots::record_wait_jobs(
-        &dir,
-        SLOT_RUN_HOLDER,
-        weight,
-        Some(jobs),
-        waited,
-        "admitted",
-    );
+    record("admitted");
     let code = spawn(program, rest, Launch::Held, Some(jobs));
     drop(lease);
     code
@@ -267,6 +272,61 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 /// `amont slots [--json]`.
+/// `6 cores, 12 threads`: the threads only where they differ from the cores
+/// (SMT), and a short tag when the count did not come from plain detection,
+/// so the `slots` header stays inside 80 columns. `doctor` names the key.
+pub fn cores_phrase(cores: u32, threads: u32, source: greenharness_slots::host::Source) -> String {
+    use greenharness_slots::host::Source;
+    let mut phrase = format!("{cores} cores");
+    if threads != cores {
+        phrase.push_str(&format!(", {threads} threads"));
+    }
+    let tag = match source {
+        Source::Env => Some("env"),
+        Source::Global | Source::System => Some("git"),
+        Source::LogicalFallback => Some("logical"),
+        Source::LimitedByAffinity => Some("affinity"),
+        _ => None,
+    };
+    if let Some(tag) = tag {
+        phrase.push_str(&format!(" ({tag})"));
+    }
+    phrase
+}
+
+/// Where a host key's value came from, in words a person can act on: the
+/// variable or the `git config` scope and key, else the detection outcome.
+fn source_label(source: greenharness_slots::host::Source, key: &str, env: &str) -> String {
+    use greenharness_slots::host::Source;
+    match source {
+        Source::Env => env.to_string(),
+        Source::Global => format!("git config --global {key}"),
+        Source::System => format!("git config --system {key}"),
+        other => other.name().to_string(),
+    }
+}
+
+/// The host sizing line `doctor` prints: the core count and the slot count,
+/// each with the source that set it. Any warning about either key is printed
+/// separately, once, by `host_slots::host_sizing`.
+pub fn doctor_line() -> String {
+    use greenharness_slots::host::{CORES_ENV, CORES_KEY, SLOTS_ENV, SLOTS_KEY};
+    let settings = crate::config::Settings::default();
+    let host = crate::host_slots::host_sizing(&settings);
+    let slots = match host.slots.value {
+        None => "off".to_string(),
+        Some(greenharness_slots::Sizing::Auto) => "auto".to_string(),
+        Some(greenharness_slots::Sizing::Fixed(n)) => n.to_string(),
+    };
+    format!(
+        "host slots: {} cores ({}), {} threads; slots {slots} ({})",
+        host.cores.value,
+        source_label(host.cores.source, CORES_KEY, CORES_ENV),
+        greenharness_slots::logical_cores(),
+        source_label(host.slots.source, SLOTS_KEY, SLOTS_ENV),
+    )
+}
+
 pub fn slots_command(args: &[OsString]) -> i32 {
     if let Some(bad) = args.iter().find(|a| *a != "--json") {
         eprintln!("{BIN}: slots: unknown argument {:?}", bad.to_string_lossy());
@@ -274,15 +334,28 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     }
     let json = !args.is_empty();
     let settings = crate::config::Settings::default();
-    let Some(sizing) = crate::host_slots::sizing(&settings) else {
+    let host = crate::host_slots::host_sizing(&settings);
+    let machine = greenharness_slots::Machine {
+        cores: host.cores.value.max(1),
+    };
+    // Additive fields: the core count the slots are sized from, and its source.
+    let cores_json = format!(
+        "\"cores\":{},\"cores_source\":\"{}\"",
+        machine.cores,
+        host.cores.source.name()
+    );
+    let Some(sizing) = host.slots.value else {
         if json {
-            println!("{{\"cap\":0,\"held\":0,\"holders\":[],\"unknown\":0,\"waiting\":0}}");
+            println!(
+                "{{\"cap\":0,{cores_json},\"held\":0,\"holders\":[],\"unknown\":0,\"waiting\":0}}"
+            );
         } else {
             println!("host slots are off (greengate.hostSlots 0)");
         }
         return 0;
     };
-    let status = match greenharness_slots::status(sizing) {
+    let status = match greenharness_slots::status_in_on(&greenharness_slots::dir(), sizing, machine)
+    {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{BIN}: cannot read the host slots: {e}");
@@ -292,9 +365,13 @@ pub fn slots_command(args: &[OsString]) -> i32 {
     let held = status.holders.len() + status.unknown;
     let mode = match sizing {
         greenharness_slots::Sizing::Auto => format!(
-            "auto: load {}, {} cores",
+            "auto: load {}, {}",
             greenharness_slots::load1().map_or("?".to_string(), |l| format!("{l:.1}")),
-            greenharness_slots::cores()
+            cores_phrase(
+                machine.cores,
+                greenharness_slots::logical_cores(),
+                host.cores.source
+            )
         ),
         greenharness_slots::Sizing::Fixed(n) => format!("greengate.hostSlots {n}"),
     };
@@ -305,7 +382,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
             .map(greenharness_slots::Holder::to_json)
             .collect();
         println!(
-            "{{\"cap\":{},\"held\":{held},\"holders\":[{}],\"unknown\":{},\"waiting\":{}}}",
+            "{{\"cap\":{},{cores_json},\"held\":{held},\"holders\":[{}],\"unknown\":{},\"waiting\":{}}}",
             status.cap,
             holders.join(","),
             status.unknown,
@@ -337,6 +414,32 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_cores_phrase_names_threads_and_overrides_only_when_they_matter() {
+        use greenharness_slots::host::Source;
+        assert_eq!(cores_phrase(6, 12, Source::Detected), "6 cores, 12 threads");
+        assert_eq!(cores_phrase(10, 10, Source::Detected), "10 cores");
+        assert_eq!(
+            cores_phrase(4, 12, Source::Env),
+            "4 cores, 12 threads (env)"
+        );
+        assert_eq!(
+            cores_phrase(4, 12, Source::Global),
+            "4 cores, 12 threads (git)"
+        );
+        assert_eq!(
+            cores_phrase(8, 8, Source::LogicalFallback),
+            "8 cores (logical)"
+        );
+        // A large host with every slot held, a heavy load and the longest tag
+        // still fits in 80 columns.
+        let header = format!(
+            "host slots: 64 of 64 held (auto: load 99.9, {})",
+            cores_phrase(128, 256, Source::LimitedByAffinity)
+        );
+        assert!(header.len() <= 80, "{} columns: {header}", header.len());
     }
 
     #[test]

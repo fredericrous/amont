@@ -67,14 +67,68 @@ pub enum Reason {
 /// a push waits at most one `slotWait`.
 static BUSY_SEEN: AtomicBool = AtomicBool::new(false);
 
-/// `greengate.hostSlots`, a host key: unset sizes the slots from the machine
+/// Both host sizing keys, `greengate.hostCores` and `greengate.hostSlots`,
+/// resolved by the slots crate from the environment and this `Settings`'
+/// cached rows: one implementation, shared with relais, and no extra git
+/// spawn. Each warning is printed once.
+pub fn host_sizing(settings: &crate::config::Settings) -> greenharness_slots::host::HostSizing {
+    let rows = crate::config::host_rows(settings);
+    let mut sizing = greenharness_slots::host::resolve(
+        |name| std::env::var(name).ok(),
+        rows.unwrap_or(&[]),
+        greenharness_slots::detect_cores(),
+    );
+    if rows.is_none() {
+        sizing.warnings.push(
+            "git cannot list config with scopes, so the host keys are not read; using the \
+             detected sizing\n  Fix: check that git runs (git config --global --list)"
+                .to_string(),
+        );
+    }
+    for warning in &sizing.warnings {
+        say_once(warning);
+    }
+    sizing
+}
+
+/// A sizing warning on stderr, once per process. Plain text: the warning
+/// sign's colour follows stdout, and this line is on stderr.
+fn say_once(warning: &str) {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static SAID: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let said = SAID.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let fresh = match said.lock() {
+        Ok(mut set) => set.insert(warning.to_string()),
+        Err(_) => true,
+    };
+    if fresh {
+        eprintln!("{}: warning: {warning}", crate::names::BIN);
+    }
+}
+
+/// The slot sizing and the machine it is computed for, from one resolution:
+/// `greengate.hostSlots` (`None` when `0` turns slots off) and
+/// `greengate.hostCores`, else the detected physical core count.
+pub fn sizing_and_machine(
+    settings: &crate::config::Settings,
+) -> (
+    Option<greenharness_slots::Sizing>,
+    greenharness_slots::Machine,
+) {
+    let host = host_sizing(settings);
+    (
+        host.slots.value,
+        greenharness_slots::Machine {
+            cores: host.cores.value.max(1),
+        },
+    )
+}
+
+/// `greengate.hostSlots`: unset sizes the slots from the machine
 /// (`Sizing::Auto`), N fixes them, `0` turns them off (`None`).
 pub fn sizing(settings: &crate::config::Settings) -> Option<greenharness_slots::Sizing> {
-    match crate::config::host_integer_or(settings, "greengate.hostSlots", -1, 0..=64) {
-        0 => None,
-        n if n < 0 => Some(greenharness_slots::Sizing::Auto),
-        n => Some(greenharness_slots::Sizing::Fixed(n as u32)),
-    }
+    sizing_and_machine(settings).0
 }
 
 /// The environment override of `greengate.onBusy`, for one run:
@@ -386,7 +440,11 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         // Nested first: a nested amont must not pay the host-key scan for a
         // slot count it is about to ignore. Neither answer queues, so neither
         // can defer.
-        let sizing = if nested() { None } else { sizing(settings) };
+        let (sizing, machine) = if nested() {
+            (None, greenharness_slots::Machine::detect())
+        } else {
+            sizing_and_machine(settings)
+        };
         let Some(sizing) = sizing else {
             CURRENT.with(|c| c.borrow_mut().settled = true);
             return Ok(false);
@@ -418,17 +476,18 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
             BusyPolicy::Defer { slot_wait } => slot_wait,
         };
-        let cap = u64::from(sizing.cap());
+        let slot_cap = sizing.cap_for(machine.cores);
+        let cap = u64::from(slot_cap);
         // Hook checks take one slot; the width is set whether a slot is
         // granted or the check runs unqueued, which happens at peak load.
-        let jobs = greenharness_slots::parallelism(1, greenharness_slots::cores(), sizing.cap());
+        let jobs = greenharness_slots::parallelism(1, machine.cores, slot_cap);
         let sink = crate::live::current_sink();
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, Some((Instant::now(), cap)));
         }
         let started = Instant::now();
         let holder = holder_for(&name);
-        let mut got = wait_for_slot(sizing, holder.clone(), budget);
+        let mut got = wait_for_slot(sizing, machine, holder.clone(), budget);
         if let (BusyPolicy::Defer { .. }, Err(Reason::TimedOut(_))) = (policy, &got) {
             // A sibling check of this process holds a slot: the host is busy
             // with this commit's own work, which is not a reason to defer.
@@ -441,7 +500,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             } else {
                 Duration::ZERO
             };
-            got = wait_for_slot(sizing, holder, rest);
+            got = wait_for_slot(sizing, machine, holder, rest);
         }
         if let Some((stage, idx)) = &sink {
             stage.queue(*idx, None);
@@ -464,7 +523,13 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        record_acquisition(&name, Some(jobs), waited, outcome);
+        record_acquisition(
+            &name,
+            Some(jobs),
+            Some((slot_cap, machine.cores)),
+            waited,
+            outcome,
+        );
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
@@ -505,7 +570,7 @@ fn take_handed(handed: Parked, name: &str) -> bool {
             "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
-    record_acquisition(name, jobs, Duration::ZERO, "handed");
+    record_acquisition(name, jobs, None, Duration::ZERO, "handed");
     CURRENT.with(|current| {
         let mut current = current.borrow_mut();
         current.held = Some(lease);
@@ -516,7 +581,14 @@ fn take_handed(handed: Parked, name: &str) -> bool {
 }
 
 /// One line of `waits.jsonl` for the check `name`, with where it ran.
-fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: &str) {
+/// `sized` is the (cap, cores) the waiter was sized for, when known.
+fn record_acquisition(
+    name: &str,
+    jobs: Option<u32>,
+    sized: Option<(u32, u32)>,
+    waited: Duration,
+    outcome: &str,
+) {
     let short = crate::short_name(name);
     greenharness_slots::record_wait_named(
         &greenharness_slots::dir(),
@@ -530,6 +602,8 @@ fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: 
             } else {
                 greenharness_slots::WaitPlace::Push
             },
+            cap: sized.map(|(cap, _)| cap),
+            cores: sized.map(|(_, cores)| cores),
         },
         1,
         jobs,
@@ -557,11 +631,18 @@ pub fn bound(cmd: &mut std::process::Command) {
 /// behind.
 fn wait_for_slot(
     sizing: greenharness_slots::Sizing,
+    machine: greenharness_slots::Machine,
     holder: greenharness_slots::Holder,
     budget: Duration,
 ) -> Result<greenharness_slots::Lease, Reason> {
     let started = Instant::now();
-    let mut waiter = match greenharness_slots::Waiter::new(sizing, 1, holder) {
+    let mut waiter = match greenharness_slots::Waiter::new_in_on(
+        &greenharness_slots::dir(),
+        sizing,
+        1,
+        holder,
+        machine,
+    ) {
         Ok(w) => w,
         Err(e) if e.kind() == std::io::ErrorKind::Other => {
             return Err(Reason::DirUnsafe(e.to_string()))
@@ -594,8 +675,11 @@ pub fn behind(queue: &greenharness_slots::Queue) -> String {
     if queue.unknown > 0 {
         who.push(format!("{} unknown (old client)", queue.unknown));
     }
+    let reason = queue
+        .reason
+        .map_or(String::new(), |r| format!(" ({})", r.describe()));
     format!(
-        "queued behind {} · {} waiting",
+        "queued behind {}{reason} · {} waiting · see {BIN} slots",
         who.join(", "),
         queue.waiting.max(1)
     )

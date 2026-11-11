@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub mod host;
+
 /// Exported to the command a slot holder runs; an amont (or a wrapper)
 /// started under it does not queue again for the slot its parent holds.
 pub const HELD_ENV: &str = "GREENHARNESS_HOST_SLOT";
@@ -75,10 +77,97 @@ impl Sizing {
 }
 
 /// Logical cores this process may run on.
-pub fn cores() -> u32 {
+pub fn logical_cores() -> u32 {
     std::thread::available_parallelism()
         .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
         .unwrap_or(1)
+}
+
+/// The cores a heavy job should count: physical where the OS reports them,
+/// never more than the logical count (which also honours a cgroup or affinity
+/// limit). Hyper-threads share a core, so 6 physical cores with 12 threads
+/// count 6 here; the width and the load test follow from that.
+pub fn cores() -> u32 {
+    detect_cores().value
+}
+
+/// [`cores`] and how it was found ([`host::choose_cores`]). The physical
+/// count is read from the OS once per process: a waiter probes every 200 ms.
+pub fn detect_cores() -> host::Resolved<u32> {
+    static PHYSICAL: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    host::choose_cores(*PHYSICAL.get_or_init(physical_cores_os), logical_cores())
+}
+
+/// The physical core count the OS reports, if it reports one.
+#[cfg(target_os = "macos")]
+fn physical_cores_os() -> Option<u32> {
+    use std::ffi::{c_char, c_void, CString};
+    extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *mut c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    let name = CString::new("hw.physicalcpu").ok()?;
+    let mut value: i32 = 0;
+    let mut len = std::mem::size_of::<i32>();
+    // SAFETY: `name` is a valid NUL-terminated string; `value` and `len` are
+    // a writable i32 and its size, as sysctlbyname's oldp/oldlenp contract wants.
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut i32).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && value > 0).then(|| u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+/// The physical core count from sysfs first (one `core_cpus_list` per CPU),
+/// then `/proc/cpuinfo`. Neither reports a count on some hosts (aarch64 VMs),
+/// so the caller falls back to the logical count.
+#[cfg(target_os = "linux")]
+fn physical_cores_os() -> Option<u32> {
+    let lists: Vec<String> = fs::read_dir("/sys/devices/system/cpu")
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with("cpu") && n[3..].chars().all(|c| c.is_ascii_digit()) && n.len() > 3
+        })
+        .filter_map(|e| fs::read_to_string(e.path().join("topology/core_cpus_list")).ok())
+        .collect();
+    host::physical_from_core_lists(lists.iter().map(String::as_str)).or_else(|| {
+        fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|text| host::physical_from_cpuinfo(&text))
+    })
+}
+
+/// No physical count is read on other platforms: the logical count stands.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn physical_cores_os() -> Option<u32> {
+    None
+}
+
+/// The machine a sizing is computed for: its core count, passed explicitly so
+/// the cap, the width and the admission load test all see the same number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Machine {
+    pub cores: u32,
+}
+
+impl Machine {
+    /// This machine, as [`cores`] reports it.
+    pub fn detect() -> Machine {
+        Machine { cores: cores() }
+    }
 }
 
 /// The variables that bound how wide a heavy job runs. A holder that ran at
@@ -422,6 +511,39 @@ pub struct Queue {
     /// Slots held by a client that writes no record (amont ≤ 1.61, old
     /// relais).
     pub unknown: usize,
+    /// Why this waiter was not admitted on this poll, when it was decided.
+    pub reason: Option<WaitReason>,
+}
+
+/// Why a waiter was not admitted: what a person reading the queue line can
+/// act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitReason {
+    /// Others are ahead of it in the queue.
+    Behind { ahead: usize },
+    /// Every slot is held.
+    SlotsFull { held: usize, cap: u32 },
+    /// A slot is free, but the one-minute load is at or above the core count.
+    /// The load is in tenths (`310` is 31.0), so the queue stays `Eq`.
+    Load { load_tenths: u32, cores: u32 },
+    /// A slot is free, but a holder was admitted under a minute ago.
+    Ramp,
+}
+
+impl WaitReason {
+    /// `load 31.0 >= 6 cores`, `slots full 3/3`, `2 ahead`, `ramp`.
+    pub fn describe(&self) -> String {
+        match self {
+            WaitReason::Behind { ahead } => format!("{ahead} ahead"),
+            WaitReason::SlotsFull { held, cap } => format!("slots full {held}/{cap}"),
+            WaitReason::Load { load_tenths, cores } => format!(
+                "load {}.{} >= {cores} cores",
+                load_tenths / 10,
+                load_tenths % 10
+            ),
+            WaitReason::Ramp => "one new holder per minute".to_string(),
+        }
+    }
 }
 
 /// The answer to one [`Waiter::poll`].
@@ -458,6 +580,7 @@ impl Probe {
 pub struct Waiter {
     dir: PathBuf,
     sizing: Sizing,
+    machine: Machine,
     weight: u32,
     holder: Holder,
     ticket: Option<(PathBuf, File)>,
@@ -474,6 +597,18 @@ impl Waiter {
     /// lock, so no visible ticket is ever unlocked, and cleanup (which removes
     /// visible tickets whose lock is free) can never take a live one.
     pub fn new_in(dir: &Path, sizing: Sizing, weight: u32, holder: Holder) -> io::Result<Waiter> {
+        Waiter::new_in_on(dir, sizing, weight, holder, Machine::detect())
+    }
+
+    /// [`Waiter::new_in`] for a given machine: the width is computed from
+    /// `machine.cores` and the sizing's cap on it.
+    pub fn new_in_on(
+        dir: &Path,
+        sizing: Sizing,
+        weight: u32,
+        holder: Holder,
+        machine: Machine,
+    ) -> io::Result<Waiter> {
         safe_dir(dir).map_err(io::Error::other)?;
         let queue = dir.join("queue");
         let nanos = SystemTime::now()
@@ -491,11 +626,16 @@ impl Waiter {
         let weight = weight.max(1);
         let mut holder = holder;
         if holder.jobs.is_none() {
-            holder.jobs = Some(parallelism(weight, cores(), sizing.cap()));
+            holder.jobs = Some(parallelism(
+                weight,
+                machine.cores,
+                sizing.cap_for(machine.cores),
+            ));
         }
         Ok(Waiter {
             dir: dir.to_path_buf(),
             sizing,
+            machine,
             weight,
             holder,
             ticket: Some((visible, file)),
@@ -504,7 +644,17 @@ impl Waiter {
 
     /// Ask once, without blocking.
     pub fn poll(&mut self) -> io::Result<Poll> {
-        self.poll_with(Probe::now())
+        self.poll_with(self.probe())
+    }
+
+    /// The probe [`Waiter::poll`] decides with: the load and clock now, and
+    /// the cores of the machine this waiter was sized for, so an override of
+    /// the core count reaches the load test as well as the width.
+    pub fn probe(&self) -> Probe {
+        Probe {
+            cores: self.machine.cores,
+            ..Probe::now()
+        }
     }
 
     /// [`Waiter::poll`] against a given load and clock.
@@ -544,11 +694,30 @@ impl Waiter {
         };
         if !admit {
             let (holders, unknown) = read_holders(&self.dir, &held);
+            let reason = if position > 0 {
+                WaitReason::Behind { ahead: position }
+            } else if free.len() < weight {
+                WaitReason::SlotsFull {
+                    held: held.len(),
+                    cap,
+                }
+            } else {
+                match probe.load1 {
+                    Some(load1) if load1 >= f64::from(probe.cores) => WaitReason::Load {
+                        // In tenths, without a lossy cast: a load is a small
+                        // non-negative number, and anything else saturates.
+                        load_tenths: format!("{:.0}", load1 * 10.0).parse().unwrap_or(u32::MAX),
+                        cores: probe.cores,
+                    },
+                    _ => WaitReason::Ramp,
+                }
+            };
             return Ok(Poll::Waiting(Queue {
                 position,
                 waiting: live.len(),
                 holders,
                 unknown,
+                reason: Some(reason),
             }));
         }
         let mut files = Vec::new();
@@ -620,8 +789,13 @@ pub fn status(sizing: Sizing) -> io::Result<Status> {
 }
 
 pub fn status_in(dir: &Path, sizing: Sizing) -> io::Result<Status> {
+    status_in_on(dir, sizing, Machine::detect())
+}
+
+/// [`status_in`] for a given machine: the cap is the sizing's on its cores.
+pub fn status_in_on(dir: &Path, sizing: Sizing, machine: Machine) -> io::Result<Status> {
     safe_dir(dir).map_err(io::Error::other)?;
-    let cap = sizing.cap();
+    let cap = sizing.cap_for(machine.cores);
     let waiting = live_tickets_readonly(dir)?;
     let Some(_admission) = platform::try_lock(&dir.join("admission"))? else {
         let held: Vec<u32> = (0..cap).collect();
@@ -679,6 +853,13 @@ pub struct WaitContext<'a> {
     pub name: Option<&'a str>,
     /// Where the acquisition happened.
     pub place: WaitPlace,
+    /// The slot cap the waiter was sized against, when the caller knows it;
+    /// written as `"cap"` so lines from before and after a sizing change can
+    /// be told apart.
+    pub cap: Option<u32>,
+    /// The core count the waiter was sized for, when the caller knows it;
+    /// written as `"cores"`. `None` writes the detected count.
+    pub cores: Option<u32>,
 }
 
 /// Where an acquisition happened: a plain push, a push rehearsal in a
@@ -705,6 +886,9 @@ pub fn record_wait_named(
 ) {
     let load = load1().map_or("null".to_string(), |l| format!("{l:.2}"));
     let jobs = jobs.map_or(String::new(), |j| format!(",\"jobs\":{j}"));
+    let cap = context
+        .cap
+        .map_or(String::new(), |c| format!(",\"cap\":{c}"));
     let name = context
         .name
         .map_or(String::new(), |n| format!(",\"name\":\"{}\"", escape(n)));
@@ -720,10 +904,11 @@ pub fn record_wait_named(
         WaitPlace::Prestage => (",\"rehearsal\":true", ",\"prestage\":true"),
     };
     let line = format!(
-        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
+        "{{\"at_ms\":{},\"tool\":\"{}\"{name},\"pid\":{}{session},\"weight\":{weight}{jobs}{cap},\"cores\":{},\"waited_ms\":{waited_ms},\"load1\":{load},\"outcome\":\"{}\"{rehearsal}{prestage}}}\n",
         now_ms(),
         escape(tool),
         std::process::id(),
+        context.cores.unwrap_or_else(cores),
         escape(outcome)
     );
     if let Ok(mut f) = OpenOptions::new()
@@ -1123,9 +1308,30 @@ mod tests {
         let mut a = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "a")).unwrap();
         let _first = granted(a.poll_with(idle(t0)).unwrap());
         let mut b = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "b")).unwrap();
-        waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
-        waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
+        let ramp = waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
+        assert_eq!(ramp.reason, Some(WaitReason::Ramp));
+        let load = waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
+        assert_eq!(
+            load.reason,
+            Some(WaitReason::Load {
+                load_tenths: 200,
+                cores: 12
+            })
+        );
+        assert_eq!(load.reason.unwrap().describe(), "load 20.0 >= 12 cores");
         let _second = granted(b.poll_with(idle(t0 + 61_000)).unwrap());
+    }
+
+    /// With every slot held, a waiter says so, whatever the load.
+    #[test]
+    fn a_full_host_says_its_slots_are_full() {
+        let d = scratch("full");
+        let mut a = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let _held = granted(a.poll_with(idle(1_000_000)).unwrap());
+        let mut b = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "b")).unwrap();
+        let q = waiting(b.poll_with(idle(1_000_000)).unwrap());
+        assert_eq!(q.reason, Some(WaitReason::SlotsFull { held: 1, cap: 1 }));
+        assert_eq!(q.reason.unwrap().describe(), "slots full 1/1");
     }
 
     /// A sibling of a holder in the same process (one commit's checks)
@@ -1438,6 +1644,76 @@ mod tests {
         assert_eq!(get("RUST_TEST_THREADS").as_deref(), Some("2"));
     }
 
+    /// On a four-core machine a weight-2 waiter under automatic sizing gets
+    /// cap 2 and so 2 x 4 / 2 = 4 jobs, from the machine it was given, not
+    /// from the host it runs on.
+    #[test]
+    fn a_waiter_sizes_from_the_machine_it_is_given() {
+        let d = scratch("machine");
+        let w = Waiter::new_in_on(
+            &d,
+            Sizing::Auto,
+            2,
+            Holder::here("t", "a"),
+            Machine { cores: 4 },
+        )
+        .unwrap();
+        assert_eq!(w.holder.jobs, Some(4));
+        drop(w);
+        let _ = fs::remove_dir_all(&d); // best-effort: scratch
+    }
+
+    /// A waiter sized for four cores probes with four, so poll() refuses at
+    /// load 4.0 whatever the host has (the override reaches the load test).
+    #[test]
+    fn a_waiter_probes_with_the_machine_it_was_sized_for() {
+        let d = scratch("probe-machine");
+        let mut first = Waiter::new_in_on(
+            &d,
+            Sizing::Auto,
+            1,
+            Holder::here("t", "a"),
+            Machine { cores: 4 },
+        )
+        .unwrap();
+        let _held = granted(first.poll_with(idle(1_000_000)).unwrap());
+        let w = Waiter::new_in_on(
+            &d,
+            Sizing::Auto,
+            1,
+            Holder::here("t", "b"),
+            Machine { cores: 4 },
+        )
+        .unwrap();
+        assert_eq!(w.probe().cores, 4);
+        let mut w = w;
+        let at_four = Probe {
+            load1: Some(4.0),
+            now_ms: 1_000_000 + 61_000,
+            ..w.probe()
+        };
+        let q = waiting(w.poll_with(at_four).unwrap());
+        assert_eq!(
+            q.reason,
+            Some(WaitReason::Load {
+                load_tenths: 40,
+                cores: 4
+            })
+        );
+        let _ = fs::remove_dir_all(&d); // best-effort: scratch
+    }
+
+    /// Status reports the cap for the machine it is given, not the host's.
+    #[test]
+    fn status_caps_from_the_machine_it_is_given() {
+        let d = scratch("status-machine");
+        let st = status_in_on(&d, Sizing::Auto, Machine { cores: 4 }).unwrap();
+        assert_eq!(st.cap, 2);
+        let st = status_in_on(&d, Sizing::Auto, Machine { cores: 12 }).unwrap();
+        assert_eq!(st.cap, 6);
+        let _ = fs::remove_dir_all(&d); // best-effort: scratch
+    }
+
     /// A waiter's record carries the width its weight buys.
     #[test]
     fn a_waiters_record_carries_its_width() {
@@ -1562,6 +1838,8 @@ mod tests {
             WaitContext {
                 name: Some("cargo-test"),
                 place: WaitPlace::Prestage,
+                cap: Some(3),
+                cores: Some(5),
             },
             1,
             Some(3),
@@ -1570,6 +1848,9 @@ mod tests {
         );
         let line = fs::read_to_string(dir.join("waits.jsonl")).unwrap();
         assert_eq!(raw(&line, "name").as_deref(), Some("cargo-test"));
+        // The sized-for count, not the detected one, and the cap with it.
+        assert_eq!(raw(&line, "cores").as_deref(), Some("5"));
+        assert_eq!(raw(&line, "cap").as_deref(), Some("3"));
         assert_eq!(raw(&line, "pid"), Some(std::process::id().to_string()));
         assert!(line.contains("\"rehearsal\":true"));
         assert!(line.contains("\"prestage\":true"));
