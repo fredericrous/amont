@@ -5,7 +5,7 @@
 //! `git config --type=bool` implements git-config(1) by definition: `on`,
 //! `yes`, `1`, an empty value, and every capitalisation of each. A hand-rolled
 //! `matches!(v, "true" | "1" | "yes")` is our own dialect wearing git's
-//! clothes, and it had already drifted — `git config amont.fix on` looked
+//! clothes, and it had already drifted — `git config greengate.fix on` looked
 //! like it worked and did not.
 //!
 //! The exit code carries the part that matters most:
@@ -28,7 +28,7 @@ use std::ops::RangeInclusive;
 use std::sync::{Mutex, OnceLock};
 
 /// What a key said. Three answers, because "unset" is a state this project
-/// makes decisions with — `amont.commit.gitmoji` has four meanings and one
+/// makes decisions with — `greengate.commit.gitmoji` has four meanings and one
 /// of them is absence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value<T> {
@@ -134,7 +134,7 @@ fn untyped(key: &str) -> Value<String> {
 
 /// Is `key` set at a scope that outranks policy (local/worktree/command)?
 ///
-/// One lazily-cached `git config --show-scope --get-regexp '^amont\.'` for
+/// One lazily-cached `git config --show-scope --get-regexp '^greengate\.'` for
 /// the whole process — this is the PRECEDENCE reader, deliberately separate
 /// from [`scope_of`], which is `--show-origin`-based and display-oriented.
 /// Scope words `system`/`global` rank below policy; every other word —
@@ -147,18 +147,20 @@ fn untyped(key: &str) -> Value<String> {
 /// beats policy.
 fn key_set_above_policy(settings: &crate::config::Settings, key: &str) -> bool {
     let above = settings.scoped.get_or_init(|| {
-        crate::git::stdout(&["config", "--show-scope", "--get-regexp", r"^amont\."]).map(|scoped| {
-            scoped
-                .lines()
-                .filter_map(|line| {
-                    let (scope, rest) = line.split_once('\t')?;
-                    match scope {
-                        "system" | "global" => None,
-                        _ => rest.split_whitespace().next().map(str::to_ascii_lowercase),
-                    }
-                })
-                .collect()
-        })
+        crate::git::stdout(&["config", "--show-scope", "--get-regexp", r"^greengate\."]).map(
+            |scoped| {
+                scoped
+                    .lines()
+                    .filter_map(|line| {
+                        let (scope, rest) = line.split_once('\t')?;
+                        match scope {
+                            "system" | "global" => None,
+                            _ => rest.split_whitespace().next().map(str::to_ascii_lowercase),
+                        }
+                    })
+                    .collect()
+            },
+        )
     });
     match above {
         Some(set) => set.contains(&key.to_ascii_lowercase()),
@@ -223,7 +225,7 @@ pub enum QuietOverride {
 }
 
 impl Settings {
-    /// Decide `amont.quiet` for this run, ahead of the configuration:
+    /// Decide `greengate.quiet` for this run, ahead of the configuration:
     /// `amont run --quiet` / `--raw`. Only before anything has read it —
     /// a read first would have fixed the answer, and the flag would do
     /// nothing; that is a bug in the caller, not a configuration.
@@ -234,7 +236,7 @@ impl Settings {
         };
         self.quiet
             .set(quiet)
-            .expect("amont.quiet was read before --quiet/--raw could decide it");
+            .expect("greengate.quiet was read before --quiet/--raw could decide it");
     }
 
     /// The policy a trusted manifest declared — empty when nothing was
@@ -397,14 +399,14 @@ pub fn integer_or(
 /// repository is ignored with one warning naming the scope to use: two
 /// repositories that disagreed about the host's slot count would each take
 /// slots the other never sees. An environment variable named after the key
-/// (`amont.idleLoadScale` → `AMONT_IDLE_LOAD_SCALE`) outranks both, which
+/// (`greengate.idleLoadScale` → `GREENGATE_IDLE_LOAD_SCALE`) outranks both, which
 /// is the precedence `cli.config.precedence` gives it: flag or environment,
 /// then the person's config, then the system's, then the default. The
 /// `amont.conf` policy ladder does not apply: a committed file cannot set
 /// a host key.
 ///
 /// One `--show-scope` scan per `Settings`, run on the first host key read
-/// and never before: `amont.idleLoadScale` is read when the first observed
+/// and never before: `greengate.idleLoadScale` is read when the first observed
 /// tool of any check is spawned, so a commit that runs no tool spawns
 /// nothing for it and one that does pays exactly one spawn, pinned by
 /// `spawn_budget.rs`.
@@ -449,7 +451,7 @@ pub fn host_integer_or(
         }
     }
     let rows = settings.host.get_or_init(|| {
-        git::stdout(&["config", "--show-scope", "--get-regexp", r"^amont\."]).map(|out| {
+        git::stdout(&["config", "--show-scope", "--get-regexp", r"^greengate\."]).map(|out| {
             out.lines()
                 .filter_map(|line| {
                     let (scope, rest) = line.split_once('\t')?;
@@ -484,11 +486,11 @@ pub fn host_integer_or(
         .unwrap_or(default)
 }
 
-/// `amont.idleLoadScale` → `AMONT_IDLE_LOAD_SCALE`: the environment name a
+/// `greengate.idleLoadScale` → `GREENGATE_IDLE_LOAD_SCALE`: the environment name a
 /// host key answers to.
 pub fn host_env_name(key: &str) -> String {
-    let mut out = String::from("AMONT");
-    for part in key.trim_start_matches("amont.").split('.') {
+    let mut out = String::from("GREENGATE");
+    for part in key.trim_start_matches("greengate.").split('.') {
         out.push('_');
         for c in part.chars() {
             if c.is_ascii_uppercase() {
@@ -506,14 +508,14 @@ mod host_key_tests {
     fn a_host_key_names_its_environment_variable() {
         use super::host_env_name;
         assert_eq!(
-            host_env_name("amont.idleLoadScale"),
-            "AMONT_IDLE_LOAD_SCALE"
+            host_env_name("greengate.idleLoadScale"),
+            "GREENGATE_IDLE_LOAD_SCALE"
         );
-        assert_eq!(host_env_name("amont.hostSlots"), "AMONT_HOST_SLOTS");
-        assert_eq!(host_env_name("amont.timeout"), "AMONT_TIMEOUT");
+        assert_eq!(host_env_name("greengate.hostSlots"), "GREENGATE_HOST_SLOTS");
+        assert_eq!(host_env_name("greengate.timeout"), "GREENGATE_TIMEOUT");
         assert_eq!(
-            host_env_name("amont.commit.bodyWrap"),
-            "AMONT_COMMIT_BODY_WRAP"
+            host_env_name("greengate.commit.bodyWrap"),
+            "GREENGATE_COMMIT_BODY_WRAP"
         );
     }
 }
@@ -543,8 +545,8 @@ pub fn enumerated_or(
 /// Same shape as `registry::Overrides::read`, for the same reason.
 ///
 /// **Names come back lowercased.** Git lowercases the section and key parts of
-/// every name it prints, so `amont.commit.subjectMax` is reported as
-/// `amont.commit.subjectmax`. Keys are case-insensitive on lookup, so this
+/// every name it prints, so `greengate.commit.subjectMax` is reported as
+/// `greengate.commit.subjectmax`. Keys are case-insensitive on lookup, so this
 /// only affects comparison here — hence [`is_present`] rather than a bare
 /// `contains`.
 pub fn present(settings: &crate::config::Settings, prefix: &str) -> BTreeSet<String> {
@@ -734,7 +736,7 @@ mod tests {
     fn a_key_name_is_escaped_before_it_becomes_a_pattern() {
         // Without escaping, `.` matches any character and the prefix would
         // also select `amontXcommit.*`.
-        assert_eq!(regex_escape("amont.commit."), "amont\\.commit\\.");
+        assert_eq!(regex_escape("greengate.commit."), "greengate\\.commit\\.");
         assert_eq!(regex_escape("plain"), "plain");
     }
 
@@ -742,12 +744,12 @@ mod tests {
     /// case would answer "not set" for every camelCase key we ship.
     #[test]
     fn presence_is_case_insensitive_because_git_lowercases_names() {
-        let names: BTreeSet<String> = ["amont.commit.subjectmax".to_string()]
+        let names: BTreeSet<String> = ["greengate.commit.subjectmax".to_string()]
             .into_iter()
             .collect();
-        assert!(is_present(&names, "amont.commit.subjectMax"));
-        assert!(is_present(&names, "AMONT.COMMIT.SUBJECTMAX"));
-        assert!(!is_present(&names, "amont.commit.bodyWrap"));
+        assert!(is_present(&names, "greengate.commit.subjectMax"));
+        assert!(is_present(&names, "GREENGATE.COMMIT.SUBJECTMAX"));
+        assert!(!is_present(&names, "greengate.commit.bodyWrap"));
     }
 
     #[test]

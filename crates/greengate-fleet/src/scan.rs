@@ -124,7 +124,7 @@ pub struct Repo {
     /// trigger silences fifteen), and local/global are indistinguishable once
     /// merged.
     pub skips: Vec<SkipEntry>,
-    /// `amont.severity.*` entries. A downgraded check still runs and still
+    /// `greengate.severity.*` entries. A downgraded check still runs and still
     /// prints its failure, so unlike a skip it leaves no trace on screen — a
     /// repo that enforces nothing reads exactly like one that enforces
     /// everything unless this column says otherwise.

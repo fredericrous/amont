@@ -64,7 +64,7 @@ use crate::ui::valid_sign;
 /// `--worktree` config was the other candidate. It needs
 /// `extensions.worktreeConfig=true` on the repository, which is amont writing a
 /// repo-wide git setting other tools also read, to fix a problem of its own.
-pub const KEY: &str = "amont.trusted";
+pub const KEY: &str = "greengate.trusted";
 
 /// Content id of `path`, as git would compute it.
 ///

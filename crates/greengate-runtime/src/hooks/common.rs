@@ -31,7 +31,7 @@ static OVERRIDE: OnceLock<Vec<String>> = OnceLock::new();
 /// this commit. `amont run --all-files` replaces the file set with every
 /// tracked path — which is that precondition being FALSE.
 ///
-/// With `amont.fix true`, every fixer's `restage(&files)` would then `git
+/// With `greengate.fix true`, every fixer's `restage(&files)` would then `git
 /// add` everything in the working tree that differs from the index, turning a
 /// read-only "does my tree pass" query into `git add .`. That is the hazard §2
 /// of docs/index-fidelity-and-run-modes.md names.
@@ -232,7 +232,7 @@ pub(crate) enum Version {
 
 /// How long a `--version` probe may take. A probe runs before the check
 /// itself, so a tool that hangs on `--version` must not hold the commit for
-/// `amont.timeout` (an hour by default): five seconds, then its whole process
+/// `greengate.timeout` (an hour by default): five seconds, then its whole process
 /// group is killed (`tree_run::run_output`).
 pub(crate) const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -702,11 +702,11 @@ pub fn strip_git_env(cmd: &mut Command) {
 
 /// The variable a pre-commit command is told the index being committed in:
 /// see [`commit_index`].
-pub const INDEX_ENV: &str = "AMONT_INDEX_FILE";
+pub const INDEX_ENV: &str = "GREENGATE_INDEX_FILE";
 /// The absolute git dir of the repository that index belongs to: a consumer
 /// honours [`INDEX_ENV`] only where its own `git rev-parse --absolute-git-dir`
 /// is this, so a suite's fixture repository never reads the outer index.
-pub const INDEX_GIT_DIR_ENV: &str = "AMONT_INDEX_GIT_DIR";
+pub const INDEX_GIT_DIR_ENV: &str = "GREENGATE_INDEX_GIT_DIR";
 
 /// The index `git commit` is sealing, and the repository it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,7 +782,7 @@ fn path_from_bytes(bytes: Vec<u8>) -> std::path::PathBuf {
 
 /// The wall-clock CEILING for one check's spawned command, in seconds.
 ///
-/// `amont.timeout`, default 3600. This used to be 600 and to be the only
+/// `greengate.timeout`, default 3600. This used to be 600 and to be the only
 /// clock, which made it answer two different questions with one number: "is
 /// this tool stuck?" and "is this suite slow?". A stuck tool is silent, and
 /// [`idle_timeout`] catches it in minutes; what is left for the ceiling is
@@ -791,14 +791,14 @@ fn path_from_bytes(bytes: Vec<u8>) -> std::path::PathBuf {
 /// checks must not each spawn a `git config` to learn the same number.
 pub fn check_timeout(settings: &crate::config::Settings) -> u64 {
     *settings.timeout.get_or_init(|| {
-        crate::config::integer_or(settings, "amont.timeout", 3600, 0..=86_400) as u64
+        crate::config::integer_or(settings, "greengate.timeout", 3600, 0..=86_400) as u64
     })
 }
 
 /// The SILENCE budget: how long a spawned command may go without writing a
 /// byte before it is judged stuck, in seconds.
 ///
-/// `amont.idleTimeout`, default 120. A hang is silent; a slow test suite
+/// `greengate.idleTimeout`, default 120. A hang is silent; a slow test suite
 /// talks — `cargo test` prints a line per test. Not every one does (vitest
 /// without a terminal prints only its summary), so where CPU can be measured
 /// the budget counts silence AND an idle process tree — see [`Activity`] and
@@ -810,29 +810,29 @@ pub fn check_timeout(settings: &crate::config::Settings) -> u64 {
 /// terminal directly answers to the ceiling alone. `0` disables.
 pub fn idle_timeout(settings: &crate::config::Settings) -> u64 {
     *settings.idle.get_or_init(|| {
-        crate::config::integer_or(settings, "amont.idleTimeout", 120, 0..=86_400) as u64
+        crate::config::integer_or(settings, "greengate.idleTimeout", 120, 0..=86_400) as u64
     })
 }
 
 /// Whether a silent check that is measurably working on CPU is kept alive
-/// past the silence budget — `amont.idleCpuCredit`, default true (ADR-0008,
+/// past the silence budget — `greengate.idleCpuCredit`, default true (ADR-0008,
 /// `hooks.liveness`). `false` restores the silence-only rule everywhere.
 /// Read once per `Settings`, like the two clocks.
 pub fn idle_cpu_credit(settings: &crate::config::Settings) -> bool {
     *settings
         .idle_cpu
-        .get_or_init(|| crate::config::boolean_or(settings, "amont.idleCpuCredit", true))
+        .get_or_init(|| crate::config::boolean_or(settings, "greengate.idleCpuCredit", true))
 }
 
 /// How long a command may sit in a DECLARED wait — a line that says it is
 /// blocked on a lock ([`crate::hooks::wait::marker`]) — before it is killed,
-/// in seconds. `amont.lockWait`, default 600; `0` means until the ceiling.
+/// in seconds. `greengate.lockWait`, default 600; `0` means until the ceiling.
 /// The silence clock does not run during such a wait: the tool has said
 /// what it is doing, and a lock held by another cargo for a minute on a
 /// loaded machine is not a hang (ADR-0009). Read once per `Settings`.
 pub fn lock_wait(settings: &crate::config::Settings) -> LockWait {
     match *settings.lock_wait.get_or_init(|| {
-        crate::config::integer_or(settings, "amont.lockWait", 600, 0..=86_400) as u64
+        crate::config::integer_or(settings, "greengate.lockWait", 600, 0..=86_400) as u64
     }) {
         0 => LockWait::UntilCeiling,
         s => LockWait::Secs(s),
@@ -843,7 +843,7 @@ pub fn lock_wait(settings: &crate::config::Settings) -> LockWait {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockWait {
     Secs(u64),
-    /// `amont.lockWait 0`: the ceiling alone bounds a declared wait — and
+    /// `greengate.lockWait 0`: the ceiling alone bounds a declared wait — and
     /// when the ceiling is off too, the extended silence budget does, so
     /// nothing is ever unbounded.
     UntilCeiling,
@@ -869,7 +869,7 @@ pub const BUSY_MILLI_CORES: u32 = 100;
 /// What the CPU side of [`Activity`] knows. Stored as a `u8`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuState {
-    /// Not sampled: `amont.idleCpuCredit false`, no silence budget, or a
+    /// Not sampled: `greengate.idleCpuCredit false`, no silence budget, or a
     /// platform that cannot measure. The silence-only rule applies.
     Off = 0,
     /// Sampling, but nothing measured yet (the check has not been quiet
@@ -1198,7 +1198,7 @@ impl Activity {
 /// sampled at all: the silence-only rule, as ever. Measured: the silence
 /// budget, because "silent and idle" was actually observed. Unmeasured —
 /// sampling is on but the last sample was late, partial, or has not come
-/// yet: the EXTENDED budget, `amont.idleTimeout × amont.idleLoadScale`,
+/// yet: the EXTENDED budget, `greengate.idleTimeout × greengate.idleLoadScale`,
 /// which is bounded even when the ceiling is off, and never the bare
 /// silence budget, because that would kill on a measurement nobody made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1231,8 +1231,8 @@ pub fn cores(milli: u32) -> String {
 /// The deadline for a network PROBE — an `ls-remote` asked before the real
 /// work, not the work itself. Capped at 30s below [`check_timeout`]: a
 /// probe answers in a second or two when the network is there at all, and
-/// a healthy `amont.timeout` of ten minutes is sized for a test suite, not
-/// for deciding whether the remote is reachable. Shrinking `amont.timeout`
+/// a healthy `greengate.timeout` of ten minutes is sized for a test suite, not
+/// for deciding whether the remote is reachable. Shrinking `greengate.timeout`
 /// below the cap shrinks this too, and `0` keeps meaning no deadline —
 /// somebody who disabled the clock disabled all of it.
 pub fn network_probe_budget(settings: &crate::config::Settings) -> u64 {
@@ -1245,11 +1245,11 @@ pub fn network_probe_budget(settings: &crate::config::Settings) -> u64 {
 /// Which clock killed a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Why {
-    /// The wall-clock ceiling, `amont.timeout`, in seconds.
+    /// The wall-clock ceiling, `greengate.timeout`, in seconds.
     Ceiling(u64),
-    /// The silence budget, `amont.idleTimeout`, in seconds.
+    /// The silence budget, `greengate.idleTimeout`, in seconds.
     Silence(u64),
-    /// A declared wait outlived `amont.lockWait` (or, with that at 0 and
+    /// A declared wait outlived `greengate.lockWait` (or, with that at 0 and
     /// the ceiling off, the extended silence budget), in seconds.
     Waited(crate::hooks::wait::WaitKind, u64),
 }
@@ -1285,18 +1285,18 @@ pub struct Killed {
 /// not move while the command runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Clocks {
-    /// `amont.timeout`; `None` when off.
+    /// `greengate.timeout`; `None` when off.
     pub ceiling: Option<u64>,
-    /// `amont.idleTimeout`; `None` when off or when nobody watches the
+    /// `greengate.idleTimeout`; `None` when off or when nobody watches the
     /// output.
     pub silence: Option<u64>,
-    /// `amont.lockWait`.
+    /// `greengate.lockWait`.
     pub lock_wait: LockWait,
     /// The bound a declared wait falls back to when `lock_wait` says "until
     /// the ceiling" and the ceiling is off: the extended silence budget,
     /// `None` when silence is off too.
     pub extended: Option<u64>,
-    /// `amont.idleLoadScale`: how far the host's load may stretch
+    /// `greengate.idleLoadScale`: how far the host's load may stretch
     /// `silence`; 1 means not at all.
     pub scale: u64,
 }
@@ -1331,7 +1331,7 @@ impl Clocks {
 /// How often the wait loop re-reads the host's load.
 const LOAD_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// `amont.idleLoadScale`: how far the silence budget may stretch, as a
+/// `greengate.idleLoadScale`: how far the silence budget may stretch, as a
 /// factor — under load (ADR-0009, the load-scaled budget) and whenever the
 /// CPU could not be measured (the extended budget, `idleTimeout × this`).
 /// Default 4, `1` disables the stretch, range 1..=16. A HOST key: read from
@@ -1339,7 +1339,7 @@ const LOAD_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 /// describes the machine and two repositories must not disagree about it.
 pub fn idle_load_scale(settings: &crate::config::Settings) -> u64 {
     *settings.idle_load_scale.get_or_init(|| {
-        crate::config::host_integer_or(settings, "amont.idleLoadScale", 4, 1..=16) as u64
+        crate::config::host_integer_or(settings, "greengate.idleLoadScale", 4, 1..=16) as u64
     })
 }
 
@@ -1367,7 +1367,7 @@ pub fn status_within(
     cmd: &mut Command,
 ) -> std::io::Result<Ran> {
     // The same host-slot wait as the observed runners: a check run without
-    // a live stage (one check by name, `amont.progress false`) still queues.
+    // a live stage (one check by name, `greengate.progress false`) still queues.
     if crate::host_slots::before_spawn(settings)? {
         cmd.env(crate::host_slots::HELD_ENV, "held");
     }
@@ -1479,7 +1479,7 @@ fn run_observed(
     let mut clocks = Clocks::from_settings(settings, idle);
     if let Some(left) = ceiling_left {
         // A retry runs under what the first attempt left of the ceiling:
-        // both attempts together answer to one `amont.timeout`.
+        // both attempts together answer to one `greengate.timeout`.
         clocks.ceiling = Some(left.max(1));
     }
     let ran = wait_within(&mut child, clocks, Some(&activity));
@@ -1523,7 +1523,7 @@ impl CpuSampler {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = std::sync::Arc::clone(&stop);
         let handle = std::thread::Builder::new()
-            .name("amont-cpu".into())
+            .name("greengate-cpu".into())
             .spawn(move || sample_loop(pid, &activity, idle_secs, &flag))
             .expect("spawn the CPU sampler thread");
         CpuSampler { stop, handle }
@@ -1569,13 +1569,13 @@ fn sample_loop(
     let mut limits = crate::proctree::Limits::default();
     // A diagnostic, and the seam the timing tests use to force a partial
     // snapshot: cap the walk at this many processes.
-    if let Some(n) = std::env::var("AMONT_CPU_MAX_PROCS")
+    if let Some(n) = std::env::var("GREENGATE_CPU_MAX_PROCS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
     {
         limits.max_procs = n;
     }
-    let trace = std::env::var_os("AMONT_CPU_TRACE");
+    let trace = std::env::var_os("GREENGATE_CPU_TRACE");
     let mut tracker = crate::proctree::Tracker::default();
     let nap = |d: std::time::Duration| {
         let until = std::time::Instant::now() + d;
@@ -1608,7 +1608,7 @@ fn sample_loop(
     }
 }
 
-/// `AMONT_CPU_TRACE=<file>`: append what each sample saw — one
+/// `GREENGATE_CPU_TRACE=<file>`: append what each sample saw — one
 /// `pid start ppid cpu_ns` line per process of a complete snapshot, then a
 /// `# root <pid> <observation>` line. A diagnostic, and the seam the timing
 /// tests use to know a worker was seen before they orphan it (they match
@@ -1648,7 +1648,7 @@ fn trace_sample(
 /// calling check's slot instead of inherited — the other half of one-check-
 /// one-block: a linter's twelve lines used to land on the shared terminal
 /// between two other checks' lines. Falls back to plain [`status_within`]
-/// when no slot is installed on this thread (`amont.progress false`, or a
+/// when no slot is installed on this thread (`greengate.progress false`, or a
 /// spawn outside a stage), which is byte-for-byte the old behaviour.
 ///
 /// stdout and stderr merge in ARRIVAL order inside the block, which is what
@@ -1766,7 +1766,7 @@ pub fn retry_budget(retry: Retry, k: &Killed, ceiling: u64) -> Option<Option<u64
     (left >= k.idle_secs.max(1)).then_some(Some(left))
 }
 
-/// Run to completion under the `amont.timeout` deadline with stdout and
+/// Run to completion under the `greengate.timeout` deadline with stdout and
 /// stderr CAPTURED into a string the caller can parse — what the audit
 /// checks need: their verdict lives in the tool's output, not its exit
 /// code alone. Arrival-ordered merge of both streams, like
@@ -1929,7 +1929,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                 (CpuVerdict::Unmeasured, _) => format!(
                     " (the extended budget, {} × {}: its CPU could not be measured)",
                     human_secs(k.idle_secs),
-                    hl("amont.idleLoadScale")
+                    hl("greengate.idleLoadScale")
                 ),
                 (_, Some((load, factor))) => format!(
                     " ({} stretched {} by a load average of {} on {} cores — {})",
@@ -1937,7 +1937,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                     crate::load::factor_text(factor),
                     load.avg1_text(),
                     load.cores,
-                    hl("amont.idleLoadScale")
+                    hl("greengate.idleLoadScale")
                 ),
                 _ => String::new(),
             };
@@ -1950,7 +1950,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                     human_secs(budget),
                     human_secs(covered.max(1)),
                     human_secs(k.ran_secs),
-                    hl("git config amont.idleTimeout <secs>")
+                    hl("git config greengate.idleTimeout <secs>")
                 ),
                 _ => format!(
                     "{} printed nothing for {}{stretched}{} and was killed after {} — a tool \
@@ -1964,7 +1964,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                         ""
                     },
                     human_secs(k.ran_secs),
-                    hl("git config amont.idleTimeout <secs>")
+                    hl("git config greengate.idleTimeout <secs>")
                 ),
             })
         }
@@ -1976,7 +1976,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
             kind.describe(),
             human_secs(k.ran_secs),
             kind.holders(),
-            hl("git config amont.lockWait <secs>")
+            hl("git config greengate.lockWait <secs>")
         )),
         Why::Ceiling(budget) => {
             let verdict = match (k.quiet_secs, k.cpu) {
@@ -1997,7 +1997,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                      silence budget whatever their CPU.",
                         human_secs(q),
                         cores(m),
-                        hl("git config amont.idleCpuCredit false")
+                        hl("git config greengate.idleCpuCredit false")
                     )
                 }
                 (Some(q), CpuVerdict::Unmeasured) if k.idle_secs > 0 && q >= k.idle_secs => {
@@ -2006,7 +2006,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                          so only the extended silence budget applied. {} kills quiet runs at \
                          the silence budget whatever their CPU.",
                         human_secs(q),
-                        hl("git config amont.idleCpuCredit false")
+                        hl("git config greengate.idleCpuCredit false")
                     )
                 }
                 (Some(q), _) if q < 30 => format!(
@@ -2021,7 +2021,7 @@ pub fn say_timed_out(what: &str, k: Killed) {
                  (0 disables).{verdict}",
                 hl(what),
                 human_secs(budget),
-                hl("git config amont.timeout <secs>")
+                hl("git config greengate.timeout <secs>")
             ))
         }
     }
@@ -2095,7 +2095,7 @@ pub fn run_quiet(
 
 /// Whether the user asked for checks to repair what they find.
 ///
-/// OFF by default. `git config amont.fix true` turns it on, per repository,
+/// OFF by default. `git config greengate.fix true` turns it on, per repository,
 /// because a hook that edits your files without being asked is a larger
 /// surprise than one that complains — and because with index fidelity in place
 /// the repair lands in the commit you are making, which is a bigger claim to
@@ -2113,7 +2113,7 @@ pub fn fixing_enabled(settings: &crate::config::Settings) -> bool {
 pub fn fixing_requested(settings: &crate::config::Settings) -> bool {
     *settings
         .fixing
-        .get_or_init(|| crate::config::boolean_or(settings, "amont.fix", false))
+        .get_or_init(|| crate::config::boolean_or(settings, "greengate.fix", false))
 }
 
 /// What a re-stage actually did. THREE answers, because the old `bool`
@@ -2192,7 +2192,7 @@ pub fn restage(paths: &[String]) -> Restaged {
 }
 
 /// A check passed. THE funnel for every success line, which is what lets
-/// `amont.quiet` swallow them in one place — see [`crate::live::quiet`].
+/// `greengate.quiet` swallow them in one place — see [`crate::live::quiet`].
 pub fn ok(settings: &crate::config::Settings, msg: &str) {
     if crate::live::quiet(settings) {
         return;
@@ -2543,7 +2543,7 @@ mod tests {
         );
     }
 
-    /// A declared wait answers to `amont.lockWait` and never to the silence
+    /// A declared wait answers to `greengate.lockWait` and never to the silence
     /// budget; at 0 it answers to the ceiling, and with the ceiling off too,
     /// to the extended silence budget — never to nothing.
     #[test]
@@ -2814,7 +2814,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn windows_prefers_an_executable_extension_over_a_bare_file() {
-        let dir = std::env::temp_dir().join("amont-which-order");
+        let dir = std::env::temp_dir().join("greengate-which-order");
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(dir.join("faketool"), "#!/bin/sh\n").unwrap();
         std::fs::write(dir.join("faketool.cmd"), "@echo off\n").unwrap();
@@ -2847,7 +2847,7 @@ mod tests {
         // its own commit.
         let _cwd = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
         let outside = std::env::temp_dir()
-            .join("amont-restage-outside-any-repo")
+            .join("greengate-restage-outside-any-repo")
             .to_string_lossy()
             .into_owned();
         assert_eq!(
@@ -2914,7 +2914,7 @@ mod tests {
 
     #[test]
     fn first_existing_picks_the_earliest_present_name() {
-        let dir = std::env::temp_dir().join("amont-first-existing-test");
+        let dir = std::env::temp_dir().join("greengate-first-existing-test");
         let _ = std::fs::create_dir_all(&dir);
         let root = dir.to_string_lossy().into_owned();
         let _ = std::fs::write(dir.join("second"), "x");

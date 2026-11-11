@@ -1,5 +1,5 @@
 //! The fleet journey: what a person does with `amont-fleet`, one test per
-//! part (decisions plan 2026-10-17-amont-tests-follow-user-flows, Phase 5).
+//! part (decisions plan 2026-10-17-greengate-tests-follow-user-flows, Phase 5).
 //!
 //! Each flow builds its scan root once and walks the journey, asserting what
 //! each step leaves on the terminal and on disk: the tool's public
@@ -259,8 +259,8 @@ fn the_survey_journey() {
     // Three `--no-verify` commits in the ledger the runtime keeps.
     git(&t.path("ledger"), &["init", "-q", "--template=", "."]);
     t.write(
-        "ledger/.git/amont-bypasses",
-        "amont-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n",
+        "ledger/.git/greengate-bypasses",
+        "greengate-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n",
     );
     // Somebody else's hooks.
     t.hooks("legacy");
@@ -659,10 +659,10 @@ fn the_install_journey() {
     t.write("kept/.git/hooks/pre-commit", shim_for("/bin/fake-amont"));
     // Ours: a trust record and a ledger. Theirs: a skip policy and parked
     // work an interrupted run left behind.
-    git(&kept, &["config", "amont.trusted", "deadbeef"]);
+    git(&kept, &["config", "greengate.trusted", "deadbeef"]);
     git(&kept, &["config", "hook.skip", "pre-commit-clippy"]);
-    t.write("kept/.git/amont-bypasses", "amont-bypasses-v1\n");
-    t.write("kept/.git/amont-held/index", b"amont-held-v1\0");
+    t.write("kept/.git/greengate-bypasses", "greengate-bypasses-v1\n");
+    t.write("kept/.git/greengate-held/index", b"greengate-held-v1\0");
 
     // `install` turns hooks on where there were none, and refuses to write
     // over somebody else's.
@@ -724,12 +724,12 @@ fn the_install_journey() {
     }
     step!(
         "uninstall",
-        config(&kept, "amont.trusted").is_empty(),
+        config(&kept, "greengate.trusted").is_empty(),
         "trust survived a fleet uninstall:\n{out}"
     );
     step!(
         "uninstall",
-        !t.exists("kept/.git/amont-bypasses"),
+        !t.exists("kept/.git/greengate-bypasses"),
         "the ledger outlived the hooks it describes:\n{out}"
     );
     step!(
@@ -748,7 +748,7 @@ fn the_install_journey() {
     );
     step!(
         "uninstall",
-        t.exists("kept/.git/amont-held/index"),
+        t.exists("kept/.git/greengate-held/index"),
         "PARKED WORK was deleted — the one thing uninstall must never take:\n{out}"
     );
     step_eq!(

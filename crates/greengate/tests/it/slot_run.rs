@@ -2,7 +2,7 @@
 //! host slot, and the queue says who holds it.
 //!
 //! Unpinned, like `busy_defers.rs`: `.cargo/config.toml` sets
-//! `AMONT_HOST_SLOT=held` for the test process, which would make every
+//! `GREENHARNESS_HOST_SLOT=held` for the test process, which would make every
 //! wrapper nested. Each test removes it and uses a slot directory of its own
 //! with one fixed slot, so no load test or ramp is involved.
 
@@ -14,8 +14,10 @@ fn slot_dir(tag: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir =
-        std::env::temp_dir().join(format!("amont-slotrun-{}-{tag}-{seq}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "greengate-slotrun-{}-{tag}-{seq}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     dir
@@ -24,9 +26,9 @@ fn slot_dir(tag: &str) -> PathBuf {
 fn amont(slots: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_greengate"));
     cmd.args(args)
-        .env_remove("AMONT_HOST_SLOT")
-        .env("AMONT_SLOT_DIR", slots)
-        .env("AMONT_HOST_SLOTS", "1");
+        .env_remove("GREENHARNESS_HOST_SLOT")
+        .env("GREENHARNESS_SLOT_DIR", slots)
+        .env("GREENGATE_HOST_SLOTS", "1");
     cmd
 }
 
@@ -167,7 +169,7 @@ fn a_nested_wrapper_runs_at_once_and_flags_after_dashes_pass_through() {
             "--help",
         ],
     )
-    .env("AMONT_HOST_SLOT", "held")
+    .env("GREENHARNESS_HOST_SLOT", "held")
     .output()
     .expect("nested");
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
@@ -225,7 +227,7 @@ fn env_under(slots: &Path, cap: &str, flags: &[&str], preset: &[(&str, &str)]) -
     args.extend_from_slice(flags);
     args.extend_from_slice(&["--", "env"]);
     let mut cmd = amont(slots, &args);
-    cmd.env("AMONT_HOST_SLOTS", cap);
+    cmd.env("GREENGATE_HOST_SLOTS", cap);
     for key in WIDTH_KEYS {
         cmd.env_remove(key);
     }

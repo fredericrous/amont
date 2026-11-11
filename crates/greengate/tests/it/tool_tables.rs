@@ -1,5 +1,5 @@
 //! The per-language checks, one table per property they share (decisions plan
-//! 2026-10-17-amont-tests-follow-user-flows, Phase 7).
+//! 2026-10-17-greengate-tests-follow-user-flows, Phase 7).
 //!
 //! Every tool hook makes the same promises: out of scope it passes and says
 //! nothing; opted in, a broken input is refused and a clean one passes; a
@@ -99,7 +99,7 @@ struct Row {
     hook: &'static str,
     gate: Gate,
     path: PathKind,
-    /// `git config` set before anything else (`amont.fix`).
+    /// `git config` set before anything else (`greengate.fix`).
     config: Files,
     /// Written and NOT staged: the repository's opt-in.
     written: Files,
@@ -334,7 +334,7 @@ const ESLINT: Files = &[(
 const PRETTIERRC: Files = &[(".prettierrc", "{}\n")];
 const RUFF: Files = &[("pyproject.toml", "[tool.ruff]\n")];
 const PYRIGHT: Files = &[("pyrightconfig.json", "{}\n")];
-const FIX: Files = &[("amont.fix", "true")];
+const FIX: Files = &[("greengate.fix", "true")];
 
 const CARGO_TOML: &str =
     "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
@@ -1425,11 +1425,11 @@ fn with_fixing_off_a_refused_file_is_left_as_written() {
     table(&rows);
 }
 
-/// With `amont.fix true` a fixable finding is repaired, the repair is
+/// With `greengate.fix true` a fixable finding is repaired, the repair is
 /// re-staged, and the commit goes through. The registry declared
 /// `Fix::Rewrite` for cargo-fmt, and `amont list --json` reported
 /// `"fix":"rewrite"` (which `agents_md` tells agents to trust), long before
-/// any fixing code existed: an agent could set `amont.fix` and wait forever.
+/// any fixing code existed: an agent could set `greengate.fix` and wait forever.
 /// ruff's partial fix is its own case in `linters`.
 #[test]
 fn with_fixing_on_the_repair_reaches_the_index() {

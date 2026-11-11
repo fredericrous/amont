@@ -19,7 +19,7 @@
 //! so the threat model is unchanged. It fires only when `amont.conf` is staged
 //! and not during a merge, rebase, cherry-pick or revert: a manifest arriving
 //! from another branch is the pulled case, and stays a visible gap.
-//! Downgrade it like any check: `git config amont.severity.pre-commit-manifest-trust warn`.
+//! Downgrade it like any check: `git config greengate.severity.pre-commit-manifest-trust warn`.
 
 use std::path::Path;
 

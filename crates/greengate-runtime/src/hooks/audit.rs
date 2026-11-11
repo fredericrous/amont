@@ -1394,7 +1394,7 @@ fn uv_production_names(
 pub const AUDIT_REF: &str = "amont-audit";
 const AUDIT_FORMAT: &str = "amont-audit-v1";
 /// How long a record answers for its lockfiles, in hours.
-const AUDIT_MAX_AGE: &str = "amont.auditMaxAge";
+const AUDIT_MAX_AGE: &str = "greengate.auditMaxAge";
 /// A report that could not check anything answers for an hour only: an
 /// offline push is never blocked, and the audit is tried again soon.
 const UNCHECKED_MAX_AGE_SECS: i64 = 60 * 60;

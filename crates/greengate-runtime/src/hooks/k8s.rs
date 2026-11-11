@@ -394,7 +394,8 @@ mod tests {
         if which("kustomize").is_none() || which("kubeconform").is_none() {
             return;
         }
-        let tmp = std::env::temp_dir().join(format!("amont-loadrestrictor-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("greengate-loadrestrictor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let shared = tmp.join("shared");
         let overlay = tmp.join("overlay");
@@ -423,7 +424,7 @@ mod tests {
 
     #[test]
     fn walks_up_to_the_nearest_kustomization_root() {
-        let tmp = std::env::temp_dir().join("amont-kustomize-test");
+        let tmp = std::env::temp_dir().join("greengate-kustomize-test");
         let _ = std::fs::remove_dir_all(&tmp);
         let base = tmp.join("kubernetes/app/base");
         std::fs::create_dir_all(&base).unwrap();

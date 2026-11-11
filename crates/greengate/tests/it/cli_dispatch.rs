@@ -343,7 +343,7 @@ fn a_hook_from_a_newer_template_is_absorbed_not_erred() {
         "the first encounter explains itself: {out}"
     );
     assert!(
-        repo.join(".git/amont-skew").is_file(),
+        repo.join(".git/greengate-skew").is_file(),
         "the warning leaves its once-per-version marker"
     );
 
@@ -382,11 +382,11 @@ fn uninstall_forgets_the_skew_marker() {
         &repo,
         &["--hooks-dir", &hooks_dir, "post-merge-from-the-future"],
     );
-    assert!(repo.join(".git/amont-skew").is_file());
+    assert!(repo.join(".git/greengate-skew").is_file());
     let (code, out) = s.run(&repo, &["uninstall"]);
     assert_eq!(code, 0, "{out}");
     assert!(
-        !repo.join(".git/amont-skew").exists(),
+        !repo.join(".git/greengate-skew").exists(),
         "the marker is OUR bookkeeping — gone with the hooks"
     );
 }

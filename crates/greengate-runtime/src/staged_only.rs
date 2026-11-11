@@ -71,7 +71,7 @@ static ENTER_LOCK: Mutex<()> = Mutex::new(());
 
 /// Where the unstaged changes are parked. Inside `$GIT_DIR` so they are never
 /// committed, never seen by a check, and findable by hand.
-pub const STORE: &str = "amont-held";
+pub const STORE: &str = crate::names::HELD_STORE;
 
 /// Our metadata, beside the payloads rather than encoded into their names.
 const INDEX: &str = "index";
@@ -81,7 +81,7 @@ const FILES: &str = "files";
 
 /// The index's first field. Present so an older or newer store is recognised
 /// as such instead of being half-understood.
-const FORMAT: &str = "amont-held-v1";
+const FORMAT: &str = crate::names::HELD_FORMAT;
 
 /// What each held path's ON-DISK content looked like right after `enter()`'s
 /// checkout — i.e. the index content the checks were meant to see. `rel NUL
@@ -92,7 +92,7 @@ const EXPECTED: &str = "expected";
 /// Where a file the user edited MID-CHECK parks the held copy instead of
 /// clobbering the edit. Beside the store, not inside it: the store is deleted
 /// on a clean restore and this must survive to be read.
-const PRESERVED: &str = "amont-preserved";
+const PRESERVED: &str = crate::names::PRESERVED_STORE;
 
 /// FNV-1a over the content. Not a security boundary — the question is "did
 /// an editor save land here while the checks ran", and an accidental
@@ -211,7 +211,8 @@ fn parse_index(raw: &[u8]) -> Result<Vec<Held>, String> {
     let header = fields
         .first()
         .ok_or_else(|| "held store index is empty".to_string())?;
-    if *header != FORMAT.as_bytes() {
+    // greengate 3.x's store keeps its own header: `restore` puts one back.
+    if *header != FORMAT.as_bytes() && *header != crate::migrate::old::HELD_FORMAT.as_bytes() {
         return Err(format!(
             "held store index is not {FORMAT} — refusing to guess at its shape"
         ));
@@ -283,11 +284,11 @@ pub struct StagedOnly {
     held: bool,
 }
 
-/// `amont.fix`, read the moment a restore needs it and not before.
+/// `greengate.fix`, read the moment a restore needs it and not before.
 ///
 /// `Drop` and the signal watcher both restore, and neither can hold a borrow
 /// of the process's `Settings`. Reading through a config-only `Settings` is
-/// EXACT here, not an approximation: `amont.fix` is not in
+/// EXACT here, not an approximation: `greengate.fix` is not in
 /// [`crate::manifest::SETTABLE`], so no policy can set it and the answer is
 /// git config's alone. Lazy on purpose — the spawn budget counts every read
 /// on the happy path, and a restore is the unhappy one.
@@ -579,7 +580,7 @@ fn put_back_v1(fixing: bool, store: &Path, root: &Path, entries: &[Held]) -> std
     let expected = read_expected(store);
     // The guard stands down when fixing is ON: a repo-wide fixer (`prettier
     // --write .`) legitimately rewrites held files mid-run, and telling its
-    // writes apart from an editor save is not possible from here. `amont.fix`
+    // writes apart from an editor save is not possible from here. `greengate.fix`
     // is an explicit opt-in whose documented contract has always been "the
     // tree returns to your unstaged version"; the guard protects the default
     // population, which is everyone else.
@@ -858,6 +859,16 @@ pub(crate) fn leave_on_second_signal() -> LeaveOnSecondSignal {
 /// For when even the signal handler was interrupted.
 pub fn restore_command(settings: &crate::config::Settings) -> Result<(), String> {
     let store = store_dir().ok_or_else(|| "not inside a git repository".to_string())?;
+    // A store greengate 3.x parked is put back from where 3.x left it: the
+    // migration refuses to move it, and asks for this command.
+    let store = match store
+        .parent()
+        .and_then(crate::migrate::old_held_store)
+        .filter(|_| !store.is_dir())
+    {
+        Some(old) => old,
+        None => store,
+    };
     if !store.is_dir() {
         println!("{} nothing of ours to restore", warning_sign());
         return Ok(());
@@ -1122,21 +1133,31 @@ mod tests {
     /// A store we do not recognise is never half-understood.
     #[test]
     fn parse_index_rejects_a_foreign_header() {
-        let err = parse_index(b"amont-held-v99\0file\0a\0\0").expect_err("must refuse");
-        assert!(err.contains("amont-held-v1"), "{err}");
+        let err = parse_index(b"greengate-held-v99\0file\0a\0\0").expect_err("must refuse");
+        assert!(err.contains("greengate-held-v1"), "{err}");
+    }
+
+    /// greengate 3.x's store is still read, so `restore` can put it back.
+    #[test]
+    fn parse_index_reads_a_3x_store() {
+        assert_eq!(
+            parse_index(format!("{}\0", crate::migrate::old::HELD_FORMAT).as_bytes())
+                .expect("a 3.x header"),
+            Vec::<Held>::new()
+        );
     }
 
     #[test]
     fn parse_index_rejects_a_truncated_record() {
         // A `file` record promises a path and a mode.
-        let raw = b"amont-held-v1\0file\0a.txt\0";
+        let raw = b"greengate-held-v1\0file\0a.txt\0";
         let err = parse_index(raw).expect_err("must refuse");
         assert!(err.contains("ends mid-record"), "{err}");
     }
 
     #[test]
     fn parse_index_rejects_an_unknown_record_kind() {
-        let raw = b"amont-held-v1\0execute\0rm -rf\0";
+        let raw = b"greengate-held-v1\0execute\0rm -rf\0";
         assert!(parse_index(raw).is_err());
     }
 

@@ -37,13 +37,13 @@ fn a_stale_block_warns_without_blocking() {
     assert!(run.says("greengate agents-md"), "{}", run.output());
 }
 
-/// With `amont.fix true` the block is regenerated AND re-staged, so the
+/// With `greengate.fix true` the block is regenerated AND re-staged, so the
 /// commit being made carries the current guidance.
 #[test]
 fn with_fixing_on_the_block_is_regenerated_and_restaged() {
     let r = Repo::new();
     stale_block(&r);
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     let run = r.run(&["run", "pre-commit-agents-md"]);
     assert!(run.passed(), "{}", run.output());
     assert!(run.says("regenerated"), "{}", run.output());

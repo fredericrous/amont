@@ -1,7 +1,7 @@
 //! A rehearsal's `platform=any` gates as one Argo Workflow that outlives the
 //! laptop (ADR-0017).
 //!
-//! `amont rehearse --cluster`, or `amont.rehearse.cluster` for the
+//! `amont rehearse --cluster`, or `greengate.rehearse.cluster` for the
 //! post-commit rehearsal, hands the gates a rehearsal would run, and that the
 //! cluster may run, to one Workflow: a DAG with a pod per gate, the same pod
 //! as ADR-0016's Job. The code goes in as a Forgejo snapshot commit, or is
@@ -35,7 +35,7 @@ pub(crate) use collect::{collect, settled_lines, status_lines, stop_pending};
 use pending::{Gate, GateState, Pending, PendingError, RecordPhase, Source, Store};
 
 /// The machine key that sends every rehearsal to the cluster.
-const REHEARSE_CLUSTER: &str = "amont.rehearse.cluster";
+const REHEARSE_CLUSTER: &str = "greengate.rehearse.cluster";
 /// A push of the snapshot commit, and a read of a remote's refs, are network
 /// calls with a deadline each.
 const PUSH_SECS: u64 = 60;
@@ -48,13 +48,13 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 pub enum Ask {
     /// `rehearse --cluster`: the person asked, so what goes wrong is said.
     Flag,
-    /// Only the machine key may ask (`amont.rehearse.cluster`): the
+    /// Only the machine key may ask (`greengate.rehearse.cluster`): the
     /// post-commit rehearsal, which says nothing on the terminal.
     Setting,
 }
 
 /// Does this rehearsal go to the cluster: asked for with `--cluster`, or the
-/// machine says `amont.rehearse.cluster true`?
+/// machine says `greengate.rehearse.cluster true`?
 pub fn wanted(settings: &crate::config::Settings, ask: Ask) -> bool {
     ask == Ask::Flag || crate::config::boolean_or(settings, REHEARSE_CLUSTER, false)
 }
@@ -69,7 +69,7 @@ pub struct Detached {
 /// Compiled only with `test-hooks`: nothing reads the variable otherwise.
 #[cfg(feature = "test-hooks")]
 fn crash_point(at: &str) {
-    if std::env::var("AMONT_TEST_CRASH").is_ok_and(|v| v == at) {
+    if std::env::var("GREENGATE_TEST_CRASH").is_ok_and(|v| v == at) {
         std::process::exit(137);
     }
 }
@@ -101,16 +101,16 @@ fn machine(settings: &crate::config::Settings) -> Result<Machine, Fallback> {
             .ok_or(Fallback::Unconfigured(shown))
     };
     let snapshot_remote = need(
-        "amont.cluster.snapshotremote",
-        "amont.cluster.snapshotRemote is not set: `git config --global amont.cluster.snapshotRemote 'git@host:org/{repo}.git'`",
+        "greengate.cluster.snapshotremote",
+        "greengate.cluster.snapshotRemote is not set: `git config --global greengate.cluster.snapshotRemote 'git@host:org/{repo}.git'`",
     )?;
     let snapshot_fetch = need(
-        "amont.cluster.snapshotfetch",
-        "amont.cluster.snapshotFetch is not set: `git config --global amont.cluster.snapshotFetch 'http://forgejo-http.forgejo.svc.cluster.local:3000/org/{repo}.git'`",
+        "greengate.cluster.snapshotfetch",
+        "greengate.cluster.snapshotFetch is not set: `git config --global greengate.cluster.snapshotFetch 'http://forgejo-http.forgejo.svc.cluster.local:3000/org/{repo}.git'`",
     )?;
     let mirror = match (
-        key(&keys, "amont.cluster.mirrorremote"),
-        key(&keys, "amont.cluster.mirror"),
+        key(&keys, "greengate.cluster.mirrorremote"),
+        key(&keys, "greengate.cluster.mirror"),
     ) {
         (Some(remote), Some(fetch)) => Some(Mirror {
             remote: remote.to_string(),
@@ -204,7 +204,7 @@ fn known_for(tree: &str) -> (Vec<String>, Vec<String>) {
 /// a record of this tree still waits for, and the ones this call submitted.
 /// The rest run here, exactly as without the lane.
 ///
-/// `ask` is `--cluster` ([`Ask::Flag`]); `amont.rehearse.cluster` asks too.
+/// `ask` is `--cluster` ([`Ask::Flag`]); `greengate.rehearse.cluster` asks too.
 /// With neither, nothing is submitted, but the gates an earlier call put there
 /// still count. What is said goes to stderr, and only when the person asked.
 pub fn detach(
@@ -715,7 +715,7 @@ struct ManifestFile {
 
 impl ManifestFile {
     fn write(label: &str, json: &str) -> Result<ManifestFile, Fallback> {
-        let path = std::env::temp_dir().join(format!("amont-workflow-{label}.json"));
+        let path = std::env::temp_dir().join(format!("greengate-workflow-{label}.json"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -820,7 +820,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn record_intent_refuses_a_gate_a_record_of_the_tree_holds() {
-        let dir = std::env::temp_dir().join(format!("amont-intent-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-intent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = Store::in_dir(&dir);
         let first = super::pending::tests::sample("wf-1");

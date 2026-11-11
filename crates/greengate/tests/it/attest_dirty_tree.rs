@@ -34,7 +34,7 @@ fn signing_repo() -> Option<(Repo, String, std::path::PathBuf)> {
     crate::tree_gates::trust_and_install(&r);
     r.stage("a.txt", "hello\n");
     r.commit("feat: something to push");
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let key = r.path(".git/attest-key");
     let made = Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@example.org", "-f"])
@@ -46,8 +46,8 @@ fn signing_repo() -> Option<(Repo, String, std::path::PathBuf)> {
     let origin = r.path(".git/origin.git");
     r.git(&["init", "-q", "--bare", &origin.display().to_string()]);
     r.git(&["remote", "add", "origin", &origin.display().to_string()]);
-    r.git(&["config", "amont.attest", "true"]);
-    r.git(&["config", "amont.attestKey", &key.display().to_string()]);
+    r.git(&["config", "greengate.attest", "true"]);
+    r.git(&["config", "greengate.attestKey", &key.display().to_string()]);
     Some((r, base, origin))
 }
 

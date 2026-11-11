@@ -47,7 +47,7 @@ fn selected<'a>(
 
 /// Do this repository's hooks apply the CONVENTIONS, or only the safety net?
 ///
-/// `git config amont.conventions declared` (usually `--global`, set by
+/// `git config greengate.conventions declared` (usually `--global`, set by
 /// `amont enroll`) scopes the house rules to repositories that commit an
 /// `amont.conf` — the standing grant of `init.templateDir` then becomes safe
 /// to hand a whole team: a clone of somebody else's project gets conflict,
@@ -69,7 +69,7 @@ fn declared_mode(settings: &crate::config::Settings) -> bool {
     *settings.declared_mode.get_or_init(|| {
         crate::config::enumerated_or(
             settings,
-            "amont.conventions",
+            "greengate.conventions",
             &["everywhere", "declared"],
             "everywhere",
         ) == "declared"
@@ -139,7 +139,7 @@ fn selected_during<'a>(
     if !held.is_empty() {
         println!(
             "{} {} convention check(s) held back — no amont.conf here and \
-             amont.conventions is `declared`; the safety net still runs",
+             greengate.conventions is `declared`; the safety net still runs",
             warning_sign(),
             held.len(),
         );
@@ -150,7 +150,7 @@ fn selected_during<'a>(
 /// The key that turns evidence ordering on. `declared` — the registry's
 /// order, the one this file's header argues for — is the default and nothing
 /// about it changes.
-const ORDER: &str = "amont.order";
+const ORDER: &str = "greengate.order";
 
 /// How far back [`crate::gate_evidence::order_by_evidence`] looks. Not a
 /// config key: it is an input to an ordering that changes nothing about what
@@ -650,7 +650,7 @@ fn run_stage_traced(
     }
     // One slot per check: everything a check says lands in its own buffer
     // and reaches stdout as ONE block when it finishes — see `live`. Off
-    // (`amont.progress false`), no sink is ever installed and every print
+    // (`greengate.progress false`), no sink is ever installed and every print
     // streams exactly as it always did.
     let stage = crate::live::enabled(settings).then(|| {
         let names: Vec<&str> = checks.iter().map(|c| c.name()).collect();
@@ -706,14 +706,14 @@ fn run_stage_traced(
 /// How a pre-commit stage runs its checks (ADR-0020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Waves {
-    /// Every check at once, as before 2.1 (`amont.failFast false`).
+    /// Every check at once, as before 2.1 (`greengate.failFast false`).
     One,
     /// The Light checks, then the Heavy ones only if none blocked.
     LightThenHeavy,
 }
 
 impl Waves {
-    /// `AMONT_FAIL_FAST` for one run, then `amont.failFast` (git config, then
+    /// `GREENGATE_FAIL_FAST` for one run, then `greengate.failFast` (git config, then
     /// a trusted `set failFast` in `amont.conf`), then on. Read once by the
     /// caller and handed down, never cached behind the settings it takes.
     fn resolve(settings: &crate::config::Settings) -> Waves {
@@ -731,7 +731,7 @@ fn is_heavy(check: &dyn Check) -> bool {
     check.weight() == crate::host_slots::Weight::Heavy
 }
 
-const FAIL_FAST_ENV: &str = "AMONT_FAIL_FAST";
+const FAIL_FAST_ENV: &str = "GREENGATE_FAIL_FAST";
 
 /// [`Waves::resolve`] with the environment value handed in: the testable seam,
 /// because setting a variable in a threaded test binary races its siblings.
@@ -747,11 +747,11 @@ fn resolve_fail_fast(from_env: Option<&str>, settings: &crate::config::Settings)
             crate::config::complain(
                 FAIL_FAST_ENV,
                 &format!("{other:?} is not true or false"),
-                "amont.failFast",
+                "greengate.failFast",
             );
-            crate::config::boolean_or(settings, "amont.failFast", true)
+            crate::config::boolean_or(settings, "greengate.failFast", true)
         }
-        None => crate::config::boolean_or(settings, "amont.failFast", true),
+        None => crate::config::boolean_or(settings, "greengate.failFast", true),
     }
 }
 
@@ -839,7 +839,7 @@ struct Report<'a> {
     /// (ADR-0020). Said in quiet mode too: a refused commit whose suite did
     /// not run must never read as one whose suite passed.
     skipped: Vec<&'a str>,
-    /// How many passed outright. Only read when `amont.quiet` swallowed their
+    /// How many passed outright. Only read when `greengate.quiet` swallowed their
     /// individual lines — a run that says nothing at all is indistinguishable
     /// from a gate that never ran, and that is the one thing this crate will
     /// not let a reader believe.
@@ -970,7 +970,7 @@ pub fn run_all(ctx: &Ctx, all_files: bool) -> Verdict {
                 "{} {} is set, but fixing is off for {}: the input set is the \
                  working tree, not the index",
                 warning_sign(),
-                highlight("amont.fix"),
+                highlight("greengate.fix"),
                 highlight("--all-files")
             );
         }
@@ -1075,7 +1075,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
     };
     // Under quiet, a check run by name is captured like one inside its stage
     // — one slot, its tool's output to a log, one line on a pass — whatever
-    // `amont.progress` says: the person who asked for quiet asked for this.
+    // `greengate.progress` says: the person who asked for quiet asked for this.
     let check = crate::registry::one_named(name, ctx.manifest);
     let run = |ctx: &Ctx| match check.filter(|_| crate::live::quiet(ctx.settings)) {
         Some(check) => run_quiet(ctx, check),
@@ -1105,7 +1105,7 @@ pub fn run_named(ctx: &Ctx, name: &str, all_files: bool) -> Named {
 /// a rehearsal snapshot, where no push connection is open, no commit waits,
 /// and land's pre-stage needs the check's evidence: there it follows the
 /// busy policy the rehearsal sets, except in land's pre-stage, where a `warn`
-/// check waits at most `amont.warnSlotWait` and then runs unqueued
+/// check waits at most `greengate.warnSlotWait` and then runs unqueued
 /// (`host_slots::wait_bounded_for_warn`). Only a heavy check can wait, so only it
 /// asks `severity`, which the caller answers from its stage's severity fold
 /// when it has one: a git-config read per check broke the commit's git-spawn
@@ -1198,7 +1198,7 @@ enum Decision {
     },
 }
 
-/// `amont.pushStamps`, as the refusal needs it: whether anything run before
+/// `greengate.pushStamps`, as the refusal needs it: whether anything run before
 /// the push can let it skip its gates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StampReuse {
@@ -1237,8 +1237,8 @@ pub(crate) fn push_refusal(
         None => format!("{BIN} land"),
     };
     if reuse == StampReuse::Off {
-        out.push("    stamp reuse is off (amont.pushStamps false); turn it on:".to_string());
-        out.push("        git config amont.pushStamps true".to_string());
+        out.push("    stamp reuse is off (greengate.pushStamps false); turn it on:".to_string());
+        out.push("        git config greengate.pushStamps true".to_string());
         out.push("    then run the gates before git connects, and push:".to_string());
         out.push(format!("        {land}"));
     } else {
@@ -1250,7 +1250,7 @@ pub(crate) fn push_refusal(
         }
     }
     out.push("    or run them in this push:".to_string());
-    out.push("        git config amont.pushGates inline".to_string());
+    out.push("        git config greengate.pushGates inline".to_string());
     out
 }
 
@@ -1300,8 +1300,8 @@ pub(crate) fn wrap_names(names: &[&str]) -> Vec<String> {
 
 pub fn pre_push(ctx: &Ctx) -> Verdict {
     let settings = ctx.settings;
-    // `amont.treeLintWait` counts from HERE, so no earlier wait (a test
-    // rehearsal's `amont.rehearsalWait`) can extend it.
+    // `greengate.treeLintWait` counts from HERE, so no earlier wait (a test
+    // rehearsal's `greengate.rehearsalWait`) can extend it.
     let push_started = std::time::Instant::now();
     // The notes push `attest` makes re-enters this hook; its ref list is only
     // ever the attest ref, so there is nothing to prove — and proving it
@@ -1348,7 +1348,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // (a test suite: its verdict is a function of the tree alone) whose
     // stamp sits on every tip is not run again; the unscoped ones
     // (branch-protect, secrets — questions about the push, not the content)
-    // always run. `amont.pushStamps false` turns the reuse off.
+    // always run. `greengate.pushStamps false` turns the reuse off.
     //
     // Reading `ctx.push` here may consume stdin, exactly as `attest` does
     // below; every pre-push check reads it anyway.
@@ -1415,7 +1415,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     };
     // ADR-0018: a heavy gate never runs while git holds the remote's
     // connection open, unless this machine asked for that
-    // (`amont.pushGates inline`). Land's own push expects its pre-stage's
+    // (`greengate.pushGates inline`). Land's own push expects its pre-stage's
     // evidence; a bare push under `refuse` (the default) refuses at once.
     // Neither waits for a background rehearsal: that wait would itself hold
     // the connection.
@@ -1426,8 +1426,8 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // its stamp — read AFTER the wait, below — is the hand-off.
     // Only when this push has test gates for the rehearsal to vouch for: a
     // rehearsal that is only proving tree lint is waited for by the tree
-    // verdict alone, under its own `amont.treeLintWait` (ADR-0024), never
-    // under `amont.rehearsalWait`.
+    // verdict alone, under its own `greengate.treeLintWait` (ADR-0024), never
+    // under `greengate.rehearsalWait`.
     if reuse_stamps && !tips.is_empty() && !gate_before_push {
         let changed = crate::pushrefs::changed_files(ctx.push.get());
         if !scoped_push_gates(settings, ctx.manifest, &changed).is_empty() {
@@ -1766,7 +1766,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 unstamped_pair: Some((name, n)),
                 ..
             } => {
-                // `amont.unstampedPush refuse`: never run a suite with
+                // `greengate.unstampedPush refuse`: never run a suite with
                 // the remote's connection held open — say how to earn
                 // the stamp instead. Not inside a rehearsal snapshot:
                 // running there is how the stamp is earned.
@@ -1930,7 +1930,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
     // RAN here, so the next push of this content (a retry after a dropped
     // connection, or the real push after an `amont run pre-push` rehearsal)
     // skips them. Only when what ran is what is being pushed: with
-    // `amont.testPushedTree` the suite ran on the tip itself — unless the
+    // `greengate.testPushedTree` the suite ran on the tip itself — unless the
     // snapshot could not be made, which `stamp_tips` asks about rather than
     // assuming; otherwise it ran on the working tree, which vouches for the
     // tip only when the two are the same content — HEAD, with nothing
@@ -2105,7 +2105,7 @@ fn announce_deferred(deferred: &[(&str, Severity)]) {
 
 /// The lines [`announce_deferred`] prints: the roll-up, then one `run now:`
 /// command per deferred check (`amont run` takes one check by name, and a
-/// `--raw` run waits for its slot under `AMONT_ON_BUSY=wait`, warn or block),
+/// `--raw` run waits for its slot under `GREENGATE_ON_BUSY=wait`, warn or block),
 /// then the `onBusy wait` hint only when a `block` check is in the list,
 /// since only a `block` check stops deferring under it.
 fn deferral_advice(deferred: &[(&str, Severity)]) -> Vec<String> {
@@ -2124,7 +2124,7 @@ fn deferral_advice(deferred: &[(&str, Severity)]) -> Vec<String> {
         }
         lines.push(format!(
             "  run now: {}",
-            highlight(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {name}"))
+            highlight(&format!("GREENGATE_ON_BUSY=wait {BIN} run --raw {name}"))
         ));
     }
     if any_block {
@@ -2244,7 +2244,7 @@ fn stamp_tips(
     // shape, and CI is where it surfaced — a `*.log` line in one developer's
     // global gitignore had hidden it on the machine that wrote the change.
     //
-    // `amont.testPushedTree true` closes the gap properly for anyone who
+    // `greengate.testPushedTree true` closes the gap properly for anyone who
     // wants it closed: it runs the suite in a checkout of the commit, where
     // no untracked file exists to be read.
     //
@@ -2255,7 +2255,7 @@ fn stamp_tips(
     let mut stamped: Vec<String> = Vec::new();
     for tip in tips {
         // PER GATE, from what each one actually did — not from the config.
-        // `amont.testPushedTree` is a request; `pushed_tree::ran_on_tip` is
+        // `greengate.testPushedTree` is a request; `pushed_tree::ran_on_tip` is
         // the record of which gates were handed a checkout of this tip. A
         // gate that ran somewhere else (a snapshot that could not be made,
         // or a check that ran in the working tree) may vouch for the tip
@@ -2409,7 +2409,7 @@ struct TipWitness {
     head: Option<String>,
     /// The working tree held HEAD's content when the gates started: clean
     /// of tracked changes, or a rehearsal snapshot. A snapshot is a checkout
-    /// git made of the commit, and whatever `amont.snapshotPrepare` added to
+    /// git made of the commit, and whatever `greengate.snapshotPrepare` added to
     /// make it runnable (a `node_modules`, a virtualenv) is not a reason to
     /// distrust it.
     tree_is_head: bool,
@@ -2534,7 +2534,9 @@ mod tests {
             "{:?}",
             sets[1]
         );
-        assert!(sets[1].iter().any(|l| l.contains("amont.pushStamps true")));
+        assert!(sets[1]
+            .iter()
+            .any(|l| l.contains("greengate.pushStamps true")));
         assert!(sets[1].iter().any(|l| l.ends_with(&format!("{BIN} land"))));
         assert_eq!(sets[2][0], crate::land::LAND_EVIDENCE_MISSING);
         assert_eq!(sets[3][0], crate::land::LAND_REMOTE_MOVED);
@@ -2681,7 +2683,7 @@ mod tests {
     /// A clean stage concludes nothing at all — not an empty message, no
     /// message. Twenty checks that passed should print no roll-ups.
     ///
-    /// `passed` is a tally, not a roll-up. It exists so that `amont.quiet` can
+    /// `passed` is a tally, not a roll-up. It exists so that `greengate.quiet` can
     /// say how many lines it swallowed, and it must never be the reason this
     /// report looks like it has something to announce.
     #[test]
@@ -2972,7 +2974,7 @@ mod tests {
         assert!(said.contains("2 check(s) deferred to CI"), "{said}");
         for gate in ["pre-push-probe", "pre-push-lint"] {
             assert!(
-                said.contains(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {gate}")),
+                said.contains(&format!("GREENGATE_ON_BUSY=wait {BIN} run --raw {gate}")),
                 "{said}"
             );
         }
@@ -2990,7 +2992,7 @@ mod tests {
         let said = lines.join("\n");
         for gate in ["pre-push-probe", "pre-push-cargo-test"] {
             assert!(
-                said.contains(&format!("AMONT_ON_BUSY=wait {BIN} run --raw {gate}")),
+                said.contains(&format!("GREENGATE_ON_BUSY=wait {BIN} run --raw {gate}")),
                 "{said}"
             );
         }

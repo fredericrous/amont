@@ -68,9 +68,9 @@ fn git_dir() -> Option<PathBuf> {
     crate::git::stdout(&["rev-parse", "--absolute-git-dir"]).map(PathBuf::from)
 }
 
-/// `$GIT_DIR/amont-cache/<gate>`.
+/// `$GIT_DIR/greengate-cache/<gate>`.
 pub fn gate_dir(gate: &TreeGate) -> Option<PathBuf> {
-    Some(git_dir()?.join("amont-cache").join(&gate.name))
+    Some(git_dir()?.join(crate::names::TREE_CACHE).join(&gate.name))
 }
 
 /// The version of the tool the gate actually runs, as best it can be read
@@ -155,7 +155,7 @@ fn json_string_field(text: &str, field: &str) -> Option<String> {
 pub fn namespace(gate: &TreeGate, version: &str) -> Option<String> {
     let staged = crate::git::stdout(&["ls-files", "-s"])?;
     let mut material = format!(
-        "amont-tree-ns-v1\ncommand {}\nversion {}\n",
+        "greengate-tree-ns-v1\ncommand {}\nversion {}\n",
         gate.command, version
     );
     for line in staged.lines() {
@@ -254,10 +254,10 @@ const DURATIONS: &str = ".durations";
 const LAST_MS: &str = ".last_ms";
 
 /// The last measured duration of each declared commit check, `<id> <ms>` per
-/// line, in `$GIT_DIR/amont-cache/.durations`: how long a commit's own
+/// line, in `$GIT_DIR/greengate-cache/.durations`: how long a commit's own
 /// checks run, which is the cover a tree gate can hide behind.
 pub fn duration_of(id: &str) -> Option<u64> {
-    let path = git_dir()?.join("amont-cache").join(DURATIONS);
+    let path = git_dir()?.join(crate::names::TREE_CACHE).join(DURATIONS);
     let text = std::fs::read_to_string(path).ok()?;
     text.lines().find_map(|l| {
         let (k, v) = l.split_once(' ')?;
@@ -270,7 +270,7 @@ pub fn record_durations(measured: &[(String, u64)]) {
     if measured.is_empty() {
         return;
     }
-    let Some(dir) = git_dir().map(|d| d.join("amont-cache")) else {
+    let Some(dir) = git_dir().map(|d| d.join(crate::names::TREE_CACHE)) else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
@@ -302,7 +302,7 @@ pub fn gate_last_ms(gate: &TreeGate) -> Option<u64> {
 }
 
 pub fn record_gate_last_ms(gate_name: &str, ms: u64) {
-    if let Some(dir) = git_dir().map(|d| d.join("amont-cache").join(gate_name)) {
+    if let Some(dir) = git_dir().map(|d| d.join(crate::names::TREE_CACHE).join(gate_name)) {
         let _ = std::fs::create_dir_all(&dir);
         record_last_ms(&dir, ms);
     }
@@ -552,7 +552,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tree_cache_a_held_lock_is_busy_not_awaited() {
-        let dir = std::env::temp_dir().join(format!("amont-lock-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-lock-test-{}", std::process::id()));
         let first = lock_in(&dir).expect("first lock");
         assert!(lock_in(&dir).is_none(), "a second lock was granted");
         drop(first);
@@ -596,7 +596,7 @@ mod tests {
     /// No eslint to ask: typed (no cache), and nothing remembered.
     #[test]
     fn tree_cache_undetermined_eslint_reads_typed() {
-        let d = std::env::temp_dir().join(format!("amont-typed-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-{}", std::process::id()));
         let ns = d.join("ns");
         std::fs::create_dir_all(&ns).unwrap();
         let typed = typed_eslint(
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn tree_cache_one_typed_file_makes_eslint_typed() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("amont-typed-mix-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-mix-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let bin = d.join("node_modules/.bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn tree_cache_a_filename_scoped_typed_config_reads_typed() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("amont-typed-text-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-text-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
         std::fs::write(d.join("a.js"), "").unwrap();
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn tree_cache_unstaged_config_is_never_remembered() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("amont-typed-dirty-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-dirty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
         std::fs::write(d.join("a.js"), "").unwrap();
@@ -751,7 +751,7 @@ mod tests {
             eprintln!("uv unavailable — skipping");
             return;
         }
-        let d = std::env::temp_dir().join(format!("amont-uv-probe-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-uv-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn tree_cache_more_pairs_than_the_cap_read_typed_unremembered() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("amont-typed-cap-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-cap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
         let mut paths = Vec::new();
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn tree_cache_many_untyped_files_before_src_do_not_hide_it() {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("amont-typed-many-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-typed-many-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let bin = d.join("node_modules/.bin");
         std::fs::create_dir_all(&bin).unwrap();

@@ -8,6 +8,12 @@
 //! fixtures, and the frozen AGENTS.md block and the text that quotes it. Each file's count is
 //! pinned below: a new literal fails here, and a file that drops one fails
 //! too, so the list only shrinks on purpose.
+//!
+//! The data names follow the same rule since greengate 4.0's hard rename
+//! (plan "greengate 4.0 renames its data names"): an `AMONT_` variable, an
+//! `amont.<key>`, an `amont-<name>` or an `amont:start` literal is allowed
+//! only in `names.rs`, in `migrate.rs` (which moves them) and where
+//! [`ALLOWED_DATA`] pins it with its reason.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +73,90 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
 ];
 
+/// Per file: how many old DATA-name literals it may hold, and why.
+const ALLOWED_DATA: &[(&str, usize, &str)] = &[
+    (
+        "greengate-fleet/src/fix.rs",
+        1,
+        "a test fixture: an old npm package path",
+    ),
+    (
+        "greengate-fleet/src/shim.rs",
+        5,
+        "the old npm packages a shim may name",
+    ),
+    (
+        "greengate-runtime/src/agents_md.rs",
+        2,
+        "the AGENTS.md markers (Phase 3 renames them)",
+    ),
+    (
+        "greengate-runtime/src/attest.rs",
+        8,
+        "notes namespaces and greenpiste's key (plan 3a-3)",
+    ),
+    (
+        "greengate-runtime/src/attest_inputs.rs",
+        1,
+        "a canon hashed into signed notes (3a-3)",
+    ),
+    (
+        "greengate-runtime/src/cluster.rs",
+        6,
+        "Kubernetes names (Phase 4)",
+    ),
+    (
+        "greengate-runtime/src/cluster/detached.rs",
+        2,
+        "the amont-snapshots repository (a later step)",
+    ),
+    (
+        "greengate-runtime/src/cluster/detached/collect.rs",
+        3,
+        "Kubernetes names in a test (Phase 4)",
+    ),
+    (
+        "greengate-runtime/src/cluster/detached/pending.rs",
+        2,
+        "the namespace and cluster contract (Phase 4)",
+    ),
+    (
+        "greengate-runtime/src/cluster/detached/workflow.rs",
+        7,
+        "Kubernetes names (Phase 4)",
+    ),
+    (
+        "greengate-runtime/src/finding.rs",
+        2,
+        "the editor format, an outside contract",
+    ),
+    (
+        "greengate-runtime/src/gate_identity.rs",
+        1,
+        "the cluster contract (Phase 4)",
+    ),
+    (
+        "greengate-runtime/src/gate_stamp.rs",
+        15,
+        "notes namespaces and their format (3a-3)",
+    ),
+    (
+        "greengate-runtime/src/hooks/audit.rs",
+        3,
+        "the audit notes namespace (3a-3)",
+    ),
+    (
+        "greengate-runtime/src/staged_only.rs",
+        5,
+        "held-store markers a 3.x store holds, which restore reads",
+    ),
+    (
+        "greengate/src/main.rs",
+        1,
+        "the doctor's usage line naming AMONT_*",
+    ),
+];
+
 /// The three spellings of the old name as the tool's own.
 const OLD: &[&str] = &["amont ", "amont: ", "amont-fleet"];
 
@@ -74,6 +164,11 @@ const OLD: &[&str] = &["amont ", "amont: ", "amont-fleet"];
 /// Comments are skipped; char literals and raw strings are understood well
 /// enough for this codebase.
 fn count(src: &str) -> usize {
+    count_with(src, hits)
+}
+
+/// As [`count`], with what a literal holds counted by `hits`.
+fn count_with(src: &str, hits: fn(&str) -> usize) -> usize {
     let bytes = src.as_bytes();
     let mut i = 0;
     let mut found = 0;
@@ -177,6 +272,50 @@ fn hits(text: &str) -> usize {
     old_spellings
 }
 
+/// Old data names in one literal's text: `AMONT_X` (not the shim's
+/// `__AMONT_BIN__` placeholder), `amont.<key>` (not the `amont.conf`,
+/// `amont.pack` and `amont.exe` file names), `amont-<name>` (not the
+/// binaries `amont-fleet` and `amont-agent`), and `amont:start`/`amont:end`.
+fn data_hits(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut found = 0;
+    for (at, _) in text.match_indices("AMONT_") {
+        let placeholder = text[..at].ends_with("__") && text[at..].starts_with("AMONT_BIN__");
+        let word_start = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        if word_start && !placeholder {
+            found += 1;
+        }
+    }
+    for (at, _) in text.match_indices("amont") {
+        let word_start =
+            at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        if !word_start {
+            continue;
+        }
+        let rest = &text[at + "amont".len()..];
+        let next_word = |sep: char| {
+            rest.strip_prefix(sep).map(|r| {
+                r.chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+            })
+        };
+        let hit = if let Some(word) = next_word('.') {
+            !word.is_empty() && !["conf", "pack", "exe"].contains(&word.as_str())
+        } else if let Some(word) = next_word('-') {
+            !word.is_empty() && !["fleet", "agent"].contains(&word.as_str())
+        } else if let Some(word) = next_word(':') {
+            word == "start" || word == "end"
+        } else {
+            false
+        };
+        if hit {
+            found += 1;
+        }
+    }
+    found
+}
+
 /// Every `.rs` file under `dir`, depth first.
 fn sources(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -230,6 +369,64 @@ fn the_old_name_is_said_only_where_it_is_allowed() {
 }
 
 #[test]
+fn old_data_names_are_read_only_by_the_migration() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut found = BTreeMap::new();
+    for krate in std::fs::read_dir(&crates).expect("crates dir") {
+        let src = krate.expect("crate entry").path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        for file in sources(&src) {
+            if file.ends_with("greengate-runtime/src/names.rs")
+                || file.ends_with("greengate-runtime/src/migrate.rs")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("utf-8 source");
+            let old = count_with(&text, data_hits);
+            if old > 0 {
+                let rel = file
+                    .strip_prefix(&crates)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.insert(rel, old);
+            }
+        }
+    }
+    let allowed: BTreeMap<String, usize> = ALLOWED_DATA
+        .iter()
+        .filter(|(_, n, _)| *n > 0)
+        .map(|(f, n, _)| (f.to_string(), *n))
+        .collect();
+    assert_eq!(
+        found, allowed,
+        "old data-name literals per file differ from the pinned list: read and write the name \
+         from greengate_runtime::names, move the old one in migrate.rs, or pin the new count in \
+         ALLOWED_DATA with its reason"
+    );
+}
+
+#[test]
+fn each_planted_data_name_is_counted() {
+    assert_eq!(count_with(r#"let e = "AMONT_TIMEOUT";"#, data_hits), 1);
+    assert_eq!(count_with(r#"let k = "amont.timeout";"#, data_hits), 1);
+    assert_eq!(count_with(r#"let f = "amont-bypasses";"#, data_hits), 1);
+    assert_eq!(
+        count_with(r#"let m = "<!-- amont:start -->";"#, data_hits),
+        1
+    );
+    assert_eq!(
+        count_with(
+            r#"let a = "amont.conf"; let b = "amont-fleet"; let c = "__AMONT_BIN__"; let d = "greengate.timeout";"#,
+            data_hits
+        ),
+        0
+    );
+}
+
+#[test]
 fn each_planted_spelling_is_counted() {
     assert_eq!(count(r#"eprintln!("amont land failed");"#), 1);
     assert_eq!(count(r#"let s = "amont: refused";"#), 1);
@@ -241,7 +438,7 @@ fn each_planted_spelling_is_counted() {
 fn comments_names_read_and_char_literals_are_not() {
     assert_eq!(count("// amont land\n/// amont: x\n/* amont-fleet */"), 0);
     assert_eq!(
-        count(r#"let k = "amont.conf"; let e = "AMONT_X"; let p = "amont-push-1";"#),
+        count(r#"let k = "amont.conf"; let e = "GREENGATE_X"; let p = "amont-push-1";"#),
         0
     );
     assert_eq!(count(r#"let q = '"'; let s = "fine"; let t = '\''; "#), 0);

@@ -1,8 +1,8 @@
 //! The checks whose assertions are about ELAPSED TIME.
 //!
-//! `amont` runs a check under two clocks: a silence budget (`amont.idleTimeout`
+//! `amont` runs a check under two clocks: a silence budget (`greengate.idleTimeout`
 //! — a tool that has printed nothing for N seconds is presumed stuck) and a
-//! total ceiling (`amont.timeout`). The tests below prove the wiring by
+//! total ceiling (`greengate.timeout`). The tests below prove the wiring by
 //! actually spending the seconds, which makes them the only tests in this
 //! suite that can fail because of what ELSE was running.
 //!
@@ -33,7 +33,7 @@
 //! sleeping by `common::tests::the_clocks_judge_silence_and_ceiling_
 //! separately`) are `#[ignore]`d and run in CI's hooks job
 //! (`make test-load`), ADR-0009's "skipping the check by name and leaning on
-//! CI" (decisions plan 2026-10-17-amont-tests-follow-user-flows).
+//! CI" (decisions plan 2026-10-17-greengate-tests-follow-user-flows).
 //!
 //! The *decisions* these tests exercise are pinned to the second, without any
 //! sleeping, by `common::tests::the_clocks_judge_silence_and_ceiling_separately`
@@ -83,7 +83,7 @@ fn a_check_that_outlives_the_budget_is_killed_and_fails() {
     let body = "#!/bin/sh\nexec sleep 300\n";
     staged_exec(&r, "slow.sh", body);
     manifest(&r, "pre-commit  slowpoke  *  block  ./slow.sh\n");
-    r.git(&["config", "amont.timeout", "1"]);
+    r.git(&["config", "greengate.timeout", "1"]);
 
     let started = std::time::Instant::now();
     let run = r.hook("pre-commit", &[]);
@@ -93,7 +93,7 @@ fn a_check_that_outlives_the_budget_is_killed_and_fails() {
     );
     assert!(!run.passed(), "a killed check must fail:\n{}", run.output());
     assert!(
-        run.says("timed out") && run.says("amont.timeout"),
+        run.says("timed out") && run.says("greengate.timeout"),
         "must say what happened and how to change the budget:\n{}",
         run.output()
     );
@@ -110,8 +110,8 @@ fn a_silent_check_is_killed_by_the_idle_budget() {
     let body = "#!/bin/sh\nexec sleep 300\n";
     staged_exec(&r, "quiet.sh", body);
     manifest(&r, "pre-commit  quiet  *  block  ./quiet.sh\n");
-    r.git(&["config", "amont.timeout", "0"]);
-    r.git(&["config", "amont.idleTimeout", "1"]);
+    r.git(&["config", "greengate.timeout", "0"]);
+    r.git(&["config", "greengate.idleTimeout", "1"]);
 
     let started = std::time::Instant::now();
     let run = r.hook("pre-commit", &[]);
@@ -121,12 +121,12 @@ fn a_silent_check_is_killed_by_the_idle_budget() {
     );
     assert!(!run.passed(), "a killed check must fail:\n{}", run.output());
     assert!(
-        run.says("printed nothing") && run.says("amont.idleTimeout"),
+        run.says("printed nothing") && run.says("greengate.idleTimeout"),
         "must blame the silence and name its key:\n{}",
         run.output()
     );
     assert!(
-        !run.says("amont.timeout <secs>"),
+        !run.says("greengate.timeout <secs>"),
         "the ceiling was off and must not be blamed:\n{}",
         run.output()
     );
@@ -150,7 +150,7 @@ fn a_chatty_check_outlives_the_idle_budget() {
     // itself, which is the thing being measured. The decision itself is
     // pinned to the second by `common::tests::the_clocks_judge_silence_and_
     // ceiling_separately`; this test only proves the wiring end to end.
-    r.git(&["config", "amont.idleTimeout", "10"]);
+    r.git(&["config", "greengate.idleTimeout", "10"]);
 
     let run = r.hook("pre-commit", &[]);
     assert!(
@@ -225,7 +225,7 @@ fn concurrent_checks_emit_contiguous_blocks() {
 // the system `sh` and reading the script as data takes the fresh file out of
 // the exec path.
 // Each busy fixture also prints one line once its burn is running, so its
-// own start-up is not counted as silence, and runs under AMONT_CPU_TRACE so
+// own start-up is not counted as silence, and runs under GREENGATE_CPU_TRACE so
 // a failure shows what the sampler saw.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -260,14 +260,14 @@ fn staged_exec(r: &Repo, name: &str, body: &str) {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn busy_budgets(r: &Repo) {
-    r.git(&["config", "amont.idleTimeout", "4"]);
-    r.git(&["config", "amont.timeout", "12"]);
+    r.git(&["config", "greengate.idleTimeout", "4"]);
+    r.git(&["config", "greengate.timeout", "12"]);
 }
 
 /// A fresh trace file for one test.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn trace_file(tag: &str) -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("amont-cpu-trace-{}-{tag}", std::process::id()));
+    let p = std::env::temp_dir().join(format!("greengate-cpu-trace-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_file(&p);
     p
 }
@@ -307,7 +307,7 @@ fn a_silent_busy_check_answers_to_the_ceiling_not_the_silence_budget() {
     let trace = trace_file("busy");
     let (run, took) = r.hook_watched(
         "pre-commit",
-        &[("AMONT_CPU_TRACE", trace.as_os_str())],
+        &[("GREENGATE_CPU_TRACE", trace.as_os_str())],
         WATCHDOG,
     );
     killed_at_the_ceiling(&run, took, &trace);
@@ -332,7 +332,7 @@ fn fork_per_file_work_keeps_a_silent_check_alive() {
     let trace = trace_file("churn");
     let (run, took) = r.hook_watched(
         "pre-commit",
-        &[("AMONT_CPU_TRACE", trace.as_os_str())],
+        &[("GREENGATE_CPU_TRACE", trace.as_os_str())],
         WATCHDOG,
     );
     killed_at_the_ceiling(&run, took, &trace);
@@ -340,7 +340,7 @@ fn fork_per_file_work_keeps_a_silent_check_alive() {
 
 /// A worker whose parent exits is reparented away from the tree. Once the
 /// sampler has SEEN it, it keeps counting. The intermediate waits until the
-/// worker's pid appears in `AMONT_CPU_TRACE` before it exits, so the test
+/// worker's pid appears in `GREENGATE_CPU_TRACE` before it exits, so the test
 /// never depends on winning the discovery race — which the guarantee does
 /// not cover (a worker orphaned before it was ever seen is invisible). The
 /// root then idles in `sleep`, so the only CPU left is the orphan's.
@@ -354,7 +354,7 @@ fn a_seen_worker_keeps_counting_after_its_parent_exits() {
     let worker = burn(24).trim_end().replace('\n', "; ");
     let body = format!(
         "sh -c '({worker}) & w=$!; n=0; \
-         while [ $n -lt 200 ]; do grep -q \"^$w \" \"$AMONT_CPU_TRACE\" 2>/dev/null && break; \
+         while [ $n -lt 200 ]; do grep -q \"^$w \" \"$GREENGATE_CPU_TRACE\" 2>/dev/null && break; \
          n=$((n+1)); sleep 0.05; done'\n\
          sleep 24\n"
     );
@@ -363,7 +363,7 @@ fn a_seen_worker_keeps_counting_after_its_parent_exits() {
     busy_budgets(&r);
     let (run, took) = r.hook_watched(
         "pre-commit",
-        &[("AMONT_CPU_TRACE", trace.as_os_str())],
+        &[("GREENGATE_CPU_TRACE", trace.as_os_str())],
         WATCHDOG,
     );
     killed_at_the_ceiling(&run, took, &trace);
@@ -382,8 +382,8 @@ fn an_idle_silent_check_still_dies_at_the_budget_and_says_it_was_measured() {
     // change does not address.
     script(&r, "idle.sh", "exec sleep 30\n");
     manifest(&r, "pre-commit  idle  *  block  ./idle.sh\n");
-    r.git(&["config", "amont.idleTimeout", "3"]);
-    r.git(&["config", "amont.timeout", "0"]);
+    r.git(&["config", "greengate.idleTimeout", "3"]);
+    r.git(&["config", "greengate.timeout", "0"]);
     let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(!run.passed(), "{}", run.output());
     assert!(
@@ -398,7 +398,7 @@ fn an_idle_silent_check_still_dies_at_the_budget_and_says_it_was_measured() {
     );
 }
 
-/// `amont.idleCpuCredit false` restores the silence-only rule: the same busy
+/// `greengate.idleCpuCredit false` restores the silence-only rule: the same busy
 /// check dies at the budget, and the message makes no CPU claim.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
@@ -409,7 +409,7 @@ fn with_cpu_credit_off_a_busy_silent_check_dies_at_the_budget() {
     script(&r, "busy.sh", &burn(20));
     manifest(&r, "pre-commit  busy  *  block  sh ./busy.sh\n");
     busy_budgets(&r);
-    r.git(&["config", "amont.idleCpuCredit", "false"]);
+    r.git(&["config", "greengate.idleCpuCredit", "false"]);
     let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(!run.passed(), "{}", run.output());
     assert!(
@@ -460,8 +460,8 @@ fn a_declared_lock_wait_outlives_the_silence_budget() {
         r.git(&["add", "wait.sh"]);
     }
     manifest(&r, "pre-commit  locked  *  block  sh ./wait.sh\n");
-    r.git(&["config", "amont.idleTimeout", "2"]);
-    r.git(&["config", "amont.timeout", "12"]);
+    r.git(&["config", "greengate.idleTimeout", "2"]);
+    r.git(&["config", "greengate.timeout", "12"]);
     let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(
         run.passed(),
@@ -476,7 +476,7 @@ fn a_declared_lock_wait_outlives_the_silence_budget() {
     );
 }
 
-/// A declared wait answers to `amont.lockWait`, and the message names the
+/// A declared wait answers to `greengate.lockWait`, and the message names the
 /// lock, its likely holders and the key.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
@@ -489,15 +489,15 @@ fn a_lock_wait_past_its_budget_is_killed_and_named() {
         &format!("echo '{CARGO_WAIT}' >&2\nexec sleep 30\n"),
     );
     manifest(&r, "pre-commit  locked  *  block  sh ./stuck.sh\n");
-    r.git(&["config", "amont.idleTimeout", "60"]);
-    r.git(&["config", "amont.lockWait", "2"]);
-    r.git(&["config", "amont.timeout", "12"]);
+    r.git(&["config", "greengate.idleTimeout", "60"]);
+    r.git(&["config", "greengate.lockWait", "2"]);
+    r.git(&["config", "greengate.timeout", "12"]);
     let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(!run.passed(), "{}", run.output());
     assert!(took < std::time::Duration::from_secs(8), "took {took:?}");
     assert!(
         run.says("waited 2s for the cargo lock on the build directory")
-            && run.says("amont.lockWait"),
+            && run.says("greengate.lockWait"),
         "must name the wait, the lock and the key:\n{}",
         run.output()
     );
@@ -516,8 +516,8 @@ fn a_marker_on_stdout_does_not_pause_the_clock() {
         &format!("echo '{CARGO_WAIT}'\nexec sleep 30\n"),
     );
     manifest(&r, "pre-commit  locked  *  block  sh ./out.sh\n");
-    r.git(&["config", "amont.idleTimeout", "2"]);
-    r.git(&["config", "amont.timeout", "0"]);
+    r.git(&["config", "greengate.idleTimeout", "2"]);
+    r.git(&["config", "greengate.timeout", "0"]);
     let (run, took) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(!run.passed(), "{}", run.output());
     assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
@@ -539,17 +539,17 @@ fn an_unmeasured_check_answers_to_the_extended_budget() {
     // amont reading until it exits.
     script(&r, "idle.sh", "sleep 30 >/dev/null 2>&1 &\nwait\n");
     manifest(&r, "pre-commit  idle  *  block  ./idle.sh\n");
-    r.git(&["config", "amont.idleTimeout", "2"]);
-    r.git(&["config", "amont.timeout", "0"]);
+    r.git(&["config", "greengate.idleTimeout", "2"]);
+    r.git(&["config", "greengate.timeout", "0"]);
     let zero = std::ffi::OsString::from("0");
     let four = std::ffi::OsString::from("4");
     let held = std::ffi::OsString::from("held");
     let (run, took) = r.hook_watched_unpinned(
         "pre-commit",
         &[
-            ("AMONT_CPU_MAX_PROCS", zero.as_os_str()),
-            ("AMONT_IDLE_LOAD_SCALE", four.as_os_str()),
-            ("AMONT_HOST_SLOT", held.as_os_str()),
+            ("GREENGATE_CPU_MAX_PROCS", zero.as_os_str()),
+            ("GREENGATE_IDLE_LOAD_SCALE", four.as_os_str()),
+            ("GREENHARNESS_HOST_SLOT", held.as_os_str()),
         ],
         WATCHDOG,
     );
@@ -560,7 +560,7 @@ fn an_unmeasured_check_answers_to_the_extended_budget() {
         run.output()
     );
     assert!(
-        run.says("CPU could not be measured") && run.says("amont.idleLoadScale"),
+        run.says("CPU could not be measured") && run.says("greengate.idleLoadScale"),
         "must say why the budget is not the configured one:\n{}",
         run.output()
     );
@@ -597,7 +597,8 @@ fn slow_clippy_repo() -> Repo {
 #[ignore = "real-clock load scenario: CI runs it (`make test-load`), not every commit (ADR-0009)"]
 fn heavy_checks_queue_for_a_host_slot() {
     let _alone = alone();
-    let slots = std::env::temp_dir().join(format!("amont-slots-fixture-{}", std::process::id()));
+    let slots =
+        std::env::temp_dir().join(format!("greengate-slots-fixture-{}", std::process::id()));
     let run_pair = |slots: &std::path::Path| -> (std::time::Duration, Vec<String>) {
         // Both repositories exist, their shims primed, before the clock
         // starts: the span measured is the two hooks and nothing else.
@@ -618,8 +619,8 @@ fn heavy_checks_queue_for_a_host_slot() {
                             "pre-commit-clippy",
                             &[
                                 ("PATH", path.as_os_str()),
-                                ("AMONT_SLOT_DIR", slots.as_os_str()),
-                                ("AMONT_HOST_SLOTS", one.as_os_str()),
+                                ("GREENHARNESS_SLOT_DIR", slots.as_os_str()),
+                                ("GREENGATE_HOST_SLOTS", one.as_os_str()),
                             ],
                             WATCHDOG,
                         );
@@ -692,8 +693,8 @@ fn waiting_clippy_repo(always: bool) -> Repo {
              echo 'waiting for lock on x' >&2; exec sleep 30;;\nesac\nexit 0\n"
         ),
     );
-    r.git(&["config", "amont.idleTimeout", "2"]);
-    r.git(&["config", "amont.timeout", "12"]);
+    r.git(&["config", "greengate.idleTimeout", "2"]);
+    r.git(&["config", "greengate.timeout", "12"]);
     r
 }
 
@@ -770,8 +771,8 @@ fn a_declared_check_is_never_retried() {
         "echo 'waiting for lock on x' >&2\nexec sleep 30\n",
     );
     manifest(&r, "pre-commit  look  *  block  ./look.sh\n");
-    r.git(&["config", "amont.idleTimeout", "2"]);
-    r.git(&["config", "amont.timeout", "12"]);
+    r.git(&["config", "greengate.idleTimeout", "2"]);
+    r.git(&["config", "greengate.timeout", "12"]);
     let (run, _) = r.hook_watched("pre-commit", &[], WATCHDOG);
     assert!(!run.passed(), "{}", run.output());
     assert!(!run.says("retrying once"), "{}", run.output());

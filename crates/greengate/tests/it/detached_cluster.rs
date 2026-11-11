@@ -74,7 +74,9 @@ impl Wf {
         };
         Wf {
             name: after("\"metadata\":{\"name\":\""),
-            label: after("\"labels\":{\"app.kubernetes.io/managed-by\":\"amont\",\"amont.run\":\""),
+            label: after(
+                "\"labels\":{\"app.kubernetes.io/managed-by\":\"amont\",\"greengate.run\":\"",
+            ),
             json,
         }
     }
@@ -134,21 +136,21 @@ impl Wf {
     fn pod(&self, task: &str, edit: impl Fn(String) -> String) -> String {
         let pod = compact(POD)
             .replace(
-                "\"workflows.argoproj.io/node-name\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-name\":\"greengate-handrun-pqtbl\"",
                 &format!(
                     "\"workflows.argoproj.io/node-name\":\"{}.{task}\"",
                     self.name
                 ),
             )
             .replace(
-                "\"workflows.argoproj.io/node-id\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-id\":\"greengate-handrun-pqtbl\"",
                 &format!("\"workflows.argoproj.io/node-id\":\"node-{task}\""),
             )
             .replace(
-                "\"name\":\"amont-handrun-pqtbl\",\"uid\":\"b8eb52b7-8ede-4c1f-bd94-9ada529eec97\"",
+                "\"name\":\"greengate-handrun-pqtbl\",\"uid\":\"b8eb52b7-8ede-4c1f-bd94-9ada529eec97\"",
                 &format!("\"name\":\"{}\",\"uid\":\"{}\"", self.name, self.uid()),
             )
-            .replace("amont-handrun-pqtbl", &format!("{}-{task}", self.name))
+            .replace("greengate-handrun-pqtbl", &format!("{}-{task}", self.name))
             .replace("handrun-2", &self.label)
             .replace(LIVE_TREE, &self.tree())
             .replace(LIVE_COMMIT, &self.env("GATE_REF"))
@@ -263,19 +265,19 @@ impl Lane {
         let forgejo = self.forgejo().display().to_string();
         let fetch = "http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots";
         self.cluster.config(
-            "amont.cluster.snapshotRemote",
+            "greengate.cluster.snapshotRemote",
             &format!("{forgejo}/{{repo}}.git"),
         );
         self.cluster.config(
-            "amont.cluster.snapshotFetch",
+            "greengate.cluster.snapshotFetch",
             &format!("{fetch}/{{repo}}.git"),
         );
         self.cluster.config(
-            "amont.cluster.mirrorRemote",
+            "greengate.cluster.mirrorRemote",
             &format!("{forgejo}/{{repo}}-mirror.git"),
         );
         self.cluster.config(
-            "amont.cluster.mirror",
+            "greengate.cluster.mirror",
             &format!("{fetch}/{{repo}}-mirror.git"),
         );
     }
@@ -287,7 +289,7 @@ impl Lane {
     }
 
     fn pending(&self) -> String {
-        std::fs::read_to_string(self.cluster.r.dir.join(".git/amont/cluster-pending"))
+        std::fs::read_to_string(self.cluster.r.dir.join(".git/greengate/cluster-pending"))
             .unwrap_or_default()
     }
 
@@ -682,7 +684,9 @@ fn every_non_pass_collects_nothing_and_logs_one_line() {
     for (what, phase, node, edit) in cases {
         let Some(l) = Lane::new(ONE) else { return };
         // ADR-0018: this test covers the inline path, where the gate runs in the push.
-        l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
+        l.cluster
+            .r
+            .git(&["config", "greengate.pushGates", "inline"]);
         let wf = l.submitted();
         let mut items = vec![wf.object(phase, &[("g0", node)])];
         if let Some(edit) = edit {
@@ -887,7 +891,7 @@ fn collect_makes_one_batched_call_for_three_pending_records() {
         "{}",
         batched[0]
     );
-    assert!(batched[0].contains("amont.run in ("), "{}", batched[0]);
+    assert!(batched[0].contains("greengate.run in ("), "{}", batched[0]);
     for wf in &made {
         assert!(
             batched[0].contains(&wf.label),
@@ -924,7 +928,7 @@ fn a_busy_lock_returns_at_once_without_asking_the_cluster() {
         wf.pod("g0", |p| p),
     ]);
     l.forget_calls();
-    let lock = l.cluster.r.dir.join(".git/amont/cluster-pending.lock");
+    let lock = l.cluster.r.dir.join(".git/greengate/cluster-pending.lock");
     let mut holder = Command::new("perl")
         .args([
             "-MFcntl=:flock",
@@ -962,7 +966,7 @@ fn a_closed_lid_loses_nothing() {
     let Some(l) = Lane::new(ONE) else { return };
     let (code, text) = l.cluster.amont(
         &["rehearse", "--cluster"],
-        &[("AMONT_TEST_CRASH", "after-create")],
+        &[("GREENGATE_TEST_CRASH", "after-create")],
         None,
     );
     assert_eq!(code, 137, "killed after the create: {text}");
@@ -1010,7 +1014,7 @@ fn a_crash_before_create_leaves_an_intent_and_creates_nothing_twice() {
     let Some(l) = Lane::new(ONE) else { return };
     let (code, text) = l.cluster.amont(
         &["rehearse", "--cluster"],
-        &[("AMONT_TEST_CRASH", "before-create")],
+        &[("GREENGATE_TEST_CRASH", "before-create")],
         None,
     );
     assert_eq!(code, 137, "{text}");
@@ -1088,10 +1092,12 @@ fn an_unconfirmed_create_keeps_the_intent_and_the_gates_run() {
 fn a_changed_image_between_submission_and_collect_is_not_accepted_at_push() {
     let Some(l) = Lane::new(ONE) else { return };
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
+    l.cluster
+        .r
+        .git(&["config", "greengate.pushGates", "inline"]);
     let wf = l.submitted();
     let other = format!("reg/gate:2@sha256:{}", "2".repeat(64));
-    l.cluster.config("amont.cluster.image", &other);
+    l.cluster.config("greengate.cluster.image", &other);
     l.answer(&[
         wf.object("Succeeded", &[("g0", "Succeeded")]),
         wf.pod("g0", |p| p),
@@ -1119,7 +1125,9 @@ fn a_changed_prepare_between_submission_and_collect_is_not_accepted_at_push() {
     let conf = format!("{ONE}set clusterPrepare make deps\n");
     let Some(l) = Lane::new(&conf) else { return };
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
+    l.cluster
+        .r
+        .git(&["config", "greengate.pushGates", "inline"]);
     let wf = l.submitted();
     // the repository now says another prepare, trusted
     l.cluster.r.write(
@@ -1173,7 +1181,7 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
         assert!(l
             .cluster
             .r
-            .git(&["config", "--unset", &format!("amont.cluster.{key}")])
+            .git(&["config", "--unset", &format!("greengate.cluster.{key}")])
             .status
             .success());
     }
@@ -1195,7 +1203,7 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
     let (code, text) = l.rehearse(&["--wait", "--cluster"]);
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains("amont.cluster.snapshotRemote is not set"),
+        text.contains("greengate.cluster.snapshotRemote is not set"),
         "{text}"
     );
     assert!(l.workflows().is_empty(), "{text}");
@@ -1206,12 +1214,12 @@ fn with_no_detached_keys_a_rehearsal_is_unchanged() {
     );
 }
 
-/// `amont.rehearse.cluster true` alone sends the post-commit rehearsal's gates
+/// `greengate.rehearse.cluster true` alone sends the post-commit rehearsal's gates
 /// to the cluster, with no flag.
 #[test]
 fn the_machine_key_alone_detaches_the_rehearsal() {
     let Some(l) = Lane::new(MIXED) else { return };
-    l.cluster.config("amont.rehearse.cluster", "true");
+    l.cluster.config("greengate.rehearse.cluster", "true");
     let (code, text) = l.rehearse(&["--wait"]);
     assert_eq!(code, 0, "{text}");
     assert_eq!(
@@ -1311,7 +1319,7 @@ fn an_unreadable_cluster_still_lets_old_records_expire() {
     assert!(!text.contains("0 cluster passes"), "{text}");
     assert!(l.pending().contains(&wf.name));
     // old: dropped with one line, even though the cluster is still down
-    let pending_file = l.cluster.r.dir.join(".git/amont/cluster-pending");
+    let pending_file = l.cluster.r.dir.join(".git/greengate/cluster-pending");
     let aged = l
         .pending()
         .replacen("\"submitted\":", "\"submitted\":1,\"was\":", 1);
@@ -1341,7 +1349,9 @@ fn a_changed_command_or_args_between_submission_and_collect_is_not_accepted_at_p
     ] {
         let Some(l) = Lane::new(ONE) else { return };
         // ADR-0018: this test covers the inline path, where the gate runs in the push.
-        l.cluster.r.git(&["config", "amont.pushGates", "inline"]);
+        l.cluster
+            .r
+            .git(&["config", "greengate.pushGates", "inline"]);
         let wf = l.submitted();
         l.cluster
             .r

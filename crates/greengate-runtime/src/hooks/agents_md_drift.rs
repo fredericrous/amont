@@ -7,7 +7,7 @@
 //! instructions being followed. Nothing noticed until `amont-fleet` ran.
 //!
 //! Warn, never block: the file is guidance, and the commit at hand is about
-//! something else. With `amont.fix true` it is the same shape as prettier —
+//! something else. With `greengate.fix true` it is the same shape as prettier —
 //! regenerate, re-stage, say so. Silent when there is no block at all: the
 //! block is opt-in, and a repository without one has not opted in.
 //!
@@ -119,7 +119,7 @@ pub fn run_in(settings: &crate::config::Settings, root: &Path) -> Outcome {
         crate::names::BIN,
         env!("CARGO_PKG_VERSION"),
         hl(concat!(crate::bin!(), " agents-md")),
-        hl("git config amont.fix true")
+        hl("git config greengate.fix true")
     ));
     Outcome::Warned
 }

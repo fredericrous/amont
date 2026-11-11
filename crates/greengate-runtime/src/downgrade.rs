@@ -25,17 +25,17 @@
 //! the project's no-telemetry promise applies in full. It lives in the COMMON
 //! git dir because "what has this repository been warning about" is a question
 //! about the repository, not about one worktree. `amont uninstall` deletes it;
-//! so does `amont.recordDowngrades false`, prospectively.
+//! so does `greengate.recordDowngrades false`, prospectively.
 //!
 //! A consequence worth stating rather than leaving to be discovered: this
 //! **cannot aggregate across a team**. Every developer's ledger is their own
 //! machine's. A lead runs the trial on their own checkout, or asks people to
 //! paste. That is a deliberate limit of the no-telemetry promise, not a gap.
 //!
-//! Format, versioned like its siblings (`amont-bypass-v1`, `amont-gate-v1`):
+//! Format, versioned like its siblings (`greengate-bypass-v1`, `amont-gate-v1`):
 //!
 //! ```text
-//! amont-downgrade-v1
+//! greengate-downgrade-v1
 //! <unix-epoch> <head-oid> <check-id> <origin>
 //! ```
 //!
@@ -47,10 +47,10 @@ use std::path::{Path, PathBuf};
 
 /// First line of the ledger. A future amont that changes the shape bumps this,
 /// and an old ledger reads as empty rather than being misread.
-pub const FORMAT: &str = "amont-downgrade-v1";
+pub const FORMAT: &str = crate::names::DOWNGRADE_FORMAT;
 
 /// The ledger's filename inside the common git dir.
-const LEDGER: &str = "amont-downgrades";
+const LEDGER: &str = crate::names::DOWNGRADE_LEDGER;
 
 /// Compact past this — roughly 5,500 events.
 ///
@@ -75,7 +75,7 @@ const KEEP: usize = 2_000;
 /// about a rollout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// `git config amont.severity.<check> warn` — the trial switch.
+    /// `git config greengate.severity.<check> warn` — the trial switch.
     Config,
     /// The repository's committed policy.
     Policy,
@@ -242,7 +242,7 @@ pub(crate) fn note(settings: &crate::config::Settings, events: &[(String, Origin
     if events.is_empty() {
         return;
     }
-    if !crate::config::boolean_or(settings, "amont.recordDowngrades", true) {
+    if !crate::config::boolean_or(settings, "greengate.recordDowngrades", true) {
         return;
     }
     // The parent commit, which groups an afternoon's repeated attempts at one
@@ -254,7 +254,7 @@ pub(crate) fn note(settings: &crate::config::Settings, events: &[(String, Origin
     append(&path, &oid, events);
 }
 
-/// `<common-dir>/amont-downgrades` — shared by every worktree of the repo.
+/// `<common-dir>/greengate-downgrades` — shared by every worktree of the repo.
 fn ledger_path() -> Option<PathBuf> {
     let dir = crate::git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     Some(Path::new(&dir).join(LEDGER))
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn a_ledger_in_an_unknown_format_version_reads_as_empty() {
         assert_eq!(
-            parse("amont-downgrade-v2\n100 abcdef0 pre-commit-x config\n"),
+            parse("greengate-downgrade-v2\n100 abcdef0 pre-commit-x config\n"),
             Ledger::default()
         );
     }
@@ -465,7 +465,8 @@ mod tests {
     /// zero — not as an error.
     #[test]
     fn an_absent_ledger_reads_as_empty() {
-        let dir = std::env::temp_dir().join(format!("amont-downgrade-none-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-downgrade-none-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         assert_eq!(read_at(&dir), Ledger::default());
         let _ = std::fs::remove_dir_all(&dir);
@@ -475,8 +476,10 @@ mod tests {
     /// still parses.
     #[test]
     fn compaction_keeps_the_header_and_the_newest_events() {
-        let dir =
-            std::env::temp_dir().join(format!("amont-downgrade-compact-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "greengate-downgrade-compact-{}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(LEDGER);
         let mut body = format!("{FORMAT}\n");
@@ -514,7 +517,7 @@ mod tests {
     #[test]
     fn appending_twice_writes_exactly_one_header() {
         let dir =
-            std::env::temp_dir().join(format!("amont-downgrade-append-{}", std::process::id()));
+            std::env::temp_dir().join(format!("greengate-downgrade-append-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(LEDGER);
         append(

@@ -13,7 +13,7 @@
 //! first `amont trust`.
 //!
 //! The journey, in order:
-//! 1. no manifest: nothing mentions one, and `amont.conventions declared`
+//! 1. no manifest: nothing mentions one, and `greengate.conventions declared`
 //!    holds the house rules back (the safety net stays) until a manifest,
 //!    even a comment, declares the repository;
 //! 2. a manifest nobody trusted: committing it is blocked (or downgraded on
@@ -23,7 +23,7 @@
 //!    and a pulled edit is a gap, never a block;
 //! 4. declared checks: block, pass, warn, scope, `hook.skip` and severity,
 //!    a command that cannot start, a malformed line, the `files` marker and
-//!    `$AMONT_FILES`, tool pins;
+//!    `$GREENGATE_FILES`, tool pins;
 //! 5. policy lines: `severity` and `skip` against git config, `amont run`,
 //!    `amont list` and `trust --show`, `set` thresholds, commit style,
 //!    commands, refused keys and the version floor;
@@ -126,7 +126,7 @@ fn the_declared_journey() {
     r.stage("bad.json", BAD_JSON);
     let (ok, out) = commit(&r, "feat: bad json");
     step!("reach, default", !ok, "lint-json-yaml still blocks:\n{out}");
-    config(&r, "amont.conventions", "declred");
+    config(&r, "greengate.conventions", "declred");
     let (ok, out) = commit(&r, "feat: bad json");
     step!(
         "reach, misspelt",
@@ -135,7 +135,7 @@ fn the_declared_journey() {
     );
 
     // Declared mode, no manifest: the house rules stand down, said once.
-    config(&r, "amont.conventions", "declared");
+    config(&r, "greengate.conventions", "declared");
     let (ok, out) = commit(&r, "feat: bad json");
     step!(
         "reach, undeclared",
@@ -197,7 +197,7 @@ fn the_declared_journey() {
         "nothing is held back in a declared repo:\n{out}"
     );
     unstage(&r);
-    unset(&r, "amont.conventions");
+    unset(&r, "greengate.conventions");
 
     // ---- 2. a manifest nobody trusted --------------------------------------
 
@@ -214,12 +214,12 @@ fn the_declared_journey() {
     step!("first manifest", !out.contains("probe-"), "{out}");
 
     // A block, and like every block it can be downgraded on purpose.
-    config(&r, "amont.severity.pre-commit-manifest-trust", "warn");
+    config(&r, "greengate.severity.pre-commit-manifest-trust", "warn");
     let (ok, out) = commit(&r, "feat: a manifest");
     step!("trust downgraded", ok, "{out}");
     step!("trust downgraded", out.contains("greengate trust"), "{out}");
     step!("trust downgraded", !out.contains("probe-"), "{out}");
-    unset(&r, "amont.severity.pre-commit-manifest-trust");
+    unset(&r, "greengate.severity.pre-commit-manifest-trust");
 
     // A clone: the manifest arrived in history, the commit is about
     // something else. Inert, and reported rather than dropped.
@@ -286,7 +286,7 @@ fn the_declared_journey() {
     let text = stdout(&r, &["list"]);
     step!(
         "untrusted prepare",
-        !text.contains("amont-should-not-run"),
+        !text.contains("greengate-should-not-run"),
         "an untrusted manifest supplies no command: {text}"
     );
     unstage(&r);
@@ -386,7 +386,7 @@ fn the_declared_journey() {
     );
     step!("block", !ok, "a blocking failure must stop the commit");
     step!("block", out.contains("lint-shell"), "by name:\n{out}");
-    config(&r, "amont.severity.lint-shell", "warn");
+    config(&r, "greengate.severity.lint-shell", "warn");
     let (ok, out) = commit(&r, "feat: six");
     step!("severity", ok, "severity override ignored:\n{out}");
     step!(
@@ -394,7 +394,7 @@ fn the_declared_journey() {
         out.contains("probe-"),
         "downgraded, not disabled"
     );
-    unset(&r, "amont.severity.lint-shell");
+    unset(&r, "greengate.severity.lint-shell");
     config(&r, "hook.skip", "lint-shell");
     r.stage("note.txt", "seven\n");
     let (ok, out) = commit(&r, "feat: seven");
@@ -498,7 +498,7 @@ fn the_declared_journey() {
     );
     step!("malformed", out.contains("line 1"), "and where:\n{out}");
 
-    // The `files` marker hands the command its matched paths, `$AMONT_FILES`
+    // The `files` marker hands the command its matched paths, `$GREENGATE_FILES`
     // carries them without it, and with nothing matched it does not run.
     #[cfg(unix)]
     {
@@ -508,7 +508,7 @@ fn the_declared_journey() {
         );
         crate::common::fixture_exec(
             &r.path("envfiles.sh"),
-            "#!/bin/sh\nprintf '%s' \"$AMONT_FILES\" > envfiles.txt\nexit 0\n",
+            "#!/bin/sh\nprintf '%s' \"$GREENGATE_FILES\" > envfiles.txt\nexit 0\n",
         );
         r.git(&["add", "argv.sh", "envfiles.sh"]);
         r.commit("chore: two more probes");
@@ -536,10 +536,14 @@ fn the_declared_journey() {
         r.stage("b.rs", "fn main() {}\n");
         declare(&r, "pre-commit  lint-shell  *.sh  block  ./envfiles.sh\n");
         let (ok, out) = commit(&r, "feat: shell");
-        step!("AMONT_FILES", ok, "{out}");
+        step!("GREENGATE_FILES", ok, "{out}");
         let env = std::fs::read_to_string(r.path("envfiles.txt")).expect("envfiles.txt");
-        step!("AMONT_FILES", env.lines().any(|l| l == "a.sh"), "{env}");
-        step!("AMONT_FILES", !env.lines().any(|l| l == "b.rs"), "{env}");
+        step!("GREENGATE_FILES", env.lines().any(|l| l == "a.sh"), "{env}");
+        step!(
+            "GREENGATE_FILES",
+            !env.lines().any(|l| l == "b.rs"),
+            "{env}"
+        );
         undo(&r);
         std::fs::remove_file(r.path("envfiles.txt")).expect("remove envfiles.txt");
 
@@ -608,10 +612,10 @@ fn the_declared_journey() {
     // it; `amont run` resolves it the same way as the dispatcher.
     declare(&r, "severity lint-json-yaml warn\n");
     r.stage("bad.json", BAD_JSON);
-    config(&r, "amont.severity.lint-json-yaml", "block");
+    config(&r, "greengate.severity.lint-json-yaml", "block");
     let (ok, out) = commit(&r, "feat: bad json");
     step!("policy, local wins", !ok, "local block must win:\n{out}");
-    unset(&r, "amont.severity.lint-json-yaml");
+    unset(&r, "greengate.severity.lint-json-yaml");
     let (ok, out) = amont(&r, &["run", "pre-commit-lint-json-yaml"]);
     step!(
         "policy, amont run",
@@ -630,7 +634,7 @@ fn the_declared_journey() {
     // Specificity decides between keys: a policy full id beats a local
     // trigger key.
     declare(&r, "severity pre-commit-lint-json-yaml warn\n");
-    config(&r, "amont.severity.pre-commit", "block");
+    config(&r, "greengate.severity.pre-commit", "block");
     r.stage("bad.json", BAD_JSON);
     let (ok, out) = commit(&r, "feat: bad json");
     step!(
@@ -639,7 +643,7 @@ fn the_declared_journey() {
         "full-id policy outranks a trigger key:\n{out}"
     );
     undo(&r);
-    unset(&r, "amont.severity.pre-commit");
+    unset(&r, "greengate.severity.pre-commit");
 
     // A policy skip is the team's, announced under its own source, beside a
     // machine's.
@@ -730,7 +734,7 @@ fn the_declared_journey() {
     );
     undo(&r);
     declare(&r, "set largeFileWarn 1\n");
-    config(&r, "amont.largeFileWarn", "1000");
+    config(&r, "greengate.largeFileWarn", "1000");
     stage_blob(&r);
     let (ok, out) = commit(&r, "feat: a blob");
     step!("set, local wins", ok, "{out}");
@@ -740,7 +744,7 @@ fn the_declared_journey() {
         "the local 1000 MB threshold wins:\n{out}"
     );
     undo(&r);
-    unset(&r, "amont.largeFileWarn");
+    unset(&r, "greengate.largeFileWarn");
 
     // Commit style travels to commit-msg, a separate process.
     declare(&r, "set commit.subjectMax 20\n");
@@ -792,7 +796,7 @@ fn the_declared_journey() {
         out.contains("asks for greengate") && out.contains("99.0.0"),
         "the floor is announced:\n{out}"
     );
-    config(&r, "amont.minVersion", "0.1.0");
+    config(&r, "greengate.minVersion", "0.1.0");
     r.stage("a.txt", "floor two\n");
     let (ok, out) = commit(&r, "feat: floor two");
     step!("floor, local wins", ok, "{out}");
@@ -801,7 +805,7 @@ fn the_declared_journey() {
         !out.contains("asks for amont"),
         "local wins:\n{out}"
     );
-    unset(&r, "amont.minVersion");
+    unset(&r, "greengate.minVersion");
     declare(&r, "set minVersion 0.1.0\n");
     r.stage("a.txt", "floor three\n");
     let (ok, out) = commit(&r, "feat: floor three");
@@ -984,7 +988,7 @@ fn tree_gates(r: &Repo) {
     trust_and_install(r);
 
     // Off: nothing runs, nothing is said, nothing is stamped.
-    config(r, "amont.treeLint", "false");
+    config(r, "greengate.treeLint", "false");
     r.stage("a.txt", "lint off\n");
     let (ok, out) = commit(r, "feat: lint off");
     step!("tree lint off", ok, "{out}");
@@ -997,13 +1001,13 @@ fn tree_gates(r: &Repo) {
 
     // Cold: the commit is not held, the cache warms in the background, and
     // the cold run is evidence on the tree.
-    config(r, "amont.treeLint", "true");
+    config(r, "greengate.treeLint", "true");
     r.stage("a.txt", "hello\n");
     let (ok, out) = commit(r, "feat: a");
     step!("tree, cold", ok, "{out}");
     step!(
         "tree, cold",
-        out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
+        out.contains("tree lint cold: ok — warming ($GIT_DIR/greengate-warm.log)"),
         "{out}"
     );
     step!(
@@ -1021,7 +1025,7 @@ fn tree_gates(r: &Repo) {
     let marker = || {
         namespaces(r, "ok").iter().any(|ns| {
             r.dir
-                .join(".git/amont-cache/ok")
+                .join(".git/greengate-cache/ok")
                 .join(ns)
                 .join(".complete")
                 .is_file()

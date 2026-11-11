@@ -49,7 +49,7 @@ amont list --json --stage pre-push --pushed  # exactly what pushing next gates\n
 ```\n\
 \n\
 Each check reports its _effective_ severity (`block`/`warn`, including any\n\
-`amont.severity.*` override) and whether it fires here. The same output\n\
+`greengate.severity.*` override) and whether it fires here. The same output\n\
 carries `commit_style`: the subject and description limits `commit-msg`\n\
 enforces, and where the type's gitmoji is placed. It also carries\n\
 `branch_style`: name a branch `<prefix>/<name>` BEFORE creating it —\n\
@@ -64,20 +64,20 @@ it runs every push gate the push owes on a snapshot of the exact commit,\n\
 with no connection open, then pushes, and the push itself skips them (git\n\
 connects before pre-push runs, and a remote may drop the idle session while a\n\
 suite runs). A bare `git push` whose push gates have not run on its tree is\n\
-refused at once (`amont.pushGates refuse`, the default): run `amont land`, or\n\
+refused at once (`greengate.pushGates refuse`, the default): run `amont land`, or\n\
 `amont rehearse --wait` (or `amont run --stamp`) first and push again. Push a\n\
 release tag with `amont land --tag <name>`: it runs the release audits on the\n\
 tagged commit first, which a branch rehearsal never does. Where\n\
-`amont.rehearseOnCommit` is on, every commit already starts that rehearsal in\n\
+`greengate.rehearseOnCommit` is on, every commit already starts that rehearsal in\n\
 the background and `--wait` only follows it. Give these commands the\n\
 longest timeout your tooling allows, never its default: here a check is\n\
 killed only after {idle} of silence or {ceiling} in total\n\
-(`amont.idleTimeout` / `amont.timeout`) — and on Linux and macOS a silent\n\
+(`greengate.idleTimeout` / `greengate.timeout`) — and on Linux and macOS a silent\n\
 check whose processes are busy on CPU is not \"silent\": it can run to the\n\
 {ceiling} ceiling. A check waiting on a cargo or uv lock answers to\n\
-`amont.lockWait` instead, the silence budget stretches with the machine's\n\
-load (`amont.idleLoadScale`), and a heavy check (clippy, a test suite) may\n\
-first queue for a host slot (`amont.hostSlots`) while other worktrees run\n\
+`greengate.lockWait` instead, the silence budget stretches with the machine's\n\
+load (`greengate.idleLoadScale`), and a heavy check (clippy, a test suite) may\n\
+first queue for a host slot (`greengate.hostSlots`) while other worktrees run\n\
 theirs. A test suite may legitimately run for most of that. If your tooling caps a foreground command below it,\n\
 run the command in the background and read its result when it exits —\n\
 while it runs, a line a minute on stderr says which check is alive and\n\
@@ -93,12 +93,12 @@ Never bypass with `--no-verify`. To change enforcement, downgrade it\n\
 intentionally instead:\n\
 \n\
 ```sh\n\
-git config amont.severity.<check-id> warn\n\
+git config greengate.severity.<check-id> warn\n\
 ```\n\
 \n\
 `commit-msg` takes neither `hook.skip` nor a severity override. Write the\n\
 message it asks for, or change what it asks for — `amont setup`, or\n\
-`amont.commit.*` directly.\n\
+`greengate.commit.*` directly.\n\
 \n\
 {END}\n"
     )
@@ -307,7 +307,7 @@ mod tests {
                 "{what}: prettier wants a blank line before the closing comment"
             );
             // A `*` OPENING emphasis is what prettier rewrites. A trailing
-            // one inside a code span (`amont.severity.*`) is untouched, so
+            // one inside a code span (`greengate.severity.*`) is untouched, so
             // the rule is "no `*` immediately followed by a letter" rather
             // than "no `*`".
             let opener = text
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn check_reports_not_present_for_a_missing_file() {
-        let tmp = std::env::temp_dir().join("amont-agents-md-test-nonexistent-xyz");
+        let tmp = std::env::temp_dir().join("greengate-agents-md-test-nonexistent-xyz");
         let _ = std::fs::remove_file(&tmp);
         assert_eq!(
             check(&test_settings(), &tmp).unwrap(),
@@ -419,8 +419,10 @@ mod tests {
 
     #[test]
     fn check_reports_matches_generated_after_a_write() {
-        let tmp =
-            std::env::temp_dir().join(format!("amont-agents-md-test-{}-match", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "greengate-agents-md-test-{}-match",
+            std::process::id()
+        ));
         std::fs::write(&tmp, generate_block(&test_settings())).unwrap();
         assert_eq!(
             check(&test_settings(), &tmp).unwrap(),
@@ -431,8 +433,10 @@ mod tests {
 
     #[test]
     fn check_reports_drifted_for_a_stale_block() {
-        let tmp =
-            std::env::temp_dir().join(format!("amont-agents-md-test-{}-drift", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "greengate-agents-md-test-{}-drift",
+            std::process::id()
+        ));
         std::fs::write(&tmp, format!("{START}\nstale\n{END}\n")).unwrap();
         assert_eq!(check(&test_settings(), &tmp).unwrap(), CheckResult::Drifted);
         let _ = std::fs::remove_file(&tmp);

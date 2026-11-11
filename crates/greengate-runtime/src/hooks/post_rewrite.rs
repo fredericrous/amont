@@ -15,7 +15,7 @@
 //! has already rehearsed that commit — only `rebase` is handled here.
 //!
 //! Same opt-in and same silence rules as post-commit
-//! (`amont.rehearseOnCommit`); notification-only, never blocks.
+//! (`greengate.rehearseOnCommit`); notification-only, never blocks.
 
 use crate::check::Verdict;
 

@@ -4,7 +4,7 @@
 //! With nothing pending it costs one `stat` and spawns no `kubectl`. With
 //! something pending it takes the pending file's lock without waiting (busy
 //! means somebody else is collecting: return), and asks the cluster ONE
-//! question per hook process: `kubectl get workflows,pods -l 'amont.run in
+//! question per hook process: `kubectl get workflows,pods -l 'greengate.run in
 //! (…)' -o json`, under a 1 s request timeout and a wall deadline. A failed
 //! read keeps every record for the next hook.
 //!
@@ -821,19 +821,19 @@ mod tests {
         let node = node_name(&record.name, "g0");
         let pod = compact(&fixture("pod-succeeded.json"))
             .replace(
-                "\"workflows.argoproj.io/node-name\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-name\":\"greengate-handrun-pqtbl\"",
                 &format!("\"workflows.argoproj.io/node-name\":\"{node}\""),
             )
             .replace(
-                "\"workflows.argoproj.io/node-id\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-id\":\"greengate-handrun-pqtbl\"",
                 "\"workflows.argoproj.io/node-id\":\"node-g0\"",
             )
-            .replace("amont-handrun-pqtbl", &record.name)
+            .replace("greengate-handrun-pqtbl", &record.name)
             .replace("b8eb52b7-8ede-4c1f-bd94-9ada529eec97", "uid-1")
             .replace("handrun-2", &record.label);
         let wf = format!(
             "{{\"kind\":\"Workflow\",\"metadata\":{{\"name\":\"{}\",\"uid\":\"uid-1\",\
-             \"labels\":{{\"amont.run\":\"{}\"}}}},\"status\":{{\"phase\":\"{phase}\",\
+             \"labels\":{{\"greengate.run\":\"{}\"}}}},\"status\":{{\"phase\":\"{phase}\",\
              \"nodes\":{{\"node-g0\":{{\"id\":\"node-g0\",\"name\":\"{node}\",\"type\":\"Pod\",\
              \"templateName\":\"gate-g0\",\"phase\":\"{node_phase}\"}}}}}}}}",
             record.name, record.label

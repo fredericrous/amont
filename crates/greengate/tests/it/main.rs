@@ -1,9 +1,9 @@
 //! amont's integration tests, as ONE binary.
 //!
 //! Each file here was its own test binary, and each binary linked
-//! amont-runtime again: 69 links, about 50 s to rebuild after a one-line
+//! greengate-runtime again: 69 links, about 50 s to rebuild after a one-line
 //! change, and the same cost for every mutant a mutation run builds
-//! (decisions plan 2026-10-17-amont-tests-follow-user-flows). As modules of
+//! (decisions plan 2026-10-17-greengate-tests-follow-user-flows). As modules of
 //! one crate they link once. Test names now carry the old file as their
 //! module path, so `cargo test --test it land::` runs what
 //! `cargo test --test land` did.

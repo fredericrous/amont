@@ -4,8 +4,8 @@
 //! check does at commit time: trust, block and warn, scope, `hook.skip` and
 //! severity, gaps, the `files` marker and tool pins. What stays here is what a
 //! commit does not reach: pre-push ordering and the pushed range, judged on
-//! ref lines written by hand, and the output modes (`amont.progress`,
-//! `amont.quiet`).
+//! ref lines written by hand, and the output modes (`greengate.progress`,
+//! `greengate.quiet`).
 
 use crate::common;
 use common::Repo;
@@ -183,7 +183,7 @@ fn a_declared_pre_push_check_runs_after_the_built_ins() {
 fn a_pre_push_scope_is_judged_against_the_pushed_range() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");
@@ -227,7 +227,7 @@ fn a_pre_push_scope_is_judged_against_the_pushed_range() {
 fn a_reverted_change_within_the_pushed_range_still_counts() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");
@@ -263,7 +263,7 @@ fn a_reverted_change_within_the_pushed_range_still_counts() {
 fn a_file_touched_only_by_a_merge_resolution_still_counts() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     probe(&r, PROBE, 0);
     manifest(&r, &format!("pre-push  smoke  *.rs  block  ./{PROBE}\n"));
     r.commit("init");
@@ -296,7 +296,7 @@ fn a_file_touched_only_by_a_merge_resolution_still_counts() {
     );
 }
 
-/// `amont.progress false` is the escape hatch back to raw streaming — the
+/// `greengate.progress false` is the escape hatch back to raw streaming — the
 /// output is all still there, just without the one-block guarantee.
 #[cfg(unix)]
 #[test]
@@ -311,7 +311,7 @@ fn progress_off_restores_raw_streaming() {
         .expect("chmod");
     r.git(&["add", "noisy.sh"]);
     manifest(&r, "pre-commit  noisy  *  warn  ./noisy.sh\n");
-    r.git(&["config", "amont.progress", "false"]);
+    r.git(&["config", "greengate.progress", "false"]);
 
     let run = r.hook("pre-commit", &[]);
     assert!(run.passed(), "{}", run.output());
@@ -322,7 +322,7 @@ fn progress_off_restores_raw_streaming() {
     );
 }
 
-/// `amont.quiet` swallows the per-check success lines and leaves one count in
+/// `greengate.quiet` swallows the per-check success lines and leaves one count in
 /// their place — the same run, told once instead of once per check.
 ///
 /// The count is the point. A gate that says nothing at all is
@@ -357,7 +357,7 @@ fn quiet_replaces_the_success_lines_with_their_count() {
     // And `auto` is the DEFAULT, which this harness cannot reach by simply
     // unsetting: `auto` asks who is reading, and `Command::output()` means
     // nobody is. Unset and the run must go quiet on its own.
-    r.git(&["config", "--unset", "amont.quiet"]);
+    r.git(&["config", "--unset", "greengate.quiet"]);
     let defaulted = r.hook("pre-commit", &[]);
     assert!(defaulted.passed(), "{}", defaulted.output());
     assert!(
@@ -371,7 +371,7 @@ fn quiet_replaces_the_success_lines_with_their_count() {
         defaulted.output()
     );
 
-    r.git(&["config", "amont.quiet", "always"]);
+    r.git(&["config", "greengate.quiet", "always"]);
     let quiet = r.hook("pre-commit", &[]);
     assert!(quiet.passed(), "{}", quiet.output());
     assert!(
@@ -398,7 +398,7 @@ fn quiet_never_swallows_a_failure() {
         .expect("chmod");
     r.git(&["add", "nope.sh"]);
     manifest(&r, "pre-commit  refuses  *  block  ./nope.sh\n");
-    r.git(&["config", "amont.quiet", "always"]);
+    r.git(&["config", "greengate.quiet", "always"]);
 
     let run = r.hook("pre-commit", &[]);
     assert!(

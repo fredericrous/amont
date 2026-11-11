@@ -63,7 +63,11 @@ fn policy_beats_global_config() {
     let r = Repo::new();
     manifest(&r, "severity lint-json-yaml warn\n");
     let global = r.path("sandbox-gitconfig");
-    std::fs::write(&global, "[amont \"severity\"]\n\tlint-json-yaml = block\n").unwrap();
+    std::fs::write(
+        &global,
+        "[greengate \"severity\"]\n\tlint-json-yaml = block\n",
+    )
+    .unwrap();
     stage_bad_json(&r);
     let (code, out) = pre_commit_env(&r, &[("GIT_CONFIG_GLOBAL", global.to_str().unwrap())]);
     assert_eq!(code, 0, "policy warn beats global block: {out}");
@@ -80,7 +84,7 @@ fn command_scope_beats_policy() {
         &r,
         &[
             ("GIT_CONFIG_COUNT", "1"),
-            ("GIT_CONFIG_KEY_0", "amont.severity.lint-json-yaml"),
+            ("GIT_CONFIG_KEY_0", "greengate.severity.lint-json-yaml"),
             ("GIT_CONFIG_VALUE_0", "block"),
         ],
     );
@@ -132,7 +136,11 @@ fn degraded_git_lets_all_config_beat_policy() {
     .unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
     let global = r.path("sandbox-gitconfig");
-    std::fs::write(&global, "[amont \"severity\"]\n\tlint-json-yaml = block\n").unwrap();
+    std::fs::write(
+        &global,
+        "[greengate \"severity\"]\n\tlint-json-yaml = block\n",
+    )
+    .unwrap();
     let (code, out) = pre_commit_env(
         &r,
         &[

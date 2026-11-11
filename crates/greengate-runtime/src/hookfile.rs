@@ -637,7 +637,7 @@ pub fn stage(dest: &Path, body: &str, exec: bool) -> io::Result<Staged> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "hook".to_string());
-    let tmp = dir.join(format!(".amont-tmp-{}-{name}", std::process::id()));
+    let tmp = dir.join(format!(".greengate-tmp-{}-{name}", std::process::id()));
     // Remove first: a leftover from a killed run could be a symlink, and
     // `fs::write` would follow it.
     let _ = std::fs::remove_file(&tmp);

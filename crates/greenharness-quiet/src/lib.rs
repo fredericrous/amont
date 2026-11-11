@@ -373,7 +373,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> Scratch {
-        let d = std::env::temp_dir().join(format!("amont-quiet-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("greengate-quiet-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d); // absent unless an earlier run was killed
         Scratch(d)
     }

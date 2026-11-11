@@ -74,7 +74,11 @@ fn the_check_blocks_by_default() {
 #[test]
 fn severity_warn_reports_without_blocking() {
     let r = Repo::new();
-    r.git(&["config", "amont.severity.pre-commit-merge-conflict", "warn"]);
+    r.git(&[
+        "config",
+        "greengate.severity.pre-commit-merge-conflict",
+        "warn",
+    ]);
     r.stage("bad.txt", &conflicted());
     let run = r.hook("pre-commit", &[]);
 
@@ -98,11 +102,15 @@ fn severity_warn_reports_without_blocking() {
 #[test]
 fn severity_block_overrides_a_broader_warn() {
     let r = Repo::new();
-    r.git(&["config", "amont.severity.pre-commit-merge-conflict", "warn"]);
+    r.git(&[
+        "config",
+        "greengate.severity.pre-commit-merge-conflict",
+        "warn",
+    ]);
     r.git(&[
         "config",
         "--replace-all",
-        "amont.severity.pre-commit-merge-conflict",
+        "greengate.severity.pre-commit-merge-conflict",
         "block",
     ]);
     r.stage("bad.txt", &conflicted());
@@ -116,7 +124,7 @@ fn an_unrecognised_severity_keeps_the_declared_one() {
     let r = Repo::new();
     r.git(&[
         "config",
-        "amont.severity.pre-commit-merge-conflict",
+        "greengate.severity.pre-commit-merge-conflict",
         "advisory",
     ]);
     r.stage("bad.txt", &conflicted());
@@ -140,7 +148,11 @@ fn a_warn_failure_does_not_end_the_pre_push_chain() {
     let (code, out) = pre_push(&r);
     assert_ne!(code, 0, "branch-pattern was expected to block:\n{out}");
 
-    r.git(&["config", "amont.severity.pre-push-branch-pattern", "warn"]);
+    r.git(&[
+        "config",
+        "greengate.severity.pre-push-branch-pattern",
+        "warn",
+    ]);
     let (code, out) = pre_push(&r);
     assert_eq!(code, 0, "the chain stopped at a warning:\n{out}");
     assert!(
@@ -153,7 +165,7 @@ fn a_warn_failure_does_not_end_the_pre_push_chain() {
 #[test]
 fn the_override_is_scoped_to_one_check() {
     let r = Repo::new();
-    r.git(&["config", "amont.severity.pre-commit-ban-terms", "warn"]);
+    r.git(&["config", "greengate.severity.pre-commit-ban-terms", "warn"]);
     r.stage("bad.txt", &conflicted());
     assert!(
         !r.hook("pre-commit", &[]).passed(),

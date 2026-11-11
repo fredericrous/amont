@@ -59,7 +59,7 @@ impl Machine {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "amont-onboarding-{tag}-{}-{}",
+            "greengate-onboarding-{tag}-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -312,7 +312,7 @@ fn installed_bin(m: &Machine) -> Option<PathBuf> {
 
 /// A person's own machine, one repository. The refusals (redirects,
 /// symlinks, unwritable dirs, foreign hooks and `--force`) and where the
-/// binary is taken from (PATH, `AMONT_BIN_DIR`, a build dir) keep their own
+/// binary is taken from (PATH, `GREENGATE_BIN_DIR`, a build dir) keep their own
 /// fixtures in `install.rs`.
 #[test]
 fn the_install_journey() {
@@ -421,14 +421,20 @@ fn the_install_journey() {
     let (code, out) = m.amont(&repo, &["trust"]);
     step_eq!("uninstall", code, 0, "amont trust:\n{out}");
     let trusted = || {
-        let (_, out) = m.git(&repo, &["config", "--local", "--get", "amont.trusted"]);
+        let (_, out) = m.git(&repo, &["config", "--local", "--get", "greengate.trusted"]);
         out.trim().to_string()
     };
     step!("uninstall", !trusted().is_empty(), "fixture: trust granted");
     let git_dir = repo.join(".git");
-    write(&git_dir.join("amont-held/index"), "amont-held-v1\0");
-    write(&git_dir.join("amont-bypasses"), "amont-bypasses-v1\n");
-    write(&git_dir.join("amont-skew"), "amont-skew-v1\n1.0.0\n");
+    write(&git_dir.join("greengate-held/index"), "greengate-held-v1\0");
+    write(
+        &git_dir.join("greengate-bypasses"),
+        "greengate-bypasses-v1\n",
+    );
+    write(
+        &git_dir.join("greengate-skew"),
+        "greengate-skew-v1\n1.0.0\n",
+    );
 
     let (code, out) = m.amont(&repo, &["uninstall"]);
     step_eq!("uninstall", code, 0, "{out}");
@@ -467,16 +473,20 @@ fn the_install_journey() {
     );
     step!(
         "uninstall",
-        git_dir.join("amont-held/index").exists(),
+        git_dir.join("greengate-held/index").exists(),
         "uninstall deleted PARKED WORK — the one thing it must never touch:\n{out}"
     );
     step!("uninstall", repo.join("amont.conf").exists(), "{out}");
     step!(
         "uninstall",
-        !git_dir.join("amont-bypasses").exists(),
+        !git_dir.join("greengate-bypasses").exists(),
         "the bypass ledger outlived the hooks it describes:\n{out}"
     );
-    step!("uninstall", !git_dir.join("amont-skew").exists(), "{out}");
+    step!(
+        "uninstall",
+        !git_dir.join("greengate-skew").exists(),
+        "{out}"
+    );
 
     // Twice is how somebody makes sure.
     let (code, out) = m.amont(&repo, &["uninstall"]);
@@ -625,7 +635,7 @@ fn the_enroll_journey() {
         None,
         "nothing was granted"
     );
-    step_eq!("bad value", m.global("amont.conventions"), None);
+    step_eq!("bad value", m.global("greengate.conventions"), None);
 
     // The grant reaches forward, the output says so, and existing clones get
     // a remedy.
@@ -682,7 +692,7 @@ fn the_enroll_journey() {
     step_eq!("declared", code, 0, "{out}");
     step_eq!(
         "declared",
-        m.global("amont.conventions").as_deref(),
+        m.global("greengate.conventions").as_deref(),
         Some("declared")
     );
     step_eq!(
@@ -724,7 +734,7 @@ fn the_enroll_journey() {
         "the clone arrived without the shims"
     );
     let listed = list_json(&m, &clone);
-    step_eq!("clone", listed["format"], "amont-list-v1");
+    step_eq!("clone", listed["format"], "greengate-list-v1");
     step_eq!(
         "clone",
         listed["conventions_apply"],

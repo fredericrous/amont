@@ -2,7 +2,7 @@
 //! command, and who holds them.
 //!
 //! `amont slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <cmd…>`
-//! waits for a slot, runs the command with `AMONT_HOST_SLOT=held`, passes
+//! waits for a slot, runs the command with `GREENHARNESS_HOST_SLOT=held`, passes
 //! its exit status through and frees the slot when the command exits. The
 //! wrapper alone holds the slot: its descriptors are close-on-exec, so a
 //! daemon the command leaves behind never keeps it. A wait longer than
@@ -81,7 +81,7 @@ fn value<'a>(flags: &'a [(&'static str, String)], flag: &str) -> Option<&'a str>
 /// How the command runs: inside a held slot, or with none.
 #[derive(Clone, Copy)]
 enum Launch {
-    /// A slot is held for it (here or by an ancestor): `AMONT_HOST_SLOT=held`.
+    /// A slot is held for it (here or by an ancestor): `GREENHARNESS_HOST_SLOT=held`.
     Held,
     /// No slot: off, unsupported, unavailable, or `--on-timeout run`.
     Unqueued,
@@ -275,7 +275,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
         if json {
             println!("{{\"cap\":0,\"held\":0,\"holders\":[],\"unknown\":0,\"waiting\":0}}");
         } else {
-            println!("host slots are off (amont.hostSlots 0)");
+            println!("host slots are off (greengate.hostSlots 0)");
         }
         return 0;
     };
@@ -293,7 +293,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
             greenharness_slots::load1().map_or("?".to_string(), |l| format!("{l:.1}")),
             greenharness_slots::cores()
         ),
-        greenharness_slots::Sizing::Fixed(n) => format!("amont.hostSlots {n}"),
+        greenharness_slots::Sizing::Fixed(n) => format!("greengate.hostSlots {n}"),
     };
     if json {
         let holders: Vec<String> = status

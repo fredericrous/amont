@@ -29,10 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Exported to the command a slot holder runs; an amont (or a wrapper)
 /// started under it does not queue again for the slot its parent holds.
-pub const HELD_ENV: &str = "AMONT_HOST_SLOT";
+pub const HELD_ENV: &str = "GREENHARNESS_HOST_SLOT";
 
 /// A diagnostic, and the seam tests use: the slot directory.
-pub const DIR_ENV: &str = "AMONT_SLOT_DIR";
+pub const DIR_ENV: &str = "GREENHARNESS_SLOT_DIR";
 
 /// At most one new holder per this long under automatic sizing: the
 /// one-minute load average lags, and after 10 s shows only ~15% of a new
@@ -50,11 +50,11 @@ pub fn held_in_process() -> usize {
 /// How many slots there are, and whether the load decides admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sizing {
-    /// `amont.hostSlots` unset: at most `max(1, cores/2)`; a free slot is
+    /// `greengate.hostSlots` unset: at most `max(1, cores/2)`; a free slot is
     /// taken only while the one-minute load is below the core count, at most
     /// one new holder per [`RAMP`].
     Auto,
-    /// `amont.hostSlots N`: exactly N, no load test, no ramp.
+    /// `greengate.hostSlots N`: exactly N, no load test, no ramp.
     Fixed(u32),
 }
 
@@ -161,14 +161,14 @@ pub fn bound_width(cmd: &mut std::process::Command, jobs: u32) {
 }
 
 /// The one-minute load average, where it can be read.
-/// Copied from amont-runtime's `load.rs` (a leaf reading, ADR-0039 allows
+/// Copied from greengate-runtime's `load.rs` (a leaf reading, ADR-0039 allows
 /// the copy): a crate with no dependencies cannot reach it.
 pub fn load1() -> Option<f64> {
     platform::load1()
 }
 
-/// The slot directory: `AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/amont-slots`
-/// on Linux, else `/tmp/amont-slots-<uid>`. A FIXED path, never
+/// The slot directory: `GREENHARNESS_SLOT_DIR`, else `$XDG_RUNTIME_DIR/greenharness-slots`
+/// on Linux, else `/tmp/greenharness-slots-<uid>`. A FIXED path, never
 /// `std::env::temp_dir()`, which follows a `$TMPDIR` that macOS and agent
 /// sandboxes set per session — every session would get a queue of its own.
 pub fn dir() -> PathBuf {
@@ -177,9 +177,9 @@ pub fn dir() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d).join("amont-slots");
+        return PathBuf::from(d).join("greenharness-slots");
     }
-    PathBuf::from(format!("/tmp/amont-slots-{}", platform::uid()))
+    PathBuf::from(format!("/tmp/greenharness-slots-{}", platform::uid()))
 }
 
 /// Make `dir` (and its `queue/` and `holders/`) if needed, then refuse it
@@ -212,7 +212,7 @@ pub struct Holder {
     pub session: String,
     pub started_ms: u128,
     /// How many jobs the holder may run ([`parallelism`]); absent in a
-    /// record written by an older amont-slots.
+    /// record written by an older greengate-slots.
     pub jobs: Option<u32>,
 }
 
@@ -242,7 +242,7 @@ impl Holder {
         }
     }
 
-    /// `relais: cargo test (amont-wt-x, 4m)`, for a waiter's line.
+    /// `relais: cargo test (greengate-wt-x, 4m)`, for a waiter's line.
     pub fn describe(&self, now_ms: u128) -> String {
         let repo = Path::new(&self.repo)
             .file_name()
@@ -625,7 +625,7 @@ pub fn record_wait(dir: &Path, tool: &str, weight: u32, waited_ms: u128, outcome
 
 /// [`record_wait`] with the width the holder was given, when known: the
 /// line gains `"jobs"`. A separate function so callers of `record_wait`
-/// built against an older amont-slots keep compiling.
+/// built against an older greengate-slots keep compiling.
 pub fn record_wait_jobs(
     dir: &Path,
     tool: &str,
@@ -832,7 +832,7 @@ fn read_holders(dir: &Path, held: &[u32]) -> (Vec<Holder>, usize) {
     (holders, unknown)
 }
 
-/// Escape `s` per the JSON spec. Copied from amont-quiet (a leaf utility,
+/// Escape `s` per the JSON spec. Copied from greengate-quiet (a leaf utility,
 /// ADR-0039 allows the copy).
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -1039,7 +1039,8 @@ mod tests {
     fn scratch(tag: &str) -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("amont-slots-{}-{tag}-{n}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("greengate-slots-{}-{tag}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&d); // best-effort: a fresh scratch dir
         d
     }
@@ -1252,7 +1253,7 @@ mod tests {
             jobs: Some(4),
         };
         assert_eq!(Holder::from_json(&h.to_json()), Some(h.clone()));
-        // A record from an older amont-slots has no `jobs`, and still reads.
+        // A record from an older greengate-slots has no `jobs`, and still reads.
         let old = Holder { jobs: None, ..h };
         assert!(!old.to_json().contains("jobs"));
         assert_eq!(Holder::from_json(&old.to_json()), Some(old));

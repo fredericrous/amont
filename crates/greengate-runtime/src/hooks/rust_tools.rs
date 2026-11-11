@@ -345,7 +345,7 @@ fn workspace_roots(cargo: &[String], roots: &[PathBuf], bound: &Path) -> Vec<Pat
 /// touched member. When more than one invocation is still due, each is
 /// announced, so a second suite run never looks like the first one stalling.
 /// The line is progress, like the dispatcher's "still running" lines, so
-/// `amont.quiet` does not hide it: an agent's piped run is where a silent
+/// `greengate.quiet` does not hide it: an agent's piped run is where a silent
 /// second run cost two hours.
 fn run_in_roots(
     settings: &crate::config::Settings,
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn finds_the_nearest_manifest_not_the_repo_root() {
-        let tmp = std::env::temp_dir().join("amont-cargo-roots");
+        let tmp = std::env::temp_dir().join("greengate-cargo-roots");
         let _ = std::fs::remove_dir_all(&tmp);
         let nested = tmp.join("services/engine");
         std::fs::create_dir_all(nested.join("src")).unwrap();
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn several_files_in_one_crate_yield_one_root() {
-        let tmp = std::env::temp_dir().join("amont-cargo-dedupe");
+        let tmp = std::env::temp_dir().join("greengate-cargo-dedupe");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("src")).unwrap();
         std::fs::write(tmp.join("Cargo.toml"), "[package]\n").unwrap();
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn the_nearest_pin_above_the_manifest_wins() {
-        let tmp = std::env::temp_dir().join("amont-toolchain-pin");
+        let tmp = std::env::temp_dir().join("greengate-toolchain-pin");
         let _ = std::fs::remove_dir_all(&tmp);
         let nested = tmp.join("services/engine");
         std::fs::create_dir_all(&nested).unwrap();

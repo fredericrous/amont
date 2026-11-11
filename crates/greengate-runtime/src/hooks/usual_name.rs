@@ -10,7 +10,7 @@ use crate::ui::{highlight, warning_sign};
 
 /// Identities already vouched for here — local, never committed, OURS to
 /// remove on uninstall.
-const KNOWN_KEY: &str = "amont.knownIdentity";
+const KNOWN_KEY: &str = "greengate.knownIdentity";
 
 pub fn run(_args: &[std::ffi::OsString]) -> Outcome {
     // An empty repo has no history to compare against.

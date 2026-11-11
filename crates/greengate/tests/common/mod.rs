@@ -24,7 +24,7 @@ fn unique() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     format!(
-        "amont-test-{}-{}",
+        "greengate-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     )
@@ -60,7 +60,7 @@ impl Repo {
         // would be asserting git's newline policy rather than the behaviour
         // under test — and would pass on two platforms and fail on the third.
         r.git(&["config", "core.autocrlf", "false"]);
-        // `amont.quiet` defaults to `auto`, and every command this harness runs
+        // `greengate.quiet` defaults to `auto`, and every command this harness runs
         // goes through `Command::output()` — so stderr is NEVER a terminal and
         // `auto` would resolve to quiet for the whole suite. That is not a
         // harmless difference: roughly twenty assertions here are NEGATIVE
@@ -74,7 +74,7 @@ impl Repo {
         // `quiet_replaces_the_success_lines_with_their_count` sets `auto` and
         // `always` itself. Pinning also stops every other test asserting a
         // default by accident.
-        r.git(&["config", "amont.quiet", "never"]);
+        r.git(&["config", "greengate.quiet", "never"]);
         r
     }
 
@@ -132,14 +132,14 @@ impl Repo {
     /// Pin the host-level knobs a fixture must not inherit from the machine
     /// (ADR-0009). These tests run under amont's own `pre-push-cargo-test`,
     /// on a workstation that is often loaded: without
-    /// `AMONT_IDLE_LOAD_SCALE=1` every kill-time bound in `timing.rs`
-    /// stretches with the load average, and without `AMONT_HOST_SLOT=held`
+    /// `GREENGATE_IDLE_LOAD_SCALE=1` every kill-time bound in `timing.rs`
+    /// stretches with the load average, and without `GREENHARNESS_HOST_SLOT=held`
     /// a fixture's heavy check would queue on the real host slots behind the
     /// very suite that is running it. The slot and load fixtures use
     /// [`Repo::hook_watched_unpinned`], which sets neither.
     pub fn pin_host_env(cmd: &mut Command) {
-        cmd.env("AMONT_IDLE_LOAD_SCALE", "1");
-        cmd.env("AMONT_HOST_SLOT", "held");
+        cmd.env("GREENGATE_IDLE_LOAD_SCALE", "1");
+        cmd.env("GREENHARNESS_HOST_SLOT", "held");
         // amont's own gate sets FORCE_COLOR for the tools it runs on a
         // terminal, `cargo test` among them; a fixture must not inherit it,
         // or every captured output would be painted. A test about colour sets
@@ -254,8 +254,8 @@ impl Repo {
         } else {
             // `.cargo/config.toml` pins both for the whole test process;
             // an unpinned fixture starts from neither and sets its own.
-            cmd.env_remove("AMONT_HOST_SLOT");
-            cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
+            cmd.env_remove("GREENHARNESS_HOST_SLOT");
+            cmd.env_remove("GREENGATE_IDLE_LOAD_SCALE");
         }
         for (k, v) in env {
             cmd.env(k, v);
@@ -301,7 +301,7 @@ impl Repo {
     /// FILE pointing at a private admin directory under this repo's
     /// `.git/worktrees` — distinct from the common `.git` the hooks and
     /// their stash live in, which is exactly the distinction
-    /// `amont-held` must get right.
+    /// `greengate-held` must get right.
     pub fn worktree(&self, name: &str) -> PathBuf {
         let path = self.dir.join(name);
         self.git(&[
@@ -351,7 +351,7 @@ impl HookRun {
 }
 
 /// The variable [`fixture_exec`] sets for its one priming run.
-pub const PRIME_ENV: &str = "AMONT_FIXTURE_PRIME";
+pub const PRIME_ENV: &str = "GREENGATE_FIXTURE_PRIME";
 
 /// Write a fixture executable — a `#!/bin/sh` script `body`, shebang
 /// included — make it executable, and exec it ONCE, before any test reads a
@@ -500,11 +500,11 @@ pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::io::Resu
     unreachable!("the zero-tries arm returns")
 }
 
-/// `AMONT_TEST_CLOCK_SCALE` as the tests see it (`.cargo/config.toml`):
+/// `GREENGATE_TEST_CLOCK_SCALE` as the tests see it (`.cargo/config.toml`):
 /// amont's own fixed waits are shortened by it in the test build, so a
 /// fixture that must outlast one is shortened by the same factor.
 pub fn clock_scale() -> f64 {
-    std::env::var("AMONT_TEST_CLOCK_SCALE")
+    std::env::var("GREENGATE_TEST_CLOCK_SCALE")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|f| *f > 0.0 && *f <= 1.0)

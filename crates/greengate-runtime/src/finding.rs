@@ -150,7 +150,7 @@ pub fn line_col(content: &str, offset: usize) -> (usize, usize) {
 /// Findings as JSON, for anything that would rather not parse a line.
 ///
 /// Hand-rolled to keep the commit path dependency-free, and versioned like
-/// `amont-list-v1` for the same reason: a consumer that does not recognise the
+/// `greengate-list-v1` for the same reason: a consumer that does not recognise the
 /// format string should say so rather than guess at the shape.
 pub fn to_json(findings: &[Finding]) -> String {
     let items: Vec<String> = findings

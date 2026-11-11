@@ -1,5 +1,5 @@
 //! What a person does with amont, one test per journey (decisions plan
-//! 2026-10-17-amont-tests-follow-user-flows, Phase 5).
+//! 2026-10-17-greengate-tests-follow-user-flows, Phase 5).
 //!
 //! Each flow builds its repository once and walks the journey, asserting
 //! what each step leaves on the terminal, in the refs and on disk: amont's

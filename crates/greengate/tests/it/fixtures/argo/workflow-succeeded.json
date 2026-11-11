@@ -7,14 +7,14 @@
             "workflows.argoproj.io/pod-name-format": "v2"
         },
         "creationTimestamp": "2026-11-03T04:40:24Z",
-        "generateName": "amont-handrun-",
+        "generateName": "greengate-handrun-",
         "generation": 4,
         "labels": {
-            "amont.run": "handrun-2",
+            "greengate.run": "handrun-2",
             "workflows.argoproj.io/completed": "true",
             "workflows.argoproj.io/phase": "Succeeded"
         },
-        "name": "amont-handrun-pqtbl",
+        "name": "greengate-handrun-pqtbl",
         "namespace": "amont-gates",
         "resourceVersion": "651409329",
         "uid": "b8eb52b7-8ede-4c1f-bd94-9ada529eec97"
@@ -37,7 +37,7 @@
         },
         "podMetadata": {
             "labels": {
-                "amont.run": "handrun-2",
+                "greengate.run": "handrun-2",
                 "istio.io/dataplane-mode": "ambient"
             }
         },
@@ -216,12 +216,12 @@
         ],
         "finishedAt": "2026-11-03T04:40:44Z",
         "nodes": {
-            "amont-handrun-pqtbl": {
-                "displayName": "amont-handrun-pqtbl",
+            "greengate-handrun-pqtbl": {
+                "displayName": "greengate-handrun-pqtbl",
                 "finishedAt": "2026-11-03T04:40:35Z",
                 "hostNodeName": "talos-wk-3-gpu",
-                "id": "amont-handrun-pqtbl",
-                "name": "amont-handrun-pqtbl",
+                "id": "greengate-handrun-pqtbl",
+                "name": "greengate-handrun-pqtbl",
                 "outputs": {
                     "exitCode": "0"
                 },
@@ -235,7 +235,7 @@
                 "startedAt": "2026-11-03T04:40:24Z",
                 "taskResultSynced": true,
                 "templateName": "gate",
-                "templateScope": "local/amont-handrun-pqtbl",
+                "templateScope": "local/greengate-handrun-pqtbl",
                 "type": "Pod"
             }
         },

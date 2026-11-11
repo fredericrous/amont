@@ -192,7 +192,7 @@ pub(super) struct Pending {
     /// The Workflow's UID. `None` while the intent is all there is: written
     /// before `create`, or after a `create` whose answer was lost.
     pub(super) uid: Option<String>,
-    /// The `amont.run` label of the Workflow and its pods.
+    /// The `greengate.run` label of the Workflow and its pods.
     pub(super) label: String,
     pub(super) namespace: String,
     pub(super) kubeconfig: PathBuf,
@@ -382,7 +382,7 @@ impl Store {
         let common =
             crate::git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
         Some(Store {
-            dir: Path::new(&common).join("amont"),
+            dir: Path::new(&common).join(crate::names::STATE_DIR),
         })
     }
 
@@ -534,7 +534,7 @@ pub(in crate::cluster::detached) mod tests {
 
     #[test]
     fn writing_replaces_the_file_and_no_record_removes_it() {
-        let dir = std::env::temp_dir().join(format!("amont-pending-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-pending-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = Store::in_dir(&dir);
         assert_eq!(store.read(), Ok(Vec::new()));
@@ -554,7 +554,8 @@ pub(in crate::cluster::detached) mod tests {
     #[cfg(unix)]
     #[test]
     fn a_second_writer_does_not_get_the_lock() {
-        let dir = std::env::temp_dir().join(format!("amont-pending-lock-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-pending-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = Store::in_dir(&dir);
         let first = store.try_lock().expect("the first writer locks");

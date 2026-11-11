@@ -11,7 +11,7 @@
 //! system config < global config < POLICY < local config < worktree <
 //! command-line. Between different keys naming the same check, specificity
 //! (full id > short name > trigger) decides, whatever the source — a local
-//! `amont.severity.pre-commit warn` must never be unbeatable by policy, and
+//! `greengate.severity.pre-commit warn` must never be unbeatable by policy, and
 //! a policy full-id beats a local trigger. Skips are a UNION of all sources:
 //! there is no unskip mechanism anywhere, so ordering has nothing to decide.
 //!
@@ -39,7 +39,7 @@ pub struct Policy {
     /// Skip targets, resolved by the same three-way naming `hook.skip` uses.
     pub skips: Vec<String>,
     /// Committed defaults for allowlisted config keys, by FULL git key
-    /// (`amont.timeout`). Values are raw strings — GIT parses them at read
+    /// (`greengate.timeout`). Values are raw strings — GIT parses them at read
     /// time (`config::typed_literal`), so no second config dialect exists.
     pub settings: std::collections::BTreeMap<String, String>,
 }

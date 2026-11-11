@@ -106,7 +106,7 @@ fn manifest_with_fixer(r: &Repo) {
 fn a_failed_restage_blocks_and_names_the_files() {
     let r = Repo::new();
     manifest_with_fixer(&r);
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.stage("a.js", "const a = BAD\n");
 
     // git refuses to write the index while this exists.
@@ -159,7 +159,7 @@ fn concurrent_restages_do_not_collide() {
         .output()
         .expect("amont trust");
     assert!(out.status.success(), "could not trust the manifest");
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
 
     for name in ["a.js", "b.js", "c.js"] {
         r.stage(name, "const a = BAD\n");
@@ -195,7 +195,7 @@ fn prettier_repairs_and_restages() {
         return;
     }
     let r = prettier_repo();
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.stage("a.ts", "const  x   =1\n");
 
     let run = r.hook("pre-commit-prettier", &[]);
@@ -232,7 +232,7 @@ fn prettier_blocks_when_it_cannot_restage_what_it_wrote() {
         return;
     }
     let r = prettier_repo();
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.stage("a.ts", "const  x   =1\n");
 
     std::fs::write(r.path(".git/index.lock"), "").expect("plant index.lock");

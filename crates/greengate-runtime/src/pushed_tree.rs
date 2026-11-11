@@ -23,7 +23,7 @@
 //!
 //! The cost is real: a second checkout, and a build that cannot reuse the
 //! primary tree's `target/` cache, so the first push after this lands is a cold
-//! build. That is why it is opt-in — `git config amont.testPushedTree true`
+//! build. That is why it is opt-in — `git config greengate.testPushedTree true`
 //! — rather than the default. The default keeps today's behaviour and now SAYS
 //! what it is testing, which was the actual bug: not that it used the tree, but
 //! that nobody knew it did.
@@ -38,12 +38,12 @@ use crate::ui::warning_sign;
 /// exactly as git-config(1) says they do — and a value git cannot parse takes
 /// the default while SAYING so, rather than reading as a quiet "no".
 pub fn enabled(settings: &crate::config::Settings) -> bool {
-    crate::config::boolean_or(settings, "amont.testPushedTree", false)
+    crate::config::boolean_or(settings, "greengate.testPushedTree", false)
 }
 
 /// The escape hatch: a command to run inside a fresh snapshot before any
 /// suite does, after amont's own preparation (see [`crate::snapshot_prep`]:
-/// `amont.snapshotCarry`, then the JavaScript dependencies).
+/// `greengate.snapshotCarry`, then the JavaScript dependencies).
 ///
 /// A checkout is not a workspace, and most of what makes one is now
 /// amont's: `npm ci` / `pnpm install --frozen-lockfile` per lockfile, and
@@ -52,27 +52,27 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
 /// build step:
 ///
 /// ```sh
-/// git config amont.snapshotPrepare "pnpm prisma generate"
+/// git config greengate.snapshotPrepare "pnpm prisma generate"
 /// ```
 ///
 /// When it is set it OWNS the dependencies — amont's own install step stands
 /// down, so a repository that already installs here does not install twice.
 /// Runs through the shell, in the snapshot, before the gate, and a failure
 /// is the snapshot's failure: no suite runs on a tree that was never made
-/// runnable. Used by both snapshot consumers — `amont.testPushedTree` at
+/// runnable. Used by both snapshot consumers — `greengate.testPushedTree` at
 /// push time and the background rehearsal — so the two cannot drift. It gets
-/// `AMONT_SOURCE_WORKTREE`: the working tree the snapshot was taken from.
-const PREPARE: &str = "amont.snapshotPrepare";
+/// `GREENGATE_SOURCE_WORKTREE`: the working tree the snapshot was taken from.
+const PREPARE: &str = "greengate.snapshotPrepare";
 
 /// The environment variable naming the source working tree (see PREPARE).
-pub const SOURCE_WORKTREE_ENV: &str = "AMONT_SOURCE_WORKTREE";
+pub const SOURCE_WORKTREE_ENV: &str = "GREENGATE_SOURCE_WORKTREE";
 
 /// Set to `1` on what a snapshot runs to prepare itself — the dependency
-/// install and `amont.snapshotPrepare` — for a custom `prepare` script that
+/// install and `greengate.snapshotPrepare` — for a custom `prepare` script that
 /// wants to know. INFORMATION, not the guard: the guard is `MARKER`, a file
 /// in the snapshot's git dir, which cannot leak into another repository the
 /// way an inherited variable does.
-pub const SNAPSHOT_ENV: &str = "AMONT_SNAPSHOT";
+pub const SNAPSHOT_ENV: &str = "GREENGATE_SNAPSHOT";
 
 /// The file a push snapshot carries in its OWN git admin dir
 /// (`<common>/worktrees/<name>/`), which `amont init` reads before baking.
@@ -84,12 +84,12 @@ pub const SNAPSHOT_ENV: &str = "AMONT_SNAPSHOT";
 /// that admin dir is the snapshot's alone and dies with it, so every process
 /// run inside the snapshot sees it (the install, `snapshotPrepare`, an
 /// install a gate runs itself) and a fixture repository amont's own suite
-/// creates does not. `AMONT_REHEARSAL` could not serve: it is removed before
+/// creates does not. `GREENGATE_REHEARSAL` could not serve: it is removed before
 /// any gate spawns (`rehearsal::in_snapshot`), deliberately.
 ///
 /// Both halves must be a version carrying this: an older runner writes no
 /// marker, and an older pinned `init` does not read one.
-const MARKER: &str = "amont-snapshot";
+const MARKER: &str = "greengate-snapshot";
 
 /// Where `dir`'s snapshot marker lives, absolute. `Err` carries git's own
 /// reason when it would not say. The `GIT_*` environment is stripped: a
@@ -189,7 +189,7 @@ impl PushedTree {
     /// to `--status`, to a push that would otherwise start over, and to a
     /// newer commit that must cancel it.
     pub fn checkout(repo: &Path, tip: &str) -> Option<PushedTree> {
-        let base = std::env::temp_dir().join(unique_name("amont-push"));
+        let base = std::env::temp_dir().join(unique_name("greengate-push"));
         Self::checkout_at(base, repo, tip)
     }
 
@@ -251,7 +251,7 @@ impl PushedTree {
     }
 
     /// Make the checkout runnable: carry, dependencies, then
-    /// `amont.snapshotPrepare`. `Err` says why, in one line.
+    /// `greengate.snapshotPrepare`. `Err` says why, in one line.
     pub fn prepare(&self, settings: &crate::config::Settings) -> Result<(), String> {
         let script = prepare_command(settings);
         crate::snapshot_prep::run(
@@ -424,7 +424,7 @@ pub fn where_to_run(
         if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
             println!(
                 "{} testing the WORKING TREE, not the pushed commits \
-                 (`git config amont.testPushedTree true` to test what you are pushing)",
+                 (`git config greengate.testPushedTree true` to test what you are pushing)",
                 warning_sign()
             );
         }
@@ -470,10 +470,10 @@ mod tests {
     /// predictable name is right back to being predictable.
     #[test]
     fn unique_name_does_not_repeat() {
-        let a = unique_name("amont-push");
-        let b = unique_name("amont-push");
+        let a = unique_name("greengate-push");
+        let b = unique_name("greengate-push");
         assert_ne!(a, b);
-        assert!(a.starts_with("amont-push-"));
+        assert!(a.starts_with("greengate-push-"));
     }
 
     /// The point of the whole fix: something already at the target path is
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn an_unmarkable_snapshot_is_no_snapshot() {
         let (d, head) = seeded("unmarkable");
-        let base = std::env::temp_dir().join(unique_name("amont-push-unmarkable"));
+        let base = std::env::temp_dir().join(unique_name("greengate-push-unmarkable"));
         let name = base.file_name().unwrap().to_string_lossy().into_owned();
         let got = PushedTree::checkout_at_with(base.clone(), &d, &head, &|_| {
             Err(std::io::Error::other("cannot mark"))
@@ -635,7 +635,7 @@ mod tests {
                 }
             }
         }
-        let d = std::env::temp_dir().join(unique_name("amont-probe"));
+        let d = std::env::temp_dir().join(unique_name("greengate-probe"));
         let locked = d.join("locked");
         std::fs::create_dir_all(&locked).expect("mkdir");
         let marker = locked.join(MARKER);

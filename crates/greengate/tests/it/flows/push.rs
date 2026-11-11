@@ -23,7 +23,7 @@
 //!    stamps the tip, and the retry after a dropped push repeats nothing;
 //! 3. stamps are about one tree: new content runs again, an amend that kept
 //!    the tree does not, an untracked file costs nothing, a modified tracked
-//!    file or `amont.pushStamps false` earns no stamp;
+//!    file or `greengate.pushStamps false` earns no stamp;
 //! 4. rehearsal: `amont rehearse --wait` tests a snapshot of HEAD and the
 //!    push finds the stamp; a failed one is reported and the push runs the
 //!    gate itself, recording what failed;
@@ -58,7 +58,7 @@ fn gate_js(r: &Repo) -> String {
         "const fs = require('fs');\n\
          const who = process.argv[2];\n\
          fs.appendFileSync({log:?}, who + '\\n');\n\
-         if (process.env.AMONT_REHEARSAL !== undefined) process.exit(1);\n\
+         if (process.env.GREENGATE_REHEARSAL !== undefined) process.exit(1);\n\
          if (who === 'suite' && fs.readFileSync('a.txt', 'utf8').includes('broken')) process.exit(1);\n"
     )
 }
@@ -144,7 +144,7 @@ fn amont_run(r: &Repo, args: &[&str]) -> (i32, String) {
 
 /// The rehearsal's state file.
 fn rehearsal_state(r: &Repo) -> String {
-    std::fs::read_to_string(r.path(".git/amont-rehearsal")).unwrap_or_default()
+    std::fs::read_to_string(r.path(".git/greengate-rehearsal")).unwrap_or_default()
 }
 
 /// Registered worktrees: the primary plus any snapshot left behind.
@@ -172,7 +172,7 @@ fn commit_a(r: &Repo, content: &str, msg: &str) -> String {
 fn the_push_journey() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     r.stage("gate.js", &gate_js(&r));
     r.stage("a.txt", "seed\n");
     r.stage("amont.conf", CONF);
@@ -411,8 +411,8 @@ fn the_push_journey() {
     step_eq!("dirty", runs(&r, "suite"), suites + 5);
     r.git(&["checkout", "-q", "--", "a.txt"]);
 
-    // `amont.pushStamps false` neither writes nor honours stamps.
-    r.git(&["config", "amont.pushStamps", "false"]);
+    // `greengate.pushStamps false` neither writes nor honours stamps.
+    r.git(&["config", "greengate.pushStamps", "false"]);
     commit_a(&r, "nine\n", "feat: nine");
     drop_next(&remote);
     let (ok, out) = git(&r, &["push"]);
@@ -422,7 +422,7 @@ fn the_push_journey() {
     step!("stamps off", ok, "{out}");
     step!("stamps off", !out.contains(SKIP), "{out}");
     step_eq!("stamps off", runs(&r, "suite"), suites + 7);
-    r.git(&["config", "--unset", "amont.pushStamps"]);
+    r.git(&["config", "--unset", "greengate.pushStamps"]);
 
     // ---- 4. rehearsal ---------------------------------------------------------
 
@@ -453,7 +453,7 @@ fn the_push_journey() {
     step_eq!("rehearse", worktrees(&r), 1, "the snapshot was removed");
     // A finished rehearsal records its verdict and no step: the step is
     // only for one still running.
-    let state = read(&r, ".git/amont-rehearsal");
+    let state = read(&r, ".git/greengate-rehearsal");
     step!("rehearse", state.contains("phase=passed"), "{state}");
     step!("rehearse", !state.contains("step="), "{state}");
     step!(
@@ -480,13 +480,13 @@ fn the_push_journey() {
     r.stage("a.txt", "eleven\n");
     r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
     step_eq!("dodged", runs(&r, "check"), checks, "nothing ran at commit");
-    let ledger = std::fs::read_to_string(r.path(".git/amont-bypasses"))
+    let ledger = std::fs::read_to_string(r.path(".git/greengate-bypasses"))
         .expect("a dodged gate leaves a ledger");
     step!("dodged", ledger.contains(" check"), "{ledger:?}");
 
-    // `amont.unstampedPush refuse`: turned away with the way out, nothing
+    // `greengate.unstampedPush refuse`: turned away with the way out, nothing
     // run while the remote waits.
-    r.git(&["config", "amont.unstampedPush", "refuse"]);
+    r.git(&["config", "greengate.unstampedPush", "refuse"]);
     let (ok, out) = git(&r, &["push"]);
     step!("refuse", !ok, "{out}");
     step!("refuse", out.contains("refusing the push"), "{out}");
@@ -500,12 +500,12 @@ fn the_push_journey() {
     );
     step_eq!("refuse", runs(&r, "check"), checks, "nothing ran: {out}");
     // `run` keeps the old behaviour.
-    r.git(&["config", "amont.unstampedPush", "run"]);
+    r.git(&["config", "greengate.unstampedPush", "run"]);
     let (ok, out) = git(&r, &["push"]);
     step!("refuse, then run", ok, "{out}");
     step!("refuse, then run", out.contains(UNSTAMPED), "{out}");
     step_eq!("refuse, then run", runs(&r, "check"), checks + 1);
-    r.git(&["config", "--unset", "amont.unstampedPush"]);
+    r.git(&["config", "--unset", "greengate.unstampedPush"]);
 
     // By default the pair just comes back, and every gate that ran leaves
     // its run line on the tree's record.
@@ -570,7 +570,7 @@ fn the_push_journey() {
     );
     let (_, status) = amont_run(&r, &["rehearse", "--status"]);
     step!("failed rehearsal", status.contains("FAILED"), "{status}");
-    let state = read(&r, ".git/amont-rehearsal");
+    let state = read(&r, ".git/greengate-rehearsal");
     step!(
         "failed rehearsal",
         state.contains("phase=failed"),
@@ -640,19 +640,23 @@ fn the_push_journey() {
     std::mem::forget(theirs); // under `.git/`: removed with the repository
     r.git(&["fetch", "-q", "origin"]);
 
-    // `amont.autoRebase false`: advised, the key named, nothing rebased.
-    r.git(&["config", "amont.autoRebase", "false"]);
+    // `greengate.autoRebase false`: advised, the key named, nothing rebased.
+    r.git(&["config", "greengate.autoRebase", "false"]);
     let before = head(&r);
     let (ok, out) = git(&r, &["push"]);
     step!("behind, advised", !ok, "{out}");
-    step!("behind, advised", out.contains("amont.autoRebase"), "{out}");
+    step!(
+        "behind, advised",
+        out.contains("greengate.autoRebase"),
+        "{out}"
+    );
     step_eq!(
         "behind, advised",
         head(&r),
         before,
         "advisory mode rebased anyway"
     );
-    r.git(&["config", "--unset", "amont.autoRebase"]);
+    r.git(&["config", "--unset", "greengate.autoRebase"]);
 
     // By default the branch is synced, and the push stops: the refs git
     // handed it predate the rebase.
@@ -731,8 +735,8 @@ fn the_push_journey() {
             .expect("ssh-keygen")
             .success();
         step!("attest", ok, "ssh-keygen");
-        r.git(&["config", "amont.attest", "true"]);
-        r.git(&["config", "amont.attestKey", &key.display().to_string()]);
+        r.git(&["config", "greengate.attest", "true"]);
+        r.git(&["config", "greengate.attestKey", &key.display().to_string()]);
         r.stage("b.txt", "attested\n");
         let (ok, out) = git_commit(&r, &["-m", "feat: attested"]);
         step!("attest", ok, "{out}");

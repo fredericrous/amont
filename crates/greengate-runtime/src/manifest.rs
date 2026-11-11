@@ -108,7 +108,7 @@ pub enum ParseError {
     /// rewrite made in a pod never reaches the index (ADR-0016).
     PlatformAnyWithFix,
     /// `platform=any` beside `files`: the pod is not handed the matched set
-    /// (`AMONT_FILES`), so a pass would be over the wrong files (ADR-0016).
+    /// (`GREENGATE_FILES`), so a pass would be over the wrong files (ADR-0016).
     PlatformAnyWithFiles,
     /// `platform=<word>` other than `any`. Loud rather than read as the
     /// program name, which is what an older amont does with it.
@@ -279,7 +279,7 @@ pub struct Declared {
 impl Declared {
     /// `<trigger>-<name>`, the same shape a built-in has.
     ///
-    /// This is what `hook.skip` and `amont.severity.<key>` resolve against,
+    /// This is what `hook.skip` and `greengate.severity.<key>` resolve against,
     /// so a declared check answers to its trigger and its short name exactly as
     /// a compiled-in one does. Before it had an id, `hook.skip pre-commit`
     /// silenced fifteen built-ins and left every declared check running.
@@ -437,7 +437,7 @@ pub enum PolicyLine {
     /// `skip <check|short-name|trigger>`
     Skip { target: String },
     /// `set <key> <value>` — a committed default for an allowlisted
-    /// `amont.*` config key. `key` is the FULL git key (`amont.timeout`),
+    /// `greengate.*` config key. `key` is the FULL git key (`greengate.timeout`),
     /// canonicalised from whatever case the file used, because git keys are
     /// case-insensitive and a policy file stricter than git is a trap.
     Set { key: String, value: String },
@@ -474,7 +474,7 @@ pub const SETTABLE: &[&str] = &[
     // before this it could not say how to make that checkout runnable, which
     // for a pnpm or npm workspace means an install. The repository is what
     // knows; requiring every clone to discover `git config
-    // amont.snapshotPrepare` by hand made the declarable half useless.
+    // greengate.snapshotPrepare` by hand made the declarable half useless.
     //
     // Safe on the same terms as a declared check: policy is populated ONLY
     // when the manifest is trusted, `PolicyLine::describe` puts the command
@@ -489,7 +489,7 @@ pub const SETTABLE: &[&str] = &[
     // properties of the project, and trust-gated like `snapshotPrepare`.
     "snapshotDeps",
     "snapshotCarry",
-    // Ordering only. `amont.order evidence` permutes the push gates a
+    // Ordering only. `greengate.order evidence` permutes the push gates a
     // repository already runs, using that machine's own record of them; it
     // adds nothing, removes nothing and skips nothing, so it grants a
     // committed file no power over what is enforced — which is the line
@@ -531,14 +531,14 @@ pub const SETTABLE: &[&str] = &[
     // Whether pre-commit's Heavy checks wait for its Light ones and are
     // skipped when one blocks (ADR-0020). On by default; `false` runs every
     // check at once, as before 2.1. A local `git config` outranks it, and
-    // `AMONT_FAIL_FAST` outranks both for one run.
+    // `GREENGATE_FAIL_FAST` outranks both for one run.
     "failFast",
     // Where a `platform=any` gate runs (ADR-0016): `cluster` sends it to the
     // homelab as one Kubernetes Job, `local` (the default) keeps it here, and
     // `clusterPrepare` is the shell command the Job's `prepare` container
     // runs before the gate. Policy, so effective only from a trusted
     // manifest; strict and set once, like `onBusy`. A local `git config
-    // amont.executor local` may turn it off, never on.
+    // greengate.executor local` may turn it off, never on.
     "executor",
     "clusterPrepare",
 ];
@@ -690,7 +690,7 @@ impl Trigger {
 
 /// A check a repository declares, rather than one compiled in.
 pub struct External {
-    /// `<trigger>-<name>` — what `hook.skip` and `amont.severity.<key>`
+    /// `<trigger>-<name>` — what `hook.skip` and `greengate.severity.<key>`
     /// resolve against, and what `Check::name` returns. Built-ins have had this
     /// shape all along; declared checks answering to a bare name were invisible
     /// to `hook.skip pre-commit`.
@@ -782,7 +782,7 @@ enum IndexEnv {
     /// These variables, in this order.
     Set(Vec<(&'static str, std::path::PathBuf)>),
     /// No index to read: refused, never run blind. An unmarked gate may read
-    /// `$AMONT_INDEX_FILE` and fall back to the default index, so it is
+    /// `$GREENGATE_INDEX_FILE` and fall back to the default index, so it is
     /// refused too: a blind pass would be stamped onto the committed tree.
     Refuse(String),
 }
@@ -954,7 +954,7 @@ impl Check for External {
         // A check whose whole job is to rewrite has nothing to say when nobody
         // asked for rewriting — so it does not RUN, rather than running and
         // having its result discarded. Gating only the re-staging let the
-        // command edit files with `amont.fix` off, which is precisely the
+        // command edit files with `greengate.fix` off, which is precisely the
         // surprise the gate exists to prevent.
         //
         // `Unavailable`, not `Passed`. `check.rs` defines `Unavailable` as
@@ -968,7 +968,7 @@ impl Check for External {
             crate::hooks::common::warn(&format!(
                 "{}: declares fix, and {} is off — not run",
                 crate::ui::highlight(&self.short_name),
-                crate::ui::highlight("amont.fix")
+                crate::ui::highlight("greengate.fix")
             ));
             return Outcome::Unavailable;
         }
@@ -1079,7 +1079,7 @@ impl Check for External {
                     Path::new(&root),
                 )
             }
-            // PER REF, and — when `amont.testPushedTree` asks for it — in a
+            // PER REF, and — when `greengate.testPushedTree` asks for it — in a
             // checkout of that ref's tip, exactly as the built-in suites do
             // and for the same reason: a declared `test *.rs block cargo
             // test` line used to run once, in the working tree, whatever the
@@ -1153,7 +1153,7 @@ fn files_to_judge(scope: &Scope, files: bool, in_scope: &[String]) -> Option<Vec
 impl External {
     /// Spawn the declared command over `matched`, in `run_in`, and judge it.
     ///
-    /// `matched` reaches the command two ways: `$AMONT_FILES` always
+    /// `matched` reaches the command two ways: `$GREENGATE_FILES` always
     /// (newline-separated, so a wrapper script never re-derives `git diff
     /// --cached` and diverges from the set this gate judged — `amont run
     /// --all-files` overrides the set in-process, invisibly to any child that
@@ -1187,7 +1187,7 @@ impl External {
         // instead, which a wrapper treats exactly like "derive it yourself".
         let joined = matched.join("\n");
         cmd.env(
-            "AMONT_FILES",
+            "GREENGATE_FILES",
             if joined.len() <= 100_000 {
                 joined.as_str()
             } else {
@@ -1519,7 +1519,7 @@ pub fn parse_lines(text: &str) -> Vec<Line> {
         // `planExempt off` that they would read as "on" (a form feed, a
         // non-breaking space) is loud here, never a silent opt-out that is not.
         if matches!(&parsed, Line::Policy { what: PolicyLine::Set { key, value }, .. }
-            if key == "amont.planExempt" && value.eq_ignore_ascii_case("off"))
+            if key == "greengate.planExempt" && value.eq_ignore_ascii_case("off"))
             && !crate::attest_inputs::conf_says_plan_exempt_off(raw.as_bytes())
         {
             parsed = broken_at(
@@ -1644,7 +1644,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                             )
                         } else if earlier.iter().any(|l| {
                             matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. }
-                                if key == "amont.planExempt")
+                                if key == "greengate.planExempt")
                         }) {
                             broken_at(
                                 lineno,
@@ -1655,7 +1655,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                         } else {
                             Line::Policy {
                                 what: PolicyLine::Set {
-                                    key: format!("amont.{canonical}"),
+                                    key: format!("greengate.{canonical}"),
                                     value: value.to_string(),
                                 },
                                 lineno,
@@ -1680,7 +1680,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                                 )),
                             }
                         };
-                        let full = format!("amont.{canonical}");
+                        let full = format!("greengate.{canonical}");
                         let twice = earlier.iter().any(|l| {
                             matches!(l, Line::Policy { what: PolicyLine::Set { key, .. }, .. }
                                 if *key == full)
@@ -1723,7 +1723,7 @@ fn parse_line(lineno: usize, line: &str, earlier: &[Line]) -> Line {
                     }
                     Some(canonical) => Line::Policy {
                         what: PolicyLine::Set {
-                            key: format!("amont.{canonical}"),
+                            key: format!("greengate.{canonical}"),
                             value: value.to_string(),
                         },
                         lineno,
@@ -1961,7 +1961,7 @@ fn parse_cluster_setting(
     value: &str,
     earlier: &[Line],
 ) -> Line {
-    let full = format!("amont.{canonical}");
+    let full = format!("greengate.{canonical}");
     let bad = |why: String| {
         broken_at(
             lineno,
@@ -2724,7 +2724,7 @@ mod tests {
             matches!(index_env(Err(&lost), RunsOn::Here { reads_index: true }, "staged"), IndexEnv::Refuse(w) if w.contains("staged") && w.contains("dubious ownership"))
         );
         assert!(
-            matches!(index_env(Err(&lost), RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Refuse(w) if w.contains("AMONT_INDEX_FILE"))
+            matches!(index_env(Err(&lost), RunsOn::Here { reads_index: false }, "lint"), IndexEnv::Refuse(w) if w.contains("GREENGATE_INDEX_FILE"))
         );
         let found = crate::hooks::common::CommitIndex {
             file: "/r/.git/index.lock".into(),
@@ -2737,7 +2737,7 @@ mod tests {
         };
         assert_eq!(
             plain.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
-            ["AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"]
+            ["GREENGATE_INDEX_FILE", "GREENGATE_INDEX_GIT_DIR"]
         );
         let IndexEnv::Set(marked) = index_env(found, RunsOn::Here { reads_index: true }, "staged")
         else {
@@ -3369,11 +3369,11 @@ mod tests {
         let lines = parse_lines("set executor CLUSTER\nset clusterPrepare pnpm i && pnpm build\n");
         assert!(
             matches!(&lines[0], Line::Policy { what: PolicyLine::Set { key, value }, .. }
-            if key == "amont.executor" && value == "cluster")
+            if key == "greengate.executor" && value == "cluster")
         );
         assert!(
             matches!(&lines[1], Line::Policy { what: PolicyLine::Set { key, value }, .. }
-            if key == "amont.clusterPrepare" && value == "pnpm i && pnpm build")
+            if key == "greengate.clusterPrepare" && value == "pnpm i && pnpm build")
         );
         for text in [
             "set executor remote\n",
@@ -3405,12 +3405,15 @@ mod tests {
         let lines = parse_lines("set onBusy DEFER\nset slotWait 90\nset warnSlotWait 120\n");
         assert_eq!(
             set(&lines[0]),
-            Some(("amont.onBusy".into(), "defer".into()))
+            Some(("greengate.onBusy".into(), "defer".into()))
         );
-        assert_eq!(set(&lines[1]), Some(("amont.slotWait".into(), "90".into())));
+        assert_eq!(
+            set(&lines[1]),
+            Some(("greengate.slotWait".into(), "90".into()))
+        );
         assert_eq!(
             set(&lines[2]),
-            Some(("amont.warnSlotWait".into(), "120".into()))
+            Some(("greengate.warnSlotWait".into(), "120".into()))
         );
         for bad in [
             "set onBusy later",
@@ -3462,7 +3465,7 @@ mod tests {
         ] {
             let v = parse_lines(ok);
             assert!(policy(&v[0]).is_some(), "{ok:?} should parse");
-            assert_eq!(policy(&v[0]).unwrap().0, "amont.planExempt");
+            assert_eq!(policy(&v[0]).unwrap().0, "greengate.planExempt");
         }
         // attest's verifiers match only exactly `set planExempt off`, so any
         // other shape would silently mean "on" to them: loud here instead.

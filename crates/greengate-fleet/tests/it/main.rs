@@ -3,7 +3,7 @@
 //! `parity`, `scan`, `uninstall` and `write_safety` were four test binaries,
 //! each linking amont-fleet's dependencies again and each a separate link for
 //! every mutant a mutation run builds (decisions plan
-//! 2026-10-17-amont-tests-follow-user-flows; amont's own `tests/it` did the
+//! 2026-10-17-greengate-tests-follow-user-flows; amont's own `tests/it` did the
 //! same in amont#351). As modules of one crate they link once. Test names
 //! carry the old file as their module path, so `cargo test --test it scan::`
 //! runs what `cargo test --test scan` did.

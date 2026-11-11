@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn finds_the_nearest_module_not_the_repo_root() {
-        let tmp = std::env::temp_dir().join("amont-go-roots");
+        let tmp = std::env::temp_dir().join("greengate-go-roots");
         let _ = std::fs::remove_dir_all(&tmp);
         let nested = tmp.join("services/api");
         std::fs::create_dir_all(nested.join("cmd")).unwrap();
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn several_files_in_one_module_yield_one_root() {
-        let tmp = std::env::temp_dir().join("amont-go-dedupe");
+        let tmp = std::env::temp_dir().join("greengate-go-dedupe");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("pkg")).unwrap();
         std::fs::write(tmp.join("go.mod"), "module x\n").unwrap();
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn a_tools_module_without_packages_is_not_vetted_or_tested() {
-        let tmp = std::env::temp_dir().join("amont-go-tools-module");
+        let tmp = std::env::temp_dir().join("greengate-go-tools-module");
         let _ = std::fs::remove_dir_all(&tmp);
         let w = |rel: &str, text: &str| {
             let p = tmp.join(rel);

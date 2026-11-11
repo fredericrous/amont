@@ -999,7 +999,7 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
     }
     if !repo.severities.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from("amont.severity").style(tint(app.color, ACCENT)));
+        lines.push(Line::from("greengate.severity").style(tint(app.color, ACCENT)));
         for entry in &repo.severities {
             let scope = match &entry.scope {
                 crate::skips::Scope::Local => "local",
@@ -1861,7 +1861,7 @@ mod tests {
         let mut app = App::new(scan_with_repos(vec![r]));
         app.mode = Mode::Detail;
         let out = render(&app, 120, 30);
-        assert!(out.contains("amont.severity"), "{out}");
+        assert!(out.contains("greengate.severity"), "{out}");
         assert!(out.contains("does NOT block"), "{out}");
         assert!(
             !out.contains("changes nothing"),
@@ -1898,7 +1898,7 @@ mod tests {
         let mut app = App::new(scan_with_repos(vec![r]));
         app.mode = Mode::Detail;
         let out = render(&app, 120, 30);
-        assert!(out.contains("amont.severity"), "{out}");
+        assert!(out.contains("greengate.severity"), "{out}");
         assert!(!out.contains("does NOT block"), "{out}");
         assert!(!out.contains("changes nothing"), "{out}");
     }

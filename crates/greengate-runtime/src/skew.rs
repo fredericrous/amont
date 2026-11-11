@@ -21,7 +21,7 @@
 //! this project exists to unteach.
 //!
 //! Once-per-version, not once-per-commit, via a marker in `$GIT_DIR` —
-//! versioned like its siblings (`amont-gate`, `amont-bypasses`), removed by
+//! versioned like its siblings (`amont-gate`, `greengate-bypasses`), removed by
 //! `amont uninstall`, harmlessly stale after an upgrade (a NEW version that
 //! still does not know some hook warns afresh, which is correct).
 
@@ -30,11 +30,11 @@ use std::path::PathBuf;
 
 /// First line of the marker. Bump on shape change; an old marker then reads
 /// as "not warned yet", which only repeats one line.
-pub const FORMAT: &str = "amont-skew-v1";
+pub const FORMAT: &str = crate::names::SKEW_FORMAT;
 
 /// The marker's filename inside `$GIT_DIR` — worktree-private, like the
 /// gate marker: the warning belongs where the commits happen.
-const MARKER: &str = "amont-skew";
+const MARKER: &str = crate::names::SKEW_MARKER;
 
 /// Hook mode met a name this binary does not know. Warn once per binary
 /// version per repository, then absorb silently. Always returns exit 0.
@@ -79,7 +79,7 @@ fn remember(version: &str) {
 /// does not have the secrets check and NOTHING can tell, because no
 /// artifact in the repository says which amont the team means. This is
 /// that artifact: `set minVersion 1.9.0` in a trusted `amont.conf` (or
-/// plain `amont.minVersion` git config), compared here on every hook run.
+/// plain `greengate.minVersion` git config), compared here on every hook run.
 ///
 /// Warn-only, deliberately, on both sides of the doctrine: blocking
 /// commits for being out of date teaches `--no-verify`, and a binary too
@@ -87,12 +87,12 @@ fn remember(version: &str) {
 /// advice that gets loudly better with adoption, never a gate that lies
 /// about being one.
 pub fn announce_minimum(settings: &crate::config::Settings) {
-    let Some(want) = crate::config::string_value(settings, "amont.minVersion") else {
+    let Some(want) = crate::config::string_value(settings, "greengate.minVersion") else {
         return;
     };
     let Some(min) = parse_version(&want) else {
         crate::config::complain(
-            "amont.minVersion",
+            "greengate.minVersion",
             "not a version (want x.y.z)",
             "no minimum",
         );

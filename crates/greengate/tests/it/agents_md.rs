@@ -2,7 +2,7 @@
 //! `AGENTS.md`, and `--check` for CI drift detection.
 //!
 //! The core marker-detection logic (`desired_file_content`) is unit-tested in
-//! `amont-runtime`; these drive the actual binary and a real file on disk,
+//! `greengate-runtime`; these drive the actual binary and a real file on disk,
 //! the way `pull_rebase.rs`'s suite drives `pre-push-pull-rebase` rather than
 //! re-testing `divergence` through the CLI.
 //!

@@ -61,7 +61,7 @@ pub const PROVENANCE_FORMAT: &str = "amont-provenance-v1";
 
 /// Environment marker carried by the notes push so the recursive pre-push
 /// invocation stands down. See the module doc.
-pub const PUSH_GUARD: &str = "AMONT_ATTEST_PUSH";
+pub const PUSH_GUARD: &str = "GREENGATE_ATTEST_PUSH";
 
 /// The repository a hook stands in: git starts hooks at the worktree top.
 fn here() -> &'static Path {
@@ -71,10 +71,10 @@ fn here() -> &'static Path {
 /// The opt-in switch. Off by default: an attestation is a statement to
 /// another system, and amont does not speak for a repository that never
 /// asked it to.
-const TOGGLE: &str = "amont.attest";
+const TOGGLE: &str = "greengate.attest";
 
 /// Where the signing key lives when the repository does not say.
-const KEY_CONFIG: &str = "amont.attestKey";
+const KEY_CONFIG: &str = "greengate.attestKey";
 const KEY_DEFAULT: &str = ".ssh/amont-attest";
 
 /// Is the recursive-push marker set on THIS invocation?
@@ -87,9 +87,9 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, TOGGLE, false)
 }
 
-/// The signing key path: `amont.attestKey`, else `~/.ssh/amont-attest`.
+/// The signing key path: `greengate.attestKey`, else `~/.ssh/amont-attest`.
 ///
-/// Read like `amont.knownIdentity` is — a raw string through git, unset
+/// Read like `greengate.knownIdentity` is — a raw string through git, unset
 /// collapsing to the default — because a path has no shape git could
 /// validate for us anyway.
 fn key_path() -> Option<PathBuf> {
@@ -618,7 +618,7 @@ mod tests {
         git_attest::sign::verify(namespace, payload, sig, signers, Some(principal)).is_ok()
     }
 
-    /// `amont.attest` and the key path come from git config, which each test
+    /// `greengate.attest` and the key path come from git config, which each test
     /// sets on its own repo; no policy is in play.
     fn test_settings() -> crate::config::Settings {
         crate::config::Settings::default()
@@ -714,8 +714,11 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attest", "true"]);
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(&work, &["config", "greengate.attest", "true"]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("a.ts"), "x").unwrap();
         git(&work, &["add", "a.ts"]);
         git(&work, &["commit", "-qm", "chore: a"]);
@@ -797,8 +800,11 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attest", "true"]);
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(&work, &["config", "greengate.attest", "true"]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("README.md"), "words").unwrap();
         std::fs::create_dir_all(work.join("docs/plans")).unwrap();
         std::fs::write(work.join("docs/plans/p.md"), "# P\n").unwrap();
@@ -1101,7 +1107,7 @@ mod tests {
         let name = work.file_name().unwrap().to_string_lossy().into_owned();
         std::fs::create_dir_all(elsewhere.join(&name)).unwrap();
         std::fs::write(elsewhere.join(&name).join(&head), record(&head, &tree)).unwrap();
-        for key in ["amont.provenanceDir", "amont.agent.provenanceDir"] {
+        for key in ["greengate.provenanceDir", "amont.agent.provenanceDir"] {
             git(&work, &["config", key, elsewhere.to_str().unwrap()]);
         }
         in_repo(&work, || {
@@ -1147,8 +1153,11 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attest", "true"]);
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(&work, &["config", "greengate.attest", "true"]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("a.ts"), "x").unwrap();
         git(&work, &["add", "a.ts"]);
         git(&work, &["commit", "-qm", "chore: a"]);
@@ -1235,7 +1244,10 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("a.ts"), "x").unwrap();
         git(&work, &["add", "a.ts"]);
         git(&work, &["commit", "-qm", "chore: a"]);
@@ -1277,8 +1289,11 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attest", "true"]);
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(&work, &["config", "greengate.attest", "true"]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("a.ts"), "x").unwrap();
         git(&work, &["add", "a.ts"]);
         git(&work, &["commit", "-qm", "chore: a"]);
@@ -1355,8 +1370,11 @@ mod tests {
             &work,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
-        git(&work, &["config", "amont.attest", "true"]);
-        git(&work, &["config", "amont.attestKey", key.to_str().unwrap()]);
+        git(&work, &["config", "greengate.attest", "true"]);
+        git(
+            &work,
+            &["config", "greengate.attestKey", key.to_str().unwrap()],
+        );
         std::fs::write(work.join("a.ts"), "x").unwrap();
         git(&work, &["add", "a.ts"]);
         git(&work, &["commit", "-qm", "chore: a"]);

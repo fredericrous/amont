@@ -54,7 +54,7 @@ pub struct Ctx<'a> {
     /// whoever starts the hook, lent to each audit.
     pub audits: &'a crate::hooks::audit::Ledger,
     /// The working tree a rehearsal snapshot was taken from, inside one
-    /// (`AMONT_SOURCE_WORKTREE`, read once in `main`); `None` elsewhere.
+    /// (`GREENGATE_SOURCE_WORKTREE`, read once in `main`); `None` elsewhere.
     pub source_worktree: Option<&'a std::path::Path>,
 }
 
@@ -66,7 +66,7 @@ pub const ENTRYPOINTS: &[(&str, HookFn)] = &[
     ("pre-commit", dispatch::pre_commit),
     ("pre-push", dispatch::pre_push),
     // The message hooks are pure convention — a subject shape and a decoration
-    // — so under `amont.conventions declared` they quietly stand down in a
+    // — so under `greengate.conventions declared` they quietly stand down in a
     // repository that never subscribed. Quietly: the pre-commit stage has
     // already said, once, that the conventions are held back here; a second
     // and third line every commit would be the noise that gets amont
@@ -580,7 +580,7 @@ pub const CHECKS: &[Builtin] = &[
 
 /// A check's severity, after any per-repository override.
 ///
-/// `git config amont.severity.<check> warn` downgrades a blocking check to a
+/// `git config greengate.severity.<check> warn` downgrades a blocking check to a
 /// warning. Unlike `hook.skip` it keeps the signal: the check still runs and
 /// still reports, it just stops failing the commit.
 pub fn severity_of(settings: &crate::config::Settings, check: &dyn Check) -> Severity {
@@ -589,7 +589,7 @@ pub fn severity_of(settings: &crate::config::Settings, check: &dyn Check) -> Sev
 
 /// The config key a severity override lives under.
 pub fn severity_key(check: &str) -> String {
-    format!("amont.severity.{check}")
+    format!("greengate.severity.{check}")
 }
 
 /// Every severity override visible here, resolved the way `--get` resolves it.
@@ -636,14 +636,14 @@ impl Overrides {
             "config",
             "--show-scope",
             "--get-regexp",
-            r"^amont\.severity\.",
+            r"^greengate\.severity\.",
         ]) {
             Some(scoped) => Overrides::from_scoped(&scoped, policy),
             // `--get-regexp` with no matches ALSO exits non-zero, so `None`
             // here can mean "no keys" as well as "old git" — both fold the
             // same way: nothing below, policy, nothing above.
             None => Overrides::from_plain_with_policy_below(
-                crate::git::stdout(&["config", "--get-regexp", r"^amont\.severity\."]),
+                crate::git::stdout(&["config", "--get-regexp", r"^greengate\.severity\."]),
                 policy,
             ),
         }
@@ -710,7 +710,7 @@ impl Overrides {
             let Some((key, value)) = line.split_once(' ') else {
                 continue;
             };
-            let Some(check) = key.strip_prefix("amont.severity.") else {
+            let Some(check) = key.strip_prefix("greengate.severity.") else {
                 continue;
             };
             match Severity::parse(value.trim()) {
@@ -724,7 +724,7 @@ impl Overrides {
         }
     }
 
-    /// Built from `--get-regexp`-shaped text (`amont.severity.<check>
+    /// Built from `--get-regexp`-shaped text (`greengate.severity.<check>
     /// <value>` per line, in git's own precedence order — system, then
     /// global, then local, then includes). `pub` so a reader that has
     /// already fetched those lines for its own reasons (the fleet dashboard
@@ -777,7 +777,7 @@ mod precedence {
     fn overrides(lines: &[&str]) -> Overrides {
         let text = lines
             .iter()
-            .map(|l| format!("amont.severity.{l}\n"))
+            .map(|l| format!("greengate.severity.{l}\n"))
             .collect::<String>();
         Overrides::from_config(Some(text))
     }
@@ -872,7 +872,7 @@ fn overrides_in(settings: &crate::config::Settings, repo: Option<&Path>) -> Over
         // is standing in, and a scanner walks many.
         Some(dir) => Overrides::from_config(crate::git::stdout_in(
             dir,
-            &["config", "--get-regexp", r"^amont\.severity\."],
+            &["config", "--get-regexp", r"^greengate\.severity\."],
         )),
     }
 }
@@ -992,12 +992,12 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q", "--template=", "."]);
-        let key = "amont.severity.pre-commit-merge-conflict";
+        let key = "greengate.severity.pre-commit-merge-conflict";
         git(&["config", "--add", key, "warn"]);
         git(&["config", "--add", key, "block"]);
 
         let raw = std::process::Command::new("git")
-            .args(["config", "--get-regexp", r"^amont\.severity\."])
+            .args(["config", "--get-regexp", r"^greengate\.severity\."])
             .current_dir(&d)
             .output()
             .expect("git");
@@ -1026,7 +1026,8 @@ mod tests {
     #[test]
     fn an_unrecognised_value_clears_rather_than_overrides() {
         let o = Overrides::from_config(Some(
-            "amont.severity.a warn\namont.severity.a advisory\namont.severity.b warn".to_string(),
+            "greengate.severity.a warn\ngreengate.severity.a advisory\ngreengate.severity.b warn"
+                .to_string(),
         ));
         assert_eq!(o.0.get("a"), None, "a typo must not leave `warn` standing");
         assert_eq!(o.0.get("b").map(|(s, _)| *s), Some(Severity::Warn));
@@ -1325,7 +1326,7 @@ mod tests {
     /// `manifest.rs` ever called `restage`/`fixing_enabled`. `amont list
     /// --json` reported `"fix":"rewrite"` for them regardless, and `agents_md`
     /// explicitly directs agents to trust that JSON, so an agent would set
-    /// `amont.fix true` and wait for a repair that could never arrive.
+    /// `greengate.fix true` and wait for a repair that could never arrive.
     const HAS_FIXING_CODE: &[(&str, bool)] = &[
         ("pre-commit-agents-md", true),
         ("pre-commit-argo-lint", false),

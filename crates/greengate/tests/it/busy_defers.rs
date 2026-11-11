@@ -1,9 +1,9 @@
 //! A busy host defers a Heavy gate to CI (ADR-0013, `hooks.busy-policy`).
 //!
 //! Every fixture here runs UNPINNED: `.cargo/config.toml` sets
-//! `AMONT_HOST_SLOT=held` for the whole test process, which makes every
+//! `GREENHARNESS_HOST_SLOT=held` for the whole test process, which makes every
 //! check Nested, and a Nested check never queues, so it never defers. Each
-//! run removes it and points `AMONT_SLOT_DIR` at a directory of its own with
+//! run removes it and points `GREENHARNESS_SLOT_DIR` at a directory of its own with
 //! one slot, which a `perl` child holds when the host is to look busy.
 
 use crate::common;
@@ -50,7 +50,8 @@ pub(crate) fn slot_dir(tag: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("amont-busy-{}-{tag}-{seq}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("greengate-busy-{}-{tag}-{seq}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     dir
@@ -76,11 +77,11 @@ fn hook(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     Repo::strip_git_env_impl(&mut cmd);
-    cmd.env_remove("AMONT_HOST_SLOT")
-        .env_remove("AMONT_ON_BUSY")
-        .env("AMONT_IDLE_LOAD_SCALE", "1")
-        .env("AMONT_SLOT_DIR", slots)
-        .env("AMONT_HOST_SLOTS", "1");
+    cmd.env_remove("GREENHARNESS_HOST_SLOT")
+        .env_remove("GREENGATE_ON_BUSY")
+        .env("GREENGATE_IDLE_LOAD_SCALE", "1")
+        .env("GREENHARNESS_SLOT_DIR", slots)
+        .env("GREENGATE_HOST_SLOTS", "1");
     for (key, value) in env {
         cmd.env(key, value);
     }
@@ -182,13 +183,13 @@ fn commit_deferred(repo: &Repo, slots: &Path, file: &str, msg: &str) {
 /// The busy host at commit: the gate defers instead of running, a `block`
 /// gate does not block, nothing is stamped, and the push twin defers too
 /// rather than run the suite with the remote's connection open.
-/// `AMONT_ON_BUSY=wait` brings the twin back once the host is free.
+/// `GREENGATE_ON_BUSY=wait` brings the twin back once the host is free.
 #[test]
 fn a_busy_commit_defers_and_its_push_twin_defers_too() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("pair");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
 
     repo.stage("a.txt", "one\n");
@@ -197,7 +198,7 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
     assert!(out.contains("deferred to CI"), "{out}");
     assert!(
         out.contains(&format!(
-            "AMONT_ON_BUSY=wait {} run",
+            "GREENGATE_ON_BUSY=wait {} run",
             greengate_runtime::names::BIN
         )),
         "{out}"
@@ -207,7 +208,7 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
         0,
         "a deferred gate must not run: {out}"
     );
-    let marker = std::fs::read_to_string(repo.path(".git/amont-gate")).unwrap_or_default();
+    let marker = std::fs::read_to_string(repo.path(".git/greengate-gate")).unwrap_or_default();
     assert!(
         !marker.lines().any(|token| token.starts_with("gate@")),
         "a deferred gate earns no stamp: {marker:?}"
@@ -238,7 +239,7 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
         &[],
         &slots,
         &line,
-        &[("AMONT_ON_BUSY", "wait")],
+        &[("GREENGATE_ON_BUSY", "wait")],
     );
     assert_eq!(code, 0, "{out}");
     assert_eq!(runs(&repo, "gate.log"), 1, "wait runs the twin: {out}");
@@ -250,7 +251,7 @@ fn a_busy_commit_defers_and_its_push_twin_defers_too() {
 #[test]
 fn quiet_mode_still_says_a_check_was_deferred() {
     let (repo, _) = paired_repo();
-    repo.git(&["config", "amont.quiet", "always"]);
+    repo.git(&["config", "greengate.quiet", "always"]);
     let slots = slot_dir("quiet");
     let _holder = Holder::hold(&slots.join("slot-0"));
     repo.stage("a.txt", "one\n");
@@ -274,7 +275,7 @@ fn a_documentation_commit_after_a_deferred_one_keeps_the_deferral() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("docs");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
     let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
@@ -315,7 +316,7 @@ fn a_plan_commit_after_a_deferred_one_is_never_gated() {
     repo.commit("docs(plan): p");
     let base = head(&repo);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     let slots = slot_dir("plan");
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
@@ -368,7 +369,7 @@ fn a_deferred_branch_does_not_excuse_an_unchecked_one() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("refs");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
     repo.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
@@ -410,8 +411,8 @@ fn attested(repo: &Repo, slots: &Path, line: &str) -> Option<String> {
         let remote = repo.path(".git/origin.git");
         repo.git(&["init", "-q", "--bare", &remote.display().to_string()]);
         repo.git(&["remote", "add", "origin", &remote.display().to_string()]);
-        repo.git(&["config", "amont.attest", "true"]);
-        repo.git(&["config", "amont.attestKey", &key.display().to_string()]);
+        repo.git(&["config", "greengate.attest", "true"]);
+        repo.git(&["config", "greengate.attestKey", &key.display().to_string()]);
     }
     let remote = repo.path(".git/origin.git");
     let url = remote.display().to_string();
@@ -450,7 +451,7 @@ fn a_push_mixing_a_stamped_and_a_deferred_commit_defers_and_is_not_attested() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("mixed");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("a.txt", "one\n");
     let (code, out) = hook(&repo, "pre-commit", &[], &slots, "", &[]);
     assert_eq!(code, 0, "{out}");
@@ -497,7 +498,7 @@ fn a_forged_deferral_only_moves_the_gate_to_ci() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("forged");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("a.txt", "one\n");
     repo.commit("feat: a");
     let tree = rev(&repo, "HEAD^{tree}");
@@ -533,7 +534,7 @@ fn a_forged_deferral_only_moves_the_gate_to_ci() {
 fn a_busy_push_waits_one_slot_wait_not_one_per_gate() {
     let repo = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage(
         "amont.conf",
         "set onBusy defer\nset slotWait 3\n\
@@ -676,7 +677,7 @@ fn a_heavy_hook_check_is_bounded_held_or_unqueued() {
 fn a_warn_gate_never_waits_for_a_slot() {
     let repo = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage(
         "amont.conf",
         "set onBusy wait\nset timeout 600\n\
@@ -707,7 +708,7 @@ fn a_warn_gate_never_waits_for_a_slot() {
 /// the gate is `touch` itself, not `sh -c '…'`), a commit to push, and the push line for it.
 fn warn_gate_repo(marker: &Path, busy_policy: &str) -> (Repo, String) {
     let repo = Repo::new();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage(
         "amont.conf",
         &format!(
@@ -760,7 +761,7 @@ pub(crate) fn release_after(
 
 /// What a rehearsal asks of the pre-push it spawns: it is a snapshot, and
 /// every gate waits.
-const REHEARSAL: [(&str, &str); 2] = [("AMONT_REHEARSAL", "1"), ("AMONT_ON_BUSY", "wait")];
+const REHEARSAL: [(&str, &str); 2] = [("GREENGATE_REHEARSAL", "1"), ("GREENGATE_ON_BUSY", "wait")];
 
 fn assert_snapshot_gate_waited_and_ran(
     code: i32,
@@ -854,10 +855,10 @@ fn the_run_now_advice_for_a_deferred_warn_gate_waits() {
     let ran = advised
         .current_dir(&repo.dir)
         .env(key, value)
-        .env_remove("AMONT_HOST_SLOT")
-        .env("AMONT_IDLE_LOAD_SCALE", "1")
-        .env("AMONT_SLOT_DIR", &slots)
-        .env("AMONT_HOST_SLOTS", "1")
+        .env_remove("GREENHARNESS_HOST_SLOT")
+        .env("GREENGATE_IDLE_LOAD_SCALE", "1")
+        .env("GREENHARNESS_SLOT_DIR", &slots)
+        .env("GREENGATE_HOST_SLOTS", "1")
         .stdin(Stdio::null())
         .output()
         .expect("run the advice");
@@ -917,7 +918,7 @@ fn a_stamped_tip_over_a_deferred_commit_is_gated() {
     let (repo, base) = paired_repo();
     let slots = slot_dir("tip");
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     let holder = Holder::hold(&slots.join("slot-0"));
     commit_deferred(&repo, &slots, "a.txt", "feat: a");
     let (code, out) = hook(&repo, "post-commit", &[], &slots, "", &[]);
@@ -954,7 +955,7 @@ fn a_stamped_tip_over_a_deferred_commit_is_gated() {
 /// on `feat/x`, `gate.sh` beside it, and the push line for it.
 fn handoff_repo(conf: &str, gate_script: &str) -> (Repo, String) {
     let repo = Repo::new();
-    repo.git(&["config", "amont.pushGates", "inline"]);
+    repo.git(&["config", "greengate.pushGates", "inline"]);
     repo.stage("gate.sh", gate_script);
     repo.stage("amont.conf", conf);
     repo.commit("chore: base");
@@ -980,9 +981,9 @@ fn waits(slots: &Path) -> Vec<serde_json::Value> {
 fn outside_waiter(slots: &Path, script: &str) -> Child {
     Command::new(env!("CARGO_BIN_EXE_greengate"))
         .args(["slot", "run", "--", "sh", "-c", script])
-        .env_remove("AMONT_HOST_SLOT")
-        .env("AMONT_SLOT_DIR", slots)
-        .env("AMONT_HOST_SLOTS", "1")
+        .env_remove("GREENHARNESS_HOST_SLOT")
+        .env("GREENHARNESS_SLOT_DIR", slots)
+        .env("GREENGATE_HOST_SLOTS", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1101,7 +1102,7 @@ fn a_plain_push_does_not_hand_its_slot_over() {
         &[],
         &slots,
         &line,
-        &[("AMONT_ON_BUSY", "wait")],
+        &[("GREENGATE_ON_BUSY", "wait")],
     );
     assert_eq!(code, 0, "{out}");
     assert!(first.exists() && second.exists(), "{out}");
@@ -1139,9 +1140,9 @@ fn a_failing_gate_after_a_handoff_frees_the_slot() {
     assert!(leftovers.is_empty(), "a who file stayed: {leftovers:?}");
     let status = Command::new(env!("CARGO_BIN_EXE_greengate"))
         .args(["slots", "--json"])
-        .env_remove("AMONT_HOST_SLOT")
-        .env("AMONT_SLOT_DIR", &slots)
-        .env("AMONT_HOST_SLOTS", "1")
+        .env_remove("GREENHARNESS_HOST_SLOT")
+        .env("GREENHARNESS_SLOT_DIR", &slots)
+        .env("GREENGATE_HOST_SLOTS", "1")
         .output()
         .expect("amont slots");
     let json = String::from_utf8_lossy(&status.stdout);
@@ -1176,8 +1177,8 @@ fn a_nested_slot_run_under_a_parked_slot_does_not_queue() {
     );
     let releaser = release_after(Holder::hold(&slots.join("slot-0")), &slots, 1);
     let clear = [
-        ("AMONT_REHEARSAL", "1"),
-        ("AMONT_ON_BUSY", "wait"),
+        ("GREENGATE_REHEARSAL", "1"),
+        ("GREENGATE_ON_BUSY", "wait"),
         ("CARGO_BUILD_JOBS", ""),
         ("RUST_TEST_THREADS", ""),
         ("MAKEFLAGS", ""),
@@ -1206,9 +1207,12 @@ fn hold_for(holder: Holder, secs: u64) -> std::thread::JoinHandle<()> {
 }
 
 /// What land's pre-stage asks of the pre-push it spawns.
-const PRESTAGE: [(&str, &str); 2] = [("AMONT_REHEARSAL", "prestage;1"), ("AMONT_ON_BUSY", "wait")];
+const PRESTAGE: [(&str, &str); 2] = [
+    ("GREENGATE_REHEARSAL", "prestage;1"),
+    ("GREENGATE_ON_BUSY", "wait"),
+];
 
-/// In land's pre-stage a warn gate waits at most `amont.warnSlotWait`, then
+/// In land's pre-stage a warn gate waits at most `greengate.warnSlotWait`, then
 /// runs unqueued and says which key cut the wait.
 #[test]
 fn a_prestage_warn_gate_stops_waiting_at_warn_slot_wait() {
@@ -1221,7 +1225,7 @@ fn a_prestage_warn_gate_stops_waiting_at_warn_slot_wait() {
     let took = started.elapsed();
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("running it anyway"), "{out}");
-    assert!(out.contains("amont.warnSlotWait"), "{out}");
+    assert!(out.contains("greengate.warnSlotWait"), "{out}");
     assert!(!out.contains("deferred to CI"), "{out}");
     assert!(marker.exists(), "{out}");
     assert!(

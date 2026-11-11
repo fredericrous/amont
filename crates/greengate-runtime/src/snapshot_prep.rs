@@ -3,7 +3,7 @@
 //!
 //! A snapshot is a checkout, not a workspace — no `node_modules`, no `.env` —
 //! and a gate started there fails having tested nothing. Both steps run in
-//! [`crate::pushed_tree::PushedTree::prepare`], before `amont.snapshotPrepare`
+//! [`crate::pushed_tree::PushedTree::prepare`], before `greengate.snapshotPrepare`
 //! (the escape hatch), and a failure in either is the snapshot's failure: no
 //! suite runs, nothing is stamped.
 //!
@@ -40,10 +40,10 @@ use std::process::{Command, Stdio};
 
 use crate::ui::{highlight, warning_sign};
 
-const CARRY: &str = "amont.snapshotCarry";
-const DEPS: &str = "amont.snapshotDeps";
+const CARRY: &str = "greengate.snapshotCarry";
+const DEPS: &str = "greengate.snapshotDeps";
 
-/// `amont.snapshotDeps`.
+/// `greengate.snapshotDeps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepsMode {
     /// `npm ci` / `pnpm install --frozen-lockfile` / `yarn install
@@ -63,7 +63,7 @@ pub fn deps_mode(settings: &crate::config::Settings) -> DepsMode {
     }
 }
 
-/// `amont.snapshotCarry`, split on whitespace and commas.
+/// `greengate.snapshotCarry`, split on whitespace and commas.
 pub fn carry_list(settings: &crate::config::Settings) -> Vec<String> {
     crate::config::string_value(settings, CARRY)
         .map(|v| {
@@ -195,7 +195,7 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Copy the untracked files `amont.snapshotCarry` names from `source` into
+/// Copy the untracked files `greengate.snapshotCarry` names from `source` into
 /// `snapshot`.
 ///
 /// Every entry is validated before anything is copied, and every refusal is
@@ -473,7 +473,7 @@ pub fn units(files: &[String], snapshot: &Path) -> Result<Vec<Unit>, String> {
                     let names: Vec<&str> = here.iter().map(|f| f.2).collect();
                     format!(
                         "both {} in {} and no `packageManager` to choose — set \
-                         amont.snapshotPrepare",
+                         greengate.snapshotPrepare",
                         names.join(" and "),
                         if dir.is_empty() { "the root" } else { &dir }
                     )
@@ -503,8 +503,8 @@ pub fn units(files: &[String], snapshot: &Path) -> Result<Vec<Unit>, String> {
 /// install command, or turns the preparation off.
 fn bun_refusal(u: &Unit) -> String {
     format!(
-        "{} in {}: {BIN} cannot install bun dependencies — set amont.snapshotPrepare \
-         to the install command, or amont.snapshotDeps off",
+        "{} in {}: {BIN} cannot install bun dependencies — set greengate.snapshotPrepare \
+         to the install command, or greengate.snapshotDeps off",
         u.lockfile,
         unit_label(u)
     )

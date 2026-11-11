@@ -401,7 +401,7 @@ impl Verdict {
 /// Whether a failing check stops the commit or merely reports.
 ///
 /// Declared per check and overridable per repository with
-/// `git config amont.severity.<check> warn`. That is a better escape hatch
+/// `git config greengate.severity.<check> warn`. That is a better escape hatch
 /// than `hook.skip`, which is all-or-nothing and invisible enough that
 /// `hook.skip = e` disables all twenty checks: a downgrade keeps the signal and
 /// removes only the block.
@@ -499,7 +499,7 @@ pub trait Check: Sync {
     fn fix(&self) -> Fix {
         Fix::None
     }
-    /// How far the check reaches when `amont.conventions` is `declared` —
+    /// How far the check reaches when `greengate.conventions` is `declared` —
     /// see [`Reach`]. Externals default to `Convention`, which costs them
     /// nothing: a declared check only exists where an `amont.conf` does,
     /// and that is exactly the declaration the mode asks for.
@@ -526,7 +526,7 @@ pub trait Check: Sync {
 
 /// How far a check reaches into repositories that never asked for it.
 ///
-/// With `git config --global amont.conventions declared`, hooks installed by
+/// With `git config --global greengate.conventions declared`, hooks installed by
 /// a standing grant (`init.templateDir`) split in two: `Safety` checks run in
 /// EVERY repository, because their findings are mistakes in any codebase — a
 /// conflict marker, a leaked credential, a hundred-megabyte blob, a

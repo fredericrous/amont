@@ -167,7 +167,7 @@ pub fn is_bakeable(bin: &str) -> bool {
 ///
 /// NOT `canonicalize`: that returns an extended-length path (`\\?\C:\…`) on
 /// Windows, which `sh` cannot test, and it fails outright on a path that does
-/// not exist yet. `$AMONT_BIN_DIR` may be relative, which is the route by
+/// not exist yet. `$GREENGATE_BIN_DIR` may be relative, which is the route by
 /// which a relative path could reach a shim at all.
 fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
@@ -183,11 +183,11 @@ fn absolute(p: &Path) -> PathBuf {
 ///
 /// Deliberately NOT `bin_dir()`, and the difference is the whole point of
 /// `warn_if_unbaked_cannot_resolve`. `bin_dir()` answers "where should install
-/// PUT the binary?" and honours `$AMONT_BIN_DIR`. This answers "where will a
+/// PUT the binary?" and honours `$GREENGATE_BIN_DIR`. This answers "where will a
 /// shim that never got a path baked into it LOOK?", which is a constant in a
 /// POSIX sh file and cannot be configured at all.
 ///
-/// `$AMONT_BIN_DIR` is deliberately not wired into the shim to close that
+/// `$GREENGATE_BIN_DIR` is deliberately not wired into the shim to close that
 /// gap. It is an install-time question answered in the shell where `amont
 /// install` ran; the shim runs inside git's environment during a commit, where
 /// that variable is almost never set — so honouring it there would ship a knob
@@ -206,7 +206,7 @@ fn unbaked_lookup_dir() -> PathBuf {
 /// Two supported choices stop composing when made together. A template dir that
 /// IS the checkout keeps the placeholder on purpose — those shims resolve the
 /// binary at run time from [`unbaked_lookup_dir`]. Install to a custom
-/// `$AMONT_BIN_DIR` as well and nothing baked a path, while the one path the
+/// `$GREENGATE_BIN_DIR` as well and nothing baked a path, while the one path the
 /// shim knows is not where the binary went.
 ///
 /// Nothing is silently skipped — the shim prints what it looked at and exits 1,
@@ -246,9 +246,9 @@ fn warn_if_unbaked_cannot_resolve(binary: &str) {
     eprintln!("      export GIT_HOOKS_BIN={binary}");
 }
 
-/// `~/.local/bin`, or `$AMONT_BIN_DIR`.
+/// `~/.local/bin`, or `$GREENGATE_BIN_DIR`.
 pub fn bin_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("AMONT_BIN_DIR") {
+    if let Some(d) = std::env::var_os("GREENGATE_BIN_DIR") {
         return PathBuf::from(d);
     }
     home().join(".local").join("bin")
@@ -583,7 +583,7 @@ pub fn run(settings: &crate::config::Settings, force: bool) -> Result<(), String
 ///      left to the user, because a standing grant should be typed, not
 ///      inherited. `enroll` IS that typing.
 ///
-/// With `--conventions declared` it also writes `amont.conventions`, so the
+/// With `--conventions declared` it also writes `greengate.conventions`, so the
 /// grant is safe on a machine that clones other people's projects: those get
 /// the safety net only, and the house rules wait for a committed
 /// `amont.conf`. See `dispatch::conventions_apply`.
@@ -612,11 +612,13 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
 
     match conventions {
         Some(word) => {
-            if !crate::git::succeeds(&["config", "--global", "amont.conventions", word]) {
-                return Err("could not write amont.conventions to the global git config".into());
+            if !crate::git::succeeds(&["config", "--global", "greengate.conventions", word]) {
+                return Err(
+                    "could not write greengate.conventions to the global git config".into(),
+                );
             }
             eprintln!(
-                "{} amont.conventions = {} (global)",
+                "{} greengate.conventions = {} (global)",
                 valid_sign(),
                 highlight(word)
             );
@@ -1067,9 +1069,9 @@ fn install_binary() -> Result<String, String> {
     // frozen copy in ~/.local/bin — the same staleness the copy is meant to
     // prevent, arrived at from the other direction.
     //
-    // `$AMONT_BIN_DIR` is checked first because setting it IS the request to
+    // `$GREENGATE_BIN_DIR` is checked first because setting it IS the request to
     // put the binary somewhere specific, and honouring it costs nothing.
-    if std::env::var_os("AMONT_BIN_DIR").is_none() {
+    if std::env::var_os("GREENGATE_BIN_DIR").is_none() {
         if let Some(stable) = on_path_already(&me) {
             let shown = stable.to_string_lossy().into_owned();
             eprintln!("{} using {}", valid_sign(), highlight(&shown));
@@ -1083,7 +1085,7 @@ fn install_binary() -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
     // Absolute from here on: this path is what gets baked into every shim, and
-    // `bin_dir()` honours `$AMONT_BIN_DIR`, which may be relative.
+    // `bin_dir()` honours `$GREENGATE_BIN_DIR`, which may be relative.
     let target = absolute(&dir.join(installed_name()));
     // Copying a running binary over ITSELF fails on some platforms and is
     // pointless on all of them.
@@ -1470,7 +1472,7 @@ fn bake_repo_hooks(binary: &str, force: bool) -> Result<(), String> {
 ///
 /// - a hook we did not write is left alone and named, because somebody wrote it
 ///   on purpose;
-/// - `hook.skip` and `amont.severity` are never touched — those are the
+/// - `hook.skip` and `greengate.severity` are never touched — those are the
 ///   user's statements about their own repository, not our artefacts, and a
 ///   reinstall should not silently forget that they disabled a check;
 /// - the binary goes only when asked, because other repositories are using it.
@@ -1505,7 +1507,7 @@ pub fn uninstall(remove_binary: bool) -> Result<(), String> {
 
     // Said out loud, because a user who uninstalls and reinstalls should not be
     // surprised that a check they disabled is still disabled.
-    eprintln!("    hook.skip and amont.severity were not touched.");
+    eprintln!("    hook.skip and greengate.severity were not touched.");
     Ok(())
 }
 
@@ -1651,9 +1653,9 @@ fn baked_binary(path: &Path) -> Option<String> {
 /// (untrusted manifests are inert, policy is withheld); it defaults to no
 /// here too. Re-granting is one `amont trust`, which shows the file again.
 ///
-/// **What is never touched**: `hook.skip` and `amont.severity` (the user's
+/// **What is never touched**: `hook.skip` and `greengate.severity` (the user's
 /// statements about their repository, not ours), and above all the held
-/// store — `$GIT_DIR/amont-held` and `amont-preserved` hold UNCOMMITTED
+/// store — `$GIT_DIR/greengate-held` and `greengate-preserved` hold UNCOMMITTED
 /// WORK. An uninstall that deletes those loses the very thing the parking
 /// machinery exists to protect; `amont restore` must keep working after the
 /// hooks are gone.
@@ -1675,7 +1677,7 @@ pub fn forget_bookkeeping_in(repo: &Path) -> Vec<&'static str> {
         gone.push("version-skew marker");
     }
     // `--unset-all` exits 5 when the key is absent; that is not a removal.
-    if crate::git::succeeds_in(repo, &["config", "--unset-all", "amont.knownIdentity"]) {
+    if crate::git::succeeds_in(repo, &["config", "--unset-all", "greengate.knownIdentity"]) {
         gone.push("known-identity memo");
     }
     if !crate::trust::recorded(repo).is_empty() && crate::trust::revoke(repo).is_ok() {
