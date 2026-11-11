@@ -301,17 +301,34 @@ failure it would show.
    - Expected: the commit runs `cargo test --locked`, and the push prints
      `gated at commit instead`.
    - Failure it shows: the push runs `pre-push-cargo-test`.
+   - Observed (2026-11-11): a detached scratch worktree of this repository,
+     its real `amont.conf` with the command swapped for `true`, trusted and
+     then revoked, `Cargo.lock` staged. 3.0.0 printed nothing and the check
+     never fired. The branch binary printed `cargo-test: Cargo.lock is read by
+     pre-push-cargo-test — testing at commit` (since reworded `running it at
+     commit`) and ran it. The push half, `gated at commit instead`, is
+     `gate_pairs::a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped`
+     with real hooks; it stages `rustfmt.toml`, because a lockfile push also
+     owes `pre-push-audit-rust`, a gate of its own.
 2. **Go scope gap, on a fixture Go module.**
    - Input: `pre-commit go-test *.go block go test ./...`, then commit a
      `go.sum`-only change and push.
    - Expected: the commit runs `go test` and the push is gated.
    - Failure it shows: the suite runs at push.
+   - Observed (2026-11-11): a fixture Go module, `go.sum` staged. 3.0.0 was
+     silent and the check never fired; the branch binary printed `go-test:
+     go.sum is read by pre-push-go-test — testing at commit` (since reworded).
 3. **Reason line.**
    - Input: a `files` pair whose push changes a file outside its scope.
    - Expected: the push prints `⚠ … covers <scope>, not <path> — running it
      here` in at most 80 columns, then the indented line naming the
      `amont.conf` line, and then runs.
    - Failure it shows: a silent run.
+   - Observed (2026-11-11): the same Go fixture with `files true`, a push of
+     `go.sum` only: `go-test at commit covers *.go, not go.sum — running it
+     here`, then `a files declaration is not widened: add go.sum to amont.conf
+     line 1`, then `go test` ran. The final wording is pinned by
+     `gate_pairs` and `run_tests_js` tests, one per reason.
 4. **JS declared root, on a scratch copy of website-builder**
    (`git worktree add --detach`), with `set rootRunsMembers test,typecheck`
    added and trusted.
@@ -334,6 +351,10 @@ failure it would show.
    - Expected: commit time grows by the suite's time (written down),
      and push time shrinks by the same amount.
    - Failure it shows: the suite runs at both commit and push.
+   - Not timed: the host ran at load 20 to 60 on 12 cores during this work
+     (the commit gate's suite took 2,840 s), so a wall-clock comparison would
+     have measured the load. The cost of a twin-only commit is the suite's own
+     time, as the plan says; the 7-day measure (check 7) stands.
 7. **After release, for 7 days.**
    - Count pushes in amont and website-builder that print `gated at commit
      instead`, against those that run the suite. Target: 0 silent reruns.
@@ -345,6 +366,14 @@ failure it would show.
    - Expected: crates.io, the GitHub assets and the tap at 3.1.0, and
      `brew upgrade greengate` installs 3.1.0; the same again at 3.2.0 after
      Phase 3.
+
+## Implementation review
+
+- implementation-review: approve-with-changes, then approve. Fixed: wildcard arms, output parameters, short names, plan wording. Older tests keep their `r`.
+- backend: approve-with-changes, then approve. Fixed: refusal path, twin union, shared reasons. Deliberate: no test for the unscoped-twin wording with no line.
+- lang:rust: approve-with-changes three times. Fixed: comments, `Option` line numbers, one `decide`. Deliberate: the `RefCell` in the refusal path, tuple `twins`.
+- tui: approve-with-changes, then approve. Fixed: line endings at 80 columns, wording, `list` row. Deliberate: scope label and fix line never cut.
+- unix, architect: approve on the delta; unix's stream note holds (`say!` prints to stdout). Phase 3, then Phase 4's release, follow.
 
 ## Outcome
 
