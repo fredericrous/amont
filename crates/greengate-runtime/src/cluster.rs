@@ -756,6 +756,13 @@ fn warn_unavailable(name: &str, fallback: &Fallback) {
 /// Append `<epoch> <gate> <reason>` to `greengate/cluster.log` in the common git
 /// directory. Best-effort: the log is evidence, never a verdict.
 fn log_line(gate: &str, reason: &str) {
+    // The log goes to the common dir of the process's own repository. A unit
+    // test runs inside a worktree of this repository, whose common dir is the
+    // live checkout's `.git`: it appended there on every run that settled a
+    // pass it could not record. No unit test reads the log.
+    if cfg!(test) {
+        return;
+    }
     let reason: String = reason
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
