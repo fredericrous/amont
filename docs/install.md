@@ -474,8 +474,9 @@ slot queues on one machine.
 6. Run `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
    `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
    under `~/.config/amont/`, with the command that moves each. It does not
-   check the committed names (step 5 does); when it exits 0, the upgrade is
-   done.
+   check the committed names (step 5 does); when it exits 0, this machine is
+   clean, and the upgrade is done once step 5 has moved every repository (any
+   it skipped is named there).
 
 To go back to 3.x, before installing it: `greengate migrate --reverse` in each
 repository and `greengate migrate --reverse --global` once, then revert each

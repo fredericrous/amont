@@ -26,9 +26,11 @@ To upgrade, in this order (the full steps are in
 4. Rename each repository's committed names with `greengate migrate
    --tracked` (or across a root, `greengate-fleet fix --apply --migrate`; see
    below).
-5. Run `greengate doctor`. It exits 1 and names what is left (environment,
-   keys, state, a 3.x kubeconfig), with the command that moves it, until it
-   exits 0. It does not look at the committed names: step 4 does.
+5. Run `greengate doctor`. It exits 1 and names what is left (an `AMONT_*`
+   variable, an `amont.*` key, 3.x state, a `greengate.cluster.kubeconfig`
+   still under `~/.config/amont/`), with the command that moves it, until it
+   exits 0. It does not look at the committed names: the upgrade is done once
+   step 4 has moved every repository (any it skipped is named there).
 
 What changes:
 
