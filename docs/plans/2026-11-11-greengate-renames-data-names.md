@@ -405,5 +405,6 @@ has one slot queue, and no held store was lost.
   architect approve (old names in `names::old`, one `needs`, `staged_nothing` in the runtime; its doc scope to the tracked rename carried to Phase 6).
   Fixed in the last deltas: `trust` without `--show` says everything on stderr (listing, heading, verdict, "nothing to do"), `--show` stays data on stdout, `add`'s "already carries" too;
   `staged_nothing()` matches every variant; the halfway undo test fails at the attest-inputs read after the manifest moved, without permission bits, so it holds as root.
+  Carried to Phase 5 (backend, medium): a test pinning `trust`'s stream split (accept path: stdout empty, verdict on stderr; `--show` listing on stdout), with the 4.0 CHANGELOG entry that names the move.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
