@@ -999,7 +999,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 }
             }
             if after == before {
-                println!("{} already carries exactly this", manifest_file);
+                eprintln!("{} already carries exactly this", manifest_file);
                 return 0;
             }
             // No confirmation prompt here, deliberately. `amont trust` does not

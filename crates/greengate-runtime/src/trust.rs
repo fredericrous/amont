@@ -451,7 +451,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
 
     if flag("--revoke") {
         revoke(root)?;
-        println!(
+        eprintln!(
             "{} {} is no longer trusted here",
             valid_sign(),
             crate::manifest::manifest_name(root)
@@ -493,7 +493,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
         std::fs::read(&manifest).map_err(|e| format!("cannot read {}: {e}", manifest.display()))?;
     let fp = fingerprint_bytes(root, &source)
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
-    println!("{manifest_file} declares:");
+    eprintln!("{manifest_file} declares:");
     print!("{}", describe_source(&String::from_utf8_lossy(&source)));
     record_verified(root, &fp)?;
     println!("{} trusted ({fp})", valid_sign());

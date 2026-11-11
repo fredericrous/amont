@@ -190,38 +190,24 @@ fn a_refused_commit_is_undone_and_fails_the_sweep() {
 }
 
 /// A failure half-way through the rename (the manifest already moved, then
-/// AGENTS.md cannot be written) is undone the same way: exit 1, the tree as
-/// it was.
-#[cfg(unix)]
+/// `.github/attest-inputs` cannot be read: a directory there) is undone the
+/// same way: exit 1, the tree as it was. No permission bits involved, so it
+/// fails the same way as root.
 #[test]
 fn a_failure_after_the_rename_started_is_undone() {
-    use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("greengate-fleet-halfway-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root); // a fresh dir; absent is fine
-    std::fs::create_dir_all(&root).unwrap();
-    let block = format!("{OLD_START}\nblock\n{OLD_END}\n");
+    std::fs::create_dir_all(root.join("halfway/.github/attest-inputs")).unwrap();
     let halfway = repo(
         &root,
         "halfway",
         &[
             (OLD_MANIFEST, "pre-commit  a  *  warn  true\n"),
-            ("AGENTS.md", &block),
+            (".github/attest-inputs/x", "x\n"),
         ],
     );
-    let agents = halfway.join("AGENTS.md");
-    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o444)).unwrap();
-    // Root writes through mode bits: no failure to provoke there.
-    if std::fs::OpenOptions::new()
-        .write(true)
-        .open(&agents)
-        .is_ok()
-    {
-        let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
-        return;
-    }
 
     let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
-    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("halfway: FAILED"), "{out}");
     assert!(out.contains("nothing was kept"), "{out}");
