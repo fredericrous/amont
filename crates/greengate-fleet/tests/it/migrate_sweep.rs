@@ -197,6 +197,8 @@ fn a_refused_commit_is_undone_and_fails_the_sweep() {
 fn a_failure_after_the_rename_started_is_undone() {
     let root = std::env::temp_dir().join(format!("greengate-fleet-halfway-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root); // a fresh dir; absent is fine
+                                            // The rename reads `.github/attest-inputs` after it has moved the
+                                            // manifest; a directory there makes that read fail, half-way.
     std::fs::create_dir_all(root.join("halfway/.github/attest-inputs")).unwrap();
     let halfway = repo(
         &root,
@@ -210,6 +212,10 @@ fn a_failure_after_the_rename_started_is_undone() {
     let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("halfway: FAILED"), "{out}");
+    assert!(
+        out.contains("could not read") && out.contains("attest-inputs"),
+        "it failed at the read after the manifest moved: {out}"
+    );
     assert!(out.contains("nothing was kept"), "{out}");
     assert_eq!(git(&halfway, &["log", "--format=%s"]), "chore: base\n");
     assert!(git(&halfway, &["status", "--porcelain", "--untracked-files=no"]).is_empty());

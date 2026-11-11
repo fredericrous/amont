@@ -460,8 +460,12 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
 
     let state = state(root);
+    // `--show` alone answers with data on stdout; everything else this
+    // command says (the listing it asks a person to accept, the verdict,
+    // "nothing to do") is talk, on stderr, so one output never spans two
+    // streams.
     if state == State::NoManifest {
-        println!("no {} in this repository", crate::manifest::MANIFEST);
+        eprintln!("no {} in this repository", crate::manifest::MANIFEST);
         return Ok(());
     }
 
@@ -480,7 +484,7 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
 
     if state == State::Trusted {
-        println!("{} already trusted, unchanged", valid_sign());
+        eprintln!("{} already trusted, unchanged", valid_sign());
         return Ok(());
     }
 
@@ -494,9 +498,9 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     let fp = fingerprint_bytes(root, &source)
         .ok_or_else(|| format!("cannot hash {}", manifest.display()))?;
     eprintln!("{manifest_file} declares:");
-    print!("{}", describe_source(&String::from_utf8_lossy(&source)));
+    eprint!("{}", describe_source(&String::from_utf8_lossy(&source)));
     record_verified(root, &fp)?;
-    println!("{} trusted ({fp})", valid_sign());
+    eprintln!("{} trusted ({fp})", valid_sign());
     Ok(())
 }
 

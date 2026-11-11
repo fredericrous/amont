@@ -244,8 +244,19 @@ impl std::error::Error for MigrateError {}
 impl MigrateError {
     /// Refused before anything moved, so nothing is staged or renamed: the
     /// order of the checks lives here, beside the code that sets it.
+    /// Exhaustive on purpose: a new variant decides here which side it is on.
     pub fn staged_nothing(&self) -> bool {
-        matches!(self, MigrateError::BothCommitted { .. })
+        match self {
+            MigrateError::BothCommitted { .. } => true,
+            MigrateError::HeldStore { .. }
+            | MigrateError::PendingDetached { .. }
+            | MigrateError::PendingForDowngrade { .. }
+            | MigrateError::PendingUnreadable { .. }
+            | MigrateError::BothExist { .. }
+            | MigrateError::Locked { .. }
+            | MigrateError::Io { .. }
+            | MigrateError::Git { .. } => false,
+        }
     }
 }
 
