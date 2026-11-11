@@ -310,7 +310,7 @@ fn parse_gate(v: &Value) -> Option<Gate> {
     })
 }
 
-fn render_file(records: &[Pending]) -> String {
+pub(super) fn render_file(records: &[Pending]) -> String {
     let body: Vec<String> = records.iter().map(Pending::render).collect();
     format!(
         "{{\"format\":{FORMAT},\"records\":{}}}\n",

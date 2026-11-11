@@ -226,6 +226,9 @@ pub enum MigrateError {
     /// A detached cluster run 3.x submitted is still pending: its Workflow
     /// carries 3.x's label, which 4.0 cannot collect.
     PendingDetached { path: PathBuf },
+    /// 3.x's pending file exists but this version cannot read it: its runs
+    /// would be lost all the same, so the move waits.
+    PendingUnreadable { path: PathBuf, why: String },
     /// Both spellings of one name exist and are not a log to merge.
     BothExist { source: PathBuf, target: PathBuf },
     /// Another process held the migration lock past its deadline.
@@ -254,12 +257,20 @@ impl std::fmt::Display for MigrateError {
             ),
             MigrateError::PendingDetached { path } => write!(
                 out,
-                "{} lists a detached cluster run greengate 3.x submitted, which 4.0 cannot \
-                 collect; once `kubectl get workflows -n {}` no longer shows it (or its \
-                 verdict no longer matters), remove the file (`rm {}`) and run the command \
-                 again",
+                "{} lists a detached cluster run greengate 3.x submitted, which 4.0 \
+                 cannot collect.\n  once `kubectl get workflows -n {}` no longer shows \
+                 it (or its verdict no longer matters), remove the file:\n  rm {}\n  \
+                 then run the command again",
                 path.display(),
                 old::CLUSTER_NAMESPACE,
+                path.display()
+            ),
+            MigrateError::PendingUnreadable { path, why } => write!(
+                out,
+                "{} (greengate 3.x's detached cluster runs) cannot be read: {why}.\n  \
+                 if no run in it matters any more, remove it:\n  rm {}\n  then run \
+                 the command again",
+                path.display(),
                 path.display()
             ),
             MigrateError::BothExist { source, target } => write!(
@@ -310,9 +321,9 @@ pub struct Moved {
 /// Before any command but `--help`, `--version`, `restore`, `uninstall`,
 /// `migrate`, `doctor` and a `--dry-run`: migrate the repository the
 /// process stands in, once, then the machine's global keys, once.
-pub fn ensure(cwd: &Path, git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+pub fn ensure(cwd: &Path, git: &GitFn<'_>, now: u64) -> Result<Moved, MigrateError> {
     let mut moved = ensure_global(git)?;
-    let here = ensure_repo(cwd, git)?;
+    let here = ensure_repo(cwd, git, now)?;
     moved.state += here.state;
     moved.keys += here.keys;
     Ok(moved)
@@ -320,14 +331,14 @@ pub fn ensure(cwd: &Path, git: &GitFn<'_>) -> Result<Moved, MigrateError> {
 
 /// The repository half of [`ensure`]: the one `cwd` stands in, once, unless
 /// a reverse asked 4.0 to leave it alone.
-pub fn ensure_repo(cwd: &Path, git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+pub fn ensure_repo(cwd: &Path, git: &GitFn<'_>, now: u64) -> Result<Moved, MigrateError> {
     let Some(repo) = Repo::locate(cwd) else {
         return Ok(Moved::default());
     };
     if repo.marker().exists() || repo.common.join(n::REVERSED_MARKER).exists() {
         return Ok(Moved::default());
     }
-    migrate_repo(&repo, Direction::Forward, git)
+    migrate_repo(&repo, Direction::Forward, git, now)
 }
 
 /// Migrate `repo` in `direction`, under its lock. Forward writes the
@@ -337,9 +348,14 @@ pub fn migrate_repo(
     repo: &Repo,
     direction: Direction,
     git: &GitFn<'_>,
+    now: u64,
 ) -> Result<Moved, MigrateError> {
     let _lock = lock(&repo.common.join(n::MIGRATE_LOCK))?;
-    if direction == Direction::Forward && repo.marker().exists() {
+    let reversed = repo.common.join(n::REVERSED_MARKER);
+    // Done only when no reverse is half-way: a reverse writes its marker
+    // before it moves anything, so a forward run after a reverse that
+    // stopped moves the state forward again.
+    if direction == Direction::Forward && repo.marker().exists() && !reversed.exists() {
         return Ok(Moved::default());
     }
     let dirs = repo.git_dirs();
@@ -356,16 +372,21 @@ pub fn migrate_repo(
         let pending = repo
             .common
             .join(old::STATE_DIR)
-            .join(crate::cluster::detached::PENDING_FILE);
+            .join(crate::cluster::PENDING_FILE);
         // A run that has outlived its Workflow is past collecting; a file
-        // this version cannot read is refused like one that lists a live
-        // run, whose verdict would be lost all the same.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if crate::cluster::detached::lists_live(&pending, now).unwrap_or(true) {
-            return Err(MigrateError::PendingDetached { path: pending });
+        // this version cannot read is refused too, with its reason.
+        match crate::cluster::lists_live(&pending, now) {
+            Ok(false) => {}
+            Ok(true) => return Err(MigrateError::PendingDetached { path: pending }),
+            Err(why) => return Err(MigrateError::PendingUnreadable { path: pending, why }),
         }
+    }
+    if direction == Direction::Reverse {
+        // The markers first: a reverse that stops half-way must not leave
+        // a done-marker over state already under 3.x names.
+        std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
+            .map_err(io("write", &reversed))?;
+        remove_if_present(&repo.marker())?;
     }
     let mut moved = Moved::default();
     for dir in &dirs {
@@ -394,20 +415,10 @@ pub fn migrate_repo(
             })
         }
     }
-    let reversed = repo.common.join(n::REVERSED_MARKER);
-    match direction {
-        Direction::Forward => {
-            let text = format!("{}-v1\n{}\n", n::MIGRATED_MARKER, env!("CARGO_PKG_VERSION"));
-            std::fs::write(repo.marker(), text).map_err(io("write", &repo.marker()))?;
-            remove_if_present(&reversed)?;
-        }
-        Direction::Reverse => {
-            // The reversed marker first: a crash between the two leaves
-            // both, and the reversal holds.
-            std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
-                .map_err(io("write", &reversed))?;
-            remove_if_present(&repo.marker())?;
-        }
+    if direction == Direction::Forward {
+        let text = format!("{}-v1\n{}\n", n::MIGRATED_MARKER, env!("CARGO_PKG_VERSION"));
+        std::fs::write(repo.marker(), text).map_err(io("write", &repo.marker()))?;
+        remove_if_present(&reversed)?;
     }
     Ok(moved)
 }
@@ -659,7 +670,7 @@ fn ensure_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
     }
     std::fs::create_dir_all(&dir).map_err(io("make", &dir))?;
     let _lock = lock(&dir.join(n::MIGRATE_LOCK))?;
-    if marker.exists() {
+    if marker.exists() || dir.join(n::REVERSED_MARKER).exists() {
         return Ok(Moved::default());
     }
     let mut moved = Moved::default();
@@ -754,8 +765,12 @@ fn global_config_files() -> Vec<PathBuf> {
 pub fn reverse_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
     // The reversed marker first, as for a repository: until `migrate
     // --global`, 4.0 leaves the machine's keys under 3.x's names.
+    let mut _lock = None;
     if let Some(dir) = config_dir() {
         std::fs::create_dir_all(&dir).map_err(io("make", &dir))?;
+        // Under the machine lock, so a first run that passed its check
+        // before this started cannot move the keys forward again.
+        _lock = Some(lock(&dir.join(n::MIGRATE_LOCK))?);
         let reversed = dir.join(n::REVERSED_MARKER);
         std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
             .map_err(io("write", &reversed))?;
@@ -873,6 +888,9 @@ pub fn system_git(dir: Option<&Path>, args: &[&str]) -> Result<Option<String>, S
 mod tests {
     use super::*;
 
+    /// A fixed clock: no test here depends on the date.
+    const NOW: u64 = 1_800_000_000;
+
     fn scratch(name: &str) -> PathBuf {
         let scratch_dir =
             std::env::temp_dir().join(format!("greengate-migrate-{name}-{}", std::process::id()));
@@ -935,7 +953,7 @@ mod tests {
 
         let repo = Repo::locate_with(&root, None).unwrap();
         let git = git_in(&root);
-        migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(gd.join(n::BYPASS_LEDGER)).unwrap(),
@@ -953,7 +971,7 @@ mod tests {
         assert!(repo.marker().is_file());
         // A second run, marker or not, changes nothing.
         std::fs::remove_file(repo.marker()).unwrap();
-        migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
         assert!(gd.join(n::BYPASS_LEDGER).is_file());
     }
 
@@ -991,7 +1009,7 @@ mod tests {
         assert_eq!(repo.worktrees(), vec![wt.clone()]);
         std::fs::create_dir_all(wt.join("amont-held")).unwrap();
         let git = git_in(&root);
-        let err = migrate_repo(&repo, Direction::Forward, &git).unwrap_err();
+        let err = migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap_err();
         assert_eq!(
             err,
             MigrateError::HeldStore {
@@ -1005,7 +1023,7 @@ mod tests {
         );
         assert!(!repo.marker().exists());
         std::fs::remove_dir(wt.join("amont-held")).unwrap();
-        migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
         assert_eq!(
             std::fs::read_to_string(wt.join(n::SKEW_MARKER)).unwrap(),
             "greengate-skew-v1\n3.0.0\n"
@@ -1029,7 +1047,7 @@ mod tests {
             git(None, &args).unwrap();
         }
         let repo = Repo::locate_with(&root, None).unwrap();
-        let moved = migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        let moved = migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
         assert_eq!(moved.keys, 3, "trusted, timeout, cluster.namespace");
         assert_eq!(get(&git, "greengate.trusted"), "aaa\nbbb\n");
         assert_eq!(get(&git, "greengate.timeout"), "900\n", "the new name wins");
@@ -1040,14 +1058,14 @@ mod tests {
 
         // And back: the reverse restores the 3.x names, and 4.0 then leaves
         // the repository alone until asked.
-        migrate_repo(&repo, Direction::Reverse, &git).unwrap();
+        migrate_repo(&repo, Direction::Reverse, &git, NOW).unwrap();
         assert_eq!(get(&git, "amont.trusted"), "aaa\nbbb\n");
         assert_eq!(get(&git, "greengate.trusted"), "");
         assert!(!repo.marker().exists());
         assert!(repo.common.join(n::REVERSED_MARKER).is_file());
         // The repository half only: the global half reads this machine's
         // config home, which a unit test must not touch.
-        ensure_repo(&root, &git).unwrap();
+        ensure_repo(&root, &git, NOW).unwrap();
         assert_eq!(
             get(&git, "amont.trusted"),
             "aaa\nbbb\n",
@@ -1097,28 +1115,53 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_run_3x_left_pending_refuses_the_move() {
+    fn a_3x_pending_file_this_version_cannot_read_refuses_the_move() {
+        // The TTL rule itself is tested beside the file's owner
+        // (`cluster::detached::collect`, `lists_live`).
         let root = scratch("pending");
         init(&root);
         let gd = root.join(".git");
         std::fs::create_dir_all(gd.join("amont")).unwrap();
         let pending = gd.join("amont/cluster-pending");
-        std::fs::write(
-            &pending,
-            "{\"format\":1,\"records\":[{\"name\":\"amont-rh-1\"}]}\n",
-        )
-        .unwrap();
+        std::fs::write(&pending, "{\"format\":1,\"records\":[{\"name\":\"x\"}]}\n").unwrap();
         let repo = Repo::locate_with(&root, None).unwrap();
         let git = git_in(&root);
-        assert_eq!(
-            migrate_repo(&repo, Direction::Forward, &git).unwrap_err(),
-            MigrateError::PendingDetached {
-                path: pending.clone()
-            }
+        let err = migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap_err();
+        assert!(
+            matches!(err, MigrateError::PendingUnreadable { .. }),
+            "{err}"
         );
+        assert!(err.to_string().contains("rm "), "{err}");
         std::fs::write(&pending, "{\"format\":1,\"records\":[]}\n").unwrap();
-        migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
         assert!(gd.join("greengate/cluster-pending").is_file());
+    }
+
+    #[test]
+    fn a_reverse_that_stops_half_way_is_moved_forward_again() {
+        let root = scratch("half-reverse");
+        init(&root);
+        let gd = root.join(".git");
+        let git = git_in(&root);
+        std::fs::write(gd.join("amont-bypasses"), "amont-bypass-v1\n").unwrap();
+        git(None, &["config", "amont.timeout", "700"]).unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        // A reverse whose key move fails, after the state went back.
+        let failing = |dir: Option<&Path>, args: &[&str]| -> Result<Option<String>, String> {
+            if args.contains(&"--add") {
+                return Err("exit 255: could not lock config file".into());
+            }
+            git(dir, args)
+        };
+        assert!(migrate_repo(&repo, Direction::Reverse, &failing, NOW).is_err());
+        assert!(gd.join("amont-bypasses").is_file(), "the state went back");
+        assert!(!repo.marker().exists(), "no done-marker over 3.x state");
+        // Asked forward again: everything is under greengate's names.
+        std::fs::remove_file(repo.common.join(n::REVERSED_MARKER)).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        assert!(gd.join(n::BYPASS_LEDGER).is_file());
+        assert_eq!(get(&git, "greengate.timeout"), "700\n");
     }
 
     #[test]
@@ -1130,7 +1173,7 @@ mod tests {
         let repo = Repo::locate_with(&root, None).unwrap();
         let git = git_in(&root);
         assert!(matches!(
-            migrate_repo(&repo, Direction::Reverse, &git).unwrap_err(),
+            migrate_repo(&repo, Direction::Reverse, &git, NOW).unwrap_err(),
             MigrateError::HeldStore { .. }
         ));
     }

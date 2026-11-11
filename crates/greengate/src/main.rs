@@ -452,9 +452,11 @@ fn main() {
 /// runs on half-moved state.
 fn migrate_first() {
     let cwd = std::env::current_dir().unwrap_or_default();
-    if let Err(why) =
-        greengate_runtime::migrate::ensure(&cwd, &greengate_runtime::migrate::system_git)
-    {
+    if let Err(why) = greengate_runtime::migrate::ensure(
+        &cwd,
+        &greengate_runtime::migrate::system_git,
+        now_secs(),
+    ) {
         eprintln!(
             "{BIN}: {}",
             greengate_runtime::ui::sanitize(&why.to_string())
@@ -464,17 +466,30 @@ fn migrate_first() {
     }
 }
 
+/// The clock, read here and handed to the migration, which keeps no clock
+/// of its own.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
 /// What a migration that stopped says after its reason.
 const MIGRATE_HINT: &str = concat!(
-    "the move to greengate's names stopped; what it did not reach keeps its\n",
-    "old name. Run the command again, or `",
+    "the move to greengate's names stopped; what it did not reach keeps\n",
+    "its old name. Run the command again, or `",
     greengate_runtime::bin!(),
     " doctor` to list what is left."
 );
 
 /// `greengate migrate [--reverse] [--global]`.
 fn migrate_command(args: &[OsString]) -> Result<(), String> {
-    migrate_verb(args).map_err(|why| format!("{why}\n{BIN}: {MIGRATE_HINT}"))
+    migrate_verb(args).map_err(|why| {
+        format!(
+            "{BIN}: {}\n{BIN}: {MIGRATE_HINT}",
+            greengate_runtime::ui::sanitize(&why)
+        )
+    })
 }
 
 fn migrate_verb(args: &[OsString]) -> Result<(), String> {
@@ -487,8 +502,8 @@ fn migrate_verb(args: &[OsString]) -> Result<(), String> {
     if reverse {
         let mut moved = migrate::Moved::default();
         if let Some(repo) = &repo {
-            moved =
-                migrate::migrate_repo(repo, Direction::Reverse, git).map_err(|e| e.to_string())?;
+            moved = migrate::migrate_repo(repo, Direction::Reverse, git, now_secs())
+                .map_err(|e| e.to_string())?;
         } else if !global {
             return Err(
                 "not inside a git repository (`--global` moves the machine's keys alone)".into(),
@@ -530,7 +545,7 @@ fn migrate_verb(args: &[OsString]) -> Result<(), String> {
     if global {
         migrate::forget_global().map_err(|e| e.to_string())?;
     }
-    let moved = migrate::ensure(&cwd, git).map_err(|e| e.to_string())?;
+    let moved = migrate::ensure(&cwd, git, now_secs()).map_err(|e| e.to_string())?;
     if moved.state + moved.keys == 0 {
         eprintln!("nothing of greengate 3.x's to move here");
     } else {

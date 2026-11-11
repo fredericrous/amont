@@ -794,6 +794,30 @@ mod tests {
     use super::super::pending::tests::sample;
     use super::*;
 
+    #[test]
+    fn lists_live_skips_a_run_past_its_ttl_and_reads_the_owner_format() {
+        let dir = std::env::temp_dir().join(format!("greengate-lists-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: a scratch path; absent or left behind is harmless
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(super::super::PENDING_FILE);
+        let now = 1_800_000_000;
+        assert_eq!(lists_live(&file, now), Ok(false), "no file, no run");
+        let mut live = super::super::pending::tests::sample("wf-live");
+        live.submitted = now;
+        let mut gone = super::super::pending::tests::sample("wf-gone");
+        gone.submitted = now - TTL_SECS - EXPIRY_SLACK_SECS - 1;
+        std::fs::write(&file, super::super::pending::render_file(&[gone.clone()])).unwrap();
+        assert_eq!(
+            lists_live(&file, now),
+            Ok(false),
+            "a run past its TTL is not live"
+        );
+        std::fs::write(&file, super::super::pending::render_file(&[gone, live])).unwrap();
+        assert_eq!(lists_live(&file, now), Ok(true));
+        std::fs::write(&file, "not json").unwrap();
+        assert!(lists_live(&file, now).is_err());
+    }
+
     fn fixture(name: &str) -> String {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../greengate/tests/it/fixtures/argo");

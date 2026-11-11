@@ -35,8 +35,10 @@ use std::time::{Duration, Instant};
 use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
-pub(crate) mod detached;
-pub(crate) use detached::{collect, settled_lines, status_lines, stop_pending};
+mod detached;
+pub(crate) use detached::{
+    collect, lists_live, settled_lines, status_lines, stop_pending, PENDING_FILE,
+};
 pub use detached::{collect_command, detach, wanted, Ask, Detached};
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:

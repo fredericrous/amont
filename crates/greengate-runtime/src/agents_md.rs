@@ -409,39 +409,39 @@ mod tests {
 
     #[test]
     fn check_reports_not_present_for_a_missing_file() {
-        let missing_dir = std::env::temp_dir().join("greengate-agents-md-test-nonexistent-xyz");
-        let _ = std::fs::remove_file(&missing_dir); // best-effort: a scratch path; absent or left behind is harmless
+        let missing_file = std::env::temp_dir().join("greengate-agents-md-test-nonexistent-xyz");
+        let _ = std::fs::remove_file(&missing_file); // best-effort: a scratch path; absent or left behind is harmless
         assert_eq!(
-            check(&test_settings(), &missing_dir).unwrap(),
+            check(&test_settings(), &missing_file).unwrap(),
             CheckResult::NotPresent
         );
     }
 
     #[test]
     fn check_reports_matches_generated_after_a_write() {
-        let scratch_dir = std::env::temp_dir().join(format!(
+        let scratch_file = std::env::temp_dir().join(format!(
             "greengate-agents-md-test-{}-match",
             std::process::id()
         ));
-        std::fs::write(&scratch_dir, generate_block(&test_settings())).unwrap();
+        std::fs::write(&scratch_file, generate_block(&test_settings())).unwrap();
         assert_eq!(
-            check(&test_settings(), &scratch_dir).unwrap(),
+            check(&test_settings(), &scratch_file).unwrap(),
             CheckResult::MatchesGenerated
         );
-        let _ = std::fs::remove_file(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        let _ = std::fs::remove_file(&scratch_file); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn check_reports_drifted_for_a_stale_block() {
-        let scratch_dir = std::env::temp_dir().join(format!(
+        let scratch_file = std::env::temp_dir().join(format!(
             "greengate-agents-md-test-{}-drift",
             std::process::id()
         ));
-        std::fs::write(&scratch_dir, format!("{START}\nstale\n{END}\n")).unwrap();
+        std::fs::write(&scratch_file, format!("{START}\nstale\n{END}\n")).unwrap();
         assert_eq!(
-            check(&test_settings(), &scratch_dir).unwrap(),
+            check(&test_settings(), &scratch_file).unwrap(),
             CheckResult::Drifted
         );
-        let _ = std::fs::remove_file(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        let _ = std::fs::remove_file(&scratch_file); // best-effort: a scratch path; absent or left behind is harmless
     }
 }
