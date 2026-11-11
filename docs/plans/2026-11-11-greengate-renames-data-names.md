@@ -146,7 +146,7 @@ fleet's shims are re-baked.
   `relais/crates/relais/src/verify/heavy.rs` (config and markers only; the
   slots switch and `relais/crates/relais/Cargo.toml` move to the 4.0
   install window); released.
-- [ ] Phase 2 — greengate names, env, config and first-run migration:
+- [x] Phase 2 — greengate names, env, config and first-run migration:
   `amont/crates/greengate-runtime/src/names.rs`,
   `amont/crates/greengate-runtime/src/migrate.rs` (new),
   `amont/crates/greengate-runtime/src/config.rs`,
@@ -208,6 +208,34 @@ fleet's shims are re-baked.
   and greengate 4.0 installed together with no slot held), over keeping the
   `amont-slots` directory until the census: a lock directory cannot be read
   under two names, and the host keeps one queue.
+- 2026-11-11 (Phase 2) — the Kubernetes label and annotation keys
+  (`greengate.run`, `greengate.dev/gate`, `greengate.dev/tree`) moved with
+  the config keys, ahead of Phase 4: homelab selects on none of them. The
+  namespace, ServiceAccounts, secret, `managed-by: amont` and the Job and
+  Workflow name prefixes stay `amont` until the Phase 4 cutover. A 3.x
+  detached run left pending refuses the migration (4.0 cannot collect a
+  Workflow labelled `amont.run`) unless it is past its Workflow's TTL.
+- 2026-11-11 (Phase 2) — greenharness-slots shares the workspace version,
+  so its directory and variable rename ships as 4.0.0, a major; relais
+  pins it in the Phase 5 install window. Changing that later means a new
+  major of the crate and a relais release.
+- 2026-11-11 (Phase 2) — a reverse (`greengate migrate --reverse`, with
+  `--global` for the machine's keys) leaves a marker that every automatic
+  first run respects; only `greengate migrate` asked by name moves forward
+  again. A dry run, `restore`, `uninstall`, `--help`, `--version` and a
+  usage error never migrate.
+- 2026-11-11 (Phase 2) — incident: a test that started the 4.0 binary
+  with no working directory migrated the live amont repository's state
+  and keys (shared common dir) and wrote markers under the real
+  `~/.config` (02:17, 03:25, 05:09). Repaired by hand each time; the test
+  build now forces `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` into
+  `target/test-sandbox` (`.cargo/config.toml`), every hand-built start
+  goes through `sandbox_env`, and a guard test enforces it.
+- 2026-11-11 (Phase 2) — carried into Phase 3: the `--help` text still names
+  `amont.conf`/`amont.pack` (renamed with the tracked files); the refusal
+  and the hint both say "run the command again" (tui); `doctor` could say
+  a reverse is holding (backend); the reverse's lock binding (lang:rust,
+  optional).
 
 ## Verification
 
@@ -218,6 +246,32 @@ fleet's shims are re-baked.
   headers rewritten, work restored, a second run is a no-op; a migration
   interrupted halfway resumes; `greengate doctor` lists a leftover
   `AMONT_*` variable; the names test fails on a planted old literal.
+  Observed, before the push:
+  - 3.x repository with a ledger, a key and a held store → `list` refused
+    naming `restore`, nothing moved; `restore` takes the 3.x store; the next
+    `list` moves the ledger (header rewritten) and the key, writes the
+    marker → `a_3x_repository_is_moved_once_and_a_reverse_holds` passes.
+  - Second run no-op, interrupted move resumes, both names refused, linked
+    worktrees walked, interleaved and partly copied multi-valued keys kept,
+    a git failure keeps the old key, a half reverse recovered by `migrate`,
+    a live 3.x pending run refused and an expired one let through → the
+    `migrate::tests` unit tests pass (15).
+  - `doctor` with `AMONT_TIMEOUT` set → exit 1 naming `GREENGATE_TIMEOUT`
+    → `doctor_names_a_3x_variable_left_set` passes; a global reverse holds
+    until `migrate --global` → `a_global_reverse_holds_until_migrate_global`
+    passes; `list --help` / `list --bogus` / `land --dry-run` move nothing →
+    `asking_for_help_moves_nothing`, `a_dry_run_moves_nothing` pass; a
+    refusal's `rm <path>` line pastes → `a_refusal_keeps_its_lines_and_the_rm_line_pastes` passes.
+  - A planted `AMONT_X`, `amont.x`, `amont-x`, `amont-{x}` or `amont:start`
+    literal → counted → `each_planted_data_name_is_counted` passes; the
+    tree holds old data names only where `ALLOWED_DATA` pins them.
+  - Full workspace suite on the tree rebased onto 3.1.0 → passes (1179 s);
+    `cargo clippy --workspace --all-targets -D warnings` clean; after every
+    run: no `~/.config/greengate`, no marker and no `greengate.*` key in the
+    live repository.
+  - First-run cost: the done-marker `stat` on later runs; on the first run
+    the config files are read before any git starts, so the spawn budget
+    test (≤ 27 git spawns per small commit) still passes.
 - Phase 3: `greengate migrate` on a repository with `amont.conf` and old
   markers stages `greengate.conf` and new markers, trust kept; 4.0 reads
   an unswept repository's `amont.conf`; `greengate-fleet fix --apply
@@ -236,5 +290,14 @@ fleet's shims are re-baked.
 A day after the sweep: every repository's hook runs on greengate names
 (0 "not found", 0 changed verdicts), greenpiste and relais work, the host
 has one slot queue, and no held store was lost.
+
+
+## Implementation review
+
+- Phase 2, three rounds then two deltas: implementation-review approve (round 1: test spawns reached the live config, swallowed errors, value loss, weak names; all fixed) ·
+  backend approve (resumed-copy value loss, a half reverse, the reverse race, the pending TTL; fixed) · lang:rust approve (interleaved keys, typed errors, bounded lock via greenharness-slots, injected clock; one optional nit kept) ·
+  unix approve (`--help` and dry runs migrated, read-only HOME; fixed) · tui approve-with-changes (messages, 80 columns, sanitized line breaks; one wording item carried to Phase 3) ·
+  platform approve (homelab selects on no old label) · architect approve (names/migrate seam; pending file read through its owner).
+  Kept as deliberate: `sandbox_env(&mut Command)` mirrors `Command`'s builder; `slots`/`doctor` data on stdout.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
