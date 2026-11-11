@@ -1081,6 +1081,10 @@ fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
         .find(|l| l["name"] == "one")
         .expect("the first gate's own line");
     assert_eq!(admitted["pid"], handed[0]["pid"], "{lines:?}");
+    // The handed line names the sizing the slot was taken under.
+    assert!(handed[0]["cap"].is_number(), "{lines:?}");
+    assert_eq!(admitted["cap"], handed[0]["cap"], "{lines:?}");
+    assert_eq!(admitted["cores"], handed[0]["cores"], "{lines:?}");
     let _ = outside.kill(); // best-effort: it sleeps for 10 s
     let _ = outside.wait(); // best-effort: reap
     let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir

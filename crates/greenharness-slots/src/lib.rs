@@ -650,7 +650,7 @@ impl Waiter {
     /// The probe [`Waiter::poll`] decides with: the load and clock now, and
     /// the cores of the machine this waiter was sized for, so an override of
     /// the core count reaches the load test as well as the width.
-    pub fn probe(&self) -> Probe {
+    pub(crate) fn probe(&self) -> Probe {
         Probe {
             cores: self.machine.cores,
             ..Probe::now()

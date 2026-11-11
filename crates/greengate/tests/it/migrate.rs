@@ -221,14 +221,33 @@ fn doctor_names_the_host_sizing_and_its_source() {
         .expect("run doctor");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("host slots: 4 cores (GREENGATE_HOST_CORES)"),
+        stderr.contains("host cores: 4, ") && stderr.contains("(GREENGATE_HOST_CORES)"),
         "{stderr}"
     );
     assert!(
-        stderr.contains("slots 2 (GREENGATE_HOST_SLOTS)"),
+        stderr.contains("host slots: 2 (GREENGATE_HOST_SLOTS)"),
         "{stderr}"
     );
+    assert!(stderr.lines().all(|l| l.len() <= 80), "{stderr}");
     assert!(!String::from_utf8_lossy(&out.stdout).contains("host slots"));
+}
+
+/// A host with no `greengate.*` key gets no warning: git's exit 1 is no rows.
+#[test]
+fn doctor_says_nothing_about_git_on_a_host_with_no_keys() {
+    let repo = Repo::new();
+    let out = crate::common::amont_cmd()
+        .arg("doctor")
+        .current_dir(&repo.dir)
+        .env("GIT_CONFIG_GLOBAL", repo.path("empty-gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GREENGATE_HOST_CORES")
+        .env_remove("GREENGATE_HOST_SLOTS")
+        .output()
+        .expect("run doctor");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("host slots: auto (detected)"), "{stderr}");
+    assert!(!stderr.contains("warning"), "{stderr}");
 }
 
 #[test]

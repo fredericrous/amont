@@ -44,7 +44,8 @@ the one-minute load shows only about 15% of it.
 
 A waiter that is not admitted says why, after whom it waits behind:
 `(2 ahead)`, `(slots full 3/3)`, `(load 31.0 >= 6 cores)` or
-`(one new holder per minute)`, and ends with `see greengate slots`.
+`(one new holder per minute)`. The first such line is followed, once, by
+`see: greengate slots`.
 
 ## Cores
 
@@ -69,11 +70,18 @@ fewer cores.
 `greengate slots` names the threads only where they differ from the cores,
 and tags a count that plain detection did not set, inside 80 columns
 (`6 cores, 12 threads`, `4 cores, 12 threads (env)`, `(git)`, `(logical)`,
-`(affinity)`). `--json` carries `cores` and `cores_source`.
-`greengate doctor` prints the full sources on stderr, for example
-`host slots: 4 cores (GREENGATE_HOST_CORES), 12 threads; slots auto
-(detected)`. An invalid value is a warning that names the fix for its
-source (`unset GREENGATE_HOST_CORES`, or the `git config` command).
+`(affinity)`). `--json` carries `cores` and `cores_source`, whose value is
+a stable token: `env`, `global`, `system`, `detected`, `logical_fallback` or
+`limited_by_affinity`. `greengate doctor` prints the full sources on
+stderr, one line per key:
+
+```text
+host cores: 4, 12 threads (GREENGATE_HOST_CORES)
+host slots: auto (detected)
+```
+
+An invalid value is a warning that names the fix for its source
+(`unset GREENGATE_HOST_CORES`, or the `git config` command).
 
 ## Who holds a slot
 

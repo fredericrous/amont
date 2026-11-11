@@ -79,11 +79,9 @@ pub fn host_sizing(settings: &crate::config::Settings) -> greenharness_slots::ho
         greenharness_slots::detect_cores(),
     );
     if rows.is_none() {
-        sizing.warnings.push(
-            "git cannot list config with scopes, so the host keys are not read; using the \
-             detected sizing\n  Fix: check that git runs (git config --global --list)"
-                .to_string(),
-        );
+        sizing
+            .warnings
+            .push(greenharness_slots::host::NO_SCOPES_WARNING.to_string());
     }
     for warning in &sizing.warnings {
         say_once(warning);
@@ -202,6 +200,9 @@ struct Current {
     /// (`greenharness_slots::parallelism`), held or unqueued; `None` when slots are
     /// off, unsupported, or nested under a holder whose bounds it inherits.
     jobs: Option<u32>,
+    /// The (cap, cores) this check was sized for, carried to a handed slot's
+    /// `waits.jsonl` line.
+    sized: Option<(u32, u32)>,
     /// How this check waits for a slot.
     slot_wait: SlotWait,
 }
@@ -229,6 +230,7 @@ enum SlotWait {
 struct Parked {
     lease: greenharness_slots::Lease,
     jobs: Option<u32>,
+    sized: Option<(u32, u32)>,
 }
 
 /// The slot parked between gates. Process-wide, because the next gate may
@@ -341,7 +343,7 @@ impl Drop for CheckGuard {
         let finished = CURRENT.with(RefCell::take);
         if let Some(lease) = finished.held {
             if parking() {
-                park(lease, finished.jobs);
+                park(lease, finished.jobs, finished.sized);
             }
         }
     }
@@ -349,13 +351,13 @@ impl Drop for CheckGuard {
 
 /// Keep `lease` for the next heavy check of this pre-push, its record
 /// renamed so no waiter's line names the gate that finished.
-fn park(lease: greenharness_slots::Lease, jobs: Option<u32>) {
+fn park(lease: greenharness_slots::Lease, jobs: Option<u32>, sized: Option<(u32, u32)>) {
     if let Err(error) = lease.rename(&between_gates()) {
         crate::hooks::common::say(&format!(
             "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
-    let earlier = parked().replace(Parked { lease, jobs });
+    let earlier = parked().replace(Parked { lease, jobs, sized });
     drop(earlier);
 }
 
@@ -547,6 +549,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             c.held = held;
             c.settled = true;
             c.jobs = Some(jobs);
+            c.sized = Some((slot_cap, machine.cores));
             if defer {
                 c.deferred = Some(waited);
             }
@@ -564,18 +567,19 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
 /// The next heavy check takes the slot the previous one parked: renamed to
 /// itself, recorded as a wait of nothing, its width applied as a grant's is.
 fn take_handed(handed: Parked, name: &str) -> bool {
-    let Parked { lease, jobs } = handed;
+    let Parked { lease, jobs, sized } = handed;
     if let Err(error) = lease.rename(&holder_for(name)) {
         crate::hooks::common::say(&format!(
             "  host slot kept, but `{BIN} slots` may still name the previous check: {error}"
         ));
     }
-    record_acquisition(name, jobs, None, Duration::ZERO, "handed");
+    record_acquisition(name, jobs, sized, Duration::ZERO, "handed");
     CURRENT.with(|current| {
         let mut current = current.borrow_mut();
         current.held = Some(lease);
         current.settled = true;
         current.jobs = jobs;
+        current.sized = sized;
     });
     true
 }
@@ -657,6 +661,7 @@ fn wait_for_slot(
                 if !said && (!queue.holders.is_empty() || queue.unknown > 0) {
                     said = true;
                     crate::hooks::common::say(&format!("  {}", behind(&queue)));
+                    crate::hooks::common::say(&format!("  see: {BIN} slots"));
                 }
             }
             Err(e) => return Err(Reason::Io(e.to_string())),
@@ -679,7 +684,7 @@ pub fn behind(queue: &greenharness_slots::Queue) -> String {
         .reason
         .map_or(String::new(), |r| format!(" ({})", r.describe()));
     format!(
-        "queued behind {}{reason} · {} waiting · see {BIN} slots",
+        "queued behind {}{reason} · {} waiting",
         who.join(", "),
         queue.waiting.max(1)
     )
@@ -825,7 +830,7 @@ mod tests {
                 panic!("the empty directory grants the slot");
             };
             assert!(dir.join("holders/slot-0.who").exists());
-            park(lease, Some(2));
+            park(lease, Some(2), Some((3, 6)));
             assert!(dir.join("holders/slot-0.who").exists());
         };
         early();
