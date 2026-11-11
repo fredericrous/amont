@@ -77,7 +77,7 @@ fn a_second_command_queues_behind_the_first_and_names_it() {
         &["slot", "run", "--", "sh", "-c", "sleep 3; exit 3"],
     );
     let json = until_held(&slots);
-    assert!(json.contains("\"tool\":\"amont slot run\""), "{json}");
+    assert!(json.contains("\"tool\":\"greengate slot run\""), "{json}");
     assert!(json.contains("sleep 3"), "{json}");
     let second = amont(
         &slots,
@@ -88,7 +88,7 @@ fn a_second_command_queues_behind_the_first_and_names_it() {
     let out = text(&second);
     assert_eq!(second.status.code(), Some(0), "{out}");
     assert!(
-        out.contains("queued behind amont slot run: sh -c sleep 3"),
+        out.contains("queued behind greengate slot run: sh -c sleep 3"),
         "{out}"
     );
     assert!(out.contains("second-ran"), "{out}");

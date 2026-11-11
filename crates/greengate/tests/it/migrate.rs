@@ -6,46 +6,50 @@
 
 use crate::common::Repo;
 
-fn config(r: &Repo, key: &str) -> String {
-    String::from_utf8_lossy(&r.git(&["config", "--get-all", key]).stdout).into_owned()
+fn config(repo: &Repo, key: &str) -> String {
+    String::from_utf8_lossy(&repo.git(&["config", "--get-all", key]).stdout).into_owned()
 }
 
 #[test]
 fn a_3x_repository_is_moved_once_and_a_reverse_holds() {
-    let r = Repo::new();
-    std::fs::write(r.path(".git/amont-bypasses"), "amont-bypass-v1\n1 abc x\n").unwrap();
-    r.git(&["config", "amont.timeout", "700"]);
-    std::fs::create_dir_all(r.path(".git/amont-held")).unwrap();
+    let repo = Repo::new();
+    std::fs::write(
+        repo.path(".git/amont-bypasses"),
+        "amont-bypass-v1\n1 abc x\n",
+    )
+    .unwrap();
+    repo.git(&["config", "amont.timeout", "700"]);
+    std::fs::create_dir_all(repo.path(".git/amont-held")).unwrap();
 
     // 3.x's parked changes: refused, nothing moved, the way out named.
-    let refused = r.run(&["list"]);
+    let refused = repo.run(&["list"]);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(refused.stderr.contains("amont-held"), "{}", refused.stderr);
     assert!(refused.stderr.contains("restore"), "{}", refused.stderr);
-    assert!(r.path(".git/amont-bypasses").is_file());
-    assert_eq!(config(&r, "amont.timeout"), "700\n");
+    assert!(repo.path(".git/amont-bypasses").is_file());
+    assert_eq!(config(&repo, "amont.timeout"), "700\n");
 
     // `restore` is not held back by the migration, and finds the old store.
-    let restored = r.run(&["restore"]);
+    let restored = repo.run(&["restore"]);
     assert_eq!(restored.code, 0, "{}{}", restored.stdout, restored.stderr);
     assert!(
-        !r.path(".git/amont-held").exists(),
+        !repo.path(".git/amont-held").exists(),
         "restore took the 3.x store"
     );
 
     // The first command moves everything, once.
-    let listed = r.run(&["list"]);
+    let listed = repo.run(&["list"]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
-        std::fs::read_to_string(r.path(".git/greengate-bypasses")).unwrap(),
+        std::fs::read_to_string(repo.path(".git/greengate-bypasses")).unwrap(),
         "greengate-bypass-v1\n1 abc x\n"
     );
-    assert!(!r.path(".git/amont-bypasses").exists());
-    assert_eq!(config(&r, "greengate.timeout"), "700\n");
-    assert_eq!(config(&r, "amont.timeout"), "");
-    assert!(r.path(".git/greengate-migrated").is_file());
+    assert!(!repo.path(".git/amont-bypasses").exists());
+    assert_eq!(config(&repo, "greengate.timeout"), "700\n");
+    assert_eq!(config(&repo, "amont.timeout"), "");
+    assert!(repo.path(".git/greengate-migrated").is_file());
 
-    let doctor = r.run(&["doctor"]);
+    let doctor = repo.run(&["doctor"]);
     assert!(
         !doctor.stdout.contains("state:") && !doctor.stdout.contains("local config:"),
         "{}",
@@ -53,36 +57,36 @@ fn a_3x_repository_is_moved_once_and_a_reverse_holds() {
     );
 
     // Back to 3.x's names, and the next 4.0 command leaves them.
-    let reversed = r.run(&["migrate", "--reverse"]);
+    let reversed = repo.run(&["migrate", "--reverse"]);
     assert_eq!(reversed.code, 0, "{}", reversed.stderr);
     assert_eq!(
-        std::fs::read_to_string(r.path(".git/amont-bypasses")).unwrap(),
+        std::fs::read_to_string(repo.path(".git/amont-bypasses")).unwrap(),
         "amont-bypass-v1\n1 abc x\n"
     );
-    assert_eq!(config(&r, "amont.timeout"), "700\n");
-    let again = r.run(&["list"]);
+    assert_eq!(config(&repo, "amont.timeout"), "700\n");
+    let again = repo.run(&["list"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
     assert!(
-        r.path(".git/amont-bypasses").is_file(),
+        repo.path(".git/amont-bypasses").is_file(),
         "a reverse is not undone"
     );
 
     // Until `migrate` is asked for by name.
-    let forward = r.run(&["migrate"]);
+    let forward = repo.run(&["migrate"]);
     assert_eq!(forward.code, 0, "{}", forward.stderr);
     assert!(forward.stderr.contains("moved"), "{}", forward.stderr);
-    assert!(r.path(".git/greengate-bypasses").is_file());
+    assert!(repo.path(".git/greengate-bypasses").is_file());
 }
 
 #[test]
 fn a_dry_run_moves_nothing() {
-    let r = Repo::new();
-    std::fs::write(r.path(".git/amont-bypasses"), "amont-bypass-v1\n").unwrap();
-    let out = r.run(&["land", "--dry-run"]);
+    let repo = Repo::new();
+    std::fs::write(repo.path(".git/amont-bypasses"), "amont-bypass-v1\n").unwrap();
+    let out = repo.run(&["land", "--dry-run"]);
     assert!(
-        r.path(".git/amont-bypasses").is_file(),
+        repo.path(".git/amont-bypasses").is_file(),
         "a dry run promised to change nothing: {}",
         out.stderr
     );
-    assert!(!r.path(".git/greengate-migrated").exists());
+    assert!(!repo.path(".git/greengate-migrated").exists());
 }

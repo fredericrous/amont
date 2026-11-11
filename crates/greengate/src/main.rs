@@ -779,7 +779,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
                 println!("{}", greengate_runtime::ui::sanitize(line));
             }
             if found.is_empty() {
-                println!("no greengate 3.x names left here");
+                eprintln!("no greengate 3.x names left here");
             }
             i32::from(!found.is_empty())
         }

@@ -364,8 +364,13 @@ pub fn migrate_repo(
         repo.common.join("config"),
         repo.common.join("config.worktree"),
     ];
-    if may_hold(&local_files, direction) {
-        moved.keys += move_keys(&Scope::Local(repo.common.clone()), direction, git)?;
+    match may_hold(&local_files, direction) {
+        Some(true) => moved.keys += move_keys(&Scope::Local(repo.common.clone()), direction, git)?,
+        Some(false) => {}
+        // A config git cannot read either: the command that follows says
+        // so in its own words. The keys wait, and no marker is written, so
+        // the next run tries again.
+        None => return Ok(moved),
     }
     let reversed = repo.common.join(n::REVERSED_MARKER);
     match direction {
@@ -614,7 +619,11 @@ fn ensure_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
     if marker.exists() {
         return Ok(Moved::default());
     }
-    let holds = may_hold(&global_config_files(), Direction::Forward);
+    let Some(holds) = may_hold(&global_config_files(), Direction::Forward) else {
+        // An unreadable global config: git cannot read it either. The keys
+        // wait for a run that can.
+        return Ok(Moved::default());
+    };
     if std::fs::create_dir_all(&dir).is_err() && !holds {
         return Ok(Moved::default());
     }
@@ -654,28 +663,34 @@ pub fn forget_global() -> Result<(), MigrateError> {
 
 /// Whether any of `files` names a section of the namespace `direction`
 /// moves from: `[amont]`, `[amont "…"]` (forward) or the greengate ones
-/// (reverse), in any case. A file that cannot be read may hold anything.
+/// (reverse), in any case: `None` when a file exists but cannot be read.
 /// An `include.path` is read by git and not here: a key reached only
 /// through an include is left for `greengate doctor` to name.
-fn may_hold(files: &[PathBuf], direction: Direction) -> bool {
+fn may_hold(files: &[PathBuf], direction: Direction) -> Option<bool> {
     let section = match direction {
         Direction::Forward => "[amont",
         Direction::Reverse => "[greengate",
     };
-    files.iter().any(|f| match std::fs::read(f) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes)
-            .to_ascii_lowercase()
-            .lines()
-            .any(|l| {
-                let l = l.trim_start();
-                l.starts_with(section)
-                    && matches!(
-                        l[section.len()..].chars().next(),
-                        Some(']' | ' ' | '"' | '.')
-                    )
-            }),
-        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-    })
+    let mut holds = false;
+    for file in files {
+        let found = match std::fs::read(file) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes)
+                .to_ascii_lowercase()
+                .lines()
+                .any(|line| {
+                    let line = line.trim_start();
+                    line.starts_with(section)
+                        && matches!(
+                            line[section.len()..].chars().next(),
+                            Some(']' | ' ' | '"' | '.')
+                        )
+                }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return None,
+        };
+        holds |= found;
+    }
+    Some(holds)
 }
 
 /// The files `git config --global` reads: `$GIT_CONFIG_GLOBAL` when set,
@@ -1082,22 +1097,26 @@ mod tests {
         let root = scratch("may-hold");
         let config_file = root.join("config");
         std::fs::write(&config_file, "[core]\n\tbare = false\n[amontx]\n\ta = 1\n").unwrap();
-        assert!(!may_hold(
-            std::slice::from_ref(&config_file),
-            Direction::Forward
-        ));
+        assert_eq!(
+            may_hold(std::slice::from_ref(&config_file), Direction::Forward),
+            Some(false)
+        );
         for section in ["[amont]", "[Amont \"severity\"]", "  [amont.cluster]"] {
             std::fs::write(&config_file, format!("[core]\n{section}\n\tx = 1\n")).unwrap();
-            assert!(
+            assert_eq!(
                 may_hold(std::slice::from_ref(&config_file), Direction::Forward),
+                Some(true),
                 "{section}"
             );
         }
-        assert!(!may_hold(
-            std::slice::from_ref(&config_file),
-            Direction::Reverse
-        ));
-        assert!(!may_hold(&[root.join("absent")], Direction::Forward));
+        assert_eq!(
+            may_hold(std::slice::from_ref(&config_file), Direction::Reverse),
+            Some(false)
+        );
+        assert_eq!(
+            may_hold(&[root.join("absent")], Direction::Forward),
+            Some(false)
+        );
     }
 
     #[test]
