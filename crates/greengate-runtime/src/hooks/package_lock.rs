@@ -107,7 +107,7 @@ pub fn run(settings: &crate::config::Settings, _args: &[std::ffi::OsString]) -> 
         "Run {} and stage the lockfile. To stop this blocking, {}; \
          to bypass once, {}",
         hl("npm install"),
-        hl("git config amont.severity.package-lock warn"),
+        hl("git config greengate.severity.package-lock warn"),
         hl("git -c hook.skip=package-lock commit")
     ));
     Outcome::Failed

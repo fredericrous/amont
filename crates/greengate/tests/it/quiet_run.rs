@@ -3,7 +3,7 @@
 //! check's own messages, the failure blocks in full and the log's path.
 //!
 //! The tests run the binary with piped stdio, which is how an agent runs it,
-//! so `amont.quiet auto` is on unless a test says otherwise.
+//! so `greengate.quiet auto` is on unless a test says otherwise.
 #![cfg(unix)]
 
 use crate::common;
@@ -74,7 +74,7 @@ fn repo_with(severity: &str, body: &str) -> Repo {
     // The harness pins `never` so the rest of the suite sees today's output;
     // these tests are about the real default, `auto`, which a piped run (an
     // agent) resolves to quiet.
-    r.git(&["config", "amont.quiet", "auto"]);
+    r.git(&["config", "greengate.quiet", "auto"]);
     script(&r, "probe.sh", body);
     declare(&r, severity, "probe.sh");
     r.stage("a.txt", "a\n");
@@ -133,7 +133,7 @@ fn raw_keeps_the_tools_own_output() {
 #[test]
 fn quiet_never_keeps_the_tools_own_output() {
     let r = repo_with("block", CHATTY_PASS);
-    r.git(&["config", "amont.quiet", "never"]);
+    r.git(&["config", "greengate.quiet", "never"]);
     let (_, stdout, _) = run(&r, &["probe"], &[]);
     assert!(stdout.contains("Compiling crate-199"), "{stdout}");
 }
@@ -165,7 +165,7 @@ fn a_warning_check_shows_its_failure_and_does_not_block() {
 #[test]
 fn quiet_captures_even_with_progress_off() {
     let r = repo_with("block", CHATTY_PASS);
-    r.git(&["config", "amont.progress", "false"]);
+    r.git(&["config", "greengate.progress", "false"]);
     let (code, stdout, _) = run(&r, &["probe", "--quiet"], &[]);
     assert_eq!(code, 0);
     assert_eq!(stdout.lines().count(), 1, "{stdout}");
@@ -222,7 +222,7 @@ fn a_long_run_names_its_log_after_five_seconds() {
 #[test]
 fn a_check_whose_tool_is_missing_says_so_and_does_not_block() {
     let r = Repo::new();
-    r.git(&["config", "amont.quiet", "auto"]);
+    r.git(&["config", "greengate.quiet", "auto"]);
     declare(&r, "block", "no-such-tool.sh");
     r.stage("a.txt", "a\n");
     let (code, stdout, stderr) = run(&r, &["probe"], &[]);
@@ -243,7 +243,7 @@ fn in_ci_a_failure_whose_log_was_not_written_prints_the_excerpt() {
     let (code, stdout, _) = run(
         &r,
         &["probe"],
-        &[("CI", "true"), ("AMONT_TEST_LOG_FAIL_AFTER", "40")],
+        &[("CI", "true"), ("GREENGATE_TEST_LOG_FAIL_AFTER", "40")],
     );
     assert_eq!(code, 1, "{stdout}");
     assert!(
@@ -270,7 +270,7 @@ fn a_quiet_run_leaves_an_ended_entry_with_its_result() {
     assert_eq!(entries.len(), 1, "{entries:?}");
     let e = &entries[0];
     for must in [
-        "\"tool\":\"amont\"",
+        "\"tool\":\"greengate\"",
         "\"session\":\"s-test\"",
         "\"check\":\"probe\"",
         "\"exit\":101",

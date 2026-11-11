@@ -15,7 +15,7 @@ use common::Repo;
 const OFFENDING: &str = "function f() {\n  debugger;\n}\n";
 
 fn ledger(repo: &Repo) -> String {
-    std::fs::read_to_string(repo.path(".git/amont-downgrades")).unwrap_or_default()
+    std::fs::read_to_string(repo.path(".git/greengate-downgrades")).unwrap_or_default()
 }
 
 /// Event lines, header excluded.
@@ -37,7 +37,7 @@ fn seeded() -> Repo {
 }
 
 fn warn_the_stage(repo: &Repo) {
-    repo.git(&["config", "amont.severity.pre-commit", "warn"]);
+    repo.git(&["config", "greengate.severity.pre-commit", "warn"]);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn repeated_attempts_at_one_commit_share_a_commit_oid() {
 fn the_off_switch_stops_the_counting() {
     let repo = seeded();
     warn_the_stage(&repo);
-    repo.git(&["config", "amont.recordDowngrades", "false"]);
+    repo.git(&["config", "greengate.recordDowngrades", "false"]);
     repo.stage("app.js", OFFENDING);
 
     let run = repo.hook("pre-commit", &[]);
@@ -145,7 +145,7 @@ fn uninstall_takes_the_ledger_with_it() {
 
     let run = repo.run(&["uninstall"]);
     assert!(
-        !repo.path(".git/amont-downgrades").exists(),
+        !repo.path(".git/greengate-downgrades").exists(),
         "uninstall left the ledger behind: {}",
         run.output()
     );

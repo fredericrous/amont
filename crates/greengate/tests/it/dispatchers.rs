@@ -498,7 +498,7 @@ fn list_json_reflects_severity_override() {
     r.stage("Cargo.toml", "[package]\nname=\"t\"\n");
     r.stage("src/main.rs", "fn main() {}\n");
     r.commit("feat: a rust repo");
-    r.git(&["config", "amont.severity.pre-commit-clippy", "warn"]);
+    r.git(&["config", "greengate.severity.pre-commit-clippy", "warn"]);
 
     let v = list_json(&r, &[]);
     let clippy = find_check(&v, "pre-commit-clippy");

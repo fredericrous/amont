@@ -676,7 +676,7 @@ jobs:
           # useless as proof that anything ran. This also exercises the config
           # read itself on the one platform where its `git config` calls have
           # never been tried.
-          git config amont.commit.gitmoji prefix
+          git config greengate.commit.gitmoji prefix
 
           echo "hello" > a.txt && git add a.txt
           git commit -m "feat: a windows commit through the rust hooks"
@@ -700,7 +700,7 @@ jobs:
           # And the settings are readable through the CLI here too — `amont
           # setup` with no terminal must print the keys rather than hang or
           # fail, which is the path a Windows provisioning script would take.
-          "$BIN" setup | grep -q "amont.commit.gitmoji" \
+          "$BIN" setup | grep -q "greengate.commit.gitmoji" \
             || { echo "::error::greengate setup printed no keys"; exit 1; }
           echo "windows end-to-end OK"
 

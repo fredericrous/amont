@@ -267,7 +267,7 @@ pub fn rows(text: &str) -> Result<Vec<String>, String> {
             // A pack carries CHECKS. `tool`, `severity`, `skip` and `set` are
             // policy about the repository installing it, and
             // docs/custom-checks.md ("What a repository cannot do") keeps those
-            // local on purpose — a `set` line reaching `amont.fix` would let a
+            // local on purpose — a `set` line reaching `greengate.fix` would let a
             // third party turn on rewriting somebody's working tree.
             Line::Tool(_) | Line::Policy { .. } | Line::Tree(_) => {
                 return Err(format!(
@@ -458,7 +458,7 @@ mod tests {
     /// arm, with the parser's own reason rather than a guess at one.
     #[test]
     fn a_policy_line_the_parser_rejects_is_still_refused() {
-        let text = "pre-commit  ok  *  block  true\nset  amont.fix  true\n";
+        let text = "pre-commit  ok  *  block  true\nset  greengate.fix  true\n";
         let err = rows(text).unwrap_err();
         assert!(err.contains("not a policy-settable key"), "{err}");
     }

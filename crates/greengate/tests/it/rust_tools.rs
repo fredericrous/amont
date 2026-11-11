@@ -58,7 +58,7 @@ fn a_repair_does_not_stage_an_unrelated_unformatted_file() {
         return;
     }
     let r = Repo::new();
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     // A clean, committed baseline for both files.
     crate_files(&r, "mod other;\nfn main() {}\n");
     r.stage("src/other.rs", "pub fn q() {}\n");
@@ -243,7 +243,7 @@ fn each_ref_in_a_multi_ref_push_is_tested_against_its_own_tip() {
         return;
     }
     let r = Repo::new();
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
     r.stage("README.md", "start\n");
     r.commit("chore: base");
     let base = head(&r);

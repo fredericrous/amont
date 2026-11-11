@@ -65,7 +65,7 @@ human table, so its field names are a contract rather than an implementation
 detail. Every document it prints declares which contract it is:
 
 ```json
-{"format": "amont-list-v1", "stage_filter": null, "pushed": false, "checks": [...]}
+{"format": "greengate-list-v1", "stage_filter": null, "pushed": false, "checks": [...]}
 ```
 
 Assert that `format` before reading anything else, the same way this tool

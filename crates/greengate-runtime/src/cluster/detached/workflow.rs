@@ -20,7 +20,7 @@ pub(super) const PRIORITY_CLASS: &str = "gate-detached";
 /// The read-only cache of detached pods: one writer at a time, because the
 /// `gate-detached` quota allows one pod.
 const CACHE_CLAIM: &str = "gate-cache-detached";
-/// The Secret holding the `amont-bot` read token, mounted on `fetch` only.
+/// The Secret holding the `greengate-bot` read token, mounted on `fetch` only.
 const TOKEN_SECRET: &str = "amont-bot-read-token";
 const TOKEN_DIR: &str = "/run/secrets/forgejo";
 const EXECUTOR_ACCOUNT: &str = "amont-gate-executor";
@@ -29,7 +29,7 @@ const AMBIENT_KEY: &str = "istio.io/dataplane-mode";
 const AMBIENT_VALUE: &str = "ambient";
 /// Finished Workflows, and their pods with their emptyDirs, go after 48 h.
 pub(super) const TTL_SECS: u64 = 172_800;
-/// Slack on top of a gate's `amont.timeout`, as the Job lane has it.
+/// Slack on top of a gate's `greengate.timeout`, as the Job lane has it.
 const GATE_SLACK_SECS: u64 = 60;
 /// Slack on the Workflow's deadline for the time a pod waits for the one
 /// detached slot between gates.
@@ -144,7 +144,7 @@ fn template(plan: &Plan, gate: &Gate) -> String {
     }
     format!(
         "{{\"name\":{name},\"activeDeadlineSeconds\":{deadline},\
-         \"metadata\":{{\"annotations\":{{\"amont.dev/gate\":{gate_id}}}}},\
+         \"metadata\":{{\"annotations\":{{\"greengate.dev/gate\":{gate_id}}}}},\
          \"initContainers\":[{inits}],\
          \"container\":{{\"image\":{image},\"command\":{command},\"securityContext\":{SECURITY},{work_mounts}}}}}",
         name = json_string(&template_name(&gate.task)),
@@ -187,7 +187,7 @@ pub(super) fn workflow_json(plan: &Plan) -> String {
         "{{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\
          \"metadata\":{{\"name\":{name},\
          \"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_key}:{label}}},\
-         \"annotations\":{{\"amont.dev/tree\":{tree}}}}},\
+         \"annotations\":{{\"greengate.dev/tree\":{tree}}}}},\
          \"spec\":{{\"entrypoint\":\"gates\",\"serviceAccountName\":\"default\",\
          \"automountServiceAccountToken\":false,\
          \"executor\":{{\"serviceAccountName\":{executor}}},\
@@ -425,7 +425,7 @@ mod tests {
             "\"type\":\"RuntimeDefault\"",
             "\"claimName\":\"gate-cache-detached\"",
             "\"secretName\":\"amont-bot-read-token\"",
-            "\"amont.run\":\"7-00000000000000aa-0\"",
+            "\"greengate.run\":\"7-00000000000000aa-0\"",
             "\"value\":\"git\"",
             "\"memory\":\"3840Mi\"",
             "\"memory\":\"512Mi\"",
@@ -443,7 +443,7 @@ mod tests {
         // the pods carry the run label as well as the Workflow
         let pod_labels = spec.get("podMetadata").and_then(|p| p.get("labels"));
         assert_eq!(
-            text(pod_labels, "amont.run"),
+            text(pod_labels, "greengate.run"),
             Some(record.label.as_str()),
             "{json}"
         );

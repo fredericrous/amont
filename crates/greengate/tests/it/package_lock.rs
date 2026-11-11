@@ -74,7 +74,7 @@ fn a_forgotten_lockfile_blocks_without_asking() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        text.contains("amont.severity.package-lock"),
+        text.contains("greengate.severity.package-lock"),
         "the message must offer the one-time replacement for answering y: {text}"
     );
     assert!(text.contains("hook.skip=package-lock"), "{text}");
@@ -92,7 +92,7 @@ fn severity_warn_lets_a_forgotten_lockfile_through() {
     r.write("package-lock.json", "{}\n");
     r.git(&["add", "package-lock.json"]);
     r.commit("chore: seed the lockfile");
-    r.git(&["config", "amont.severity.package-lock", "warn"]);
+    r.git(&["config", "greengate.severity.package-lock", "warn"]);
     r.stage("package.json", "{\"name\":\"t\"}\n");
 
     let run = r.hook("pre-commit-package-lock", &[]);

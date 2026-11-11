@@ -28,8 +28,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = $env:AMONT_VERSION,
-    [string]$BinDir  = $env:AMONT_BIN_DIR
+    [string]$Version = $env:GREENGATE_VERSION,
+    [string]$BinDir  = $env:GREENGATE_BIN_DIR
 )
 
 $ErrorActionPreference = 'Stop'

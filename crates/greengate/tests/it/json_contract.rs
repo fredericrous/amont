@@ -98,12 +98,12 @@ fn the_json_document_declares_its_format() {
     let r = Repo::new();
     let out = r.run(&["list", "--json"]);
     assert!(
-        out.stdout.contains("\"format\":\"amont-list-v1\""),
+        out.stdout.contains("\"format\":\"greengate-list-v1\""),
         "a machine contract must say which contract it is:\n{}",
         out.stdout
     );
     assert!(
-        page().contains("amont-list-v1"),
+        page().contains("greengate-list-v1"),
         "and the page must name the same version"
     );
 }

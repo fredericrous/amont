@@ -75,8 +75,8 @@ mod tests {
     fn the_reader_agrees_with_the_runtimes_parser() {
         let d = dir("agree");
         let text =
-            "amont-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n";
-        std::fs::write(d.join("amont-bypasses"), text).unwrap();
+            "greengate-bypass-v1\n100 abcdef0 typecheck\n200 abcdef0 typecheck\n150 abcdef0 test\n";
+        std::fs::write(d.join("greengate-bypasses"), text).unwrap();
         let ours = read(&d);
         let theirs = greengate_runtime::bypass::parse(text);
         assert_eq!(ours.total, theirs.total);

@@ -3,7 +3,7 @@
 //! `gate_stamp`'s unit tests prove the note keeps both halves apart, and
 //! `flows/push.rs` proves the dispatcher fills the evidence half at all,
 //! including on the path a FAILING push leaves by. These prove that
-//! `amont.order evidence` reorders the gates it finds there without ever
+//! `greengate.order evidence` reorders the gates it finds there without ever
 //! dropping one, and that without it the declared order is kept.
 //!
 //! Same fixture shape as `push_stamps.rs`: declared pre-push gates that
@@ -99,7 +99,7 @@ fn two_gates() -> (Repo, String) {
     (r, base)
 }
 
-/// `amont.order evidence`: the gate the record says fails is attempted
+/// `greengate.order evidence`: the gate the record says fails is attempted
 /// first, so a push that is going to be refused is refused sooner. The
 /// declared order is alpha, beta; the seeded record says beta fails.
 #[test]
@@ -108,7 +108,7 @@ fn evidence_ordering_attempts_the_failing_gate_first() {
         return;
     }
     let (r, base) = two_gates();
-    r.git(&["config", "amont.order", "evidence"]);
+    r.git(&["config", "greengate.order", "evidence"]);
     // A record for content that is NOT this tree — ordering is a claim about
     // the gates, not about the content in front of it. The token line is
     // empty on purpose: this seeds evidence, never a stamp.
@@ -121,7 +121,7 @@ fn evidence_ordering_attempts_the_failing_gate_first() {
         .unwrap_or(0)
         - 86_400;
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let body = format!(
         "amont-gate-v1\n\
          run {} pre-push-alpha pass 100\n\
@@ -169,7 +169,7 @@ fn without_the_key_the_declared_order_is_kept() {
     }
     let (r, base) = two_gates();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     r.write("BETA_FAILS", "");
     let (code, _) = push_out(&r, &base, &head(&r));
     assert_eq!(code, 1);

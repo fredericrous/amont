@@ -161,8 +161,8 @@ fn the_land_journey() {
     );
     step!(
         "dry run",
-        field(&ran, "receipt_dir").ends_with("amont/land")
-            || field(&ran, "receipt_dir").ends_with("amont\\land"),
+        field(&ran, "receipt_dir").ends_with("greengate/land")
+            || field(&ran, "receipt_dir").ends_with("greengate\\land"),
         "{}",
         ran.stdout
     );

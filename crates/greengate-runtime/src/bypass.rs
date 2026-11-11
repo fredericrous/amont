@@ -20,12 +20,12 @@
 //! in the COMMON git dir (unlike the deliberately worktree-private marker)
 //! because "how often does this repository dodge its gate" is a question
 //! about the repository, not about one worktree. `amont uninstall` deletes
-//! it; so does `amont.recordBypasses false`, prospectively.
+//! it; so does `greengate.recordBypasses false`, prospectively.
 //!
-//! Format, versioned like its siblings (`amont-gate-v1`, `amont-held-v1`):
+//! Format, versioned like its siblings (`amont-gate-v1`, `greengate-held-v1`):
 //!
 //! ```text
-//! amont-bypass-v1
+//! greengate-bypass-v1
 //! <unix-epoch> <commit-oid> <script>
 //! ```
 //!
@@ -37,10 +37,10 @@ use std::path::{Path, PathBuf};
 
 /// First line of the ledger. A future amont that changes the shape bumps
 /// this, and an old ledger reads as empty rather than being misread.
-pub const FORMAT: &str = "amont-bypass-v1";
+pub const FORMAT: &str = crate::names::BYPASS_FORMAT;
 
 /// The ledger's filename inside the common git dir.
-const LEDGER: &str = "amont-bypasses";
+const LEDGER: &str = crate::names::BYPASS_LEDGER;
 
 /// Compact past this — roughly 1,100 events. A ledger that long has long
 /// since saturated the signal it exists to carry.
@@ -196,7 +196,7 @@ pub(crate) fn note_unverified(
     if missing.is_empty() {
         return;
     }
-    if !crate::config::boolean_or(settings, "amont.recordBypasses", true) {
+    if !crate::config::boolean_or(settings, "greengate.recordBypasses", true) {
         return;
     }
     let files = head_files();
@@ -235,7 +235,7 @@ fn head_files() -> Vec<String> {
     .unwrap_or_default()
 }
 
-/// `<common-dir>/amont-bypasses` — shared by every worktree of the repo.
+/// `<common-dir>/greengate-bypasses` — shared by every worktree of the repo.
 fn ledger_path() -> Option<PathBuf> {
     let dir = crate::git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     Some(Path::new(&dir).join(LEDGER))
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn a_ledger_in_an_unknown_format_version_reads_as_empty() {
         assert_eq!(
-            parse("amont-bypass-v2\n100 abcdef0 typecheck\n"),
+            parse("greengate-bypass-v2\n100 abcdef0 typecheck\n"),
             Ledger::default()
         );
     }
@@ -399,7 +399,8 @@ mod tests {
     /// zero — not as an error.
     #[test]
     fn an_absent_ledger_reads_as_empty() {
-        let dir = std::env::temp_dir().join(format!("amont-bypass-none-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-bypass-none-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         assert_eq!(read_at(&dir), Ledger::default());
         let _ = std::fs::remove_dir_all(&dir);
@@ -409,7 +410,8 @@ mod tests {
     /// and still parses.
     #[test]
     fn compaction_keeps_the_header_and_the_newest_events() {
-        let dir = std::env::temp_dir().join(format!("amont-bypass-compact-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-bypass-compact-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(LEDGER);
         let mut body = format!("{FORMAT}\n");
@@ -431,7 +433,8 @@ mod tests {
     /// does not duplicate it.
     #[test]
     fn appending_twice_writes_exactly_one_header() {
-        let dir = std::env::temp_dir().join(format!("amont-bypass-append-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-bypass-append-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(LEDGER);
         append(&path, "abcdef0123456789", &["typecheck"]);

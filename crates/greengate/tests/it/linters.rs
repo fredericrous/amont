@@ -75,7 +75,7 @@ fn ruff_fixes_what_it_can_and_still_blocks_on_the_rest() {
     }
     let r = Repo::new();
     r.write("pyproject.toml", "[tool.ruff]\n");
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     // `import os` is auto-fixable (F401); the undefined name is not.
     r.stage("a.py", "import os\nprint( undefined_name )\n");
 

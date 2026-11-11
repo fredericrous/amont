@@ -4,7 +4,7 @@
 //! slower, and a tool that is slow because it is waiting for a core is not
 //! stuck. The silence budget is therefore multiplied by how oversubscribed
 //! the host is — the one-minute load average over the core count — capped
-//! by `amont.idleLoadScale`. A false kill costs a parked commit; a slower
+//! by `greengate.idleLoadScale`. A false kill costs a parked commit; a slower
 //! verdict on a genuine hang costs minutes.
 //!
 //! The arithmetic is a calculation with no clock or syscall in it; the

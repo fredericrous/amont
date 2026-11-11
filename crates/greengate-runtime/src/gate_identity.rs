@@ -78,7 +78,7 @@ pub fn external_token(ext: &External, name: &str) -> Option<String> {
     };
     let binary = binary_identity(program)?;
     // A pre-commit pass recorded before a declared command could find the
-    // index being committed (`AMONT_INDEX_FILE`) may have judged the old one
+    // index being committed (`GREENGATE_INDEX_FILE`) may have judged the old one
     // under `commit -a`, through any wrapper: none of them counts, so each
     // pre-commit gate runs once more. `index` changes what the gate reads
     // again, so it is part of the token too. Pre-push tokens are unchanged.

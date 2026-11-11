@@ -72,7 +72,7 @@ fn diverging(r: &Repo) -> (String, String) {
 fn by_default_it_tests_the_working_tree_and_says_so() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (tip, base) = diverging(&r);
 
     let (code, out) = pre_push(&r, &tip, &base);
@@ -88,7 +88,7 @@ fn by_default_it_tests_the_working_tree_and_says_so() {
 fn opted_in_it_tests_the_pushed_commits() {
     let r = Repo::new();
     let (tip, base) = diverging(&r);
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_ne!(
@@ -104,14 +104,14 @@ fn opted_in_it_tests_the_pushed_commits() {
 /// `on` is a boolean to git, and now to us.
 ///
 /// This key used to be read by a hand-rolled `matches!(v, "true" | "1" | "yes")`
-/// — our own dialect wearing git's clothes. `git config amont.testPushedTree
+/// — our own dialect wearing git's clothes. `git config greengate.testPushedTree
 /// on` is valid git-config(1), looked like it worked, and silently did nothing.
 /// It now goes through `git config --type=bool`, which IS the definition.
 #[test]
 fn gits_own_spelling_of_true_turns_it_on() {
     let r = Repo::new();
     let (tip, base) = diverging(&r);
-    r.git(&["config", "amont.testPushedTree", "on"]);
+    r.git(&["config", "greengate.testPushedTree", "on"]);
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_ne!(code, 0, "`on` did not enable the pushed-tree run:\n{out}");
@@ -127,7 +127,7 @@ fn gits_own_spelling_of_true_turns_it_on() {
 fn the_working_tree_is_untouched_and_nothing_is_left_behind() {
     let r = Repo::new();
     let (tip, base) = diverging(&r);
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
 
     let before = std::fs::read_to_string(r.path("check.js")).expect("read");
     let (_, _) = pre_push(&r, &tip, &base);
@@ -146,7 +146,7 @@ fn the_working_tree_is_untouched_and_nothing_is_left_behind() {
     );
 }
 
-/// The snapshot is what makes `amont.testPushedTree` honest. When it cannot be
+/// The snapshot is what makes `greengate.testPushedTree` honest. When it cannot be
 /// made, the suite falls back to the WORKING TREE and says so — and nothing
 /// may be stamped for a tip that was never tested.
 ///
@@ -160,14 +160,14 @@ fn the_working_tree_is_untouched_and_nothing_is_left_behind() {
 fn a_snapshot_that_could_not_be_made_stamps_nothing() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (tip, base) = diverging(&r);
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
     // The one hook into snapshot creation a test can pull: `prepare` runs
     // this inside the fresh worktree, and a failure means no suite may run
     // there. `PushedTree::create` then returns None and `where_to_run` falls
     // back — the same path a `worktree add` failure takes.
-    r.git(&["config", "amont.snapshotPrepare", "exit 1"]);
+    r.git(&["config", "greengate.snapshotPrepare", "exit 1"]);
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_eq!(
@@ -193,7 +193,7 @@ fn a_snapshot_that_could_not_be_made_stamps_nothing() {
 fn a_snapshot_that_ran_does_stamp_its_tip() {
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     // A tip whose committed suite PASSES — there is nothing to stamp about a
     // push that was blocked.
     r.stage(
@@ -207,7 +207,7 @@ fn a_snapshot_that_ran_does_stamp_its_tip() {
     r.stage("check.js", "process.exit(0);\n// touched\n");
     r.commit("feat: still green");
     let tip = rev(&r, "HEAD");
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_eq!(code, 0, "{out}");
@@ -251,7 +251,7 @@ fn diverging_declared(r: &Repo) -> (String, String) {
     (tip, base)
 }
 
-/// A declared pre-push gate is a push gate, and `amont.testPushedTree` is a
+/// A declared pre-push gate is a push gate, and `greengate.testPushedTree` is a
 /// promise about what push gates test. It used to run in the working tree
 /// whatever the flag said — passing on the uncommitted fix — and `stamp_tips`
 /// then read the flag, concluded the gate had run on the tip, and stamped
@@ -263,7 +263,7 @@ fn a_declared_gate_tests_the_pushed_commits_when_opted_in() {
     }
     let r = Repo::new();
     let (tip, base) = diverging_declared(&r);
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_ne!(
@@ -288,7 +288,7 @@ fn a_declared_gate_on_a_dirty_tree_stamps_nothing() {
     }
     let r = Repo::new();
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (tip, base) = diverging_declared(&r);
 
     let (code, out) = pre_push(&r, &tip, &base);

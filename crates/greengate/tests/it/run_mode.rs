@@ -154,7 +154,7 @@ fn all_files_takes_no_hold() {
         .spawn()
         .expect("spawn amont run --all-files");
 
-    let store = r.path(".git/amont-held");
+    let store = r.path(".git/greengate-held");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         assert!(
@@ -184,7 +184,7 @@ fn a_named_pre_push_check_takes_no_hold() {
 
     let (_, out) = run(&r, &["pre-push-branch-pattern"]);
     assert!(
-        !r.path(".git/amont-held").exists(),
+        !r.path(".git/greengate-held").exists(),
         "a pre-push check parked the tree:\n{out}"
     );
     assert_eq!(
@@ -194,7 +194,7 @@ fn a_named_pre_push_check_takes_no_hold() {
     );
 }
 
-/// `--all-files` with `amont.fix` on must stage NOTHING.
+/// `--all-files` with `greengate.fix` on must stage NOTHING.
 ///
 /// The override makes `staged_files()` return every tracked file, and every
 /// fixer's `restage(&files)` would then `git add` everything in the tree that
@@ -229,7 +229,7 @@ fn all_files_never_stages_anything() {
         .output()
         .expect("amont trust");
     assert!(trusted.status.success(), "could not trust the manifest");
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
 
     // A dirty tree, nothing staged.
     r.write("a.js", "const a = BAD\n");
@@ -244,7 +244,7 @@ fn all_files_never_stages_anything() {
     );
     assert!(
         out.contains("fixing is off"),
-        "it must say why amont.fix did nothing:\n{out}"
+        "it must say why greengate.fix did nothing:\n{out}"
     );
 }
 

@@ -465,7 +465,7 @@ impl Detached {
     fn at(commit: &str) -> Option<Detached> {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("amont-stamps-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-stamps-{}-{n}", std::process::id()));
         let path = dir.to_str()?;
         crate::git::succeeds(&[
             "worktree",

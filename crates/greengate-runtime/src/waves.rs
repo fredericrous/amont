@@ -14,8 +14,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const LEDGER: &str = "amont-waves";
-const FORMAT: &str = "amont-waves-v1";
+const LEDGER: &str = crate::names::WAVES_LEDGER;
+const FORMAT: &str = crate::names::WAVES_FORMAT;
 /// Past this size the file is rewritten as its header plus the newest
 /// [`KEEP`] lines, so a busy repository's ledger stays small.
 const MAX_BYTES: u64 = 256 * 1024;
@@ -41,7 +41,7 @@ pub(crate) fn note(light_ms: u64, heavy_checks: usize, skipped: &[&str]) {
     );
 }
 
-/// `<common-dir>/amont-waves` — shared by every worktree of the repository.
+/// `<common-dir>/greengate-waves` — shared by every worktree of the repository.
 fn ledger_path() -> Option<PathBuf> {
     let dir = crate::git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     Some(Path::new(&dir).join(LEDGER))
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_new_ledger_starts_with_its_header_and_first_line() {
-        let dir = std::env::temp_dir().join(format!("amont-waves-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-waves-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(LEDGER);
         let _ = std::fs::remove_file(&path); // best-effort: a leftover from a crash

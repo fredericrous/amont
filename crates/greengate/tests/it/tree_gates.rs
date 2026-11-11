@@ -60,9 +60,9 @@ pub(crate) fn warm(r: &Repo) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// The namespace directories of `gate` under `$GIT_DIR/amont-cache`.
+/// The namespace directories of `gate` under `$GIT_DIR/greengate-cache`.
 pub(crate) fn namespaces(r: &Repo, gate: &str) -> Vec<String> {
-    let dir = r.dir.join(".git").join("amont-cache").join(gate);
+    let dir = r.dir.join(".git").join("greengate-cache").join(gate);
     let mut out: Vec<String> = std::fs::read_dir(dir)
         .map(|es| {
             es.filter_map(Result::ok)
@@ -101,7 +101,7 @@ fn repo_with(name: &str, tool: &str, command: &str) -> Repo {
     r.stage(".forgejo/workflows/ci.yaml", &workflow(&[(name, command)]));
     r.commit("chore: tree gates");
     trust_and_install(&r);
-    r.git(&["config", "amont.treeLint", "true"]);
+    r.git(&["config", "greengate.treeLint", "true"]);
     r.stage("a.txt", "hello\n");
     r
 }
@@ -117,7 +117,7 @@ fn a_failing_tree_gate_never_blocks_and_never_stamps() {
     r.git(&["update-index", "--chmod=+x", "bad.sh"]);
     // The verdict must be in before the commit is: this test is about what
     // a failing gate says, not about the slack, which has its own test.
-    r.git(&["config", "amont.treeLintSlack", "60"]);
+    r.git(&["config", "greengate.treeLintSlack", "60"]);
     let warmed = warm(&r);
     let (ok, out) = commit(&r, "feat: a");
     assert!(
@@ -165,7 +165,7 @@ fn an_ignored_module_outside_the_allow_list_withholds_the_proof() {
     assert!(!stamped(&r, "HEAD").contains("tree:ok"), "{out}");
 
     // Declared as a reproducible output, it no longer stands in the way.
-    r.git(&["config", "amont.snapshotPrepareOutputs", "gen/"]);
+    r.git(&["config", "greengate.snapshotPrepareOutputs", "gen/"]);
     warm(&r);
     r.stage("b.txt", "b\n");
     let (ok, out) = commit(&r, "feat: b");
@@ -185,7 +185,7 @@ fn a_slow_tree_gate_is_cancelled_at_the_slack_and_never_stamps() {
         "slow.sh",
         "#!/bin/sh\nif [ -e node_modules/slow ]; then sleep 300 & echo $! > node_modules/slow.pid; wait; fi\nexit 0\n",
     );
-    r.git(&["config", "amont.treeLintSlack", "1"]);
+    r.git(&["config", "greengate.treeLintSlack", "1"]);
     r.stage(".gitignore", "node_modules/\n");
     warm(&r);
     r.write("node_modules/slow", "");
@@ -297,16 +297,16 @@ fn a_killed_amont_leaves_no_gate_running() {
 fn quiet_still_says_a_gate_is_cold() {
     // `auto` is quiet here: the harness captures output, nobody is watching.
     let r = repo_with("ok", "ruff", "true");
-    r.git(&["config", "amont.quiet", "auto"]);
+    r.git(&["config", "greengate.quiet", "auto"]);
     let (ok, out) = commit(&r, "feat: a");
     assert!(ok, "{out}");
     assert!(
-        out.contains("tree lint cold: ok — warming ($GIT_DIR/amont-warm.log)"),
+        out.contains("tree lint cold: ok — warming ($GIT_DIR/greengate-warm.log)"),
         "{out}"
     );
 }
 
-/// A bare remote, a signing key, and `amont.attest` on. Returns the remote.
+/// A bare remote, a signing key, and `greengate.attest` on. Returns the remote.
 fn attesting(r: &Repo) -> std::path::PathBuf {
     let remote = r.dir.join("..").join(format!(
         "{}-remote.git",
@@ -329,8 +329,8 @@ fn attesting(r: &Repo) -> std::path::PathBuf {
         .success();
     assert!(ok);
     r.git(&["remote", "add", "origin", remote.to_str().unwrap()]);
-    r.git(&["config", "amont.attest", "true"]);
-    r.git(&["config", "amont.attestKey", key.to_str().unwrap()]);
+    r.git(&["config", "greengate.attest", "true"]);
+    r.git(&["config", "greengate.attestKey", key.to_str().unwrap()]);
     remote
 }
 
@@ -365,7 +365,7 @@ fn a_proven_tree_is_attested_on_push() {
     let r = repo_with("ok", "ruff", "true");
     // Proving the tree is what is attested; how long the commit waits for
     // the proof is the slack's own test.
-    r.git(&["config", "amont.treeLintSlack", "60"]);
+    r.git(&["config", "greengate.treeLintSlack", "60"]);
     let remote = attesting(&r);
     warm(&r);
     let (ok, out) = commit(&r, "feat: a");
@@ -438,7 +438,7 @@ fn a_rehearsal_proves_a_lint_only_push_on_its_tree() {
     assert!(out.contains("tree lint proven: ok"), "{out}");
     assert!(stamped(&r, "HEAD^{tree}").contains("tree:ok"), "{out}");
     // Lint was all there was: the rehearsal is over, passed, with no step.
-    let state = std::fs::read_to_string(r.dir.join(".git/amont-rehearsal")).unwrap_or_default();
+    let state = std::fs::read_to_string(r.dir.join(".git/greengate-rehearsal")).unwrap_or_default();
     assert!(state.contains("phase=passed"), "{state}");
     assert!(!state.contains("step="), "{state}");
 }
@@ -451,7 +451,7 @@ fn a_prepare_that_writes_an_allowed_output_still_proves() {
     assert!(out.status.success());
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
+        "greengate.snapshotPrepare",
         "mkdir -p .venv && touch .venv/marker",
     ]);
     let out = rehearse_wait(&r);
@@ -466,7 +466,7 @@ fn a_prepare_that_writes_an_ignored_module_cannot_forge_the_tree() {
     assert!(out.status.success());
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
+        "greengate.snapshotPrepare",
         "mkdir -p gen && touch gen/m.py",
     ]);
     let out = rehearse_wait(&r);
@@ -480,7 +480,11 @@ fn a_prepare_that_writes_an_ignored_module_cannot_forge_the_tree() {
 #[test]
 fn a_prepare_that_edits_tracked_content_cannot_forge_the_tree() {
     let r = unproven_branch("ok", "ruff", "true");
-    r.git(&["config", "amont.snapshotPrepare", "echo changed >> a.txt"]);
+    r.git(&[
+        "config",
+        "greengate.snapshotPrepare",
+        "echo changed >> a.txt",
+    ]);
     let out = rehearse_wait(&r);
     assert!(
         out.contains("snapshotPrepare changed tracked content"),
@@ -522,8 +526,8 @@ fn an_unmeasured_covering_check_counts_as_cover() {
     );
     r.commit("chore: gates");
     trust_and_install(&r);
-    r.git(&["config", "amont.treeLint", "true"]);
-    r.git(&["config", "amont.treeLintSlack", "1"]);
+    r.git(&["config", "greengate.treeLint", "true"]);
+    r.git(&["config", "greengate.treeLintSlack", "1"]);
     warm(&r);
     // Teach the gate its time on a docs commit (no cover): it runs, and is
     // cancelled at the slack.
@@ -556,8 +560,8 @@ fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
     );
     r.commit("chore: gates");
     trust_and_install(&r);
-    r.git(&["config", "amont.treeLint", "true"]);
-    r.git(&["config", "amont.treeLintSlack", "1"]);
+    r.git(&["config", "greengate.treeLint", "true"]);
+    r.git(&["config", "greengate.treeLintSlack", "1"]);
     warm(&r);
 
     // Covered: the suite runs, the gate hides behind it and is proven.
@@ -607,7 +611,7 @@ fn a_gate_runs_behind_a_long_check_and_is_skipped_when_nothing_covers_it() {
 #[test]
 fn a_hanging_version_probe_never_delays_the_commit() {
     let r = repo_with("pr", "pyright", "true");
-    r.git(&["config", "amont.treeLintSlack", "1"]);
+    r.git(&["config", "greengate.treeLintSlack", "1"]);
     let bin = r.dir.join(".git").join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fake = bin.join("pyright");
@@ -677,7 +681,11 @@ fn a_reword_keeps_the_tree_proof() {
 #[test]
 fn a_prepare_that_writes_an_untracked_module_cannot_forge_the_tree() {
     let r = unproven_branch("ok", "ruff", "true");
-    r.git(&["config", "amont.snapshotPrepare", "touch generated_mod.py"]);
+    r.git(&[
+        "config",
+        "greengate.snapshotPrepare",
+        "touch generated_mod.py",
+    ]);
     let out = rehearse_wait(&r);
     assert!(
         out.contains("tree lint not proven in the snapshot: an untracked file is present"),
@@ -705,13 +713,13 @@ fn a_tree_that_moves_during_the_run_is_withheld() {
     assert!(!stamped(&r, "HEAD").contains("tree:mover"), "{out}");
 }
 
-/// The push waits for a same-tree lint rehearsal at most `amont.treeLintWait`,
+/// The push waits for a same-tree lint rehearsal at most `greengate.treeLintWait`,
 /// ONE deadline from pre-push start, then says lint is not attested.
 #[test]
 fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
     let r = unproven_branch("sleepy", "ruff", "sleep 120");
     attesting(&r);
-    r.git(&["config", "amont.treeLintWait", "3"]);
+    r.git(&["config", "greengate.treeLintWait", "3"]);
     // Start the rehearsal in the background, and wait until it is linting.
     let mut cmd = crate::common::amont_cmd();
     cmd.arg("rehearse").current_dir(&r.dir).stdin(Stdio::null());
@@ -735,7 +743,7 @@ fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
     let pushed = push(&r);
     assert!(
         started.elapsed() < Duration::from_secs(100),
-        "the push waited past amont.treeLintWait: {:?}\n{pushed}",
+        "the push waited past greengate.treeLintWait: {:?}\n{pushed}",
         started.elapsed()
     );
     // Semantic, not the clock alone: the general test-gate wait never ran.
@@ -753,13 +761,13 @@ fn the_push_waits_for_a_lint_rehearsal_at_most_tree_lint_wait() {
     let _ = stop.output();
 }
 
-/// `amont.unstampedPush refuse` governs push CHECKS; tree gates are not
+/// `greengate.unstampedPush refuse` governs push CHECKS; tree gates are not
 /// push checks, so an unproven one never blocks a push.
 #[test]
 fn unstamped_push_refuse_never_blocks_on_a_tree_gate() {
     let r = unproven_branch("ok", "ruff", "true");
     attesting(&r);
-    r.git(&["config", "amont.unstampedPush", "refuse"]);
+    r.git(&["config", "greengate.unstampedPush", "refuse"]);
     let pushed = push(&r);
     assert!(
         pushed.contains("lint not attested (cold or changed tree): ok"),

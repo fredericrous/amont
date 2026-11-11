@@ -131,11 +131,11 @@ fn unstaged_work_in_a_worktree_survives_the_stash_and_restore() {
         "unstaged work in the worktree was not restored"
     );
     assert!(
-        !worktree_git_dir(&wt).join("amont-held").exists(),
+        !worktree_git_dir(&wt).join("greengate-held").exists(),
         "held files left behind in the worktree-private gitdir"
     );
     assert!(
-        !r.path(".git/amont-held").exists(),
+        !r.path(".git/greengate-held").exists(),
         "held files stranded in the COMMON gitdir — the exact incident this guards against"
     );
 

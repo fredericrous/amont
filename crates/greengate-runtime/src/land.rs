@@ -49,10 +49,10 @@ use crate::rehearsal::signal_of;
 /// range's remote side is not the one land's pre-stage ran against: the
 /// remote moved under land (ADR-0018). Matched in the push's output, never
 /// the prose after it.
-pub const LAND_REMOTE_MOVED: &str = "amont-land: remote-moved";
+pub const LAND_REMOTE_MOVED: &str = "greengate-land: remote-moved";
 /// The line that hook prints, first, when the range is the pre-stage's but a
 /// gate it owes carries no evidence: a defect, named with the gates.
-pub const LAND_EVIDENCE_MISSING: &str = "amont-land: evidence-missing";
+pub const LAND_EVIDENCE_MISSING: &str = "greengate-land: evidence-missing";
 
 /// Re-reads of the remote after a mismatch, and the pause between them.
 /// Spent only when the first read disagrees: at most 6 s.
@@ -761,7 +761,7 @@ fn prestage(
     let (manifest, settings) = crate::manifest::load_resolved(std::path::Path::new(&root));
     // The range starts at the remote's tip: a tip this clone never fetched
     // (a force push elsewhere) would make it unwalkable. Fetch it, or refuse.
-    // A fetch moves objects, so it gets the check budget (`amont.timeout`),
+    // A fetch moves objects, so it gets the check budget (`greengate.timeout`),
     // not the few seconds a reachability probe gets.
     if !remote_tip.is_empty() && !has_commit(remote_tip) {
         eprintln!(
@@ -815,10 +815,10 @@ fn prestage(
             owed,
             PrestageState::Refused,
             Prestage::Refused(
-                "stamp reuse is off (amont.pushStamps false), so the gates land runs \
+                "stamp reuse is off (greengate.pushStamps false), so the gates land runs \
                  cannot count at the push"
                     .to_string(),
-                vec!["git config amont.pushStamps true".to_string(), again],
+                vec!["git config greengate.pushStamps true".to_string(), again],
             ),
         );
     }
@@ -1075,7 +1075,7 @@ fn now_nanos() -> i64 {
 /// `<git-dir>/amont/land`, absolute and per worktree.
 fn receipt_dir() -> Option<PathBuf> {
     git::stdout(&["rev-parse", "--absolute-git-dir"])
-        .map(|d| PathBuf::from(d).join("amont").join("land"))
+        .map(|d| PathBuf::from(d).join(crate::names::STATE_DIR).join("land"))
 }
 
 /// The receipt is the evidence of what a land pushed, independent of the

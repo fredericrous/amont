@@ -20,10 +20,11 @@ struct Sandbox(PathBuf);
 
 impl Sandbox {
     fn new(name: &str) -> Self {
-        let d = std::env::temp_dir().join(format!("amont-init-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).expect("mkdir");
-        Sandbox(d)
+        let scratch_dir =
+            std::env::temp_dir().join(format!("greengate-init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        std::fs::create_dir_all(&scratch_dir).expect("mkdir");
+        Sandbox(scratch_dir)
     }
     fn path(&self, rel: &str) -> PathBuf {
         rel.split('/').fold(self.0.clone(), |p, c| p.join(c))
@@ -184,7 +185,7 @@ fn init_refuses_to_overwrite_a_hook_it_did_not_write() {
 // ----------------------------------------------------- push snapshots
 
 /// A linked worktree marked the way amont's push snapshot marks itself: an
-/// `amont-snapshot` file in its OWN git admin dir.
+/// `greengate-snapshot` file in its OWN git admin dir.
 fn marked_worktree(repo: &Path, wt: &Path) {
     git(repo, &["commit", "--allow-empty", "-qm", "seed"]);
     let out = Command::new("git")
@@ -202,7 +203,7 @@ fn marked_worktree(repo: &Path, wt: &Path) {
             "rev-parse",
             "--path-format=absolute",
             "--git-path",
-            "amont-snapshot",
+            "greengate-snapshot",
         ])
         .output()
         .expect("git rev-parse");
@@ -211,7 +212,7 @@ fn marked_worktree(repo: &Path, wt: &Path) {
         marker.ends_with(
             Path::new(".git/worktrees")
                 .join(wt.file_name().unwrap())
-                .join("amont-snapshot")
+                .join("greengate-snapshot")
         ),
         "the marker must be worktree-private: {}",
         marker.display()
@@ -300,7 +301,7 @@ fn init_in_a_marked_snapshot_does_not_fail_over_a_redirect() {
 
 /// Why a marker in the snapshot's git dir and not an inherited variable:
 /// while a snapshot exists, `init` in ANOTHER repository — with
-/// `AMONT_SNAPSHOT=1` in its environment, as a suite run from a snapshot
+/// `GREENGATE_SNAPSHOT=1` in its environment, as a suite run from a snapshot
 /// would inherit — still bakes that repository's hooks normally.
 #[test]
 fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
@@ -317,7 +318,7 @@ fn a_snapshot_elsewhere_does_not_stop_init_in_another_repository() {
         .current_dir(&other)
         .env("HOME", s.path(""))
         .env("XDG_CONFIG_HOME", s.path(".config"))
-        .env("AMONT_SNAPSHOT", "1")
+        .env("GREENGATE_SNAPSHOT", "1")
         .stdin(std::process::Stdio::null())
         .output()
         .expect("run amont init");

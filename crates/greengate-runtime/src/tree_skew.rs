@@ -266,18 +266,18 @@ mod tests {
         assert!(drift(&lock, &inst, MAC).unwrap().contains("integrity"));
     }
 
-    /// Point `AMONT_NPM_DRIFT_DIR` at a real npm project to see what the
+    /// Point `GREENGATE_NPM_DRIFT_DIR` at a real npm project to see what the
     /// comparison says about its installed tree.
     #[test]
-    #[ignore = "a manual probe: needs AMONT_NPM_DRIFT_DIR pointing at a real npm project"]
+    #[ignore = "a manual probe: needs GREENGATE_NPM_DRIFT_DIR pointing at a real npm project"]
     fn tree_skew_probe_a_real_project() {
-        let dir = std::env::var("AMONT_NPM_DRIFT_DIR").expect("AMONT_NPM_DRIFT_DIR");
+        let dir = std::env::var("GREENGATE_NPM_DRIFT_DIR").expect("GREENGATE_NPM_DRIFT_DIR");
         eprintln!("npm_drift: {:?}", npm_drift(Path::new(&dir)));
     }
 
     fn project(files: &[(&str, &str)]) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "amont-skew-{}-{}",
+            "greengate-skew-{}-{}",
             std::process::id(),
             files.len() * 7 + files.first().map(|f| f.1.len()).unwrap_or(0)
         ));

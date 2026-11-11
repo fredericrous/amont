@@ -107,11 +107,11 @@ fn note(r: &Repo, rev: &str) -> String {
 }
 
 fn state(r: &Repo) -> String {
-    std::fs::read_to_string(r.dir.join(".git/amont-rehearsal")).unwrap_or_default()
+    std::fs::read_to_string(r.dir.join(".git/greengate-rehearsal")).unwrap_or_default()
 }
 
 fn log(r: &Repo) -> String {
-    std::fs::read_to_string(r.dir.join(".git/amont-rehearsal.log")).unwrap_or_default()
+    std::fs::read_to_string(r.dir.join(".git/greengate-rehearsal.log")).unwrap_or_default()
 }
 
 /// Wait for the state file to satisfy `pred`, or fail loudly.
@@ -150,7 +150,7 @@ fn gate_js(r: &Repo, body: &str) -> String {
 /// `origin/main` at the base, and one committed `.txt` in the gate's scope.
 /// The gate FAILS when `a.txt` — in its own cwd — says `broken`, which is
 /// how the tests tell a snapshot run from a working-tree run — and when it
-/// inherits `AMONT_REHEARSAL`: a suite must never learn it is a rehearsal,
+/// inherits `GREENGATE_REHEARSAL`: a suite must never learn it is a rehearsal,
 /// or a suite that itself drives git hooks (amont's own does) skips checks.
 fn gated_repo(body: &str) -> (Repo, String) {
     let r = Repo::new();
@@ -158,7 +158,7 @@ fn gated_repo(body: &str) -> (Repo, String) {
         &r,
         &format!(
             "if (fs.readFileSync('a.txt','utf8').includes('broken')) process.exit(1);\n\
-             if (process.env.AMONT_REHEARSAL !== undefined) process.exit(1);\n{body}"
+             if (process.env.GREENGATE_REHEARSAL !== undefined) process.exit(1);\n{body}"
         ),
     );
     r.stage("gate.js", &script);
@@ -182,7 +182,7 @@ fn gated_repo(body: &str) -> (Repo, String) {
 
 const SKIP: &str = "passed on this exact tree earlier — not repeating it here";
 
-/// `amont.rehearseOnCommit`: the commit itself starts the worker, git does
+/// `greengate.rehearseOnCommit`: the commit itself starts the worker, git does
 /// not wait for it, and the gate ends up run exactly once.
 #[test]
 #[cfg(unix)]
@@ -198,7 +198,7 @@ fn a_commit_starts_the_rehearsal_when_asked() {
     let (_, status) = rehearse(&r, &["--status"]);
     assert!(status.contains("no rehearsal recorded"), "{status}");
 
-    r.git(&["config", "amont.rehearseOnCommit", "true"]);
+    r.git(&["config", "greengate.rehearseOnCommit", "true"]);
     r.stage("a.txt", "rehearsed\n");
     let out = r.git(&["commit", "-q", "-m", "feat: rehearsed"]);
     assert!(out.status.success());
@@ -225,7 +225,7 @@ fn a_commit_starts_the_rehearsal_when_asked() {
 }
 
 /// A rebase rewrites every commit it replays, so no stamp vouches for the
-/// branch any more. With `amont.rehearseOnCommit`, the FINISHED rebase
+/// branch any more. With `greengate.rehearseOnCommit`, the FINISHED rebase
 /// (post-rewrite) rehearses the new tip — once, not once per replayed
 /// commit — and the push that follows skips the suite.
 #[test]
@@ -250,7 +250,7 @@ fn a_rebase_starts_the_rehearsal_of_the_new_tip() {
     // post-commit and started a rehearsal of its own; the rebase's rehearsal
     // cancelled it, but whether its suite had already run (and was counted in
     // `runs`) depended on timing, so the test failed about one run in twelve.
-    r.git(&["config", "amont.rehearseOnCommit", "true"]);
+    r.git(&["config", "greengate.rehearseOnCommit", "true"]);
     let out = r.git(&["rebase", "-q", "upstream"]);
     assert!(
         out.status.success(),
@@ -359,7 +359,7 @@ fn a_push_waits_for_a_running_rehearsal_rather_than_repeating_it() {
         gated_repo("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);");
     // ADR-0018: waiting for a running rehearsal is the inline path; a
     // refusing push never waits.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (code, out) = rehearse(&r, &[]);
     assert_eq!(code, 0, "{out}");
     wait_state(&r, "the worker to start", |s| s.contains("phase=running"));
@@ -413,7 +413,7 @@ fn a_committed_snapshot_prepare_reaches_the_snapshot() {
     assert!(note(&r, "HEAD").contains("pre-push-suite"));
 }
 
-/// `amont.snapshotPrepare` makes the checkout a workspace — in the snapshot,
+/// `greengate.snapshotPrepare` makes the checkout a workspace — in the snapshot,
 /// never in the developer's tree — and its failure is the snapshot's.
 #[test]
 fn snapshot_prepare_runs_in_the_snapshot_only() {
@@ -428,7 +428,7 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
 
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
+        "greengate.snapshotPrepare",
         "echo ready > prepared.txt",
     ]);
     let (code, out) = rehearse(&r, &["--wait"]);
@@ -444,7 +444,7 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
     // A preparation that fails tests nothing and stamps nothing.
     r.stage("a.txt", "again\n");
     r.commit("feat: again");
-    r.git(&["config", "amont.snapshotPrepare", "exit 3"]);
+    r.git(&["config", "greengate.snapshotPrepare", "exit 3"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("could not prepare the snapshot"), "{out}");
@@ -467,7 +467,7 @@ fn snapshot_prepare_runs_in_the_snapshot_only() {
 }
 
 /// The preparation is told which working tree the snapshot came from, in
-/// `$AMONT_SOURCE_WORKTREE` — so it can reuse what is already installed
+/// `$GREENGATE_SOURCE_WORKTREE` — so it can reuse what is already installed
 /// there (a copy-on-write `node_modules`, a local `.env`) instead of
 /// installing from scratch.
 #[test]
@@ -481,8 +481,8 @@ fn snapshot_prepare_is_told_the_source_worktree() {
     r.write("local.env", "secret\n");
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
-        "cp \"$AMONT_SOURCE_WORKTREE/local.env\" prepared.txt",
+        "greengate.snapshotPrepare",
+        "cp \"$GREENGATE_SOURCE_WORKTREE/local.env\" prepared.txt",
     ]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 0, "{out}");
@@ -559,7 +559,7 @@ fn stop_cancels_the_worker_and_removes_its_snapshot() {
 /// `await_for` runs inside `pre-push` — after git has opened its connection to
 /// the remote and while that connection sits idle, which is the exact window
 /// this whole feature exists to shorten. The wait was bounded only by the
-/// worker's own deadline, `amont.timeout`: an hour by default, and unbounded
+/// worker's own deadline, `greengate.timeout`: an hour by default, and unbounded
 /// where somebody has set it to `0`. So the mechanism built to stop a
 /// four-minute suite killing a push could hold the same connection open for
 /// far longer than the suite would have.
@@ -575,7 +575,7 @@ fn a_push_gives_up_waiting_and_runs_the_gate_itself() {
     let (r, base) = gated_repo("");
     let tip = head(&r);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
         .trim()
         .to_string();
@@ -593,16 +593,16 @@ fn a_push_gives_up_waiting_and_runs_the_gate_itself() {
         .unwrap()
         .as_secs();
     std::fs::write(
-        r.dir.join(".git/amont-rehearsal"),
+        r.dir.join(".git/greengate-rehearsal"),
         format!(
-            "amont-rehearsal-v1\npid={}\ncommit={tip}\ntree={tree}\nstarted={started}\n\
+            "greengate-rehearsal-v1\npid={}\ncommit={tip}\ntree={tree}\nstarted={started}\n\
              snapshot={}\nphase=running\n",
             stuck.id(),
             r.dir.join("nowhere").display()
         ),
     )
     .expect("write the state file");
-    r.git(&["config", "amont.rehearsalWait", "2"]);
+    r.git(&["config", "greengate.rehearsalWait", "2"]);
 
     let began = Instant::now();
     let (code, out) = push_out(&r, &base, &tip);

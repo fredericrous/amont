@@ -78,7 +78,7 @@
 //! and if they disagree the gate is flaky on content that did not change.
 //!
 //! Why a notes ref and not config: notes are keyed by commit, garbage-collect
-//! with unreachable commits (an `amont.checked.<hash>` config key would
+//! with unreachable commits (an `greengate.checked.<hash>` config key would
 //! outlive every rebase forever), stay local (notes refs are not pushed by
 //! default), and stay out of `git log` (only `refs/notes/commits` displays by
 //! default). `amont uninstall` deletes the ref; see `uninstall_repo_hooks`.
@@ -117,7 +117,7 @@ pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
 /// warn-severity failure, or a gate that could not run. The same note format,
 /// keyed by the tree, holding `gate_identity` tokens. Never `amont-gate`: a
 /// completion is not a pass, and nothing reads this ref to attest or to skip a
-/// gate in an inline push. Only the refusing push (`amont.pushGates refuse`)
+/// gate in an inline push. Only the refusing push (`greengate.pushGates refuse`)
 /// and land's own push read it, so that what a rehearsal or land's pre-stage
 /// already ran is not refused as "not run".
 pub const DONE_REF: &str = "amont-gate-done";
@@ -130,12 +130,12 @@ pub const PROVENANCE: &str = "provenance";
 pub const INPUTS_FULL_REF: &str = "refs/notes/amont-gate-inputs";
 
 /// The marker's filename inside `$GIT_DIR`.
-const MARKER: &str = "amont-gate";
+const MARKER: &str = crate::names::GATE_MARKER;
 
 /// The switch for push-time stamps — both writing them and honouring them.
 /// On by default: a stamp is amont's own record of a gate it ran on exactly
 /// this content, the same trust the commit-time stamps have always carried.
-const PUSH_STAMPS: &str = "amont.pushStamps";
+const PUSH_STAMPS: &str = "greengate.pushStamps";
 
 /// Does this repository reuse push-time stamps?
 pub fn push_stamps_enabled(settings: &crate::config::Settings) -> bool {
@@ -146,7 +146,7 @@ pub fn push_stamps_enabled(settings: &crate::config::Settings) -> bool {
 /// clean against exactly this staged tree is not run again. On by default,
 /// for the same reason `pushStamps` is: the record is amont's own, bound to
 /// the content, and identical content is what a test suite reads.
-const COMMIT_STAMPS: &str = "amont.commitStamps";
+const COMMIT_STAMPS: &str = "greengate.commitStamps";
 
 /// Does this repository reuse a gate's verdict across commit attempts of
 /// one tree?
@@ -1081,7 +1081,7 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 
 /// uninstall: forget everything this module ever wrote here.
 ///
-/// The stamps are OUR bookkeeping — unlike `hook.skip` and `amont.severity`,
+/// The stamps are OUR bookkeeping — unlike `hook.skip` and `greengate.severity`,
 /// which are the user's statements and are never touched.
 pub fn forget() -> bool {
     let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());

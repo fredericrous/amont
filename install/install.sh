@@ -19,8 +19,8 @@ REPO="greenharness/greengate"
 # `$HOME/.local/bin` by default, and not arbitrarily: it is candidate 3 in the
 # shim's own resolution order, so a binary here is found even by a shim whose
 # path was never baked.
-BIN_DIR="${AMONT_BIN_DIR:-$HOME/.local/bin}"
-VERSION="${AMONT_VERSION:-latest}"
+BIN_DIR="${GREENGATE_BIN_DIR:-$HOME/.local/bin}"
+VERSION="${GREENGATE_VERSION:-latest}"
 
 RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; OFF='\033[0m'
 if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then RED=''; GREEN=''; YELLOW=''; OFF=''; fi
@@ -91,7 +91,7 @@ resolve_version() {
     # handing you a tarball full of HTML.
     tag=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
         | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set AMONT_VERSION=vX.Y.Z)"
+    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set GREENGATE_VERSION=vX.Y.Z)"
     echo "${tag#v}"
 }
 
@@ -103,7 +103,7 @@ main() {
     # The 3.0.0 cutover, once, here: the names it maps from live in
     # greengate-runtime's names.rs (BIN, OLD_BIN, FLEET_BIN, OLD_FLEET_BIN).
     # Releases before 3.0.0 shipped `amont-<v>-<t>` with binaries named
-    # amont and amont-fleet; a pinned rollback (AMONT_VERSION=2.3.1) must
+    # amont and amont-fleet; a pinned rollback (GREENGATE_VERSION=2.3.1) must
     # still find them, and installs them under both names like any other.
     case "$v" in
         [012].*) prefix=amont; hook=amont; fleet=amont-fleet ;;

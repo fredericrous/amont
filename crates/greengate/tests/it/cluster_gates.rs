@@ -59,7 +59,7 @@ case "$1" in
     esac
     k=$(grep -o '"name":"amont-gate-slot-[0-9]*"' "$3" | head -1 | sed 's/.*-//; s/"//')
     if [ -n "$PROBE_AMONT" ]; then
-      ls "$AMONT_SLOT_DIR/holders" > "$D/holders-at-create" 2>/dev/null
+      ls "$GREENHARNESS_SLOT_DIR/holders" > "$D/holders-at-create" 2>/dev/null
       "$PROBE_AMONT" slots --json > "$D/slots-at-create" 2>/dev/null
     fi
     mkdir "$D/slot-$k" 2>/dev/null || { echo 'Error from server (AlreadyExists): jobs.batch already exists' >&2; exit 1; }
@@ -83,8 +83,8 @@ case "$1" in
     fi
     if [ "$2" = "job" ]; then
       k=${3##*-}
-      gate=$(grep -o '"amont.dev/gate":"[^"]*"' "$D/job-$k.json" | sed 's/.*:"//; s/"$//')
-      meta=$(printf '"metadata":{"uid":"uid-%s","annotations":{"amont.dev/gate":"%s"}}' "$k" "$gate")
+      gate=$(grep -o '"greengate.dev/gate":"[^"]*"' "$D/job-$k.json" | sed 's/.*:"//; s/"$//')
+      meta=$(printf '"metadata":{"uid":"uid-%s","annotations":{"greengate.dev/gate":"%s"}}' "$k" "$gate")
       job=$(val job Complete)
       case "$job" in
         Complete) printf '{%s,"status":{"conditions":[{"type":"Complete","status":"True"}]}}' "$meta" ;;
@@ -126,9 +126,9 @@ case "$1" in
     [ -d "$D" ] || exit 1
     touch "$D/delete-done"
     if [ "$3" = "-l" ]; then
-      label=${4#amont.run=}
+      label=${4#greengate.run=}
       for f in "$D"/job-*.json; do
-        [ -f "$f" ] && grep -q "\"amont.run\":\"$label\"" "$f" || continue
+        [ -f "$f" ] && grep -q "\"greengate.run\":\"$label\"" "$f" || continue
         k=${f##*job-}; k=${k%.json}; rmdir "$D/slot-$k" 2>/dev/null; rm -f "$D/received-$k"
       done
       exit 0
@@ -197,15 +197,15 @@ impl Cluster {
         r.commit("chore: base");
         let c = Cluster { r, kube };
         c.config(
-            "amont.cluster.kubeconfig",
+            "greengate.cluster.kubeconfig",
             &c.kube.join("kubeconfig.yaml").to_string_lossy(),
         );
         c.config(
-            "amont.cluster.image",
+            "greengate.cluster.image",
             &format!("reg/gate:1@sha256:{IMAGE_HEX}"),
         );
-        c.config("amont.timeout", "600");
-        c.config("amont.cluster.startWait", "1");
+        c.config("greengate.timeout", "600");
+        c.config("greengate.cluster.startWait", "1");
         c
     }
 
@@ -255,7 +255,7 @@ impl Cluster {
     }
 
     pub(crate) fn cluster_log(&self) -> String {
-        std::fs::read_to_string(self.r.dir.join(".git/amont/cluster.log")).unwrap_or_default()
+        std::fs::read_to_string(self.r.dir.join(".git/greengate/cluster.log")).unwrap_or_default()
     }
 
     pub(crate) fn kubectl_calls(&self) -> String {
@@ -583,7 +583,7 @@ const MODES: &[Mode] = &[
         &[("create", "down\n")],
     ),
     Mode {
-        config: Some(("amont.cluster.kubeconfig", None)),
+        config: Some(("greengate.cluster.kubeconfig", None)),
         ..mode(
             "missing kubeconfig",
             "kubeconfig is not set",
@@ -592,29 +592,32 @@ const MODES: &[Mode] = &[
         )
     },
     Mode {
-        config: Some(("amont.cluster.image", None)),
+        config: Some(("greengate.cluster.image", None)),
         ..mode("missing image", "image is not set", Said::Nothing, &[])
     },
     Mode {
-        config: Some(("amont.cluster.image", Some("reg/gate:1"))),
+        config: Some(("greengate.cluster.image", Some("reg/gate:1"))),
         ..mode(
             "image without @sha256",
             "not pinned",
-            Said::TheFix("git config --global amont.cluster.image"),
+            Said::TheFix("git config --global greengate.cluster.image"),
             &[],
         )
     },
     Mode {
-        config: Some(("amont.cluster.kubeconfig", Some("/nonexistent/kubeconfig"))),
+        config: Some((
+            "greengate.cluster.kubeconfig",
+            Some("/nonexistent/kubeconfig"),
+        )),
         ..mode(
             "kubeconfig file missing",
             "does not exist",
-            Said::TheFix("git config --global amont.cluster.kubeconfig"),
+            Said::TheFix("git config --global greengate.cluster.kubeconfig"),
             &[],
         )
     },
     Mode {
-        config: Some(("amont.cluster.maxBundleMiB", Some("1"))),
+        config: Some(("greengate.cluster.maxBundleMiB", Some("1"))),
         big: true,
         ..mode(
             "bundle over the cap",
@@ -648,7 +651,7 @@ fn assert_said(mode: &Mode, text: &str) {
         Said::TheFix(fix) => {
             assert!(text.contains(fix), "{what}: names the fix: {text}");
             assert!(
-                text.contains("git config amont.executor local"),
+                text.contains("git config greengate.executor local"),
                 "{what}: {text}"
             );
         }
@@ -669,7 +672,7 @@ fn assert_said(mode: &Mode, text: &str) {
         Said::BundleCap => assert!(
             text.contains("lint runs here: its bundle is ")
                 && text.contains(
-                    "MiB cap — raise it with `git config amont.cluster.maxBundleMiB <MiB>`"
+                    "MiB cap — raise it with `git config greengate.cluster.maxBundleMiB <MiB>`"
                 )
                 && !text.contains("unavailable"),
             "{what}: {text}"
@@ -782,7 +785,7 @@ fn concurrent_gates_each_get_their_own_job() {
     ] {
         let job = jobs
             .iter()
-            .find(|j| j.contains(&format!("\"amont.dev/gate\":\"{gate}\"")))
+            .find(|j| j.contains(&format!("\"greengate.dev/gate\":\"{gate}\"")))
             .unwrap_or_else(|| panic!("no Job for {gate}: {jobs:?}"));
         assert!(
             job.contains(&format!("\"args\":[\"{script}\"]")),
@@ -924,7 +927,7 @@ fn pre_push_stdin_is_intact_after_a_cluster_gate() {
         "set executor cluster\npre-push  lint  *.txt  block  platform=any scripts/gate.sh\n",
     );
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     c.r.stage("a.txt", "hello\n");
     c.r.commit("feat: a");
@@ -966,7 +969,7 @@ fn pre_push_stdin_is_intact_after_a_cluster_gate() {
 }
 
 /// A cluster token is reused with the gate's program absent from this
-/// machine, and a changed `amont.cluster.image` invalidates it.
+/// machine, and a changed `greengate.cluster.image` invalidates it.
 #[test]
 fn a_changed_image_invalidates_the_cluster_token() {
     let c = staged(
@@ -987,7 +990,10 @@ fn a_changed_image_invalidates_the_cluster_token() {
 
     c.reset_records();
     let other = "2".repeat(64);
-    c.config("amont.cluster.image", &format!("reg/gate:2@sha256:{other}"));
+    c.config(
+        "greengate.cluster.image",
+        &format!("reg/gate:2@sha256:{other}"),
+    );
     let (code, text) = c.pre_commit(&[]);
     assert_eq!(code, 0, "{text}");
     assert!(
@@ -1020,7 +1026,7 @@ fn stamps_reads_a_cluster_token_only_from_a_trusted_manifest() {
 
     assert!(c
         .r
-        .git(&["config", "--unset-all", "amont.trusted"])
+        .git(&["config", "--unset-all", "greengate.trusted"])
         .status
         .success());
     let (code, text) = c.amont(&["stamps", "--json", "lint"], &[], None);
@@ -1063,8 +1069,8 @@ impl Cluster {
                 public.trim()
             ),
         );
-        c.config("amont.attest", "true");
-        c.config("amont.attestKey", &key.display().to_string());
+        c.config("greengate.attest", "true");
+        c.config("greengate.attestKey", &key.display().to_string());
         c
     }
 
@@ -1158,7 +1164,7 @@ fn a_cluster_pass_is_attested_on_linux_and_not_in_the_laptop_block() {
     }
     let c = Cluster::attesting(ATTEST_CONF);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
     let (code, text) = c.pre_push(&base, &tip);
@@ -1195,7 +1201,7 @@ fn a_linux_block_is_signed_only_for_the_tree_the_cluster_judged() {
     }
     let c = Cluster::attesting(ATTEST_CONF);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (judged, judged_tree) = c.commit_on(&base, "feat/a", "a.txt");
     // `*.md` is outside the gate's `*.txt` scope: the cluster is never asked.
@@ -1226,7 +1232,7 @@ fn repeated_pushes_of_one_tree_do_not_grow_its_note() {
     }
     let c = Cluster::attesting(ATTEST_CONF);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, tree) = c.commit_on(&base, "feat/x", "a.txt");
     for round in 0..20 {
@@ -1267,7 +1273,7 @@ fn stamps_reads_a_linux_only_attestation_and_attest_covered_does_not() {
     }
     let c = Cluster::attesting(ATTEST_CONF);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     let (tip, _) = c.commit_on(&base, "feat/x", "a.txt");
     let (code, text) = c.pre_push(&base, &tip);
@@ -1350,14 +1356,14 @@ fn a_cluster_gate_after_a_heavy_gate_holds_no_host_slot() {
             "pre-push",
         ],
         &[
-            ("AMONT_REHEARSAL", "1"),
-            ("AMONT_ON_BUSY", "wait"),
-            ("AMONT_HOST_SLOTS", "1"),
+            ("GREENGATE_REHEARSAL", "1"),
+            ("GREENGATE_ON_BUSY", "wait"),
+            ("GREENGATE_HOST_SLOTS", "1"),
             ("PROBE_AMONT", env!("CARGO_BIN_EXE_greengate")),
         ],
     );
-    cmd.env_remove("AMONT_HOST_SLOT")
-        .env("AMONT_SLOT_DIR", &slots)
+    cmd.env_remove("GREENHARNESS_HOST_SLOT")
+        .env("GREENHARNESS_SLOT_DIR", &slots)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1449,7 +1455,7 @@ fn a_push_twin_with_another_command_runs_itself() {
          pre-push  lint  *.txt  block  platform=any scripts/gate.sh --full\n",
     );
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    c.r.git(&["config", "amont.pushGates", "inline"]);
+    c.r.git(&["config", "greengate.pushGates", "inline"]);
     let base = out(&c.r, &["rev-parse", "HEAD"]);
     c.r.git(&["checkout", "-q", "--no-track", "-b", "feat/x"]);
     c.r.stage("a.txt", "hello\n");
@@ -1531,7 +1537,7 @@ fn a_create_that_times_out_deletes_the_runs_jobs_by_label() {
     assert_eq!(code, 0, "the local pass is the verdict: {text}");
     assert_eq!(c.local_runs(), 1, "{text}");
     assert!(
-        c.read("deletes").contains("delete job -l amont.run="),
+        c.read("deletes").contains("delete job -l greengate.run="),
         "{}",
         c.read("deletes")
     );
@@ -1592,7 +1598,7 @@ mod interrupted {
         /// `ready`: the hook is then inside a `kubectl` call the test scripted
         /// to stay alive (`get_sleep`, or a `create` that hangs).
         fn start(c: &Cluster, ready: &str) -> Held {
-            c.config("amont.cluster.startWait", "60");
+            c.config("greengate.cluster.startWait", "60");
             c.answer("start", "pending");
             let tmp = c.kube.join("tmp");
             std::fs::create_dir_all(&tmp).unwrap();
@@ -1624,7 +1630,7 @@ mod interrupted {
                         .unwrap()
                         .file_name()
                         .to_string_lossy()
-                        .starts_with("amont-cluster-")
+                        .starts_with("greengate-cluster-")
                 })
                 .count()
         }
@@ -1701,7 +1707,7 @@ mod interrupted {
         held.ends_by(15, Duration::from_secs(30));
         let deletes = c.read("deletes");
         assert!(
-            deletes.contains("delete job -l amont.run=") && deletes.contains("--wait=false"),
+            deletes.contains("delete job -l greengate.run=") && deletes.contains("--wait=false"),
             "{deletes} / {}",
             held.output()
         );

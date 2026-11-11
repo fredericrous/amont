@@ -483,9 +483,9 @@ fn git_at_least(major: u32, minor: u32) -> bool {
 #[cfg(unix)]
 fn the_push_has_no_land_deadline_so_a_slow_gate_still_lands() {
     let fx = fixture("feat");
-    // The probe budget follows `amont.timeout`; a gate that outlasts twice
+    // The probe budget follows `greengate.timeout`; a gate that outlasts twice
     // that budget must not be killed by land.
-    fx.r.git(&["config", "amont.timeout", "2"]);
+    fx.r.git(&["config", "greengate.timeout", "2"]);
     hook(&fx, "sleep 5");
     let started = std::time::Instant::now();
     let ran = land(&fx, &["--json"]);
@@ -496,7 +496,7 @@ fn the_push_has_no_land_deadline_so_a_slow_gate_still_lands() {
 
 /// Every receipt file of the fixture, parsed as text.
 pub(crate) fn receipts(fx: &Fx) -> Vec<String> {
-    let dir = fx.r.path(".git/amont/land");
+    let dir = fx.r.path(".git/greengate/land");
     let Ok(read) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -580,7 +580,7 @@ fn a_retry_with_a_locked_tracking_ref_still_lands_and_the_receipt_names_the_retr
 }
 
 /// `amont land` on a host whose only slot is busy: no inherited
-/// `AMONT_HOST_SLOT`, one slot in a directory of the test's own. Unix only,
+/// `GREENHARNESS_HOST_SLOT`, one slot in a directory of the test's own. Unix only,
 /// like `busy_defers`, whose slot helpers it shares.
 #[cfg(unix)]
 fn land_on_a_busy_host(fx: &Fx, slots: &std::path::Path) -> Ran {
@@ -588,11 +588,11 @@ fn land_on_a_busy_host(fx: &Fx, slots: &std::path::Path) -> Ran {
     cmd.arg("land")
         .current_dir(&fx.r.dir)
         .stdin(Stdio::null())
-        .env_remove("AMONT_HOST_SLOT")
-        .env_remove("AMONT_ON_BUSY")
-        .env("AMONT_IDLE_LOAD_SCALE", "1")
-        .env("AMONT_SLOT_DIR", slots)
-        .env("AMONT_HOST_SLOTS", "1");
+        .env_remove("GREENHARNESS_HOST_SLOT")
+        .env_remove("GREENGATE_ON_BUSY")
+        .env("GREENGATE_IDLE_LOAD_SCALE", "1")
+        .env("GREENHARNESS_SLOT_DIR", slots)
+        .env("GREENGATE_HOST_SLOTS", "1");
     let out = cmd.output().expect("run amont land");
     Ran {
         code: out.status.code().unwrap_or(-1),

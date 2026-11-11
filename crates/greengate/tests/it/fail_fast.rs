@@ -77,7 +77,7 @@ fn runs(r: &Repo) -> usize {
 
 /// The commit-time stamp marker pre-commit leaves for post-commit.
 fn marker(r: &Repo) -> String {
-    std::fs::read_to_string(r.path(".git/amont-gate")).unwrap_or_default()
+    std::fs::read_to_string(r.path(".git/greengate-gate")).unwrap_or_default()
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn a_light_failure_at_warn_does_not_skip_the_heavy_gate() {
 #[test]
 fn fail_fast_off_runs_every_check_as_before() {
     let r = repo("block", 1, "");
-    r.git(&["config", "amont.failFast", "false"]);
+    r.git(&["config", "greengate.failFast", "false"]);
     r.stage("a.txt", "one\n");
     let (code, out) = pre_commit(&r, &[]);
     assert_ne!(code, 0, "{out}");
@@ -150,9 +150,13 @@ fn fail_fast_off_runs_every_check_as_before() {
 fn the_environment_outranks_the_manifest_for_one_run() {
     let r = repo("block", 1, "set failFast true\n");
     r.stage("a.txt", "one\n");
-    let (code, out) = pre_commit(&r, &[("AMONT_FAIL_FAST", "false")]);
+    let (code, out) = pre_commit(&r, &[("GREENGATE_FAIL_FAST", "false")]);
     assert_ne!(code, 0, "{out}");
-    assert_eq!(runs(&r), 1, "AMONT_FAIL_FAST=false runs one wave: {out}");
+    assert_eq!(
+        runs(&r),
+        1,
+        "GREENGATE_FAIL_FAST=false runs one wave: {out}"
+    );
     // And the manifest's word holds without it.
     let (_, out) = pre_commit(&r, &[]);
     assert!(out.contains("check(s) skipped"), "{out}");
@@ -171,7 +175,7 @@ fn a_manifest_can_turn_fail_fast_off() {
 #[test]
 fn quiet_mode_still_says_what_was_skipped() {
     let r = repo("block", 1, "");
-    r.git(&["config", "amont.quiet", "always"]);
+    r.git(&["config", "greengate.quiet", "always"]);
     r.stage("a.txt", "one\n");
     let (_, out) = pre_commit(&r, &[]);
     assert_eq!(runs(&r), 0, "{out}");
@@ -182,7 +186,7 @@ fn quiet_mode_still_says_what_was_skipped() {
 fn the_progress_view_ends_cleanly_with_a_skipped_gate() {
     for progress in ["true", "false"] {
         let r = repo("block", 1, "");
-        r.git(&["config", "amont.progress", progress]);
+        r.git(&["config", "greengate.progress", progress]);
         r.stage("a.txt", "one\n");
         let (code, out) = pre_commit(&r, &[]);
         assert_ne!(code, 0, "progress={progress}: {out}");
@@ -211,7 +215,7 @@ fn the_heavy_gate_judges_what_a_light_fixer_restaged() {
     );
     r.commit("chore: base");
     trust(&r);
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.stage("a.js", "const a = BAD\n");
     let (code, out) = pre_commit(&r, &[]);
     assert_eq!(code, 0, "{out}");
@@ -253,7 +257,7 @@ fn amont_run_skips_the_heavy_gate_the_same_way() {
 fn the_hook_records_the_wave_and_a_rehearsal_does_not() {
     let r = repo("block", 1, "");
     r.stage("a.txt", "one\n");
-    let ledger = r.path(".git/amont-waves");
+    let ledger = r.path(".git/greengate-waves");
     let _rehearsal = common::amont_cmd() // its exit code is not under test
         .arg("run")
         .current_dir(&r.dir)
@@ -264,7 +268,7 @@ fn the_hook_records_the_wave_and_a_rehearsal_does_not() {
     let _ = pre_commit(&r, &[]); // its exit code is not under test
     let text = std::fs::read_to_string(&ledger).expect("ledger");
     let mut lines = text.lines();
-    assert_eq!(lines.next(), Some("amont-waves-v1"), "{text}");
+    assert_eq!(lines.next(), Some("greengate-waves-v1"), "{text}");
     let row: Vec<&str> = lines.next().expect("a row").split(' ').collect();
     assert_eq!(row.len(), 4, "{text}");
     assert_eq!(row[2], "1", "one Heavy check: {text}");

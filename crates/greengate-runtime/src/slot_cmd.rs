@@ -2,12 +2,15 @@
 //! command, and who holds them.
 //!
 //! `amont slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <cmd…>`
-//! waits for a slot, runs the command with `AMONT_HOST_SLOT=held`, passes
+//! waits for a slot, runs the command with `GREENHARNESS_HOST_SLOT=held`, passes
 //! its exit status through and frees the slot when the command exits. The
 //! wrapper alone holds the slot: its descriptors are close-on-exec, so a
 //! daemon the command leaves behind never keeps it. A wait longer than
 //! `--max-wait` (default 90 s, under Claude Code's 120 s Bash timeout) exits
 //! 75 without running anything, unless `--on-timeout run` says otherwise.
+
+/// The holder name a `slot run` queues under, as `greengate slots` shows it.
+const SLOT_RUN_HOLDER: &str = concat!(crate::bin!(), " slot run");
 
 use crate::names::BIN;
 use std::ffi::OsString;
@@ -81,7 +84,7 @@ fn value<'a>(flags: &'a [(&'static str, String)], flag: &str) -> Option<&'a str>
 /// How the command runs: inside a held slot, or with none.
 #[derive(Clone, Copy)]
 enum Launch {
-    /// A slot is held for it (here or by an ancestor): `AMONT_HOST_SLOT=held`.
+    /// A slot is held for it (here or by an ancestor): `GREENHARNESS_HOST_SLOT=held`.
     Held,
     /// No slot: off, unsupported, unavailable, or `--on-timeout run`.
     Unqueued,
@@ -156,7 +159,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let mut waiter = match greenharness_slots::Waiter::new(
         sizing,
         weight,
-        greenharness_slots::Holder::here("amont slot run", &label),
+        greenharness_slots::Holder::here(SLOT_RUN_HOLDER, &label),
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -191,7 +194,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         if run_on_timeout {
             greenharness_slots::record_wait_jobs(
                 &dir,
-                "amont slot run",
+                SLOT_RUN_HOLDER,
                 weight,
                 Some(jobs),
                 waited,
@@ -203,7 +206,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             );
             return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
-        greenharness_slots::record_wait(&dir, "amont slot run", weight, waited, "timeout");
+        greenharness_slots::record_wait(&dir, SLOT_RUN_HOLDER, weight, waited, "timeout");
         eprintln!(
             "{BIN}: no host slot freed in {}s; `{label}` did not run (exit {BUSY_EXIT}). \
              Retry the same command later, or let CI run it.",
@@ -213,7 +216,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     };
     greenharness_slots::record_wait_jobs(
         &dir,
-        "amont slot run",
+        SLOT_RUN_HOLDER,
         weight,
         Some(jobs),
         waited,
@@ -275,7 +278,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
         if json {
             println!("{{\"cap\":0,\"held\":0,\"holders\":[],\"unknown\":0,\"waiting\":0}}");
         } else {
-            println!("host slots are off (amont.hostSlots 0)");
+            println!("host slots are off (greengate.hostSlots 0)");
         }
         return 0;
     };
@@ -293,7 +296,7 @@ pub fn slots_command(args: &[OsString]) -> i32 {
             greenharness_slots::load1().map_or("?".to_string(), |l| format!("{l:.1}")),
             greenharness_slots::cores()
         ),
-        greenharness_slots::Sizing::Fixed(n) => format!("amont.hostSlots {n}"),
+        greenharness_slots::Sizing::Fixed(n) => format!("greengate.hostSlots {n}"),
     };
     if json {
         let holders: Vec<String> = status

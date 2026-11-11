@@ -68,6 +68,7 @@ pub mod land;
 pub mod live;
 pub mod load;
 pub mod manifest;
+pub mod migrate;
 pub mod names;
 pub mod pack;
 pub mod policy;
@@ -106,7 +107,7 @@ pub const TRIGGERS: [&str; 2] = ["pre-commit", "pre-push"];
 /// How specifically a configured value names a check.
 ///
 /// Ordered, so that when several keys match one check the most specific wins —
-/// which only matters for `amont.severity`, since a skip is a boolean.
+/// which only matters for `greengate.severity`, since a skip is a boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Match {
     /// `pre-commit` — every check on that trigger.
@@ -136,7 +137,7 @@ pub fn short_name(check: &str) -> &str {
     check
 }
 
-/// Does `pattern`, as written in `hook.skip` or `amont.severity.<pattern>`,
+/// Does `pattern`, as written in `hook.skip` or `greengate.severity.<pattern>`,
 /// name `check`?
 ///
 /// A check's id is `<trigger>-<name>`, and exactly three things name it:
@@ -198,7 +199,7 @@ pub fn skip_suppresses(check: &str, skip: &str) -> bool {
 /// chase nested objects for a yes/no question.
 #[derive(Debug, Clone)]
 pub struct CheckListing {
-    /// `<trigger>-<name>` — what `hook.skip` and `amont.severity.<key>`
+    /// `<trigger>-<name>` — what `hook.skip` and `greengate.severity.<key>`
     /// resolve against.
     pub id: String,
     pub short_name: String,
@@ -213,7 +214,7 @@ pub struct CheckListing {
     /// line that did not parse.
     pub manifest_severity: Option<check::Severity>,
     /// What `registry::Overrides::of` would actually apply — NOT the same as
-    /// `declared_severity` once `amont.severity.*` is configured. This is
+    /// `declared_severity` once `greengate.severity.*` is configured. This is
     /// the one thing the old text-only `list_checks` never reported, and the
     /// exact "declared vs. effective" gap that caused a real bug in the
     /// fleet's own severity column (see `greengate-fleet/src/severities.rs`).
@@ -273,7 +274,7 @@ pub struct ListOptions {
 /// Every check that would be considered for `stage_filter` (or both stages,
 /// when `None`), evaluated against `paths`.
 ///
-/// Reads `hook.skip` and `amont.severity.*` from the current repo's git
+/// Reads `hook.skip` and `greengate.severity.*` from the current repo's git
 /// config, same as the original `list_checks` did — this is why it is not
 /// unit-tested in isolation; see `hooks/pull_rebase.rs`'s own split between
 /// pure helpers (unit-tested) and config-dependent behaviour (integration
@@ -639,8 +640,8 @@ fn commit_style_json(style: &commit_style::Style, rows: &[commit_style::Setting]
 /// The format id this document declares, as its first field.
 ///
 /// Every other machine-readable thing this tool writes carries one and
-/// REFUSES what it does not recognise — `amont-gate-v1`, `amont-held-v1`,
-/// `amont-skew-v1`, `amont-bypasses-v1`, and `amont-attest-v2`, whose bump
+/// REFUSES what it does not recognise — `amont-gate-v1`, `greengate-held-v1`,
+/// `greengate-skew-v1`, `greengate-bypasses-v1`, and `amont-attest-v2`, whose bump
 /// exists precisely so a v1 verifier reads a v2 note as no note rather than
 /// misreading it. This document, the most public machine surface of the
 /// three, carried none: a reader had no way to state which contract it was
@@ -648,9 +649,9 @@ fn commit_style_json(style: &commit_style::Style, rows: &[commit_style::Setting]
 /// answer rather than a failure. Bump the version when a field's MEANING
 /// changes or one is removed; adding a field keeps it, which is what the
 /// object shape below was already for.
-pub const LIST_FORMAT: &str = "amont-list-v1";
+pub const LIST_FORMAT: &str = crate::names::LIST_FORMAT;
 
-/// `{"format": "amont-list-v1", "stage_filter": ..., "checks": [...]}` — an
+/// `{"format": "greengate-list-v1", "stage_filter": ..., "checks": [...]}` — an
 /// object, not a bare array, so a field can be added later without changing
 /// the top-level shape.
 pub fn print_json(
@@ -868,7 +869,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         print_downgrades(&downgrades);
         if !conventions_apply {
             println!(
-                "\n  ! conventions held back — no amont.conf here and amont.conventions \
+                "\n  ! conventions held back — no amont.conf here and greengate.conventions \
                  is `declared`; only the safety net runs"
             );
         }
@@ -879,7 +880,7 @@ pub fn list_checks(opts: ListOptions) -> i32 {
 /// The shadow-mode worksheet, only when there is one — a repository that has
 /// never warned about anything keeps its old output byte-for-byte.
 ///
-/// This is what a fortnight of `amont.severity.pre-commit warn` is FOR: the
+/// This is what a fortnight of `greengate.severity.pre-commit warn` is FOR: the
 /// counts are the argument, and the footer carries the one action a reader
 /// takes afterwards. Repeating a config line per row would bury it.
 fn print_downgrades(l: &downgrade::Ledger) {
@@ -929,7 +930,7 @@ fn print_downgrades(l: &downgrade::Ledger) {
     );
     if l.would_block > 0 {
         println!(
-            "  {} of them would have blocked — set amont.severity.<check> to keep one \
+            "  {} of them would have blocked — set greengate.severity.<check> to keep one \
              advisory when you go back to block",
             l.would_block
         );

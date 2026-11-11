@@ -4,7 +4,7 @@
 //! With nothing pending it costs one `stat` and spawns no `kubectl`. With
 //! something pending it takes the pending file's lock without waiting (busy
 //! means somebody else is collecting: return), and asks the cluster ONE
-//! question per hook process: `kubectl get workflows,pods -l 'amont.run in
+//! question per hook process: `kubectl get workflows,pods -l 'greengate.run in
 //! (…)' -o json`, under a 1 s request timeout and a wall deadline. A failed
 //! read keeps every record for the next hook.
 //!
@@ -215,6 +215,20 @@ fn collect_from(store: &Store) -> Collected {
 
 fn is_expired(record: &Pending, now: u64) -> bool {
     now > record.submitted + TTL_SECS + EXPIRY_SLACK_SECS
+}
+
+/// Whether the pending file at `path` still lists a run that has not
+/// outlived its Workflow by [`EXPIRY_SLACK_SECS`]: what `collect` would keep.
+/// `Ok(false)` for no file; `Err` for a file this version cannot read.
+pub(crate) fn lists_live(path: &std::path::Path, now: u64) -> Result<bool, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(super::pending::parse_file(&text)?
+        .iter()
+        .any(|record| !is_expired(record, now)))
 }
 
 /// The records grouped by the cluster they live on: one call each.
@@ -780,6 +794,30 @@ mod tests {
     use super::super::pending::tests::sample;
     use super::*;
 
+    #[test]
+    fn lists_live_skips_a_run_past_its_ttl_and_reads_the_owner_format() {
+        let dir = std::env::temp_dir().join(format!("greengate-lists-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: a scratch path; absent or left behind is harmless
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(super::super::PENDING_FILE);
+        let now = 1_800_000_000;
+        assert_eq!(lists_live(&file, now), Ok(false), "no file, no run");
+        let mut live = super::super::pending::tests::sample("wf-live");
+        live.submitted = now;
+        let mut gone = super::super::pending::tests::sample("wf-gone");
+        gone.submitted = now - TTL_SECS - EXPIRY_SLACK_SECS - 1;
+        std::fs::write(&file, super::super::pending::render_file(&[gone.clone()])).unwrap();
+        assert_eq!(
+            lists_live(&file, now),
+            Ok(false),
+            "a run past its TTL is not live"
+        );
+        std::fs::write(&file, super::super::pending::render_file(&[gone, live])).unwrap();
+        assert_eq!(lists_live(&file, now), Ok(true));
+        std::fs::write(&file, "not json").unwrap();
+        assert!(lists_live(&file, now).is_err());
+    }
+
     fn fixture(name: &str) -> String {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../greengate/tests/it/fixtures/argo");
@@ -821,19 +859,19 @@ mod tests {
         let node = node_name(&record.name, "g0");
         let pod = compact(&fixture("pod-succeeded.json"))
             .replace(
-                "\"workflows.argoproj.io/node-name\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-name\":\"greengate-handrun-pqtbl\"",
                 &format!("\"workflows.argoproj.io/node-name\":\"{node}\""),
             )
             .replace(
-                "\"workflows.argoproj.io/node-id\":\"amont-handrun-pqtbl\"",
+                "\"workflows.argoproj.io/node-id\":\"greengate-handrun-pqtbl\"",
                 "\"workflows.argoproj.io/node-id\":\"node-g0\"",
             )
-            .replace("amont-handrun-pqtbl", &record.name)
+            .replace("greengate-handrun-pqtbl", &record.name)
             .replace("b8eb52b7-8ede-4c1f-bd94-9ada529eec97", "uid-1")
             .replace("handrun-2", &record.label);
         let wf = format!(
             "{{\"kind\":\"Workflow\",\"metadata\":{{\"name\":\"{}\",\"uid\":\"uid-1\",\
-             \"labels\":{{\"amont.run\":\"{}\"}}}},\"status\":{{\"phase\":\"{phase}\",\
+             \"labels\":{{\"greengate.run\":\"{}\"}}}},\"status\":{{\"phase\":\"{phase}\",\
              \"nodes\":{{\"node-g0\":{{\"id\":\"node-g0\",\"name\":\"{node}\",\"type\":\"Pod\",\
              \"templateName\":\"gate-g0\",\"phase\":\"{node_phase}\"}}}}}}}}",
             record.name, record.label

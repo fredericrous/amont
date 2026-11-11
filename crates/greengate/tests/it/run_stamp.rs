@@ -75,10 +75,10 @@ fn amont(r: &Repo, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> (i32,
     let mut cmd = common::amont_cmd();
     cmd.args(args).current_dir(&r.dir).stdin(Stdio::null());
     // The busy policy is the repository's here, never the caller's: a
-    // rehearsal runs this suite with `AMONT_ON_BUSY=wait` (ADR-0013), which
+    // rehearsal runs this suite with `GREENGATE_ON_BUSY=wait` (ADR-0013), which
     // would override a fixture's `set onBusy defer`. `busy_defers` does the
     // same. A test that wants the variable passes it in `env`.
-    cmd.env_remove("AMONT_ON_BUSY");
+    cmd.env_remove("GREENGATE_ON_BUSY");
     for k in unset {
         cmd.env_remove(k);
     }
@@ -331,8 +331,8 @@ fn an_attested_tree_reads_as_attested_even_when_it_is_not_checked_out() {
             public.trim()
         ),
     );
-    r.git(&["config", "amont.attest", "true"]);
-    r.git(&["config", "amont.attestKey", &key.display().to_string()]);
+    r.git(&["config", "greengate.attest", "true"]);
+    r.git(&["config", "greengate.attestKey", &key.display().to_string()]);
 
     let stamped_tree = tree(&r);
     let (code, out) = amont(&r, &["run", "--stamp"], &[], &[]);
@@ -463,7 +463,8 @@ mod busy_host {
 
     fn slot_dir(tag: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("amont-runstamp-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-runstamp-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         dir
@@ -480,15 +481,15 @@ mod busy_host {
         let slots = slot_dir("defer");
         let _holder = Holder::hold(&slots.join("slot-0"));
         let busy = [
-            ("AMONT_SLOT_DIR", slots.to_str().unwrap()),
-            ("AMONT_HOST_SLOTS", "1"),
-            ("AMONT_IDLE_LOAD_SCALE", "1"),
+            ("GREENHARNESS_SLOT_DIR", slots.to_str().unwrap()),
+            ("GREENGATE_HOST_SLOTS", "1"),
+            ("GREENGATE_IDLE_LOAD_SCALE", "1"),
         ];
         let (code, out) = amont(
             &r,
             &["run", "--stamp", "pre-commit-check"],
             &busy,
-            &["AMONT_HOST_SLOT"],
+            &["GREENHARNESS_HOST_SLOT"],
         );
         assert_eq!(code, 4, "{out}");
         assert!(
@@ -506,9 +507,9 @@ mod busy_host {
             .arg("pre-commit")
             .current_dir(&r.dir)
             .stdin(Stdio::null())
-            .env_remove("AMONT_HOST_SLOT")
+            .env_remove("GREENHARNESS_HOST_SLOT")
             // the repository's busy policy, never the caller's (see `amont`)
-            .env_remove("AMONT_ON_BUSY");
+            .env_remove("GREENGATE_ON_BUSY");
         for (k, v) in busy {
             hook.env(k, v);
         }

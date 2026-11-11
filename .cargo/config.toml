@@ -1,12 +1,12 @@
 # Environment for every test binary cargo runs (ADR-0009).
 #
-# The integration tests spawn amont hundreds of times, often under amont's
+# The integration tests spawn greengate hundreds of times, often under greengate's
 # own gate on a loaded workstation. Two host-level knobs must not reach
 # them from the machine:
 #
-# - AMONT_HOST_SLOT=held: a fixture's heavy check would otherwise queue on
+# - GREENHARNESS_HOST_SLOT=held: a fixture's heavy check would otherwise queue on
 #   the real host slots, behind the very suite that is running it.
-# - AMONT_IDLE_LOAD_SCALE=1: every kill-time bound in timing.rs would
+# - GREENGATE_IDLE_LOAD_SCALE=1: every kill-time bound in timing.rs would
 #   otherwise stretch with the machine's load average.
 #
 # The slot and load fixtures remove both and set their own. The test
@@ -14,25 +14,33 @@
 # stops reaching the tests.
 #
 # `force`: without it a value the shell already exports wins, and an empty
-# AMONT_HOST_SLOT reads as "not held" — a fixture then queued on the real
-# slots behind the suite running it. Fixtures that start amont also pin
+# GREENHARNESS_HOST_SLOT reads as "not held" — a fixture then queued on the real
+# slots behind the suite running it. Fixtures that start greengate also pin
 # both through `common::amont_cmd`, which holds when cargo runs from
 # outside this repository and never reads this file.
 [env]
-AMONT_HOST_SLOT = { value = "held", force = true }
-AMONT_IDLE_LOAD_SCALE = { value = "1", force = true }
-# Shortens amont's own fixed waits by this factor in the test build only
-# (crates/amont-runtime/src/clock.rs), and the fixtures' sleeps with them
+# The developer's machine state stays out of reach of everything the test
+# build starts, a git hook's greengate included: greengate 4.0's first run
+# migrates the global git config and writes under `$XDG_CONFIG_HOME`, and a
+# fixture's `git commit` ran the shim with the real HOME (2026-11-11). The
+# fixtures set their git identity locally, so an empty global config is all
+# they need. A fixture that names its own `GIT_CONFIG_GLOBAL` still wins.
+XDG_CONFIG_HOME = { value = "target/test-sandbox/config", relative = true, force = true }
+GIT_CONFIG_GLOBAL = { value = "target/test-sandbox/gitconfig", relative = true, force = true }
+GREENHARNESS_HOST_SLOT = { value = "held", force = true }
+GREENGATE_IDLE_LOAD_SCALE = { value = "1", force = true }
+# Shortens greengate's own fixed waits by this factor in the test build only
+# (crates/greengate-runtime/src/clock.rs), and the fixtures' sleeps with them
 # (`common::secs`): a quiet run's log line, land's re-read, the tree-lint
 # slack and wait. The kill budgets are not scaled; timing.rs proves them on
 # the real clock.
-AMONT_TEST_CLOCK_SCALE = "0.25"
+GREENGATE_TEST_CLOCK_SCALE = "0.25"
 
 # Quiet runs write an active-run entry for relais's pane, keyed by the Claude
-# Code session (amont docs/quiet-runs.md). A test run by an agent inherits
+# Code session (docs/quiet-runs.md). A test run by an agent inherits
 # that agent's session, and its fixtures would appear in the person's live
 # pane; an empty session writes no entry, and any entry stays under target/.
-# `quiet_entries_never_reach_the_real_state_dir` in crates/amont-runtime/src/capture.rs fails if this
+# `quiet_entries_never_reach_the_real_state_dir` in crates/greengate-runtime/src/capture.rs fails if this
 # stops reaching the tests.
 CLAUDE_CODE_SESSION_ID = { value = "", force = true }
 QUIET_ACTIVE_DIR = { value = "target/quiet-active-test", relative = true, force = true }

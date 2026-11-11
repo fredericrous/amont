@@ -678,7 +678,7 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
     }
 }
 
-/// Run the installer with a custom `$AMONT_BIN_DIR`, the way somebody who
+/// Run the installer with a custom `$GREENGATE_BIN_DIR`, the way somebody who
 /// keeps their tools outside `~/.local/bin` would.
 fn install_with_bin_dir(s: &Sandbox, cwd: &Path, bin_dir: &Path) -> (i32, String) {
     let out = crate::common::amont_cmd()
@@ -687,7 +687,7 @@ fn install_with_bin_dir(s: &Sandbox, cwd: &Path, bin_dir: &Path) -> (i32, String
         .env("HOME", &s.0)
         .env("USERPROFILE", &s.0)
         .env("XDG_CONFIG_HOME", s.path(".config"))
-        .env("AMONT_BIN_DIR", bin_dir)
+        .env("GREENGATE_BIN_DIR", bin_dir)
         .output()
         .expect("run amont install");
     (
@@ -773,7 +773,7 @@ fn the_default_bin_dir_is_not_flagged() {
     let repo = s.path("repo");
     init_repo(&repo);
 
-    // No AMONT_BIN_DIR: the binary lands in $HOME/.local/bin, where an
+    // No GREENGATE_BIN_DIR: the binary lands in $HOME/.local/bin, where an
     // unbaked shim looks. `HOME` is the sandbox, so this is self-contained.
     let (code, out) = s.install(&repo);
 
@@ -784,7 +784,7 @@ fn the_default_bin_dir_is_not_flagged() {
     );
 }
 
-/// Run the installer with a chosen `PATH`, and with `$AMONT_BIN_DIR`
+/// Run the installer with a chosen `PATH`, and with `$GREENGATE_BIN_DIR`
 /// deliberately UNSET — the package-manager case.
 fn install_on_path(s: &Sandbox, cwd: &Path, path: &str) -> (i32, String) {
     let out = crate::common::amont_cmd()
@@ -793,7 +793,7 @@ fn install_on_path(s: &Sandbox, cwd: &Path, path: &str) -> (i32, String) {
         .env("HOME", &s.0)
         .env("USERPROFILE", &s.0)
         .env("XDG_CONFIG_HOME", s.path(".config"))
-        .env_remove("AMONT_BIN_DIR")
+        .env_remove("GREENGATE_BIN_DIR")
         .env("PATH", path)
         .output()
         .expect("run amont install");
@@ -941,7 +941,7 @@ fn amont_bin_dir_still_forces_a_copy() {
     assert_eq!(code, 0, "{out}");
     assert!(
         elsewhere.join("greengate").exists() || elsewhere.join("greengate.exe").exists(),
-        "AMONT_BIN_DIR was ignored:\n{out}"
+        "GREENGATE_BIN_DIR was ignored:\n{out}"
     );
 }
 
@@ -953,7 +953,7 @@ fn run_from(s: &Sandbox, exe: &Path, cwd: &Path, dir: &str) -> (i32, String) {
         .env("HOME", &s.0)
         .env("USERPROFILE", &s.0)
         .env("XDG_CONFIG_HOME", s.path(".config"))
-        .env_remove("AMONT_BIN_DIR")
+        .env_remove("GREENGATE_BIN_DIR")
         // git must stay reachable, so this PREPENDS to the inherited PATH
         // rather than replacing it — and joins with `env::join_paths`, because
         // the separator is `;` on Windows and a hand-built `a:b` string leaves

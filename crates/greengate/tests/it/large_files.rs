@@ -32,7 +32,7 @@ fn stage_of_size(r: &Repo, name: &str, mb: usize) {
 #[test]
 fn an_oversized_file_blocks_with_the_remedy_named() {
     let r = Repo::new();
-    r.git(&["config", "amont.largeFileBlock", "2"]);
+    r.git(&["config", "greengate.largeFileBlock", "2"]);
     stage_of_size(&r, "dataset.bin", 3);
     let (code, out) = run_check(&r);
     assert_ne!(code, 0, "{out}");
@@ -45,8 +45,8 @@ fn an_oversized_file_blocks_with_the_remedy_named() {
 #[test]
 fn a_merely_large_file_warns_and_passes() {
     let r = Repo::new();
-    r.git(&["config", "amont.largeFileWarn", "1"]);
-    r.git(&["config", "amont.largeFileBlock", "100"]);
+    r.git(&["config", "greengate.largeFileWarn", "1"]);
+    r.git(&["config", "greengate.largeFileBlock", "100"]);
     stage_of_size(&r, "big.pdf", 2);
     let (code, out) = run_check(&r);
     assert_eq!(code, 0, "{out}");

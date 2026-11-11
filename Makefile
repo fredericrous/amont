@@ -13,14 +13,14 @@ SRC_CTRL_HOOKS     := $(MAKEFILE_DIR)templates/hooks/*
 EXE                 = $(shell [ -f "$(MAKEFILE_DIR)target/release/greengate.exe" ] \
                         || [ -f "$(MAKEFILE_DIR)target/debug/greengate.exe" ] && echo .exe)
 # Where installed binaries go. Mirrors `install::bin_dir()` in the runtime,
-# which honours $AMONT_BIN_DIR and falls back to ~/.local/bin — so `make
+# which honours $GREENGATE_BIN_DIR and falls back to ~/.local/bin — so `make
 # install-fleet` lands beside whatever `greengate install` wrote.
 #
 # This was dropped in #62 when installation moved into the binary and the
 # Makefile's own install recipe went with it. `install-fleet` still referenced
 # it, so it expanded to nothing and the recipe ran `install … /greengate-fleet`
 # — an attempt to write to the filesystem root.
-INSTALL_BIN_DIR    ?= $(if $(AMONT_BIN_DIR),$(AMONT_BIN_DIR),$(HOME)/.local/bin)
+INSTALL_BIN_DIR    ?= $(if $(GREENGATE_BIN_DIR),$(GREENGATE_BIN_DIR),$(HOME)/.local/bin)
 
 DEBUG_BIN           = $(MAKEFILE_DIR)target/debug/greengate$(EXE)
 RELEASE_BIN         = $(MAKEFILE_DIR)target/release/greengate$(EXE)

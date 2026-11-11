@@ -431,7 +431,7 @@ pub(crate) fn pair_verdict(
     // The refs covered by their tip alone, as short shas for the line.
     let mut tips: Vec<String> = Vec::new();
     // Under `onBusy defer`, a commit whose gate the busy policy deferred is
-    // not "unstamped": its twin defers too (ADR-0013). `AMONT_ON_BUSY=wait`
+    // not "unstamped": its twin defers too (ADR-0013). `GREENGATE_ON_BUSY=wait`
     // turns this off and the twin runs.
     let defer = matches!(
         crate::host_slots::busy_policy(settings),

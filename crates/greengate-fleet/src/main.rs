@@ -53,7 +53,7 @@ const USAGE: &str = concat!(
   tui            the interactive dashboard
   install        turn hooks on across the root
   uninstall      take OUR shims back out — never a hook somebody else wrote,
-                 and never hook.skip or amont.severity
+                 and never hook.skip or greengate.severity
   fix            show what would be changed — DRY RUN unless --apply
   fix --apply    carry out the plan
 
@@ -517,7 +517,7 @@ fn main() -> ExitCode {
                 );
             }
         }
-        println!("hook.skip and amont.severity were left alone, as was any held work.");
+        eprintln!("hook.skip and greengate.severity were left alone, as was any held work.");
         // A shim that is still installed and still running, after the user
         // asked for it to be gone, is not a success.
         return if failed.is_empty() {

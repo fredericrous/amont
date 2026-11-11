@@ -99,7 +99,7 @@ fn each_placement_puts_the_emoji_where_it_says() {
         (Some("replace"), "✨  add a thing"),
     ] {
         if let Some(p) = placement {
-            r.git(&["config", "amont.commit.gitmoji", p]);
+            r.git(&["config", "greengate.commit.gitmoji", p]);
         }
         let (ok, out) = rewrite(&r, "feat: add a thing\n");
         assert!(ok, "{placement:?} rejected the message: {out:?}");
@@ -123,7 +123,7 @@ fn re_running_over_a_stored_message_is_a_no_op() {
     let r = Repo::new();
     let maximal = format!("feat: {}\n", "x".repeat(50));
     for placement in ["none", "prefix", "suffix", "replace"] {
-        r.git(&["config", "amont.commit.gitmoji", placement]);
+        r.git(&["config", "greengate.commit.gitmoji", placement]);
         for typed in ["feat(api)!: add a thing\n\nbody\n", maximal.as_str()] {
             let (ok, once) = rewrite(&r, typed);
             assert!(ok, "{placement} rejected {typed:?}: {once:?}");
@@ -147,7 +147,7 @@ fn re_running_over_a_stored_message_is_a_no_op() {
 #[test]
 fn an_emoji_the_author_chose_is_left_alone() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.gitmoji", "suffix"]);
+    r.git(&["config", "greengate.commit.gitmoji", "suffix"]);
     let (ok, out) = rewrite(&r, "feat: ship it 🚀\n");
     assert!(ok);
     assert_eq!(out.lines().next(), Some("feat: ship it 🚀 ✨"), "{out:?}");
@@ -213,7 +213,7 @@ fn the_configured_limits_are_what_is_enforced() {
     let sixty = format!("feat: {}\n", "d".repeat(60));
     assert!(!rewrite(&r, &sixty).0, "60 > the default budget of 50");
 
-    r.git(&["config", "amont.commit.descriptionMax", "60"]);
+    r.git(&["config", "greengate.commit.descriptionMax", "60"]);
     assert!(rewrite(&r, &sixty).0, "a raised budget was not honoured");
 
     // And the boundary is exact, on both sides of it.
@@ -221,7 +221,7 @@ fn the_configured_limits_are_what_is_enforced() {
     assert!(!rewrite(&r, &sixty_one).0, "61 > the configured 60");
 
     let r2 = Repo::new();
-    r2.git(&["config", "amont.commit.subjectMax", "20"]);
+    r2.git(&["config", "greengate.commit.subjectMax", "20"]);
     assert!(!rewrite(&r2, "feat: a description that is plainly too long\n").0);
     assert!(rewrite(&r2, "feat: short\n").0);
 }
@@ -242,7 +242,7 @@ fn a_zero_wrap_column_leaves_the_body_alone() {
     );
 
     let r2 = Repo::new();
-    r2.git(&["config", "amont.commit.bodyWrap", "0"]);
+    r2.git(&["config", "greengate.commit.bodyWrap", "0"]);
     let (ok, intact) = rewrite(&r2, &msg);
     assert!(ok);
     assert!(
@@ -257,12 +257,12 @@ fn a_zero_wrap_column_leaves_the_body_alone() {
 #[test]
 fn a_bad_config_value_is_never_silent() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.descriptionMax", "wide"]);
+    r.git(&["config", "greengate.commit.descriptionMax", "wide"]);
     r.write("MSG", "feat: a short one\n");
     let run = r.hook("commit-msg", &["MSG"]);
     assert!(run.passed(), "the default should still apply");
     assert!(
-        run.says("amont.commit.descriptionMax"),
+        run.says("greengate.commit.descriptionMax"),
         "the key was not named: {:?}",
         run.output()
     );
@@ -277,11 +277,15 @@ fn a_bad_config_value_is_never_silent() {
 #[test]
 fn a_limit_outside_its_range_is_reported_and_ignored() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.subjectMax", "0"]);
+    r.git(&["config", "greengate.commit.subjectMax", "0"]);
     r.write("MSG", "feat: a short one\n");
     let run = r.hook("commit-msg", &["MSG"]);
     assert!(run.passed(), "a zero limit must not block everything");
-    assert!(run.says("amont.commit.subjectMax"), "{:?}", run.output());
+    assert!(
+        run.says("greengate.commit.subjectMax"),
+        "{:?}",
+        run.output()
+    );
 }
 
 /// A word that is not a placement names what was wanted, rather than sending
@@ -289,7 +293,7 @@ fn a_limit_outside_its_range_is_reported_and_ignored() {
 #[test]
 fn an_unknown_placement_lists_the_ones_that_exist() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.gitmoji", "sideways"]);
+    r.git(&["config", "greengate.commit.gitmoji", "sideways"]);
     r.write("MSG", "feat: a short one\n");
     let run = r.hook("commit-msg", &["MSG"]);
     assert!(run.passed());

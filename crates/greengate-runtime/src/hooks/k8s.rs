@@ -394,10 +394,11 @@ mod tests {
         if which("kustomize").is_none() || which("kubeconform").is_none() {
             return;
         }
-        let tmp = std::env::temp_dir().join(format!("amont-loadrestrictor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let shared = tmp.join("shared");
-        let overlay = tmp.join("overlay");
+        let scratch_dir =
+            std::env::temp_dir().join(format!("greengate-loadrestrictor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        let shared = scratch_dir.join("shared");
+        let overlay = scratch_dir.join("overlay");
         std::fs::create_dir_all(&shared).unwrap();
         std::fs::create_dir_all(&overlay).unwrap();
         std::fs::write(
@@ -413,22 +414,22 @@ mod tests {
         )
         .unwrap();
 
-        let root = tmp.to_string_lossy().to_string();
+        let root = scratch_dir.to_string_lossy().to_string();
         assert!(
             validate_root(&test_settings(), &root, "overlay", None),
             "a kustomization built from ../shared must validate — kustomize-controller renders it"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 
     #[test]
     fn walks_up_to_the_nearest_kustomization_root() {
-        let tmp = std::env::temp_dir().join("amont-kustomize-test");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let base = tmp.join("kubernetes/app/base");
+        let scratch_dir = std::env::temp_dir().join("greengate-kustomize-test");
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        let base = scratch_dir.join("kubernetes/app/base");
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("kustomization.yaml"), "resources: []").unwrap();
-        let root = tmp.to_string_lossy().to_string();
+        let root = scratch_dir.to_string_lossy().to_string();
 
         let found = kustomization_roots(&root, &["kubernetes/app/base/deploy.yaml".into()]);
         assert_eq!(found, vec!["kubernetes/app/base".to_string()]);
@@ -436,6 +437,6 @@ mod tests {
         // nothing above it → no root, and therefore nothing to validate
         let none = kustomization_roots(&root, &["kubernetes/loose/deploy.yaml".into()]);
         assert!(none.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
     }
 }

@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn tree_run_spawn_error() {
         let r = run(
-            &["amont-no-such-program-xyz".to_string()],
+            &["greengate-no-such-program-xyz".to_string()],
             Path::new("."),
             soon(5_000),
             &AtomicBool::new(false),
@@ -462,7 +462,7 @@ mod tests {
     /// file, and the test failed on reading it rather than on a survivor.
     #[test]
     fn tree_run_timed_out_leaves_no_child_alive() {
-        let dir = std::env::temp_dir().join(format!("amont-tree-run-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-tree-run-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let pidfile = dir.join("grandchild.pid");
         let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
@@ -486,7 +486,7 @@ mod tests {
     /// above), and what the tool printed before exiting 0 is still returned.
     #[test]
     fn run_output_kills_a_child_left_holding_the_pipe_and_keeps_the_answer() {
-        let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let pgidfile = dir.join("group.pid");
         let script = format!(

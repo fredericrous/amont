@@ -2,7 +2,7 @@
 //! "is this silent check stuck, or just quiet?" (ADR-0008, `hooks.liveness`).
 //!
 //! The silence budget used to be the whole test: a tool that printed nothing
-//! for `amont.idleTimeout` was killed. vitest without a terminal prints its
+//! for `greengate.idleTimeout` was killed. vitest without a terminal prints its
 //! summary and nothing before it, so a suite with every test passing looked
 //! exactly like a hang. What a hang does NOT do is burn CPU, so this module
 //! measures that, and the caller keeps a silent check alive while its tree is

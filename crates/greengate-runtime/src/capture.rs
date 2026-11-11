@@ -93,7 +93,11 @@ fn repo() -> &'static str {
 /// `<git-dir>/amont/logs`, created 0700. `None` outside a repository.
 pub fn log_dir() -> Option<PathBuf> {
     let git_dir = crate::git::stdout(&["rev-parse", "--absolute-git-dir"])?;
-    Some(PathBuf::from(git_dir).join("amont").join("logs"))
+    Some(
+        PathBuf::from(git_dir)
+            .join(crate::names::STATE_DIR)
+            .join("logs"),
+    )
 }
 
 impl Capture {
@@ -101,7 +105,7 @@ impl Capture {
     /// returned: the excerpt still works without a file.
     pub fn open(dir: Option<PathBuf>, check: &str) -> Capture {
         #[cfg(feature = "test-hooks")]
-        let fail_after = std::env::var("AMONT_TEST_LOG_FAIL_AFTER")
+        let fail_after = std::env::var("GREENGATE_TEST_LOG_FAIL_AFTER")
             .ok()
             .and_then(|v| v.parse().ok());
         #[cfg(not(feature = "test-hooks"))]
@@ -139,7 +143,7 @@ impl Capture {
         let entry = file.as_ref().and_then(|_| {
             greenharness_quiet::Entry::start(
                 &greenharness_quiet::dir_from_env()?,
-                "amont",
+                crate::names::SLOT_HOLDER,
                 &session,
                 check,
                 repo,
@@ -320,9 +324,10 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("amont-capture-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        d
+        let scratch_dir =
+            std::env::temp_dir().join(format!("greengate-capture-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch_dir); // best-effort: a scratch path; absent or left behind is harmless
+        scratch_dir
     }
 
     #[test]

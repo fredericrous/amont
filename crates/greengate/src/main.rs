@@ -1,6 +1,6 @@
 //! The hook binary — argument handling only.
 //!
-//! Everything it does lives in `amont-runtime`. Git invokes exactly five
+//! Everything it does lives in `greengate-runtime`. Git invokes exactly five
 //! hook names; the shim passes its own filename through, and the registry maps
 //! that name to a handler.
 //!
@@ -78,7 +78,7 @@ const USAGE: &str = concat!(
     "                 the tool's own output as it comes]\n",
     "  rehearse       run the push gate on a snapshot of HEAD in the background\n",
     "                 and stamp the tree, so `git push` skips the suite\n",
-    "                 (`git config amont.rehearseOnCommit true` does this after\n",
+    "                 (`git config greengate.rehearseOnCommit true` does this after\n",
     "                 every commit) [--wait: follow it, or run it here if none]\n",
     "                 [--status] [--stop] [--cluster: send the gates the cluster\n",
     "                 may run to an Argo Workflow that outlives this machine;\n",
@@ -86,6 +86,16 @@ const USAGE: &str = concat!(
     "  cluster collect  turn the finished detached Workflows of this repository\n",
     "                 into cluster tokens now (every commit and push does it)\n",
     "  restore        bring back unstaged changes a killed pre-commit left parked\n",
+    "  migrate        move greengate 3.x's state and amont.* keys in this\n",
+    "                 repository, and the machine's global keys, to greengate's\n",
+    "                 names (every command does it once by itself)\n",
+    "                 [--global: read the machine's keys again]\n",
+    "                 [--reverse: back to 3.x's names, before a downgrade; 4.0\n",
+    "                 then leaves the repository alone until `migrate`]\n",
+    "  doctor         list greengate 3.x names still set here: AMONT_*\n",
+    "                 variables, amont.* keys, state left in .git; exits 1 when\n",
+    "                 any is left (not an error), 0 when none, 2 when it\n",
+    "                 could not look (git failed)\n",
     "  agents-md      write the agent-guidance block into AGENTS.md, plus the\n",
     "                 CLAUDE.md signpost pointing at it (both generated, both\n",
     "                 checked) [--check: report drift only] [--path <file>]\n",
@@ -156,8 +166,9 @@ const USAGE: &str = concat!(
     "Hook mode (what the shims call): ",
     greengate_runtime::bin!(),
     " --hooks-dir <dir> <hook-name> [args…]\n",
-    "Formerly amont: `amont` runs this binary, and amont.conf, amont.* keys\n",
-    "and AMONT_* variables keep their names.\n",
+    "Formerly amont: `amont` runs this binary. greengate 4.0 reads greengate.*\n",
+    "keys and GREENGATE_* variables only; its first run in a repository moves\n",
+    "greengate 3.x's state and keys there (`migrate`).\n",
     "The full manual: https://greenharness.github.io/greengate/\n",
 );
 
@@ -186,6 +197,8 @@ enum Sub {
     Slots,
     Stamps,
     Cluster,
+    Migrate,
+    Doctor,
 }
 
 impl Sub {
@@ -224,6 +237,8 @@ impl Sub {
             Sub::Slots => 18,
             Sub::Stamps => 19,
             Sub::Cluster => 20,
+            Sub::Migrate => 21,
+            Sub::Doctor => 22,
         }
     }
 }
@@ -233,7 +248,7 @@ impl Sub {
 /// There were previously seven independent string comparisons scattered down
 /// `main`, each asked twice (once of `hook`, once of `rest.first()`), which is
 /// fourteen places for the set of verbs to be. This is one.
-const SUBCOMMANDS: [(&str, Sub); 21] = [
+const SUBCOMMANDS: [(&str, Sub); 23] = [
     ("list", Sub::List),
     ("setup", Sub::Setup),
     ("install", Sub::Install),
@@ -255,6 +270,8 @@ const SUBCOMMANDS: [(&str, Sub); 21] = [
     ("slots", Sub::Slots),
     ("stamps", Sub::Stamps),
     ("cluster", Sub::Cluster),
+    ("migrate", Sub::Migrate),
+    ("doctor", Sub::Doctor),
 ];
 
 /// The only place a string is compared against the verb set.
@@ -388,7 +405,7 @@ fn die_on_sigpipe() {}
 
 fn main() {
     die_on_sigpipe();
-    // Settle `AMONT_REHEARSAL` here, on the main thread, before anything can
+    // Settle `GREENGATE_REHEARSAL` here, on the main thread, before anything can
     // spawn one. Reading it REMOVES it from the environment — deliberately,
     // so the test suite a check spawns does not inherit it and believe
     // itself a rehearsal — and `std::env::remove_var` is not thread-safe:
@@ -422,8 +439,125 @@ fn main() {
             hooks_dir,
             name,
             args,
-        } => std::process::exit(run_hook(&hooks_dir, &name, &args)),
+        } => {
+            migrate_first();
+            std::process::exit(run_hook(&hooks_dir, &name, &args))
+        }
     }
+}
+
+/// greengate 4.0's first run here moves greengate 3.x's state and keys
+/// (`migrate`): a `stat` of the done-marker on every later run. A migration
+/// that cannot finish refuses the command, naming what to fix, so no check
+/// runs on half-moved state.
+fn migrate_first() {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if let Err(why) = greengate_runtime::migrate::ensure(
+        &cwd,
+        &greengate_runtime::migrate::system_git,
+        now_secs(),
+    ) {
+        eprintln!("{BIN}: {}", sanitize_lines(&why.to_string()));
+        eprintln!("{BIN}: {MIGRATE_HINT}");
+        std::process::exit(1);
+    }
+}
+
+/// The clock, read here and handed to the migration, which keeps no clock
+/// of its own.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// What a migration that stopped says after its reason.
+const MIGRATE_HINT: &str = concat!(
+    "the move to greengate's names stopped; what it did not reach keeps\n",
+    "its old name. After the step above, run the command again, or\n",
+    "`",
+    greengate_runtime::bin!(),
+    " doctor` to list what is left."
+);
+
+/// [`greengate_runtime::ui::sanitize`] line by line: a message laid out
+/// over several lines keeps them, and each is cleaned of control bytes.
+fn sanitize_lines(text: &str) -> String {
+    text.lines()
+        .map(greengate_runtime::ui::sanitize)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `greengate migrate [--reverse] [--global]`.
+fn migrate_command(args: &[OsString]) -> Result<(), String> {
+    migrate_verb(args)
+        .map_err(|why| format!("{BIN}: {}\n{BIN}: {MIGRATE_HINT}", sanitize_lines(&why)))
+}
+
+fn migrate_verb(args: &[OsString]) -> Result<(), String> {
+    use greengate_runtime::migrate::{self, Direction, Repo};
+    let git = &migrate::system_git;
+    let reverse = args.iter().any(|a| a == "--reverse");
+    let global = args.iter().any(|a| a == "--global");
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let repo = Repo::locate(&cwd);
+    if reverse {
+        let mut moved = migrate::Moved::default();
+        if let Some(repo) = &repo {
+            moved = migrate::migrate_repo(repo, Direction::Reverse, git, now_secs())
+                .map_err(|e| e.to_string())?;
+        } else if !global {
+            return Err(
+                "not inside a git repository (`--global` moves the machine's keys alone)".into(),
+            );
+        }
+        if global {
+            moved.keys += migrate::reverse_global(git)
+                .map_err(|e| e.to_string())?
+                .keys;
+        }
+        eprintln!(
+            "moved {} names and {} keys back to greengate 3.x's; greengate 4.0 leaves {} alone \
+             until `{BIN} migrate` is run there",
+            moved.state,
+            moved.keys,
+            if repo.is_some() {
+                "this repository"
+            } else {
+                "them"
+            }
+        );
+        return Ok(());
+    }
+    // Asked for by name: run again even where a marker says done, so a 3.x
+    // run after a rollback is moved too.
+    if let Some(repo) = &repo {
+        for marker in [
+            repo.marker(),
+            repo.common.join(greengate_runtime::names::REVERSED_MARKER),
+        ] {
+            match std::fs::remove_file(&marker) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!("could not remove {}: {e}", marker.display()));
+                }
+                _ => {}
+            }
+        }
+    }
+    if global {
+        migrate::forget_global().map_err(|e| e.to_string())?;
+    }
+    let moved = migrate::ensure(&cwd, git, now_secs()).map_err(|e| e.to_string())?;
+    if moved.state + moved.keys == 0 {
+        eprintln!("nothing of greengate 3.x's to move here");
+    } else {
+        eprintln!(
+            "moved {} names and {} keys to greengate's",
+            moved.state, moved.keys
+        );
+    }
+    Ok(())
 }
 
 /// The flags each verb takes — `flags` stand alone, `valued` consume the next
@@ -462,6 +596,8 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),
         Sub::Cluster => (&[], &[]),
+        Sub::Migrate => (&["--reverse", "--global"], &[]),
+        Sub::Doctor => (&[], &[]),
     }
 }
 
@@ -544,6 +680,17 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             println!("{}", greengate_runtime::land::usage_json());
         }
         return 2;
+    }
+    // Only now, once the call is known to do something: not for a help,
+    // version or usage error above, not before a verb that must work on 3.x
+    // state as it is (restore, uninstall), not for the migration's own verbs,
+    // and not for a dry run, which promises to change nothing.
+    let exempt = matches!(
+        sub,
+        Sub::Restore | Sub::Uninstall | Sub::Migrate | Sub::Doctor
+    ) || own.iter().any(|a| a == "--dry-run");
+    if !exempt {
+        migrate_first();
     }
     match sub {
         // `amont list` — what would run here, and why. Lives in the HOOK
@@ -648,6 +795,27 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         // `amont cluster collect` — turn finished detached Workflows into
         // cluster tokens now (ADR-0017).
         Sub::Cluster => greengate_runtime::cluster::collect_command(args),
+        Sub::Migrate => report(migrate_command(args)),
+        Sub::Doctor => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let found = match greengate_runtime::migrate::leftovers(
+                &cwd,
+                &greengate_runtime::migrate::system_git,
+            ) {
+                Ok(found) => found,
+                Err(why) => {
+                    eprintln!("{BIN}: doctor could not look: {why}");
+                    return 2;
+                }
+            };
+            for line in &found {
+                println!("{}", greengate_runtime::ui::sanitize(line));
+            }
+            if found.is_empty() {
+                eprintln!("no greengate 3.x names left here");
+            }
+            i32::from(!found.is_empty())
+        }
         // `amont enroll` — the machine-level standing grant: template dir +
         // `init.templateDir`, optionally scoping the conventions to declared
         // repositories. One command in the onboarding doc instead of one
@@ -702,7 +870,8 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             // that fails after an earlier one landed would leave a manifest
             // nobody asked for — the same "refused whole" rule the row parser
             // applies within a single pack.
-            let scratch = std::env::temp_dir().join(format!("amont-pack-{}", std::process::id()));
+            let scratch =
+                std::env::temp_dir().join(format!("greengate-pack-{}", std::process::id()));
             let mut fetched: Vec<(String, String, Vec<String>)> = Vec::new();
             for (i, spec) in specs.iter().enumerate() {
                 let outcome = pack::parse_source(spec).and_then(|source| {
@@ -1021,7 +1190,7 @@ fn run_mode(args: &[OsString]) -> i32 {
     let (manifest, settings) = greengate_runtime::manifest::load_resolved(std::path::Path::new(
         &greengate_runtime::hooks::common::repo_root(),
     ));
-    // `--quiet` / `--raw` decide `amont.quiet` for this run only; the last
+    // `--quiet` / `--raw` decide `greengate.quiet` for this run only; the last
     // one given wins, like any repeated flag.
     if let Some(flag) = args.iter().rev().find(|a| *a == "--quiet" || *a == "--raw") {
         settings.override_quiet(if flag == "--quiet" {

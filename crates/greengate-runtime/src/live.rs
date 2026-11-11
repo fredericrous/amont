@@ -22,7 +22,7 @@
 //!
 //! Order across checks is COMPLETION order — deterministic per block, not
 //! per stage, which is the same nondeterminism the interleaved version had
-//! without the shuffling. `amont.progress false` switches the whole
+//! without the shuffling. `greengate.progress false` switches the whole
 //! mechanism off and restores raw streaming for anyone who wants to watch a
 //! tool write in real time.
 //!
@@ -174,7 +174,7 @@ impl Stage {
             let weak = Arc::downgrade(&stage);
             let own = settings.for_thread();
             let _ = std::thread::Builder::new()
-                .name("amont-live".into())
+                .name("greengate-live".into())
                 .spawn(move || tick(own, weak));
         } else if enabled(settings) || stage.quiet {
             // Nobody is watching a terminal — an agent, CI, a pipe — and a
@@ -185,7 +185,7 @@ impl Stage {
             let weak = Arc::downgrade(&stage);
             let own = settings.for_thread();
             let _ = std::thread::Builder::new()
-                .name("amont-heartbeat".into())
+                .name("greengate-heartbeat".into())
                 .spawn(move || heartbeat(own, weak));
         }
         stage
@@ -435,7 +435,7 @@ pub enum RowCpu {
     /// commands): nothing to say.
     None,
     /// A command is attached but its CPU is not sampled here
-    /// (`amont.idleCpuCredit false`, no silence budget, or the platform):
+    /// (`greengate.idleCpuCredit false`, no silence budget, or the platform):
     /// silence alone counts.
     NotSampled,
     /// Sampled, but nothing fresh to report (not quiet long enough yet, or
@@ -501,7 +501,7 @@ pub struct Budgets {
     pub idle: u64,
     pub ceiling: u64,
     pub lock_wait: u64,
-    /// The extended silence budget, `idle × amont.idleLoadScale`: what a
+    /// The extended silence budget, `idle × greengate.idleLoadScale`: what a
     /// check answers to while its CPU cannot be measured.
     pub extended: u64,
 }
@@ -886,7 +886,7 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
     );
     if let Some((secs, n)) = row.queued {
         line.push_str(&format!(
-            ", queued {} for a host slot (amont.hostSlots {n})",
+            ", queued {} for a host slot (greengate.hostSlots {n})",
             human_secs(secs as u64)
         ));
     } else if let Some((kind, waited)) = row.wait {
@@ -896,8 +896,8 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             human_secs(waited as u64)
         ));
         match budgets.lock_wait {
-            0 => line.push_str(" (amont.lockWait 0: until the ceiling)"),
-            s => line.push_str(&format!(" (amont.lockWait {})", human_secs(s))),
+            0 => line.push_str(" (greengate.lockWait 0: until the ceiling)"),
+            s => line.push_str(&format!(" (greengate.lockWait {})", human_secs(s))),
         }
     } else {
         match row.cpu {
@@ -912,7 +912,7 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
         }
         if let (Some((applied, load, factor)), false) = (row.load, row.cpu == RowCpu::Unmeasured) {
             line.push_str(&format!(
-                ", budget {} (load avg {} on {} cores, {} — amont.idleLoadScale)",
+                ", budget {} (load avg {} on {} cores, {} — greengate.idleLoadScale)",
                 human_secs(applied),
                 load.avg1_text(),
                 load.cores,
@@ -933,8 +933,8 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             // In a declared wait the silence clock is not running: the rule
             // in force is the wait's own budget.
             _ if row.wait.is_some() => line.push_str(&format!(
-                " (killed after {} in the wait, or {ceiling} in total — amont.lockWait / \
-                 amont.timeout)",
+                " (killed after {} in the wait, or {ceiling} in total — greengate.lockWait / \
+                 greengate.timeout)",
                 match budgets.lock_wait {
                     0 => ceiling.clone(),
                     s => human_secs(s),
@@ -944,15 +944,15 @@ fn beat_line(row: &Row, first: bool, budgets: Budgets, on_push: bool) -> String 
             // one: while CPU is unmeasured that is the extended budget.
             RowCpu::Unmeasured if budgets.idle > 0 => line.push_str(&format!(
                 " (killed after {} with no output while its CPU is unmeasured, or {ceiling} \
-                 in total — amont.idleTimeout × amont.idleLoadScale / amont.timeout)",
+                 in total — greengate.idleTimeout × greengate.idleLoadScale / greengate.timeout)",
                 human_secs(budgets.extended.max(budgets.idle))
             )),
             RowCpu::Busy(_) | RowCpu::Idle if budgets.idle > 0 => line.push_str(&format!(
                 " (killed after {idle} with no output and under 0.1 core of CPU, or \
-                 {ceiling} in total — amont.idleTimeout / amont.timeout)"
+                 {ceiling} in total — greengate.idleTimeout / greengate.timeout)"
             )),
             _ => line.push_str(&format!(
-                " (killed after {idle} of silence or {ceiling} in total — amont.idleTimeout / amont.timeout)"
+                " (killed after {idle} of silence or {ceiling} in total — greengate.idleTimeout / greengate.timeout)"
             )),
         }
         if row.cpu == RowCpu::NotSampled && budgets.idle > 0 {
@@ -1127,7 +1127,7 @@ macro_rules! say {
 pub fn quiet(settings: &crate::config::Settings) -> bool {
     *settings.quiet.get_or_init(|| {
         decide(
-            crate::config::enumerated_or(settings, "amont.quiet", QUIET_VALUES, "auto"),
+            crate::config::enumerated_or(settings, "greengate.quiet", QUIET_VALUES, "auto"),
             watching(),
         )
     })
@@ -1146,12 +1146,12 @@ fn decide(setting: &str, watching: bool) -> bool {
     }
 }
 
-/// Whether the capture mechanism is on at all. `amont.progress false` is the
+/// Whether the capture mechanism is on at all. `greengate.progress false` is the
 /// escape hatch back to raw streaming — one knob, read once.
 pub fn enabled(settings: &crate::config::Settings) -> bool {
     *settings
         .progress
-        .get_or_init(|| crate::config::boolean_or(settings, "amont.progress", true))
+        .get_or_init(|| crate::config::boolean_or(settings, "greengate.progress", true))
 }
 
 /// Is anyone watching? True only when stderr is a real terminal that speaks
@@ -1301,7 +1301,7 @@ mod tests {
         assert_eq!(
             beat,
             "  … pre-push-run-tests-js still running: 1m00s, last output 1m00s ago, \
-             queued 1m00s for a host slot (amont.hostSlots 2)\n"
+             queued 1m00s for a host slot (greengate.hostSlots 2)\n"
         );
     }
 
@@ -1328,7 +1328,7 @@ mod tests {
         let beat = beat_line(&r, false, B, false);
         assert!(
             beat.ends_with(
-                ", CPU idle 2m10s, budget 7m48s (load avg 31.2 on 8 cores, ×3.9 — amont.idleLoadScale)\n"
+                ", CPU idle 2m10s, budget 7m48s (load avg 31.2 on 8 cores, ×3.9 — greengate.idleLoadScale)\n"
             ),
             "{beat:?}"
         );
@@ -1373,7 +1373,7 @@ mod tests {
             ),
             "{first:?}"
         );
-        assert!(first.contains("amont.idleLoadScale"), "{first:?}");
+        assert!(first.contains("greengate.idleLoadScale"), "{first:?}");
     }
 
     /// A declared wait replaces the silence countdown in the region and
@@ -1402,18 +1402,20 @@ mod tests {
         assert_eq!(
             beat,
             "  … pre-push-run-tests-js still running: 4m00s, last output 2m10s ago, \
-             waiting for the cargo lock on the build directory 1m30s (amont.lockWait 10m00s)\n"
+             waiting for the cargo lock on the build directory 1m30s (greengate.lockWait 10m00s)\n"
         );
         let beat = beat_line(&r, false, until, false);
         assert!(
-            beat.contains("(amont.lockWait 0: until the ceiling)"),
+            beat.contains("(greengate.lockWait 0: until the ceiling)"),
             "{beat:?}"
         );
         // The first beat states the wait's rule, not the CPU one: the
         // silence clock is not running.
         let first = flat(&beat_line(&r, true, B, false));
         assert!(
-            first.contains("(killed after 10m00s in the wait, or 1h00m in total — amont.lockWait"),
+            first.contains(
+                "(killed after 10m00s in the wait, or 1h00m in total — greengate.lockWait"
+            ),
             "{first:?}"
         );
         assert!(!first.contains("unmeasured"), "{first:?}");
@@ -1595,9 +1597,9 @@ mod tests {
             first.contains("2m00s of silence or 1h00m in total"),
             "{first:?}"
         );
-        assert!(first.contains("amont.idleTimeout"), "{first:?}");
+        assert!(first.contains("greengate.idleTimeout"), "{first:?}");
         let later = beat_line(&r, false, B, false);
-        assert!(!later.contains("amont.idleTimeout"), "{later:?}");
+        assert!(!later.contains("greengate.idleTimeout"), "{later:?}");
         let off = beat_line(
             &r,
             true,

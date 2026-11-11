@@ -8,11 +8,11 @@
 //!
 //! ## The shape
 //!
-//! - `post-commit` (opted in with `git config amont.rehearseOnCommit true`)
+//! - `post-commit` (opted in with `git config greengate.rehearseOnCommit true`)
 //!   spawns a detached WORKER: its own process group, stdio on a log file,
 //!   no terminal. git never waits for it.
 //! - The worker checks out `HEAD` into a throwaway worktree — the same
-//!   [`crate::pushed_tree`] machinery `amont.testPushedTree` uses — and
+//!   [`crate::pushed_tree`] machinery `greengate.testPushedTree` uses — and
 //!   drives the ordinary pre-push dispatcher there, with the branch and its
 //!   upstream as the ref line. The snapshot is what makes this safe to run
 //!   while you keep editing: the suite reads a tree nobody is touching, and
@@ -30,11 +30,11 @@
 //!
 //! ## What is written where
 //!
-//! `$GIT_DIR/amont-rehearsal` — the worktree-PRIVATE git dir, like the gate
+//! `$GIT_DIR/greengate-rehearsal` — the worktree-PRIVATE git dir, like the gate
 //! marker: the commit that started this happened in this worktree, and the
 //! push that will ask about it comes from here too. One small text file:
 //! pid, commit, tree, start time, snapshot path, phase. Its log sits beside
-//! it as `amont-rehearsal.log`. Nothing here is a second source of truth
+//! it as `greengate-rehearsal.log`. Nothing here is a second source of truth
 //! about whether a gate passed — that is the stamp's job; this file only
 //! says whether someone is still working on it, so a push can decide
 //! between waiting and running.
@@ -58,7 +58,7 @@ use crate::hooks::common::{human_secs, warn};
 use crate::ui::{highlight, valid_sign, warning_sign};
 
 /// The opt-in: rehearse after every commit.
-const ON_COMMIT: &str = "amont.rehearseOnCommit";
+const ON_COMMIT: &str = "greengate.rehearseOnCommit";
 
 /// How long a PUSH may wait for a running rehearsal before giving up and
 /// running the gate itself. `0` means no limit.
@@ -66,7 +66,7 @@ const ON_COMMIT: &str = "amont.rehearseOnCommit";
 /// [`await_for`] runs inside `pre-push`, which is to say after git has opened
 /// its connection to the remote and while that connection sits idle — the
 /// exact window this whole feature exists to shorten. Waiting was bounded
-/// only by the worker's own deadline, which is `amont.timeout`: an hour by
+/// only by the worker's own deadline, which is `greengate.timeout`: an hour by
 /// default, and unbounded where somebody has set it to `0`. So the mechanism
 /// built to stop a four-minute suite killing a push could hold the same
 /// connection open for far longer than the suite would have.
@@ -76,7 +76,7 @@ const ON_COMMIT: &str = "amont.rehearseOnCommit";
 /// connection alive for the gate that follows it. `amont rehearse --wait`
 /// has no budget: nothing is connected there, and a person who typed it is
 /// asking to be told when the suite ends.
-const WAIT_BUDGET: &str = "amont.rehearsalWait";
+const WAIT_BUDGET: &str = "greengate.rehearsalWait";
 
 pub fn wait_budget(settings: &crate::config::Settings) -> Option<Duration> {
     match crate::config::integer_or(settings, WAIT_BUDGET, 300, 0..=86_400) {
@@ -86,19 +86,19 @@ pub fn wait_budget(settings: &crate::config::Settings) -> Option<Duration> {
 }
 
 /// The state file, inside `$GIT_DIR`.
-const STATE: &str = "amont-rehearsal";
+const STATE: &str = crate::names::REHEARSAL_STATE;
 /// The detached worker's stdout and stderr, beside it.
-const LOG: &str = "amont-rehearsal.log";
+const LOG: &str = crate::names::REHEARSAL_LOG;
 /// First line of the state file — bump when the layout changes, and an
 /// older binary reads the file as "no rehearsal", which re-runs the gate.
-const FORMAT: &str = "amont-rehearsal-v1";
+const FORMAT: &str = crate::names::REHEARSAL_FORMAT;
 
 /// Set in the environment of the pre-push run a worker drives inside the
 /// snapshot. The dispatcher reads it to run the content gates only — the
 /// push-shaped checks (branch-protect, secrets, the auto-rebase) ask about a
 /// push that is not happening — and to skip the wait below, which would
 /// otherwise be a process waiting for itself.
-pub const ENV: &str = "AMONT_REHEARSAL";
+pub const ENV: &str = "GREENGATE_REHEARSAL";
 
 /// Does this repository rehearse after every commit?
 pub fn on_commit_enabled(settings: &crate::config::Settings) -> bool {
@@ -114,10 +114,10 @@ pub fn on_commit_enabled(settings: &crate::config::Settings) -> bool {
 ///   (`amont rehearse --wait`). The suite then never runs while git holds
 ///   its connection to the remote open — the one place a slow suite can
 ///   kill a push whose checks all passed. A rehearsal still RUNNING for the
-///   tip is waited for first (`amont.rehearsalWait`), and its stamp is
+///   tip is waited for first (`greengate.rehearsalWait`), and its stamp is
 ///   honoured; a rehearsal snapshot itself always runs, since that is where
 ///   the stamp is earned.
-const UNSTAMPED_PUSH: &str = "amont.unstampedPush";
+const UNSTAMPED_PUSH: &str = "greengate.unstampedPush";
 
 /// Does this repository refuse a push the gate did not vouch for?
 pub fn refuse_unstamped(settings: &crate::config::Settings) -> bool {
@@ -207,7 +207,7 @@ pub fn handed_to_cluster() -> &'static [String] {
 /// `<sha> <remote tip>`, what its pre-stage ran the push gates against. Read
 /// once and removed, for the reason [`in_snapshot`] gives: a gate's own
 /// fixture pushes must not inherit it. `main` primes it on the main thread.
-pub const LAND_ENV: &str = "AMONT_LAND";
+pub const LAND_ENV: &str = "GREENGATE_LAND";
 
 /// What land's pre-stage saw: the sha it ran the gates on, and the remote tip
 /// it ran them against (all zeros for a ref the remote lacks).
@@ -264,7 +264,7 @@ pub fn land_env() -> &'static LandEnv {
 /// exactly the gates that push will owe — not the ones a possibly stale
 /// tracking ref suggests. Also means "never cancel another tree's rehearsal:
 /// wait for it". Read once and removed, like [`ENV`].
-pub const PRESTAGE_ENV: &str = "AMONT_LAND_PRESTAGE";
+pub const PRESTAGE_ENV: &str = "GREENGATE_LAND_PRESTAGE";
 
 /// [`PRESTAGE_ENV`], parsed where it is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,7 +305,7 @@ impl Prestage {
 }
 
 /// The working tree this rehearsal snapshot was taken from, when this process
-/// is the snapshot's pre-push (`AMONT_SOURCE_WORKTREE`). Read once and removed
+/// is the snapshot's pre-push (`GREENGATE_SOURCE_WORKTREE`). Read once and removed
 /// like [`ENV`]; `main` primes it and carries it on `Ctx`.
 pub fn source_worktree() -> Option<&'static std::path::Path> {
     static IN: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
@@ -336,7 +336,7 @@ pub fn prestage() -> &'static Prestage {
 /// - `refuse` (the default): refuse at once, before anything runs on the
 ///   connection git already opened, naming `amont land`;
 /// - `inline`: run it in the push, as amont did before 2.0.
-const PUSH_GATES: &str = "amont.pushGates";
+const PUSH_GATES: &str = "greengate.pushGates";
 
 /// Does a push refuse an unstamped heavy gate instead of running it?
 pub fn refuse_push_gates(settings: &crate::config::Settings) -> bool {
@@ -1186,7 +1186,7 @@ pub fn await_for(settings: &crate::config::Settings, tips: &[String]) -> Option<
                 warn(&format!(
                     "the rehearsal is still running after {} — running the gate here \
                      rather than holding the push open (`git config \
-                     amont.rehearsalWait <secs>`, or 0 to wait indefinitely)",
+                     greengate.rehearsalWait <secs>`, or 0 to wait indefinitely)",
                     human_secs(state.age_secs())
                 ));
             }
@@ -1509,7 +1509,7 @@ mod tests {
             commit: "a".repeat(40),
             tree: "b".repeat(40),
             started: 1_700_000_000,
-            snapshot: PathBuf::from("/tmp/amont-push-1-2"),
+            snapshot: PathBuf::from("/tmp/greengate-push-1-2"),
             phase: Phase::Running,
             step: Some("preparing".to_string()),
             reason: None,
@@ -1610,10 +1610,10 @@ mod tests {
     #[test]
     fn a_foreign_or_partial_file_is_no_rehearsal() {
         assert_eq!(State::parse(""), None);
-        assert_eq!(State::parse("amont-rehearsal-v2\npid=1\n"), None);
-        assert_eq!(State::parse("amont-rehearsal-v1\npid=1\n"), None);
+        assert_eq!(State::parse("greengate-rehearsal-v2\npid=1\n"), None);
+        assert_eq!(State::parse("greengate-rehearsal-v1\npid=1\n"), None);
         assert_eq!(
-            State::parse("amont-rehearsal-v1\npid=x\ncommit=a\ntree=b\nstarted=1\nsnapshot=/s\nphase=running\n"),
+            State::parse("greengate-rehearsal-v1\npid=x\ncommit=a\ntree=b\nstarted=1\nsnapshot=/s\nphase=running\n"),
             None
         );
     }

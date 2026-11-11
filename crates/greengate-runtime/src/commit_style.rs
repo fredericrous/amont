@@ -2,7 +2,7 @@
 //! keys.
 //!
 //! `commit-msg` is an entrypoint rather than a `Check` (see `registry.rs`), so
-//! `hook.skip` and `amont.severity.*` do not reach it, and git exempts it
+//! `hook.skip` and `greengate.severity.*` do not reach it, and git exempts it
 //! from `--no-verify`. That left the hook that touches every single commit with
 //! no dial at all: its two most divisive rules — the gitmoji and the 50
 //! character description budget — could be complied with or uninstalled, and
@@ -14,13 +14,13 @@
 
 use crate::config::{self, Scope};
 
-pub const KEY_GITMOJI: &str = "amont.commit.gitmoji";
-pub const KEY_SUBJECT_MAX: &str = "amont.commit.subjectMax";
-pub const KEY_DESCRIPTION_MAX: &str = "amont.commit.descriptionMax";
-pub const KEY_BODY_WRAP: &str = "amont.commit.bodyWrap";
+pub const KEY_GITMOJI: &str = "greengate.commit.gitmoji";
+pub const KEY_SUBJECT_MAX: &str = "greengate.commit.subjectMax";
+pub const KEY_DESCRIPTION_MAX: &str = "greengate.commit.descriptionMax";
+pub const KEY_BODY_WRAP: &str = "greengate.commit.bodyWrap";
 
 /// The prefix every key above shares — one `--get-regexp` finds the family.
-const PREFIX: &str = "amont.commit.";
+const PREFIX: &str = "greengate.commit.";
 
 pub const DEFAULT_GITMOJI: Gitmoji = Gitmoji::None;
 pub const DEFAULT_SUBJECT_MAX: usize = 72;

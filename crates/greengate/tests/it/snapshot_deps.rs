@@ -70,7 +70,7 @@ if [ "$op" = install ] && [ -e "$ctl/init-bin" ]; then
   # What a real package's `prepare: amont init` does: run an amont that
   # lives UNDER the snapshot, so its current_exe() is a snapshot path.
   mkdir -p node_modules/.bin && cp "$(cat "$ctl/init-bin")" node_modules/.bin/amont
-  echo "SNAPSHOT-ENV=${AMONT_SNAPSHOT:-unset}" >> "$ctl/log"
+  echo "SNAPSHOT-ENV=${GREENGATE_SNAPSHOT:-unset}" >> "$ctl/log"
   node_modules/.bin/amont init >> "$ctl/init.out" 2>&1
   echo "INIT-EXIT=$?" >> "$ctl/log"
 fi
@@ -185,7 +185,7 @@ fn note(r: &Repo, rev: &str) -> String {
 }
 
 fn state(r: &Repo) -> String {
-    std::fs::read_to_string(r.dir.join(".git/amont-rehearsal")).unwrap_or_default()
+    std::fs::read_to_string(r.dir.join(".git/greengate-rehearsal")).unwrap_or_default()
 }
 
 fn runs(r: &Repo) -> usize {
@@ -322,7 +322,7 @@ fn off_prepares_nothing() {
         return;
     }
     let (r, _) = js_repo(npm_root);
-    r.git(&["config", "amont.snapshotDeps", "off"]);
+    r.git(&["config", "greengate.snapshotDeps", "off"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 1, "{out}");
     assert!(stub_log(&r).is_empty(), "{}", stub_log(&r));
@@ -337,10 +337,10 @@ fn a_prepare_command_owns_the_dependencies() {
     }
     let (r, _) = js_repo(npm_root);
     r.write(".env", "SECRET=1\n");
-    r.git(&["config", "amont.snapshotCarry", ".env"]);
+    r.git(&["config", "greengate.snapshotCarry", ".env"]);
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
+        "greengate.snapshotPrepare",
         "test -e .env && mkdir node_modules",
     ]);
     let (code, out) = rehearse(&r, &["--wait"]);
@@ -413,14 +413,14 @@ fn a_snapshot_install_never_rebakes_the_shared_hooks() {
     );
     let after = baked(&r);
     assert!(
-        after.iter().all(|(_, l)| !l.contains("amont-push-")),
+        after.iter().all(|(_, l)| !l.contains("greengate-push-")),
         "a shim was baked into the snapshot: {after:?}"
     );
     assert_eq!(before, after, "the shared hooks changed");
 }
 
 /// `snapshotPrepare` runs inside the snapshot too, and gets
-/// `AMONT_SNAPSHOT=1` to know it. The guard does not depend on that
+/// `GREENGATE_SNAPSHOT=1` to know it. The guard does not depend on that
 /// variable: the second `init` runs WITHOUT it — the shape of an install a
 /// gate runs itself, whose environment carries no snapshot variable — and
 /// still stands down, because the marker is in the snapshot's own git dir.
@@ -436,12 +436,12 @@ fn a_prepare_command_in_the_snapshot_never_rebakes_the_shared_hooks() {
     let bin = env!("CARGO_BIN_EXE_greengate");
     r.git(&[
         "config",
-        "amont.snapshotPrepare",
+        "greengate.snapshotPrepare",
         &format!(
             "mkdir -p node_modules/.bin && cp {bin:?} node_modules/.bin/amont && \
-             echo \"env=${{AMONT_SNAPSHOT:-unset}}\" >> {log:?} && \
+             echo \"env=${{GREENGATE_SNAPSHOT:-unset}}\" >> {log:?} && \
              node_modules/.bin/amont init >> {log:?} 2>&1 && \
-             env -u AMONT_SNAPSHOT node_modules/.bin/amont init >> {log:?} 2>&1"
+             env -u GREENGATE_SNAPSHOT node_modules/.bin/amont init >> {log:?} 2>&1"
         ),
     ]);
     let (code, out) = rehearse(&r, &["--wait"]);
@@ -482,9 +482,9 @@ fn a_push_whose_snapshot_cannot_be_prepared_falls_back_and_stamps_nothing() {
     }
     let (r, base) = js_repo(npm_root);
     installed(&r, "");
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     set(&r, "install.exit", "1");
     // Dirty, so the working tree is NOT the tip: a clean one legitimately
     // vouches for it, which is `stamp_tips`' existing rule.
@@ -571,7 +571,7 @@ fn yarn_reuse_always_installs() {
     }
     let (r, _) = js_repo(yarn_root(YARN_CLASSIC));
     installed(&r, "");
-    r.git(&["config", "amont.snapshotDeps", "reuse"]);
+    r.git(&["config", "greengate.snapshotDeps", "reuse"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("yarn cannot check an installed tree"), "{out}");
@@ -633,8 +633,8 @@ fn a_bun_lockfile_is_refused_with_the_fix_named() {
         out.contains("bun.lock in the root: greengate cannot install bun dependencies"),
         "{out}"
     );
-    assert!(out.contains("amont.snapshotPrepare"), "{out}");
-    assert!(out.contains("amont.snapshotDeps off"), "{out}");
+    assert!(out.contains("greengate.snapshotPrepare"), "{out}");
+    assert!(out.contains("greengate.snapshotDeps off"), "{out}");
     assert!(
         stub_log(&r).is_empty(),
         "bun is never called: {}",
@@ -642,7 +642,7 @@ fn a_bun_lockfile_is_refused_with_the_fix_named() {
     );
     assert_eq!(runs(&r), 0);
 
-    r.git(&["config", "amont.snapshotDeps", "off"]);
+    r.git(&["config", "greengate.snapshotDeps", "off"]);
     r.stage("a.txt", "again\n");
     r.commit("feat: once more, unprepared");
     // The gate itself fails without node_modules, which is `off`'s deal;
@@ -664,7 +664,7 @@ fn npm_reuse_always_installs() {
     }
     let (r, _) = js_repo(npm_root);
     installed(&r, "");
-    r.git(&["config", "amont.snapshotDeps", "reuse"]);
+    r.git(&["config", "greengate.snapshotDeps", "reuse"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("npm cannot check an installed tree"), "{out}");
@@ -725,7 +725,7 @@ fn reuse_repo() -> (Repo, String) {
     pnpm_installed(&r, "");
     pnpm_installed(&r, "packages/m");
     pnpm_record(&r);
-    r.git(&["config", "amont.snapshotDeps", "reuse"]);
+    r.git(&["config", "greengate.snapshotDeps", "reuse"]);
     set(&r, "members.out", "packages/m\n");
     (r, base)
 }
@@ -945,7 +945,7 @@ fn a_nested_lockfile_is_its_own_unit() {
     pnpm_record(&r);
     // tools' working-tree lockfile is not the commit's: it must install.
     r.write("tools/pnpm-lock.yaml", "tools lock, edited\n");
-    r.git(&["config", "amont.snapshotDeps", "reuse"]);
+    r.git(&["config", "greengate.snapshotDeps", "reuse"]);
     set(&r, "members.out", "tools\n");
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 0, "{out}\n{}", stub_log(&r));
@@ -1047,12 +1047,12 @@ fn units_come_from_the_pushed_tip_not_head() {
     installed(&r, "");
     let older = head(&r);
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     r.stage("tools/package.json", "{\"name\":\"tools\"}\n");
     r.stage("tools/package-lock.json", "tools lock\n");
     r.stage("a.txt", "newer\n");
     r.commit("feat: a second project");
-    r.git(&["config", "amont.testPushedTree", "true"]);
+    r.git(&["config", "greengate.testPushedTree", "true"]);
     let (code, out) = push_out(&r, &base, &older);
     assert_eq!(code, 0, "{out}\n{}", stub_log(&r));
     assert!(!out.contains("could not prepare"), "{out}");
@@ -1096,7 +1096,7 @@ fn carry_copies_an_untracked_file_before_the_install() {
     }
     let (r, _) = js_repo(npm_root);
     r.write(".env", "SECRET=1\n");
-    r.git(&["config", "amont.snapshotCarry", ".env, .npmrc"]);
+    r.git(&["config", "greengate.snapshotCarry", ".env, .npmrc"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("carried .env"), "{out}");
@@ -1145,7 +1145,7 @@ fn carry_refuses_every_bad_entry_in_one_message() {
     std::os::unix::fs::symlink(r.dir.join("real"), r.dir.join("linked")).unwrap();
     r.git(&[
         "config",
-        "amont.snapshotCarry",
+        "greengate.snapshotCarry",
         ".env src/app.txt src . .. .git/config /etc/hosts linked/x",
     ]);
     let (code, out) = rehearse(&r, &["--wait"]);
@@ -1184,7 +1184,7 @@ fn an_unreadable_carry_entry_fails_preparation() {
     if std::fs::read(&env).is_ok() {
         return; // running as root: permissions do not bind
     }
-    r.git(&["config", "amont.snapshotCarry", ".env"]);
+    r.git(&["config", "greengate.snapshotCarry", ".env"]);
     let (code, out) = rehearse(&r, &["--wait"]);
     std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(code, 2, "{out}");
@@ -1214,9 +1214,9 @@ fn a_rehearsal_is_registered_while_it_prepares() {
     assert!(status.contains("preparing"), "{status}");
 
     // A push meanwhile waits rather than starting over — within its budget.
-    r.git(&["config", "amont.rehearsalWait", "2"]);
+    r.git(&["config", "greengate.rehearsalWait", "2"]);
     // ADR-0018: the wait is the inline path; a refusing push never waits.
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (_, out) = push_out(&r, &base, &head(&r));
     assert!(out.contains("still running — waiting up to"), "{out}");
 
@@ -1303,7 +1303,7 @@ fn real_repo(manager: &str) -> Option<(Repo, String)> {
         };
         r.git(&["add", lock]);
     });
-    r.git(&["config", "amont.snapshotDeps", "reuse"]);
+    r.git(&["config", "greengate.snapshotDeps", "reuse"]);
     Some((r, base))
 }
 

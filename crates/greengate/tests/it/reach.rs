@@ -1,4 +1,4 @@
-//! `amont.conventions declared` — the house rules stand down in a repository
+//! `greengate.conventions declared` — the house rules stand down in a repository
 //! that never subscribed, and the safety net does not. The journey itself is
 //! `flows/declared.rs`, step `reach`; these are the cases it does not walk: an
 //! `amont.conf` that cannot be read, and a push to main.
@@ -9,7 +9,7 @@ use common::Repo;
 use std::process::Stdio;
 
 fn declared_mode(r: &Repo) {
-    r.git(&["config", "amont.conventions", "declared"]);
+    r.git(&["config", "greengate.conventions", "declared"]);
 }
 
 /// Presence is the declaration, even of an `amont.conf` that cannot be read

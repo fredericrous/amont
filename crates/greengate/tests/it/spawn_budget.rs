@@ -48,7 +48,7 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
     let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
-        .env_remove("AMONT_IDLE_LOAD_SCALE")
+        .env_remove("GREENGATE_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -73,15 +73,15 @@ fn a_small_commit_stays_inside_the_git_spawn_budget() {
         spawns > 0,
         "the shim never ran — the budget measured nothing"
     );
-    // 25 -> 26 (`amont.quiet`): one `git config --get amont.quiet`, read once
+    // 25 -> 26 (`greengate.quiet`): one `git config --get greengate.quiet`, read once
     // per process the first time a check reports success. It buys the removal
     // of ~90% of a passing hook's output, which is re-read on every later turn
     // of a session that captured it. One config read for a documented key is
     // the intended shape of this budget growing; a check that grew a git habit
     // of its own is not.
     // 26 -> 27 (ADR-0020, the pre-commit waves): one `git config --get
-    // amont.failFast`, read once per stage by `Waves::resolve`. This test
-    // counts 27 with the setting read and 26 under `AMONT_FAIL_FAST=false`,
+    // greengate.failFast`, read once per stage by `Waves::resolve`. This test
+    // counts 27 with the setting read and 26 under `GREENGATE_FAIL_FAST=false`,
     // which skips the read. The wave ledger writes nothing here (no Heavy
     // check reaches a `.txt` change), so it asks git for nothing; a ledger
     // `rev-parse` would make it 28 and fail this budget.
@@ -136,7 +136,7 @@ fn post_commit_in_an_ungated_repo_stays_near_free() {
     let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
-        .env_remove("AMONT_IDLE_LOAD_SCALE")
+        .env_remove("GREENGATE_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -182,7 +182,7 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
     let trust = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
-        .env_remove("AMONT_IDLE_LOAD_SCALE")
+        .env_remove("GREENGATE_IDLE_LOAD_SCALE")
         .arg("trust")
         .current_dir(&r.dir)
         .output()
@@ -221,7 +221,7 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
     let out = crate::common::amont_cmd()
         // The budget must see the host-key scan: `.cargo/config.toml`
         // pins the scale, which would skip it.
-        .env_remove("AMONT_IDLE_LOAD_SCALE")
+        .env_remove("GREENGATE_IDLE_LOAD_SCALE")
         .args([
             "--hooks-dir",
             &r.path(".git/hooks").to_string_lossy(),
@@ -257,7 +257,7 @@ fn a_policy_repo_stays_inside_a_bounded_budget() {
 
 /// The host-key scan (ADR-0009) costs exactly one git spawn, once per
 /// process, and only on a commit that runs a tool: the same commit with
-/// `AMONT_IDLE_LOAD_SCALE` set (which answers the key without git) spawns
+/// `GREENGATE_IDLE_LOAD_SCALE` set (which answers the key without git) spawns
 /// git exactly once less.
 #[cfg(unix)]
 #[test]
@@ -296,9 +296,9 @@ fn the_host_key_scan_costs_one_spawn_when_a_tool_runs() {
         std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
         let mut cmd = crate::common::amont_cmd();
-        cmd.env_remove("AMONT_IDLE_LOAD_SCALE");
+        cmd.env_remove("GREENGATE_IDLE_LOAD_SCALE");
         if pin {
-            cmd.env("AMONT_IDLE_LOAD_SCALE", "1");
+            cmd.env("GREENGATE_IDLE_LOAD_SCALE", "1");
         }
         let out = cmd
             .args([

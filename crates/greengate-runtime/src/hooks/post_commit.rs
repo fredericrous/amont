@@ -28,7 +28,7 @@ pub fn run(settings: &crate::config::Settings, ctx: &crate::registry::Ctx) -> Ve
 
 /// The one thing post-commit says: that a background rehearsal of the push
 /// gate has started — only in a repository that asked for it
-/// (`amont.rehearseOnCommit`), and only outside a rebase or cherry-pick,
+/// (`greengate.rehearseOnCommit`), and only outside a rebase or cherry-pick,
 /// where the commit being made is not the one that will be pushed and the
 /// next replay would cancel this run anyway. The worker itself decides
 /// whether there is anything to run; this only pays the spawn.

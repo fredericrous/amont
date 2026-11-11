@@ -12,7 +12,7 @@
 //! `imageID` — never from the logs. Anything else, a failure of the gate
 //! included, re-runs the gate here, unchanged, and the local outcome is the
 //! verdict: a gate never fails because of the cluster. Each such fallback
-//! appends `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
+//! appends `<epoch> <gate> <reason>` to `greengate/cluster.log` in the common git
 //! directory.
 //!
 //! A pass is recorded under its own identity
@@ -36,7 +36,11 @@ use crate::json_read::Value;
 use crate::manifest::{External, Kind};
 
 mod detached;
-pub(crate) use detached::{collect, settled_lines, status_lines, stop_pending};
+#[cfg(test)]
+pub(crate) use detached::sample_pending_file;
+pub(crate) use detached::{
+    collect, lists_live, settled_lines, status_lines, stop_pending, PENDING_FILE,
+};
 pub use detached::{collect_command, detach, wanted, Ask, Detached};
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:
@@ -68,7 +72,7 @@ const CANCEL_SECS: u64 = 10;
 /// The bound on a quiet clean-up by label after a `create` timed out.
 const LABEL_DELETE_SECS: u64 = 5;
 /// The label every Job carries, valued by its run ([`run_label`]).
-const RUN_LABEL_KEY: &str = "amont.run";
+const RUN_LABEL_KEY: &str = crate::names::RUN_LABEL;
 const POLL: Duration = Duration::from_millis(500);
 const MIB: u64 = 1024 * 1024;
 
@@ -157,7 +161,7 @@ struct LiveRun {
     kubeconfig: PathBuf,
     namespace: String,
     scratch: PathBuf,
-    /// The `amont.run` label of every Job this run creates: how a Job whose
+    /// The `greengate.run` label of every Job this run creates: how a Job whose
     /// `create` is still in flight, or whose answer was lost, is found.
     run_label: String,
     /// Where this run's Job stands, as a cancel must know it.
@@ -309,14 +313,14 @@ struct ClusterConfig {
     prepare: Option<String>,
 }
 
-/// The machine's `amont.cluster.*` keys, lowercased as git prints them.
+/// The machine's `greengate.cluster.*` keys, lowercased as git prints them.
 /// `--type=path` expands a leading `~`, which is how the kubeconfig is set.
 fn machine_keys() -> Vec<(String, String)> {
     crate::git::stdout(&[
         "config",
         "--type=path",
         "--get-regexp",
-        r"^amont\.cluster\.",
+        r"^greengate\.cluster\.",
     ])
     .unwrap_or_default()
     .lines()
@@ -366,77 +370,81 @@ fn prepare(settings: &crate::config::Settings) -> Option<String> {
     settings
         .policy()
         .settings
-        .get("amont.clusterPrepare")
+        .get("greengate.clusterPrepare")
         .cloned()
 }
 
 /// Whether this repository's TRUSTED policy says `set executor cluster`, and
-/// no local `git config amont.executor local` turned it off. Reading the
+/// no local `git config greengate.executor local` turned it off. Reading the
 /// policy map spawns nothing, so a repository that says nothing pays nothing.
 fn executor_is_cluster(settings: &crate::config::Settings) -> bool {
     settings
         .policy()
         .settings
-        .get("amont.executor")
+        .get("greengate.executor")
         .is_some_and(|v| v == "cluster")
-        && crate::config::enumerated_or(settings, "amont.executor", &["cluster", "local"], "local")
-            == "cluster"
+        && crate::config::enumerated_or(
+            settings,
+            "greengate.executor",
+            &["cluster", "local"],
+            "local",
+        ) == "cluster"
 }
 
 fn misconfigured(why: String, key_fix: &str) -> Fallback {
     Fallback::Misconfigured {
         why,
-        fix: format!("{key_fix}, or `git config amont.executor local`"),
+        fix: format!("{key_fix}, or `git config greengate.executor local`"),
     }
 }
 
 /// The full configuration, or why the gate runs here instead.
 fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, Fallback> {
     let keys = machine_keys();
-    let kubeconfig = key(&keys, "amont.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
-        "amont.cluster.kubeconfig is not set: `git config --global amont.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
+    let kubeconfig = key(&keys, "greengate.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
+        "greengate.cluster.kubeconfig is not set: `git config --global greengate.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
     ))?;
     let kubeconfig = PathBuf::from(kubeconfig);
     if !kubeconfig.is_file() {
         return Err(misconfigured(
             format!("kubeconfig {} does not exist", kubeconfig.display()),
-            "`git config --global amont.cluster.kubeconfig <path>`",
+            "`git config --global greengate.cluster.kubeconfig <path>`",
         ));
     }
-    let image = key(&keys, "amont.cluster.image")
+    let image = key(&keys, "greengate.cluster.image")
         .ok_or(Fallback::Unconfigured(
-        "amont.cluster.image is not set: `git config --global amont.cluster.image 'name:tag@sha256:<digest>'`",
+        "greengate.cluster.image is not set: `git config --global greengate.cluster.image 'name:tag@sha256:<digest>'`",
     ))?;
     let digest = digest_of(image)
         .ok_or_else(|| {
             misconfigured(
-                format!("amont.cluster.image {image:?} is not pinned by @sha256: digest"),
-                "`git config --global amont.cluster.image <name>:<tag>@sha256:<digest>`",
+                format!("greengate.cluster.image {image:?} is not pinned by @sha256: digest"),
+                "`git config --global greengate.cluster.image <name>:<tag>@sha256:<digest>`",
             )
         })?
         .to_string();
-    let namespace = key(&keys, "amont.cluster.namespace").unwrap_or("amont-gates");
+    let namespace = key(&keys, "greengate.cluster.namespace").unwrap_or("amont-gates");
     if !is_label(namespace) {
         return Err(misconfigured(
-            format!("amont.cluster.namespace {namespace:?} is not a namespace name"),
-            "`git config --global amont.cluster.namespace <name>`",
+            format!("greengate.cluster.namespace {namespace:?} is not a namespace name"),
+            "`git config --global greengate.cluster.namespace <name>`",
         ));
     }
     let timeout_secs = crate::hooks::common::check_timeout(settings);
     if timeout_secs == 0 {
         return Err(misconfigured(
-            "amont.timeout is 0 (unbounded), and a Job needs a deadline".into(),
-            "`git config amont.timeout <seconds>`",
+            "greengate.timeout is 0 (unbounded), and a Job needs a deadline".into(),
+            "`git config greengate.timeout <seconds>`",
         ));
     }
     Ok(ClusterConfig {
         kubeconfig,
         namespace: namespace.to_string(),
-        slots: u32::try_from(number(&keys, "amont.cluster.slots", 2, 2)).unwrap_or(2),
+        slots: u32::try_from(number(&keys, "greengate.cluster.slots", 2, 2)).unwrap_or(2),
         image: image.to_string(),
         digest,
-        max_bundle_mib: number(&keys, "amont.cluster.maxbundlemib", 50, 4096),
-        start_wait: Duration::from_secs(number(&keys, "amont.cluster.startwait", 30, 600)),
+        max_bundle_mib: number(&keys, "greengate.cluster.maxbundlemib", 50, 4096),
+        start_wait: Duration::from_secs(number(&keys, "greengate.cluster.startwait", 30, 600)),
         timeout_secs,
         prepare: prepare(settings),
     })
@@ -472,7 +480,7 @@ fn token_from(
     if !is_platform_any(ext) {
         return None;
     }
-    let digest = digest_of(key(keys, "amont.cluster.image")?)?;
+    let digest = digest_of(key(keys, "greengate.cluster.image")?)?;
     crate::gate_identity::cluster_token(ext, name, prepare(settings).as_deref(), digest)
 }
 
@@ -730,7 +738,7 @@ fn say_fallback(short_name: &str, fallback: &Fallback) {
             }
         }
         Fallback::BundleTooBig { mib, cap } => crate::hooks::common::warn(&format!(
-            "{name} runs here: its bundle is {mib} MiB, over the {cap} MiB cap — raise it with `git config amont.cluster.maxBundleMiB <MiB>`"
+            "{name} runs here: its bundle is {mib} MiB, over the {cap} MiB cap — raise it with `git config greengate.cluster.maxBundleMiB <MiB>`"
         )),
         Fallback::SlotsTaken | Fallback::QuotaFull | Fallback::NotProved(_) => {
             warn_unavailable(&name, fallback)
@@ -745,7 +753,7 @@ fn warn_unavailable(name: &str, fallback: &Fallback) {
     ));
 }
 
-/// Append `<epoch> <gate> <reason>` to `amont/cluster.log` in the common git
+/// Append `<epoch> <gate> <reason>` to `greengate/cluster.log` in the common git
 /// directory. Best-effort: the log is evidence, never a verdict.
 fn log_line(gate: &str, reason: &str) {
     let reason: String = reason
@@ -757,7 +765,7 @@ fn log_line(gate: &str, reason: &str) {
     else {
         return;
     };
-    let dir = Path::new(&dir).join("amont");
+    let dir = Path::new(&dir).join(crate::names::STATE_DIR);
     let line = format!("{} {gate} {reason}\n", crate::gate_evidence::now());
     let written = std::fs::create_dir_all(&dir).and_then(|()| {
         let mut f = std::fs::OpenOptions::new()
@@ -767,7 +775,7 @@ fn log_line(gate: &str, reason: &str) {
         std::io::Write::write_all(&mut f, line.as_bytes())
     });
     if let Err(e) = written {
-        crate::hooks::common::warn(&format!("could not append to amont/cluster.log: {e}"));
+        crate::hooks::common::warn(&format!("could not append to greengate/cluster.log: {e}"));
     }
 }
 
@@ -1193,7 +1201,7 @@ struct Spec<'a> {
     tree: &'a str,
     repo_dir: &'a str,
     argv: &'a [String],
-    /// The value of the Job's `amont.run` label.
+    /// The value of the Job's `greengate.run` label.
     run_label: &'a str,
 }
 
@@ -1403,7 +1411,7 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
     format!(
         "{{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\
          \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_label_key}:{run_label}}},\
-         \"annotations\":{{\"amont.dev/gate\":{gate_id},\"amont.dev/tree\":{tree}}}}},\
+         \"annotations\":{{\"greengate.dev/gate\":{gate_id},\"greengate.dev/tree\":{tree}}}}},\
          \"spec\":{{\"backoffLimit\":0,\"activeDeadlineSeconds\":{deadline},\
          \"ttlSecondsAfterFinished\":300,\"template\":{{\"spec\":{{\
          \"restartPolicy\":\"Never\",\"priorityClassName\":{prio},\
@@ -1470,8 +1478,10 @@ impl Scratch {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();
-        let dir =
-            std::env::temp_dir().join(format!("amont-cluster-{}-{run}-{gate}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "greengate-cluster-{}-{run}-{gate}",
+            std::process::id()
+        ));
         #[cfg(unix)]
         let builder = {
             let mut builder = std::fs::DirBuilder::new();
@@ -1497,7 +1507,7 @@ impl Scratch {
         Ok(Scratch { run, dir })
     }
 
-    /// The `amont.run` label value of this run's Jobs.
+    /// The `greengate.run` label value of this run's Jobs.
     fn run_label(&self) -> String {
         run_label(self.run)
     }
@@ -1752,7 +1762,7 @@ fn parse_job(json: &str) -> Option<JobFacts> {
         uid: str_at(metadata, "uid").map(str::to_string),
         gate: str_at(
             metadata.and_then(|m| m.get("annotations")),
-            "amont.dev/gate",
+            crate::names::GATE_ANNOTATION,
         )
         .map(str::to_string),
         end,
@@ -2022,7 +2032,7 @@ mod tests {
             "\"args\":[\"sh\",\"-c\",\"make deps\"]",
             "\"args\":[\"scripts/lint.sh\",\"--strict\"]",
             "\"value\":\"refs/amont/cluster/1\"",
-            "\"amont.dev/gate\":\"pre-commit-lint\"",
+            "\"greengate.dev/gate\":\"pre-commit-lint\"",
         ] {
             assert!(json.contains(needle), "{needle} missing from {json}");
         }
@@ -2125,7 +2135,7 @@ mod tests {
         assert_eq!(p.image_id.as_deref(), Some("i@sha256:1"));
         assert_eq!(p.gate, done(137, "OOMKilled", ""));
         assert_eq!(p.prepare, State::Absent);
-        let job = r#"{"metadata":{"uid":"u1","annotations":{"amont.dev/gate":"pre-commit-x"}},
+        let job = r#"{"metadata":{"uid":"u1","annotations":{"greengate.dev/gate":"pre-commit-x"}},
           "status":{"conditions":[{"type":"Failed","status":"True","reason":"DeadlineExceeded"}]}}"#;
         assert_eq!(
             parse_job(job),

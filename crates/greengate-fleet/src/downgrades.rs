@@ -87,11 +87,11 @@ mod tests {
     #[test]
     fn the_reader_agrees_with_the_runtimes_parser() {
         let d = dir("agree");
-        let text = "amont-downgrade-v1\n\
+        let text = "greengate-downgrade-v1\n\
                     100 abcdef0 pre-commit-ban-terms config\n\
                     200 abcdef0 pre-commit-ban-terms config\n\
                     150 bbbbbbb pre-commit-agents-md declared\n";
-        std::fs::write(d.join("amont-downgrades"), text).unwrap();
+        std::fs::write(d.join("greengate-downgrades"), text).unwrap();
         let ours = read(&d);
         let theirs = greengate_runtime::downgrade::parse(text);
         assert_eq!(ours.total, theirs.total);

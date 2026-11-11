@@ -1,4 +1,4 @@
-//! Reading `amont.severity.<check>`, the quieter cousin of `hook.skip`.
+//! Reading `greengate.severity.<check>`, the quieter cousin of `hook.skip`.
 //!
 //! A skip is at least honest about itself: the check does not run, the
 //! dispatcher says so on every commit, and the dashboard counts it. A severity
@@ -86,7 +86,7 @@ impl SeverityOverride {
     ///
     /// The two surfaces used to disagree. `hook.skip` matched by substring and
     /// this key was an exact name, so a repo that learned `hook.skip clippy`
-    /// went on to write `amont.severity.clippy warn` and got silence. One
+    /// went on to write `greengate.severity.clippy warn` and got silence. One
     /// rule now answers both.
     pub fn covers(&self) -> Vec<&'static str> {
         covers(&self.check)
@@ -114,7 +114,7 @@ impl SeverityOverride {
     }
 }
 
-/// Every `amont.severity.*` entry visible from `repo`, with where it came
+/// Every `greengate.severity.*` entry visible from `repo`, with where it came
 /// from.
 ///
 /// `--get-regexp` rather than a key-by-key sweep: the point is to find keys
@@ -125,7 +125,7 @@ pub fn read(repo: &Path) -> Vec<SeverityOverride> {
             "config",
             "--show-origin",
             "--get-regexp",
-            r"^amont\.severity\.",
+            r"^greengate\.severity\.",
         ])
         .current_dir(repo)
         .output()
@@ -198,14 +198,14 @@ fn resolve(
             "config",
             "--show-scope",
             "--get-regexp",
-            r"^amont\.severity\.",
+            r"^greengate\.severity\.",
         ],
     ) {
         Some(scoped) => greengate_runtime::registry::Overrides::from_scoped(&scoped, policy),
         None => greengate_runtime::registry::Overrides::from_plain_with_policy_below(
             Some(
                 raws.iter()
-                    .map(|r| format!("amont.severity.{} {}\n", r.check, r.value))
+                    .map(|r| format!("greengate.severity.{} {}\n", r.check, r.value))
                     .collect(),
             ),
             policy,
@@ -284,10 +284,10 @@ fn parse(stdout: &str) -> Vec<RawEntry> {
     stdout
         .lines()
         .filter_map(|line| {
-            // `file:/path/to/config\tamont.severity.<check> <value>`
+            // `file:/path/to/config\tgreengate.severity.<check> <value>`
             let (origin, rest) = line.split_once('\t')?;
             let (key, value) = rest.split_once(' ')?;
-            let check = key.strip_prefix("amont.severity.")?.trim();
+            let check = key.strip_prefix("greengate.severity.")?.trim();
             let value = value.trim();
             if check.is_empty() {
                 return None;
@@ -360,7 +360,7 @@ mod tests {
     }
 
     /// The bug this vocabulary exists to kill: `hook.skip clippy` reached the
-    /// check and `amont.severity.clippy` did not, so the second thing anyone
+    /// check and `greengate.severity.clippy` did not, so the second thing anyone
     /// tried after the first one worked was silence. Whatever a skip resolves
     /// to, a severity key of the same text resolves to as well.
     #[test]
@@ -395,10 +395,10 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q", "--template=", "."]);
-        git(&["config", "amont.severity.pre-commit-clippy", "warn"]);
-        git(&["config", "amont.severity.pre-commit-prettier", "block"]);
+        git(&["config", "greengate.severity.pre-commit-clippy", "warn"]);
+        git(&["config", "greengate.severity.pre-commit-prettier", "block"]);
         // An unrelated key under the same section must not be mistaken for one.
-        git(&["config", "amont.other.thing", "warn"]);
+        git(&["config", "greengate.other.thing", "warn"]);
 
         let mut got = read(&d);
         got.sort_by(|a, b| a.check.cmp(&b.check));
@@ -418,9 +418,9 @@ mod tests {
     #[test]
     fn the_origin_decides_the_scope() {
         let got = parse(concat!(
-            "file:/repo/.git/config\tamont.severity.pre-commit-clippy warn\n",
-            "file:/Users/me/.gitconfig\tamont.severity.pre-commit-prettier warn\n",
-            "file:/etc/gitconfig\tamont.severity.pre-commit-ban-terms warn\n",
+            "file:/repo/.git/config\tgreengate.severity.pre-commit-clippy warn\n",
+            "file:/Users/me/.gitconfig\tgreengate.severity.pre-commit-prettier warn\n",
+            "file:/etc/gitconfig\tgreengate.severity.pre-commit-ban-terms warn\n",
         ));
         assert_eq!(got.len(), 3, "{got:?}");
         assert_eq!(got[0].scope, Scope::Local);
@@ -450,7 +450,7 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q", "--template=", "."]);
-        let key = "amont.severity.pre-commit-merge-conflict";
+        let key = "greengate.severity.pre-commit-merge-conflict";
         git(&["config", "--add", key, "warn"]);
         git(&["config", "--add", key, "block"]);
 
@@ -487,8 +487,8 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q", "--template=", "."]);
-        git(&["config", "amont.severity.clippy", "warn"]);
-        git(&["config", "amont.severity.pre-commit-clippy", "block"]);
+        git(&["config", "greengate.severity.clippy", "warn"]);
+        git(&["config", "greengate.severity.pre-commit-clippy", "block"]);
 
         let got = read(&d);
         let _ = std::fs::remove_dir_all(&d);
@@ -531,8 +531,8 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q", "--template=", "."]);
-        git(&["config", "amont.severity.pre-commit", "warn"]);
-        git(&["config", "amont.severity.clippy", "block"]);
+        git(&["config", "greengate.severity.pre-commit", "warn"]);
+        git(&["config", "greengate.severity.clippy", "block"]);
 
         let got = read(&d);
         let _ = std::fs::remove_dir_all(&d);

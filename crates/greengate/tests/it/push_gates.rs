@@ -1,13 +1,13 @@
 //! ADR-0018: heavy gates run before the push connection.
 //!
 //! - A bare push whose heavy gates (scoped ones its range touches) carry no
-//!   stamp refuses at once under `amont.pushGates refuse` (the default), runs
+//!   stamp refuses at once under `greengate.pushGates refuse` (the default), runs
 //!   none of them, and names `amont land`. `inline` keeps the old behaviour.
-//! - The hook of `amont land`'s own push (`AMONT_LAND`) refuses with a
+//! - The hook of `amont land`'s own push (`GREENGATE_LAND`) refuses with a
 //!   sentinel land matches: `remote-moved` only when the range's remote side is
 //!   not what the pre-stage saw, `evidence-missing` otherwise.
 //! - `amont land` runs the owed gates first, then pushes; a failing gate or
-//!   `amont.pushStamps false` pushes nothing.
+//!   `greengate.pushStamps false` pushes nothing.
 //! - An unwalkable range fails closed; a deletion is never refused.
 //!
 //! Gates are a node script appending to an ABSOLUTE log: inside a rehearsal
@@ -133,7 +133,7 @@ fn inline_runs_the_gate_in_the_push_as_before() {
         return;
     }
     let (r, base, log) = gated("block", 0);
-    r.git(&["config", "amont.pushGates", "inline"]);
+    r.git(&["config", "greengate.pushGates", "inline"]);
     let (code, out, err) = hook(&r, &push_line(&base, &head(&r)), &[]);
     assert_eq!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 1);
@@ -170,11 +170,11 @@ fn stamp_reuse_off_names_the_setting_and_never_offers_a_rehearsal() {
         return;
     }
     let (r, base, log) = gated("block", 0);
-    r.git(&["config", "amont.pushStamps", "false"]);
+    r.git(&["config", "greengate.pushStamps", "false"]);
     let (code, out, err) = hook(&r, &push_line(&base, &head(&r)), &[]);
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
-    assert!(err.contains("amont.pushStamps"), "{err}");
+    assert!(err.contains("greengate.pushStamps"), "{err}");
     assert!(
         !err.contains(&format!(
             "{} rehearse --wait",
@@ -192,11 +192,11 @@ fn lands_own_push_with_an_unchanged_range_reports_missing_evidence_not_a_moved_r
     let (r, base, log) = gated("block", 0);
     let tip = head(&r);
     let land = format!("{tip} {base}");
-    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("AMONT_LAND", &land)]);
+    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("GREENGATE_LAND", &land)]);
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
-    assert!(err.contains("amont-land: evidence-missing"), "{err}");
-    assert!(!err.contains("amont-land: remote-moved"), "{err}");
+    assert!(err.contains("greengate-land: evidence-missing"), "{err}");
+    assert!(!err.contains("greengate-land: remote-moved"), "{err}");
 }
 
 #[test]
@@ -208,10 +208,10 @@ fn lands_own_push_whose_remote_side_moved_says_so() {
     let tip = head(&r);
     // The pre-stage saw the branch as new; the push finds `base` there.
     let land = format!("{tip} 0000000000000000000000000000000000000000");
-    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("AMONT_LAND", &land)]);
+    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("GREENGATE_LAND", &land)]);
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
-    assert!(err.contains("amont-land: remote-moved"), "{err}");
+    assert!(err.contains("greengate-land: remote-moved"), "{err}");
 }
 
 #[test]
@@ -221,11 +221,15 @@ fn a_malformed_land_variable_refuses_and_is_never_a_moved_remote() {
     }
     let (r, base, log) = gated("block", 0);
     let tip = head(&r);
-    let (code, out, err) = hook(&r, &push_line(&base, &tip), &[("AMONT_LAND", "not a sha")]);
+    let (code, out, err) = hook(
+        &r,
+        &push_line(&base, &tip),
+        &[("GREENGATE_LAND", "not a sha")],
+    );
     assert_ne!(code, 0, "{out}{err}");
     assert_eq!(runs(&log), 0);
-    assert!(err.contains("AMONT_LAND"), "{err}");
-    assert!(!err.contains("amont-land: remote-moved"), "{err}");
+    assert!(err.contains("GREENGATE_LAND"), "{err}");
+    assert!(!err.contains("greengate-land: remote-moved"), "{err}");
 }
 
 #[test]
@@ -407,11 +411,15 @@ fn land_with_stamp_reuse_off_refuses_before_any_gate_runs() {
         return;
     }
     let (fx, log) = land_fixture(0);
-    fx.r.git(&["config", "amont.pushStamps", "false"]);
+    fx.r.git(&["config", "greengate.pushStamps", "false"]);
     let ran = crate::land::land(&fx, &[]);
     assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
     assert_eq!(runs(&log), 0);
-    assert!(ran.stderr.contains("amont.pushStamps"), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("greengate.pushStamps"),
+        "{}",
+        ran.stderr
+    );
 }
 
 #[test]
@@ -713,7 +721,7 @@ fn a_missing_audit_tool_never_blocks_a_land() {
 #[test]
 fn a_dirty_lockfile_writes_no_record() {
     let (fx, bin, log) = audit_fixture();
-    fx.r.git(&["config", "amont.pushGates", "inline"]);
+    fx.r.git(&["config", "greengate.pushGates", "inline"]);
     std::fs::write(fx.r.path("go.sum"), "example.com/m v1.0.1 h1:def=\n").expect("dirty");
     let tip = crate::land::head(&fx);
     let (code, out, err) = hook_in(&fx.r, &push_line(&tip, &tip), &bin, &[]);
@@ -753,13 +761,13 @@ fn neither_land_variable_reaches_a_gate() {
     fx.r.stage(
         "gate.js",
         &format!(
-            "require('fs').appendFileSync({:?}, (process.env.AMONT_LAND||'-') + ' ' + (process.env.AMONT_LAND_PRESTAGE||'-') + '\\n')\n",
+            "require('fs').appendFileSync({:?}, (process.env.GREENGATE_LAND||'-') + ' ' + (process.env.GREENGATE_LAND_PRESTAGE||'-') + '\\n')\n",
             seen.to_str().expect("utf8")
         ),
     );
     // `suite` is scoped: it runs in land's pre-stage, under
-    // AMONT_LAND_PRESTAGE. `probe` is unscoped (`*`): it runs in land's own
-    // push, under AMONT_LAND. Both write what they saw.
+    // GREENGATE_LAND_PRESTAGE. `probe` is unscoped (`*`): it runs in land's own
+    // push, under GREENGATE_LAND. Both write what they saw.
     fx.r.stage(
         "amont.conf",
         "pre-push    suite  *.txt  block  node gate.js\n\

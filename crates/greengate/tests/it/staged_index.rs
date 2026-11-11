@@ -7,7 +7,7 @@
 //! that index: a gate reading `git diff --cached` judged the old index,
 //! passed on nothing, and its pass was stamped onto the committed tree.
 //!
-//! - Every pre-commit command is told the index as `AMONT_INDEX_FILE`.
+//! - Every pre-commit command is told the index as `GREENGATE_INDEX_FILE`.
 //! - A command declared `index` is handed it as `GIT_INDEX_FILE` too.
 //! - Any other command still sees no `GIT_*` variable.
 //!
@@ -78,14 +78,17 @@ fn every_pre_commit_gate_is_told_the_index_being_committed() {
     if missing("sh") {
         return;
     }
-    // No `index` marker: the gate finds the index through AMONT_INDEX_FILE,
+    // No `index` marker: the gate finds the index through GREENGATE_INDEX_FILE,
     // and fails loudly when it is not set.
-    let gate = "GIT_INDEX_FILE=\"${AMONT_INDEX_FILE:?not set}\" git show :a.txt \
+    let gate = "GIT_INDEX_FILE=\"${GREENGATE_INDEX_FILE:?not set}\" git show :a.txt \
                 | grep -q BAD && exit 1\nexit 0\n";
     let fixture = repo(gate, "pre-commit  idxgate7  *.txt  block  sh gate.sh\n");
     fixture.write("a.txt", "fine\n");
     let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
-    assert!(accepted, "AMONT_INDEX_FILE names a readable index:\n{out}");
+    assert!(
+        accepted,
+        "GREENGATE_INDEX_FILE names a readable index:\n{out}"
+    );
     fixture.write("a.txt", "BAD\n");
     let (accepted, out) = commit_all_from_sub(&fixture, "feat: bad");
     assert!(!accepted, "and it is the one commit -a seals:\n{out}");
@@ -97,10 +100,10 @@ fn a_gate_not_declared_index_still_sees_no_git_variable() {
         return;
     }
     let gate = "env | grep -q '^GIT_' && { env | grep '^GIT_'; exit 1; }\n\
-                [ \"$AMONT_INDEX_GIT_DIR\" = \"$(git rev-parse --absolute-git-dir)\" ] \
-                || { echo \"AMONT_INDEX_GIT_DIR is not this repository: $AMONT_INDEX_GIT_DIR\"; exit 1; }\n\
-                case \"$AMONT_INDEX_FILE\" in /*) exit 0 ;; esac\n\
-                echo \"AMONT_INDEX_FILE is not absolute: $AMONT_INDEX_FILE\"; exit 1\n";
+                [ \"$GREENGATE_INDEX_GIT_DIR\" = \"$(git rev-parse --absolute-git-dir)\" ] \
+                || { echo \"GREENGATE_INDEX_GIT_DIR is not this repository: $GREENGATE_INDEX_GIT_DIR\"; exit 1; }\n\
+                case \"$GREENGATE_INDEX_FILE\" in /*) exit 0 ;; esac\n\
+                echo \"GREENGATE_INDEX_FILE is not absolute: $GREENGATE_INDEX_FILE\"; exit 1\n";
     let fixture = repo(gate, "pre-commit  clean  *.txt  block  sh gate.sh\n");
     fixture.write("a.txt", "fine\n");
     let (accepted, out) = commit_all_from_sub(&fixture, "feat: fine");
@@ -189,7 +192,7 @@ fn a_relative_git_index_file_is_handed_on_absolute() {
     // Also refuses unless the index it is told is absolute: a consumer that
     // changes directory must still find it.
     let gate = format!(
-        "case \"$AMONT_INDEX_FILE\" in /*) ;; *) echo relative; exit 1 ;; esac\n{READS_THE_INDEX}"
+        "case \"$GREENGATE_INDEX_FILE\" in /*) ;; *) echo relative; exit 1 ;; esac\n{READS_THE_INDEX}"
     );
     let fixture = repo(
         &gate,
@@ -245,14 +248,14 @@ fn a_pre_push_gate_never_inherits_an_index() {
     fixture.stage(
         "gate.sh",
         &format!(
-            "echo \"${{AMONT_INDEX_FILE:-unset}} ${{AMONT_INDEX_GIT_DIR:-unset}}\" > '{}'\n",
+            "echo \"${{GREENGATE_INDEX_FILE:-unset}} ${{GREENGATE_INDEX_GIT_DIR:-unset}}\" > '{}'\n",
             log.to_str().expect("utf8").replace('\'', "'\\''")
         ),
     );
     fixture.stage("amont.conf", "pre-push  probe  *  warn  sh gate.sh\n");
     fixture.commit("chore: base");
     crate::tree_gates::trust_and_install(&fixture);
-    fixture.git(&["config", "amont.pushGates", "inline"]);
+    fixture.git(&["config", "greengate.pushGates", "inline"]);
     let head = String::from_utf8_lossy(&fixture.git(&["rev-parse", "HEAD"]).stdout)
         .trim()
         .to_string();
@@ -262,8 +265,8 @@ fn a_pre_push_gate_never_inherits_an_index() {
         .arg(fixture.path(".git/hooks"))
         .arg("pre-push")
         .current_dir(&fixture.dir)
-        .env("AMONT_INDEX_FILE", "/stale/index")
-        .env("AMONT_INDEX_GIT_DIR", "/stale/.git")
+        .env("GREENGATE_INDEX_FILE", "/stale/index")
+        .env("GREENGATE_INDEX_GIT_DIR", "/stale/.git")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

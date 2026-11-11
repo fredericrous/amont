@@ -594,7 +594,7 @@ fn a_warn_declaration_leaves_the_push_gate_alone() {
 }
 
 /// The same downgrade arrived at sideways: the declaration says `block`, an
-/// `amont.severity.*` override says `warn`. The EFFECTIVE severity is what a
+/// `greengate.severity.*` override says `warn`. The EFFECTIVE severity is what a
 /// commit actually experiences, so it is what the push gate must consult.
 #[test]
 fn a_severity_override_to_warn_leaves_the_push_gate_alone() {
@@ -608,7 +608,7 @@ fn a_severity_override_to_warn_leaves_the_push_gate_alone() {
     );
     r.commit("chore: typecheck at commit time");
     trust_manifest(&r);
-    r.git(&["config", "amont.severity.pre-commit-typecheck", "warn"]);
+    r.git(&["config", "greengate.severity.pre-commit-typecheck", "warn"]);
 
     let (code, out) = push_range_out(&r, &base, &head(&r));
     assert_ne!(
@@ -834,19 +834,19 @@ fn a_local_setting_can_remove_a_declared_name_and_never_add_one() {
     }
     // Committed `test`, local `none`: the removal counts, so the members run.
     let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers test\n");
-    repo.git(&["config", "amont.rootRunsMembers", "none"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "none"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Committed `none`, local `test`: nothing is added, so the members run.
     let (repo, base) = workspace_repo(ROOT_TEST, "set rootRunsMembers none\n");
-    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
 
     // Nothing committed, local `test`: still nothing declared, so it hints.
     let (repo, base) = workspace_repo(ROOT_TEST, "");
-    repo.git(&["config", "amont.rootRunsMembers", "test"]);
+    repo.git(&["config", "greengate.rootRunsMembers", "test"]);
     let (_, out) = push_range_out(&repo, &base, &head(&repo));
     assert_eq!(ran(&repo), ["root", "a", "x"], "{out}");
     assert!(out.contains("a repeat if the root runs them"), "{out}");
@@ -1198,12 +1198,12 @@ fn a_linked_worktree_commit_earns_a_stamp_the_push_sees() {
 //
 // The stamp's silent sibling: a commit a gate declaration covered, created
 // without that gate having run, appends one line per dodged script to
-// `.git/amont-bypasses`. These tests pin what counts and — just as load-
+// `.git/greengate-bypasses`. These tests pin what counts and — just as load-
 // bearing — what does not: the fixture's own setup commits, out-of-scope
 // commits, and repositories that declare no gate must all leave NO file.
 
 fn ledger(r: &Repo) -> Option<String> {
-    std::fs::read_to_string(r.path(".git/amont-bypasses")).ok()
+    std::fs::read_to_string(r.path(".git/greengate-bypasses")).ok()
 }
 
 #[test]
@@ -1222,7 +1222,7 @@ fn a_no_verify_commit_a_gate_covers_is_recorded_as_unverified() {
     r.stage("src/b.ts", "export const y = 2\n");
     r.commit("feat: dodge the gate"); // Repo::commit IS --no-verify
     let text = ledger(&r).expect("a bypassed gate leaves a ledger");
-    assert!(text.starts_with("amont-bypass-v1"), "{text:?}");
+    assert!(text.starts_with("greengate-bypass-v1"), "{text:?}");
     assert!(text.contains(" typecheck"), "{text:?}");
     assert_eq!(text.lines().count(), 2, "one header, one event: {text:?}");
 }
@@ -1297,7 +1297,7 @@ fn a_partially_stamped_commit_records_only_the_missing_script() {
     r.stage(
         "amont.conf",
         "pre-commit  typecheck  *.ts,*.tsx  block  node tc.js\n\
-         pre-commit  test       *.ts,*.tsx  block  amont-no-such-tool-xyz\n",
+         pre-commit  test       *.ts,*.tsx  block  greengate-no-such-tool-xyz\n",
     );
     r.stage("src/b.ts", "export const y = 2\n");
     trust_manifest(&r);
@@ -1353,7 +1353,7 @@ fn amont_uninstall_forgets_the_bypass_ledger() {
 #[test]
 fn amont_record_bypasses_false_records_nothing() {
     let (r, _base) = stamped_repo();
-    r.git(&["config", "amont.recordBypasses", "false"]);
+    r.git(&["config", "greengate.recordBypasses", "false"]);
     r.stage("src/b.ts", "export const y = 2\n");
     r.commit("feat: dodge the gate, off the record");
     assert_eq!(ledger(&r), None, "the documented switch must be honoured");

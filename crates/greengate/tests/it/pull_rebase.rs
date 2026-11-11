@@ -6,7 +6,7 @@
 //! rebased every push onto main), and abort cleanly on conflict.
 //!
 //! The states a push journey passes through (no upstream, a dirty tree, in
-//! sync, diverged after an amend, behind with `amont.autoRebase` off and
+//! sync, diverged after an amend, behind with `greengate.autoRebase` off and
 //! on, an upstream merged away) are steps of `flows/push.rs`, driven by
 //! real pushes. What stays here are the states that need a setup of their
 //! own: a local upstream, a worktree marker, a remote not named `origin`,
@@ -202,7 +202,7 @@ fn offline_reads_as_unreachable_not_deleted() {
 
 /// A remote that accepts the connection and then says nothing must not hold
 /// the push hostage: the probe is killed at its deadline and the sync is
-/// skipped, honestly. `amont.timeout 1` shrinks the probe budget to 1s, so
+/// skipped, honestly. `greengate.timeout 1` shrinks the probe budget to 1s, so
 /// the hung shim's 30s sleep proves the kill rather than the wait.
 #[cfg(unix)]
 #[test]
@@ -210,7 +210,7 @@ fn a_hung_remote_is_cut_at_the_deadline() {
     let r = with_origin();
     r.git(&["checkout", "-q", "-b", "feat/hung"]);
     r.git(&["push", "-q", "--no-verify", "-u", "origin", "feat/hung"]);
-    r.git(&["config", "amont.timeout", "1"]);
+    r.git(&["config", "greengate.timeout", "1"]);
 
     let real = String::from_utf8(
         std::process::Command::new("sh")

@@ -237,7 +237,7 @@ pub enum Probe {
 /// brain, a remote that accepts the TCP connect and then says nothing.
 /// Unbounded, that held the push hostage inside the index hold with no
 /// deadline anywhere; the learned response is `--no-verify`, permanently.
-/// `budget_secs == 0` means no deadline (the same opt-out `amont.timeout`
+/// `budget_secs == 0` means no deadline (the same opt-out `greengate.timeout`
 /// honours). Output is discarded — network callers decide on exit codes.
 pub fn probe(args: &[&str], budget_secs: u64) -> Probe {
     probe_env(args, budget_secs, &[])
@@ -526,7 +526,8 @@ mod tests {
         // inside another test's repository, or one already deleted, and git
         // exited non-zero. The crate-wide lock is the rule for exactly this.
         let _cwd = crate::TEST_CWD.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("amont-probe-stdout-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-probe-stdout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let run = |args: &[&str]| {
@@ -631,7 +632,7 @@ mod probe_tests {
     /// instead of blocking until the deadline.
     #[test]
     fn a_long_ls_remote_is_drained_while_the_child_runs() {
-        let dir = std::env::temp_dir().join(format!("amont-probe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); // a leftover of an earlier run, if any
         let path = dir.display().to_string();
         let git = |args: &[&str]| {

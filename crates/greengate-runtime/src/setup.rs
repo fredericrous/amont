@@ -244,10 +244,11 @@ fn apply(answers: &[Answer], scope: Where, dry_run: bool) -> Result<(), String> 
         }
     }
 
-    println!("\nTwo more, per repository rather than per person:");
-    println!("  git config amont.fix true             # let a check fix what it finds");
-    println!("  git config amont.testPushedTree true  # test what you push, not your tree");
-    println!("\nRead it all back with:  {BIN} list");
+    // Hints for the person, not the answer: on stderr.
+    eprintln!("\nTwo more, per repository rather than per person:");
+    eprintln!("  git config greengate.fix true             # let a check fix what it finds");
+    eprintln!("  git config greengate.testPushedTree true  # test what you push, not your tree");
+    eprintln!("\nRead it all back with:  {BIN} list");
     Ok(())
 }
 

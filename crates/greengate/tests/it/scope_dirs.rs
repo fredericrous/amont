@@ -29,7 +29,7 @@ fn docs_skip_earns_no_stamp_and_a_real_run_does() {
     r.stage("docs/guide.md", "one\n");
     r.stage("src/lib.rs", "code\n");
     r.commit("base");
-    let marker = r.path(".git/amont-gate");
+    let marker = r.path(".git/greengate-gate");
 
     r.stage("docs/guide.md", "two\n");
     let run = r.hook("pre-commit", &[]);
@@ -65,7 +65,7 @@ fn amont_run_leaves_no_marker_but_the_pre_commit_hook_does() {
     manifest(&r, "pre-commit  gate  *  block  true\n");
     r.stage("src/lib.rs", "code\n");
     r.commit("base");
-    let marker = r.path(".git/amont-gate");
+    let marker = r.path(".git/greengate-gate");
 
     r.stage("src/lib.rs", "changed\n");
     let run = r.run(&["run"]);

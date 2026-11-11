@@ -36,10 +36,10 @@ fn the_defaults_are_shown_and_so_is_the_way_to_change_them() {
 #[test]
 fn a_configured_value_names_its_key_and_scope() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.gitmoji", "suffix"]);
+    r.git(&["config", "greengate.commit.gitmoji", "suffix"]);
     let out = r.run(&["list"]).output();
     assert!(out.contains("suffix"), "{out}");
-    assert!(out.contains("amont.commit.gitmoji"), "{out}");
+    assert!(out.contains("greengate.commit.gitmoji"), "{out}");
     assert!(out.contains("local"), "the scope was not reported: {out}");
 }
 
@@ -55,7 +55,7 @@ fn narrowing_to_one_stage_still_shows_the_commit_style() {
 #[test]
 fn the_json_carries_the_same_answer() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.subjectMax", "100"]);
+    r.git(&["config", "greengate.commit.subjectMax", "100"]);
     let out = r.run(&["list", "--json"]).stdout;
     assert!(out.contains("\"commit_style\""), "{out}");
     // Numbers as numbers: a limit a reader will compare against should not
@@ -72,8 +72,8 @@ fn the_json_carries_the_same_answer() {
 #[test]
 fn an_incoherent_pair_is_reported_by_list_and_not_by_the_hook() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.subjectMax", "52"]);
-    r.git(&["config", "amont.commit.descriptionMax", "50"]);
+    r.git(&["config", "greengate.commit.subjectMax", "52"]);
+    r.git(&["config", "greengate.commit.descriptionMax", "50"]);
 
     let listed = r.run(&["list"]).output();
     assert!(listed.contains("can never bind"), "{listed}");
@@ -97,10 +97,10 @@ fn setup_without_a_terminal_prints_the_commands_and_succeeds() {
     assert!(run.passed(), "exit {}: {}", run.code, run.output());
     assert!(run.stderr.contains("not a terminal"), "{}", run.stderr);
     for key in [
-        "amont.commit.gitmoji",
-        "amont.commit.subjectMax",
-        "amont.commit.descriptionMax",
-        "amont.commit.bodyWrap",
+        "greengate.commit.gitmoji",
+        "greengate.commit.subjectMax",
+        "greengate.commit.descriptionMax",
+        "greengate.commit.bodyWrap",
     ] {
         assert!(run.stdout.contains(key), "{key} missing: {}", run.stdout);
     }
@@ -112,9 +112,9 @@ fn setup_without_a_terminal_prints_the_commands_and_succeeds() {
 #[test]
 fn the_printed_commands_carry_the_current_values() {
     let r = Repo::new();
-    r.git(&["config", "amont.commit.gitmoji", "replace"]);
+    r.git(&["config", "greengate.commit.gitmoji", "replace"]);
     let out = r.run(&["setup"]).stdout;
-    assert!(out.contains("amont.commit.gitmoji replace"), "{out}");
+    assert!(out.contains("greengate.commit.gitmoji replace"), "{out}");
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn help_names_the_new_verb() {
     );
 }
 
-// The older boolean keys (`amont.fix`, `amont.testPushedTree`) moved onto
+// The older boolean keys (`greengate.fix`, `greengate.testPushedTree`) moved onto
 // the same reader in this series. They are asserted where they are actually
 // read — see `gits_own_spelling_of_true_turns_it_on` in `pushed_tree.rs` — since
 // a key nothing consults in a given run cannot prove anything here.

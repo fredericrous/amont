@@ -46,7 +46,7 @@ fn nothing_is_stashed_mid_merge() {
 
     let run = r.hook("pre-commit", &[]);
     assert_eq!(tree(&r, "x.json"), BROKEN, "the tree was touched mid-merge");
-    assert!(!r.path(".git/amont-held").exists());
+    assert!(!r.path(".git/greengate-held").exists());
     assert!(
         run.says("in progress"),
         "index fidelity was off and nothing said so:\n{}",
@@ -108,7 +108,7 @@ fn a_conflicted_path_aborts_the_stage() {
         "the refusal must name what it found:\n{}",
         run.output()
     );
-    assert!(!r.path(".git/amont-held").exists());
+    assert!(!r.path(".git/greengate-held").exists());
 }
 
 /// Trust a declared manifest non-interactively, the way `external.rs` does —
@@ -201,7 +201,7 @@ fn ctrl_c_mid_run_still_restores_and_dies_by_the_signal() {
         "unstaged work was not restored after Ctrl-C"
     );
     assert!(
-        !r.path(".git/amont-held").exists(),
+        !r.path(".git/greengate-held").exists(),
         "held files left behind after the signal-handler restore"
     );
 }
@@ -216,8 +216,8 @@ fn restore_puts_back_held_files() {
     r.write("x.json", BROKEN);
 
     // Park the file the way the guard does, then abandon it.
-    std::fs::create_dir_all(r.path(".git/amont-held")).expect("mkdir");
-    std::fs::write(r.path(".git/amont-held/x.json"), BROKEN).expect("write");
+    std::fs::create_dir_all(r.path(".git/greengate-held")).expect("mkdir");
+    std::fs::write(r.path(".git/greengate-held/x.json"), BROKEN).expect("write");
     Command::new("git")
         .arg("-C")
         .arg(&r.dir)
@@ -237,7 +237,7 @@ fn restore_puts_back_held_files() {
         .expect("amont restore");
     assert!(out.status.success(), "{:?}", out);
     assert_eq!(tree(&r, "x.json"), BROKEN, "restore did not put it back");
-    assert!(!r.path(".git/amont-held").exists());
+    assert!(!r.path(".git/greengate-held").exists());
 }
 
 /// Nothing to restore is not an error — it is how somebody checks.
@@ -316,7 +316,7 @@ fn signal_mid_check_restores(signal: &str) {
     //
     // The tree matching the INDEX is the honest proxy: that is what `checkout`
     // does, immediately before the flag is set.
-    let store = r.path(".git/amont-held");
+    let store = r.path(".git/greengate-held");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     // A NON-panicking read: `checkout` replaces the file, so there is a moment
     // where it does not exist, and `tree()` would panic on it rather than
@@ -568,9 +568,9 @@ fn a_previous_unrecovered_stash_is_not_clobbered() {
     r.write("x.json", BROKEN);
 
     // Simulate a run that parked something and never got to restore it.
-    std::fs::create_dir_all(r.path(".git/amont-held")).expect("mkdir");
+    std::fs::create_dir_all(r.path(".git/greengate-held")).expect("mkdir");
     std::fs::write(
-        r.path(".git/amont-held/precious.txt"),
+        r.path(".git/greengate-held/precious.txt"),
         "not recovered yet\n",
     )
     .expect("write");
@@ -582,7 +582,7 @@ fn a_previous_unrecovered_stash_is_not_clobbered() {
         run.output()
     );
     assert_eq!(
-        std::fs::read_to_string(r.path(".git/amont-held/precious.txt")).expect("read"),
+        std::fs::read_to_string(r.path(".git/greengate-held/precious.txt")).expect("read"),
         "not recovered yet\n",
         "the unrecovered stash must survive the refusal"
     );
@@ -637,7 +637,9 @@ fn a_commit_in_a_linked_worktree_still_gets_its_unstaged_work_back() {
         .trim()
         .to_string();
     assert!(
-        !std::path::Path::new(&git_dir).join("amont-held").exists(),
+        !std::path::Path::new(&git_dir)
+            .join("greengate-held")
+            .exists(),
         "held files left behind after a successful restore"
     );
 }
@@ -667,7 +669,7 @@ fn restore_command_finds_the_stash_from_a_linked_worktree() {
     let git_dir = String::from_utf8_lossy(&git_in(&wt, &["rev-parse", "--git-dir"]).stdout)
         .trim()
         .to_string();
-    let store = std::path::Path::new(&git_dir).join("amont-held");
+    let store = std::path::Path::new(&git_dir).join("greengate-held");
     std::fs::create_dir_all(&store).expect("mkdir");
     std::fs::write(store.join("x.json"), BROKEN).expect("write");
     git_in(&wt, &["checkout", "--", "."]);
@@ -755,7 +757,7 @@ fn a_tracked_file_named_like_the_symlink_marker_does_not_plant_a_symlink() {
     let r = Repo::new();
     seed(&r);
 
-    let outside = std::env::temp_dir().join(format!("amont-outside-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("greengate-outside-{}", std::process::id()));
     std::fs::write(&outside, "a file the repository does not own\n").expect("write outside");
 
     r.stage("payload.amont-symlink", &format!("{}\n", outside.display()));
@@ -789,7 +791,7 @@ fn a_legacy_suffix_store_is_still_recovered() {
     r.stage("gone.txt", "will be deleted\n");
     r.commit("chore: seed the legacy shapes");
 
-    let store = r.path(".git/amont-held");
+    let store = r.path(".git/greengate-held");
     std::fs::create_dir_all(&store).expect("mkdir");
     // The old format: payload by plain name, metadata by suffix. No index.
     std::fs::write(store.join("x.json"), BROKEN).expect("write payload");
@@ -909,7 +911,7 @@ fn an_editor_save_mid_check_is_kept_not_clobbered() {
         "the preservation must be announced:\n{}",
         run.output()
     );
-    let parked = r.path(".git/amont-preserved/a.txt");
+    let parked = r.path(".git/greengate-preserved/a.txt");
     assert_eq!(
         std::fs::read_to_string(&parked).expect("parked copy"),
         "my unstaged edit\n",
@@ -917,7 +919,7 @@ fn an_editor_save_mid_check_is_kept_not_clobbered() {
     );
 }
 
-/// With `amont.fix` on the guard stands down: a repo-wide fixer legitimately
+/// With `greengate.fix` on the guard stands down: a repo-wide fixer legitimately
 /// rewrites held files mid-run, and the documented contract there has always
 /// been "the tree returns to your unstaged version".
 #[cfg(unix)]
@@ -927,7 +929,7 @@ fn a_fixing_repo_keeps_the_old_restore_contract() {
     let r = Repo::new();
     r.stage("a.txt", "committed\n");
     r.commit("chore: seed");
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.write("a.txt", "my unstaged edit\n");
 
     r.stage("fixer.sh", "#!/bin/sh\nprintf 'fixed\\n' > a.txt\nexit 0\n");
@@ -947,7 +949,7 @@ fn a_fixing_repo_keeps_the_old_restore_contract() {
     );
     assert!(
         !run.says("changed while the checks ran"),
-        "the guard must stand down under amont.fix:\n{}",
+        "the guard must stand down under greengate.fix:\n{}",
         run.output()
     );
 }

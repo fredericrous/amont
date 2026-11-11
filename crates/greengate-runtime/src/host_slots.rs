@@ -5,7 +5,7 @@
 //! core. A check that compiles or executes the product is therefore Heavy,
 //! and takes a host slot before its first tool runs. The protocol (the slot
 //! directory, the lock, the queue, admission, the holder record) is the
-//! `amont-slots` crate, the one implementation relais links too; this module
+//! `greengate-slots` crate, the one implementation relais links too; this module
 //! is the hook's half: which checks are Heavy, the busy policy, deferral, and
 //! the queue row.
 //!
@@ -67,32 +67,32 @@ pub enum Reason {
 /// a push waits at most one `slotWait`.
 static BUSY_SEEN: AtomicBool = AtomicBool::new(false);
 
-/// `amont.hostSlots`, a host key: unset sizes the slots from the machine
+/// `greengate.hostSlots`, a host key: unset sizes the slots from the machine
 /// (`Sizing::Auto`), N fixes them, `0` turns them off (`None`).
 pub fn sizing(settings: &crate::config::Settings) -> Option<greenharness_slots::Sizing> {
-    match crate::config::host_integer_or(settings, "amont.hostSlots", -1, 0..=64) {
+    match crate::config::host_integer_or(settings, "greengate.hostSlots", -1, 0..=64) {
         0 => None,
         n if n < 0 => Some(greenharness_slots::Sizing::Auto),
         n => Some(greenharness_slots::Sizing::Fixed(n as u32)),
     }
 }
 
-/// The environment override of `amont.onBusy`, for one run:
-/// `AMONT_ON_BUSY=wait git push` runs a gate the file would defer.
-pub const ON_BUSY_ENV: &str = "AMONT_ON_BUSY";
+/// The environment override of `greengate.onBusy`, for one run:
+/// `GREENGATE_ON_BUSY=wait git push` runs a gate the file would defer.
+pub const ON_BUSY_ENV: &str = "GREENGATE_ON_BUSY";
 
 /// What a Heavy check does when no slot frees in time (ADR-0013,
 /// `hooks.busy-policy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusyPolicy {
-    /// Wait up to `amont.timeout`, then run unqueued with a note: ADR-0009's
+    /// Wait up to `greengate.timeout`, then run unqueued with a note: ADR-0009's
     /// behaviour, and the default.
     Wait,
     /// Wait up to `slot_wait`, then defer the check to CI.
     Defer { slot_wait: Duration },
 }
 
-/// The busy policy in force: `AMONT_ON_BUSY`, then `amont.onBusy` (git
+/// The busy policy in force: `GREENGATE_ON_BUSY`, then `greengate.onBusy` (git
 /// config, or `set onBusy` in a trusted `amont.conf`), then `wait`.
 pub fn busy_policy(settings: &crate::config::Settings) -> BusyPolicy {
     resolve_busy(std::env::var(ON_BUSY_ENV).ok().as_deref(), settings)
@@ -109,14 +109,16 @@ fn resolve_busy(from_env: Option<&str>, settings: &crate::config::Settings) -> B
             crate::config::complain(
                 ON_BUSY_ENV,
                 &format!("{other:?} is not one of wait, defer"),
-                "amont.onBusy",
+                "greengate.onBusy",
             );
-            crate::config::enumerated_or(settings, "amont.onBusy", &["wait", "defer"], "wait")
+            crate::config::enumerated_or(settings, "greengate.onBusy", &["wait", "defer"], "wait")
         }
-        None => crate::config::enumerated_or(settings, "amont.onBusy", &["wait", "defer"], "wait"),
+        None => {
+            crate::config::enumerated_or(settings, "greengate.onBusy", &["wait", "defer"], "wait")
+        }
     };
     if mode == "defer" {
-        let secs = crate::config::integer_or(settings, "amont.slotWait", 60, 1..=3600) as u64;
+        let secs = crate::config::integer_or(settings, "greengate.slotWait", 60, 1..=3600) as u64;
         BusyPolicy::Defer {
             slot_wait: Duration::from_secs(secs),
         }
@@ -163,7 +165,7 @@ enum SlotWait {
     /// [`never_waits`].
     NeverWaits,
     /// A heavy `warn` check of land's pre-stage: it waits at most
-    /// `amont.warnSlotWait`, then runs unqueued (ADR-0013). Set by
+    /// `greengate.warnSlotWait`, then runs unqueued (ADR-0013). Set by
     /// [`wait_bounded_for_warn`].
     BoundedForWarn,
 }
@@ -240,7 +242,7 @@ fn between_gates() -> greenharness_slots::Holder {
 /// reader of `amont slots` knows, whether the slot was granted, parked or
 /// handed on.
 fn holder_for(command: &str) -> greenharness_slots::Holder {
-    let mut holder = greenharness_slots::Holder::here("amont", command);
+    let mut holder = greenharness_slots::Holder::here(crate::names::SLOT_HOLDER, command);
     if let Some(src) = crate::rehearsal::source_worktree() {
         holder.repo = src.display().to_string();
     }
@@ -277,7 +279,7 @@ pub fn deferred_here() -> bool {
 /// The error a refused spawn returns. Only a way to stop the spawn: what the
 /// check makes of it does not matter, because [`CheckGuard::deferred`] wins.
 fn refusal() -> std::io::Error {
-    std::io::Error::other("deferred to CI: no host slot freed (amont.onBusy defer)")
+    std::io::Error::other("deferred to CI: no host slot freed (greengate.onBusy defer)")
 }
 
 impl Drop for CheckGuard {
@@ -330,17 +332,17 @@ pub fn never_waits() {
 
 /// The check running on this thread is a heavy `warn` check of land's
 /// pre-stage, where somebody waits for its evidence: it waits for a slot at
-/// most `amont.warnSlotWait` (and never longer than `amont.timeout`), under
+/// most `greengate.warnSlotWait` (and never longer than `greengate.timeout`), under
 /// either busy policy, then runs unqueued, never deferred.
 pub fn wait_bounded_for_warn() {
     CURRENT.with(|current| current.borrow_mut().slot_wait = SlotWait::BoundedForWarn);
 }
 
-/// `amont.warnSlotWait`: how long a heavy `warn` check of land's pre-stage
+/// `greengate.warnSlotWait`: how long a heavy `warn` check of land's pre-stage
 /// waits for a slot. Git config, then a trusted `amont.conf`, then 600 s.
 fn warn_slot_wait(settings: &crate::config::Settings) -> Duration {
     Duration::from_secs(
-        crate::config::integer_or(settings, "amont.warnSlotWait", 600, 1..=3600) as u64,
+        crate::config::integer_or(settings, "greengate.warnSlotWait", 600, 1..=3600) as u64,
     )
 }
 
@@ -452,7 +454,7 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             crate::hooks::common::say(&format!(
                 "  (waited {} for a host slot, {} {cap})",
                 crate::hooks::common::human_secs(waited.as_secs()),
-                crate::ui::highlight("amont.hostSlots")
+                crate::ui::highlight("greengate.hostSlots")
             ));
         }
         let defer =
@@ -518,7 +520,7 @@ fn record_acquisition(name: &str, jobs: Option<u32>, waited: Duration, outcome: 
     let short = crate::short_name(name);
     greenharness_slots::record_wait_named(
         &greenharness_slots::dir(),
-        "amont",
+        crate::names::SLOT_HOLDER,
         greenharness_slots::WaitContext {
             name: Some(short),
             place: if crate::rehearsal::in_prestage() {
@@ -585,7 +587,7 @@ fn wait_for_slot(
     }
 }
 
-/// `queued behind relais: cargo test (amont-wt-x, 4m) · 2 waiting`.
+/// `queued behind relais: cargo test (greengate-wt-x, 4m) · 2 waiting`.
 pub fn behind(queue: &greenharness_slots::Queue) -> String {
     let now = greenharness_slots::now_ms();
     let mut who: Vec<String> = queue.holders.iter().map(|h| h.describe(now)).collect();
@@ -602,8 +604,8 @@ pub fn behind(queue: &greenharness_slots::Queue) -> String {
 /// One line for the reasons a person can act on; nothing for the normal
 /// case (the platform).
 ///
-/// `warn_wait` is set when `amont.warnSlotWait` cut the wait: the note names
-/// that key rather than `amont.hostSlots`.
+/// `warn_wait` is set when `greengate.warnSlotWait` cut the wait: the note names
+/// that key rather than `greengate.hostSlots`.
 fn note(reason: &Reason, cap: u64, warn_wait: Option<Duration>) {
     match reason {
         Reason::DirUnsafe(why) => crate::hooks::common::warn(&format!(
@@ -614,13 +616,13 @@ fn note(reason: &Reason, cap: u64, warn_wait: Option<Duration>) {
         Reason::TimedOut(waited) if warn_wait.is_some() => crate::hooks::common::warn(&format!(
             "no host slot in {} (land: {}={}s); running it anyway",
             crate::hooks::common::human_secs(waited.as_secs()),
-            crate::ui::highlight("amont.warnSlotWait"),
+            crate::ui::highlight("greengate.warnSlotWait"),
             warn_wait.map_or(0, |limit| limit.as_secs())
         )),
         Reason::TimedOut(waited) => crate::hooks::common::warn(&format!(
             "no host slot freed in {} ({} {cap}); running it anyway",
             crate::hooks::common::human_secs(waited.as_secs()),
-            crate::ui::highlight("amont.hostSlots")
+            crate::ui::highlight("greengate.hostSlots")
         )),
         Reason::Io(why) => {
             crate::hooks::common::warn(&format!("host slots are off for this check: {why}"))
@@ -639,7 +641,7 @@ mod tests {
         crate::config::Settings::new(policy)
     }
 
-    /// `AMONT_ON_BUSY`, then `amont.conf`, then `wait`; a bad environment
+    /// `GREENGATE_ON_BUSY`, then `amont.conf`, then `wait`; a bad environment
     /// value is ignored for the file's.
     #[test]
     fn the_busy_policy_is_env_then_file_then_wait() {
@@ -691,11 +693,14 @@ mod tests {
     #[test]
     fn cargo_pins_the_host_knobs_for_tests() {
         assert_eq!(std::env::var(HELD_ENV).as_deref(), Ok("held"));
-        assert_eq!(std::env::var("AMONT_IDLE_LOAD_SCALE").as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("GREENGATE_IDLE_LOAD_SCALE").as_deref(),
+            Ok("1")
+        );
     }
 
     /// A light check never asks. A heavy one run by an amont that holds a
-    /// slot (the test process has `AMONT_HOST_SLOT=held` from
+    /// slot (the test process has `GREENHARNESS_HOST_SLOT=held` from
     /// `.cargo/config.toml`) is nested: it settles without a slot.
     #[test]
     fn a_light_check_never_takes_a_slot() {
@@ -721,7 +726,7 @@ mod tests {
     /// stays held, and no holder record stays on disk.
     #[test]
     fn a_park_scope_dropped_early_releases_the_parked_slot() {
-        let dir = std::env::temp_dir().join(format!("amont-park-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-park-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); // best-effort: a fresh scratch dir
         let early = || {
             let _scope = ParkScope::begin();

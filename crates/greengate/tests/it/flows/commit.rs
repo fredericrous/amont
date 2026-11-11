@@ -36,7 +36,7 @@ fn head_files(r: &Repo) -> String {
 
 /// The hold's store: present only while a hook has unstaged work parked.
 fn held(r: &Repo) -> bool {
-    r.path(".git/amont-held").exists()
+    r.path(".git/greengate-held").exists()
 }
 
 /// How many times `suite` has run: its log grows a byte per run.
@@ -200,7 +200,7 @@ fn the_commit_journey() {
 
     // ---- 3. fixers ---------------------------------------------------------
 
-    r.git(&["config", "amont.fix", "true"]);
+    r.git(&["config", "greengate.fix", "true"]);
     r.stage("a.js", "const a = BAD\n");
     let (ok, out) = git_commit(&r, &["-m", "feat: a"]);
     step!(
@@ -245,7 +245,7 @@ fn the_commit_journey() {
 
     // Off (the default): the fixer is not even invoked, and the check that
     // did not run says so instead of rolling up as clean, without blocking.
-    r.git(&["config", "--unset", "amont.fix"]);
+    r.git(&["config", "--unset", "greengate.fix"]);
     r.stage("d.js", "const a = BAD\n");
     let (ok, out) = git_commit(&r, &["-m", "feat: d"]);
     step_eq!(
@@ -262,7 +262,7 @@ fn the_commit_journey() {
     );
     step!(
         "fix off",
-        out.contains("amont.fix"),
+        out.contains("greengate.fix"),
         "the gap must name its reason:\n{out}"
     );
     step!("fix off", ok, "{out}");
@@ -365,9 +365,9 @@ fn the_commit_journey() {
     );
     step_eq!("re-commit", runs(&r), n);
 
-    // `amont.commitStamps false`: every attempt runs.
+    // `greengate.commitStamps false`: every attempt runs.
     let n = runs(&r);
-    r.git(&["config", "amont.commitStamps", "false"]);
+    r.git(&["config", "greengate.commitStamps", "false"]);
     r.stage("a.txt", "switched off\n");
     let (ok, _) = git_commit(&r, &["-m", "just a message with no type"]);
     step!("stamps off", !ok);
@@ -375,7 +375,7 @@ fn the_commit_journey() {
     step!("stamps off", ok, "{out}");
     step!("stamps off", !out.contains(REUSED), "reuse is off:\n{out}");
     step_eq!("stamps off", runs(&r), n + 2);
-    r.git(&["config", "--unset", "amont.commitStamps"]);
+    r.git(&["config", "--unset", "greengate.commitStamps"]);
 
     // A gate that FAILED vouches for nothing: the retry on the same tree
     // (`fail` is untracked, not staged) runs it again.

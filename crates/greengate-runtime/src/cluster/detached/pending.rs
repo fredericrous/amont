@@ -22,6 +22,9 @@ use crate::json_read::Value;
 /// The layout of the file: an older or newer amont reads a file it did not
 /// write as empty and says so in `cluster.log`.
 const FORMAT: i64 = 1;
+
+/// The pending file's name, in the common dir's state folder.
+pub(crate) const PENDING_FILE: &str = "cluster-pending";
 /// How often a writer polls for the lock.
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
@@ -192,7 +195,7 @@ pub(super) struct Pending {
     /// The Workflow's UID. `None` while the intent is all there is: written
     /// before `create`, or after a `create` whose answer was lost.
     pub(super) uid: Option<String>,
-    /// The `amont.run` label of the Workflow and its pods.
+    /// The `greengate.run` label of the Workflow and its pods.
     pub(super) label: String,
     pub(super) namespace: String,
     pub(super) kubeconfig: PathBuf,
@@ -307,7 +310,17 @@ fn parse_gate(v: &Value) -> Option<Gate> {
     })
 }
 
-fn render_file(records: &[Pending]) -> String {
+/// A pending file holding one sample record submitted at `submitted`, as
+/// this version writes it: for the migration's tests, which cannot see
+/// the record type.
+#[cfg(test)]
+pub(crate) fn sample_file(submitted: u64) -> String {
+    let mut record = tests::sample("rh-sample");
+    record.submitted = submitted;
+    render_file(&[record])
+}
+
+pub(super) fn render_file(records: &[Pending]) -> String {
     let body: Vec<String> = records.iter().map(Pending::render).collect();
     format!(
         "{{\"format\":{FORMAT},\"records\":{}}}\n",
@@ -315,7 +328,7 @@ fn render_file(records: &[Pending]) -> String {
     )
 }
 
-fn parse_file(text: &str) -> Result<Vec<Pending>, String> {
+pub(super) fn parse_file(text: &str) -> Result<Vec<Pending>, String> {
     let doc = crate::json_read::parse(text).ok_or("not JSON")?;
     match doc.get("format") {
         Some(Value::Num(n)) if n == &FORMAT.to_string() => {}
@@ -382,7 +395,7 @@ impl Store {
         let common =
             crate::git::stdout(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
         Some(Store {
-            dir: Path::new(&common).join("amont"),
+            dir: Path::new(&common).join(crate::names::STATE_DIR),
         })
     }
 
@@ -394,7 +407,7 @@ impl Store {
     }
 
     fn file(&self) -> PathBuf {
-        self.dir.join("cluster-pending")
+        self.dir.join(PENDING_FILE)
     }
 
     /// Is there anything pending? One `stat`.
@@ -534,7 +547,7 @@ pub(in crate::cluster::detached) mod tests {
 
     #[test]
     fn writing_replaces_the_file_and_no_record_removes_it() {
-        let dir = std::env::temp_dir().join(format!("amont-pending-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("greengate-pending-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = Store::in_dir(&dir);
         assert_eq!(store.read(), Ok(Vec::new()));
@@ -554,7 +567,8 @@ pub(in crate::cluster::detached) mod tests {
     #[cfg(unix)]
     #[test]
     fn a_second_writer_does_not_get_the_lock() {
-        let dir = std::env::temp_dir().join(format!("amont-pending-lock-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("greengate-pending-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = Store::in_dir(&dir);
         let first = store.try_lock().expect("the first writer locks");

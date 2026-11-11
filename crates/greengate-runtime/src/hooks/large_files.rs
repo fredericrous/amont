@@ -11,9 +11,9 @@
 //!
 //! Two thresholds, both in megabytes and both configurable:
 //!
-//! - `amont.largeFileWarn` (default 10) — named, never blocking: a large
+//! - `greengate.largeFileWarn` (default 10) — named, never blocking: a large
 //!   asset can be deliberate, and the warning is the moment to decide;
-//! - `amont.largeFileBlock` (default 100, GitHub's refusal line) — blocks,
+//! - `greengate.largeFileBlock` (default 100, GitHub's refusal line) — blocks,
 //!   with the remedy named (git-lfs, or keep it out of history).
 //!
 //! Under the staged-only hold the working tree IS the commit's content,
@@ -31,9 +31,10 @@ pub const NAME: &str = "large-files";
 
 /// The two thresholds, in bytes, as configured here.
 pub fn thresholds(settings: &crate::config::Settings) -> (u64, u64) {
-    let warn = crate::config::integer_or(settings, "amont.largeFileWarn", 10, 1..=1_000_000) as u64;
+    let warn =
+        crate::config::integer_or(settings, "greengate.largeFileWarn", 10, 1..=1_000_000) as u64;
     let block =
-        crate::config::integer_or(settings, "amont.largeFileBlock", 100, 1..=1_000_000) as u64;
+        crate::config::integer_or(settings, "greengate.largeFileBlock", 100, 1..=1_000_000) as u64;
     (warn * MB, block * MB)
 }
 
@@ -64,7 +65,7 @@ pub fn scan(settings: &crate::config::Settings, file: &str, len: u64) -> Option<
             Severity::Warn,
             format!(
                 "{mb} MB — every future clone pays for this forever \
-                 (git config amont.largeFileWarn to tune)"
+                 (git config greengate.largeFileWarn to tune)"
             ),
         ))
     } else {

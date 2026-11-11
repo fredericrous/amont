@@ -2,7 +2,7 @@
 //! stamp the tree when they prove it (ADR-0024).
 //!
 //! The commit's verdict is untouched: it comes from the checks it always came
-//! from. A tree gate adds at most `amont.treeLintSlack` after those finish, and
+//! from. A tree gate adds at most `greengate.treeLintSlack` after those finish, and
 //! a pass is recorded as the token `tree:<name>` in the commit's gate stamp
 //! (`gate_stamp::record`), which post-commit binds to both the commit and its
 //! tree. The push reads the tree's note, so a reword keeps the proof.
@@ -29,9 +29,9 @@ use crate::hooks::common::{hl, ok, say};
 use crate::manifest::{TreeGate, CACHE_PLACEHOLDER};
 use crate::tree_run::TreeRun;
 
-pub const TOGGLE: &str = "amont.treeLint";
-pub const SLACK: &str = "amont.treeLintSlack";
-pub const OUTPUTS: &str = "amont.snapshotPrepareOutputs";
+pub const TOGGLE: &str = "greengate.treeLint";
+pub const SLACK: &str = "greengate.treeLintSlack";
+pub const OUTPUTS: &str = "greengate.snapshotPrepareOutputs";
 
 /// Seconds tree gates may run after the commit's own checks have finished.
 const DEFAULT_SLACK: i64 = 2;
@@ -383,8 +383,8 @@ pub fn tree_verdict(gates: &[TreeGate], tips: &[String]) -> (Vec<String>, Vec<St
     (proven, unproven)
 }
 
-pub const REHEARSAL_TIMEOUT: &str = "amont.treeLintRehearsalTimeout";
-pub const WAIT: &str = "amont.treeLintWait";
+pub const REHEARSAL_TIMEOUT: &str = "greengate.treeLintRehearsalTimeout";
+pub const WAIT: &str = "greengate.treeLintWait";
 
 /// Whether a snapshot is still exactly its tree once `snapshotPrepare` (and
 /// `snapshotCarry`) ran: tracked content unchanged, nothing untracked, and
@@ -399,7 +399,7 @@ pub fn prepare_guard(snapshot: &Path, settings: &crate::config::Settings) -> Opt
 
 /// The rehearsal's half (ADR-0024): prove `gates` on the snapshot of `tree`,
 /// uncached (every snapshot sits at a new path) and bounded by
-/// `amont.treeLintRehearsalTimeout`, and stamp the TREE. Runs before the
+/// `greengate.treeLintRehearsalTimeout`, and stamp the TREE. Runs before the
 /// rehearsal's test gates, so a push waiting on lint does not wait on tests.
 pub fn rehearse(
     settings: &crate::config::Settings,
@@ -481,10 +481,10 @@ pub fn rehearse(
     tokens
 }
 
-/// [`tree_verdict`], waiting — at most `amont.treeLintWait` counted from
+/// [`tree_verdict`], waiting — at most `greengate.treeLintWait` counted from
 /// `started` (the start of pre-push), as ONE deadline for every gate — for a
 /// rehearsal running on the tree of one of `tips` to stamp its tree gates.
-/// Independent of `amont.rehearsalWait`: it neither uses nor extends it.
+/// Independent of `greengate.rehearsalWait`: it neither uses nor extends it.
 pub fn await_verdict(
     settings: &crate::config::Settings,
     gates: &[TreeGate],
@@ -528,11 +528,11 @@ pub fn fit_line(prefix: &str, body: &str, suffix: &str) -> String {
 #[cfg(unix)]
 fn warm_log() -> Option<PathBuf> {
     crate::git::stdout(&["rev-parse", "--absolute-git-dir"])
-        .map(|d| PathBuf::from(d).join("amont-warm.log"))
+        .map(|d| PathBuf::from(d).join(crate::names::WARM_LOG))
 }
 
 /// Start the background warm-up for the cold gates, and say so once — under
-/// every `amont.quiet` setting: a cold gate is why this commit carries no
+/// every `greengate.quiet` setting: a cold gate is why this commit carries no
 /// `tree:` stamp, and quiet only swallows success lines.
 fn warm_later(cold: &[String]) {
     #[cfg(unix)]
@@ -542,7 +542,7 @@ fn warm_later(cold: &[String]) {
             Ok(_) => say(&fit_line(
                 "  tree lint cold: ",
                 &cold.join(" "),
-                " — warming ($GIT_DIR/amont-warm.log)",
+                " — warming ($GIT_DIR/greengate-warm.log)",
             )),
             Err(e) => say(&format!(
                 "  tree lint cold: {} — could not start the warm-up ({e}); run {}",
@@ -620,7 +620,7 @@ pub fn warm(root: &Path) -> i32 {
     0
 }
 
-/// Wait at most `amont.treeLintSlack` for the gates still running, cancel the
+/// Wait at most `greengate.treeLintSlack` for the gates still running, cancel the
 /// rest, and return the stamp tokens of the gates that proved the tree.
 /// `stampable` is false when the commit is blocked or a check rewrote files:
 /// then nothing is waited for and nothing is stamped. Cold gates go to the

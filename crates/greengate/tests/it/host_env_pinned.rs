@@ -68,3 +68,37 @@ fn every_fixture_starts_amont_through_amont_cmd() {
         found.join("\n")
     );
 }
+
+/// Every file that starts the binary by hand also sandboxes it, as many
+/// times as it starts it: greengate 4.0's first run migrates the global git
+/// config and writes under `$XDG_CONFIG_HOME`, and a test that forgot did
+/// so on the developer's machine (2026-11-11).
+#[test]
+fn every_hand_built_start_is_sandboxed() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let start = format!("Command::new(env!(\"{}\"))", "CARGO_BIN_EXE_greengate");
+    let sandboxed = format!("{}(", "sandbox_env");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    let mut short = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).expect("read a test source");
+        let lines: Vec<&str> = text.lines().collect();
+        // Each start, on its own: the sandbox call wraps it on the same
+        // line or sits on the line right after it.
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(start.as_str()) {
+                continue;
+            }
+            let next = lines.get(i + 1).copied().unwrap_or_default();
+            if !line.contains(sandboxed.as_str()) && !next.contains(sandboxed.as_str()) {
+                short.push(format!("{}:{}", file.display(), i + 1));
+            }
+        }
+    }
+    assert!(
+        short.is_empty(),
+        "start the binary through `crate::common::sandbox_env` too:\n{}",
+        short.join("\n")
+    );
+}

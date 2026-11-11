@@ -6,9 +6,14 @@
 //! here. The names test (`crates/greengate/tests/it/names.rs`) fails on a new
 //! literal `"amont "`, `"amont: "` or `"amont-fleet"` in any other source.
 //!
-//! Not here: the names the tool READS (env vars, git config keys,
-//! `amont.conf`, ledgers, state paths, markers, the slots contract). Those
-//! keep their old spelling until plan 3a-2 reads both.
+//! The names the tool READS and WRITES are here too since greengate 4.0
+//! (plan "greengate 4.0 renames its data names", a hard rename): the
+//! `GREENGATE_` environment, the `greengate.` config keys, the state under
+//! `$GIT_DIR` and the common dir, and the ledgers' headers. greengate 3.x's
+//! spellings live only in `migrate.rs`, which moves them once; the names
+//! test fails on an old data name anywhere else. Kept on purpose: the notes
+//! namespaces (`refs/notes/amont-*`, plan 3a-3), the shim placeholder, and
+//! the binary aliases above.
 //!
 //! In a format string, name the constant inline: `eprintln!("{BIN}: …")`.
 //! For a `&'static str` built at compile time, use the [`bin!`] macro with
@@ -62,6 +67,80 @@ pub const NPM_PACKAGE: &str = "@greenharness/greengate";
 
 /// The Homebrew formula, tap-qualified.
 pub const BREW_FORMULA: &str = "fredericrous/tap/greengate";
+
+/// The git config namespace every key lives in (`greengate.timeout`).
+pub const CONFIG_PREFIX: &str = "greengate.";
+
+/// The environment namespace a host key answers to (`GREENGATE_TIMEOUT`).
+pub const ENV_PREFIX: &str = "GREENGATE";
+
+/// The folder of state under `$GIT_DIR` and the common dir (logs, land
+/// receipts, pending detached runs).
+pub const STATE_DIR: &str = "greengate";
+
+/// The tree cache under `$GIT_DIR`.
+pub const TREE_CACHE: &str = "greengate-cache";
+
+/// Where the unstaged changes are parked during a check.
+pub const HELD_STORE: &str = "greengate-held";
+
+/// A held copy a mid-check edit displaced.
+pub const PRESERVED_STORE: &str = "greengate-preserved";
+
+/// The bypass ledger, and its header.
+pub const BYPASS_LEDGER: &str = "greengate-bypasses";
+pub const BYPASS_FORMAT: &str = "greengate-bypass-v1";
+
+/// The downgrade ledger, and its header.
+pub const DOWNGRADE_LEDGER: &str = "greengate-downgrades";
+pub const DOWNGRADE_FORMAT: &str = "greengate-downgrade-v1";
+
+/// The waves ledger, and its header.
+pub const WAVES_LEDGER: &str = "greengate-waves";
+pub const WAVES_FORMAT: &str = "greengate-waves-v1";
+
+/// A rehearsal's state file, its log, and the state's header.
+pub const REHEARSAL_STATE: &str = "greengate-rehearsal";
+pub const REHEARSAL_LOG: &str = "greengate-rehearsal.log";
+pub const REHEARSAL_FORMAT: &str = "greengate-rehearsal-v1";
+
+/// The cold-cache warm worker's log under `$GIT_DIR`.
+pub const WARM_LOG: &str = "greengate-warm.log";
+
+/// The version-skew marker, and its header.
+pub const SKEW_MARKER: &str = "greengate-skew";
+pub const SKEW_FORMAT: &str = "greengate-skew-v1";
+
+/// The held store's index header.
+pub const HELD_FORMAT: &str = "greengate-held-v1";
+
+/// The pre-commit → post-commit gate marker under `$GIT_DIR`. Its content
+/// keeps the notes format (`amont-gate-v1`), which plan 3a-3 renames.
+pub const GATE_MARKER: &str = "greengate-gate";
+
+/// The `list --json` envelope. greenpiste and relais read it and the old
+/// `amont-list-v1` alike, from greenpiste 3.30.0 and relais 0.54.0.
+pub const LIST_FORMAT: &str = "greengate-list-v1";
+
+/// The migration's lock and its done-marker, in the common dir.
+pub const MIGRATE_LOCK: &str = "greengate-migrate.lock";
+pub const MIGRATED_MARKER: &str = "greengate-migrated";
+
+/// The marker `greengate migrate --reverse` leaves in the common dir: the
+/// first-run migration stands down until it is gone, so a 4.0 hook does
+/// not move a rolled-back repository forward again before 3.x is installed.
+pub const REVERSED_MARKER: &str = "greengate-reversed";
+
+/// The name this tool holds a host slot under (`greengate slots`).
+pub const SLOT_HOLDER: &str = "greengate";
+
+/// The label every Job and Workflow of one run carries, read by `collect`
+/// and the batched cluster reads.
+pub const RUN_LABEL: &str = "greengate.run";
+
+/// The annotations naming a cluster Job's gate and tree.
+pub const GATE_ANNOTATION: &str = "greengate.dev/gate";
+pub const TREE_ANNOTATION: &str = "greengate.dev/tree";
 
 #[cfg(test)]
 mod tests {

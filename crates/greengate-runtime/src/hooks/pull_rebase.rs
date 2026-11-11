@@ -185,7 +185,7 @@ pub fn run(
     // rebase you did not type — the shape a check is expected to have. On (the
     // default, and the behaviour every install so far has had), it syncs a
     // behind branch for you and then asks for a second push.
-    let auto = crate::config::boolean_or(settings, "amont.autoRebase", true);
+    let auto = crate::config::boolean_or(settings, "greengate.autoRebase", true);
 
     // 2b. The upstream can be configured locally but GONE on the remote — the
     //     normal state right after a PR squash-merges with delete-on-merge.
@@ -261,7 +261,7 @@ pub fn run(
             crate::say!(
                 "{} Behind {upstream} — not auto-rebasing ({} is off).",
                 warning_sign(),
-                highlight("amont.autoRebase")
+                highlight("greengate.autoRebase")
             );
             crate::say!("    Sync first: {}", highlight("git pull --rebase"));
             return Outcome::Failed;
@@ -283,7 +283,7 @@ pub fn run(
         // the verified pair from 2a/2b, and repeating them here means this
         // sync can never again silently use something other than what was
         // just checked.
-        // Under the full `amont.timeout` deadline — this is real work (a
+        // Under the full `greengate.timeout` deadline — this is real work (a
         // fetch plus a rebase), not a probe, but it is still a network verb
         // and a hung fetch used to hold the push hostage with no clock
         // anywhere. The probe above only proved the remote ANSWERS; it says
