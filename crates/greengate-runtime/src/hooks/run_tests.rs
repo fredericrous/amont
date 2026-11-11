@@ -10,6 +10,7 @@
 use super::common::program;
 use crate::check::Outcome;
 use crate::git;
+use std::io::IsTerminal;
 use std::process::{Command, Stdio};
 
 /// Whichever of these the package defines, cheapest first, stopping at the
@@ -101,9 +102,10 @@ pub(crate) fn blocking_commit_decls(
             let crate::manifest::Kind::Runnable { files, .. } = &ext.kind else {
                 return None;
             };
-            is_blocking_commit_decl(ext, &severities, &skips).then(|| GateDecl {
+            ext.blocks_at_commit(&severities, &skips).then(|| GateDecl {
                 script: ext.short_name.clone(),
                 id: ext.id.clone(),
+                lineno: ext.lineno,
                 // What it fires on and is judged on: the resolved trigger
                 // (its own scope united with its push twin's), else its own.
                 scope: ext.effective_scope(),
@@ -111,21 +113,6 @@ pub(crate) fn blocking_commit_decls(
             })
         })
         .collect()
-}
-
-/// Whether `ext` is a commit-time declaration that blocks and is not switched
-/// off: the ones whose runs earn stamps. The ONE predicate
-/// [`blocking_commit_decls`] and [`crate::manifest::Manifest::resolve_triggers`]
-/// share, so the two cannot disagree about which declarations count.
-pub(crate) fn is_blocking_commit_decl(
-    ext: &crate::manifest::External,
-    severities: &crate::registry::Overrides,
-    skips: &[String],
-) -> bool {
-    matches!(ext.kind, crate::manifest::Kind::Runnable { .. })
-        && ext.stage == crate::check::Stage::PreCommit
-        && severities.of(ext) == crate::check::Severity::Block
-        && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s))
 }
 
 /// Names this manifest declares at pre-commit, before any config is read —
@@ -162,6 +149,8 @@ pub(crate) enum WhyNot {
         scope: String,
         uncovered: Vec<String>,
         cause: GapCause,
+        /// The 1-based `amont.conf` line to edit, when it is known.
+        at: Option<usize>,
     },
     /// It is a warn check, which vouches for nothing.
     Warn,
@@ -186,71 +175,153 @@ pub(crate) enum GapCause {
     Unresolved,
 }
 
-/// Say why a same-named commit-time declaration did not vouch, before the push
-/// runs the gate. The first line keeps to 80 columns and opens with the
-/// warning sign; a scope gap adds an indented line naming the `amont.conf`
-/// line to edit. Exit codes are untouched: this is a line, not a verdict.
-pub(crate) fn say_why_not(name: &str, why: &WhyNot) {
-    let sign = crate::ui::warning_sign();
+/// The reason a declaration did not vouch because the repository lacks its
+/// opt-in marker.
+fn not_opted_in(scope: &crate::check::Scope) -> WhyNot {
+    WhyNot::NotOptedIn(scope.opt_in.iter().map(|m| m.to_string()).collect())
+}
+
+/// The reason a declaration did not vouch because its scope misses some of the
+/// files `relevant` to its push twin. One derivation for every gate that pairs
+/// (`pair_verdict` and the npm push gate), so the same gap gets the same
+/// words on both paths. `twin_line` is the `amont.conf` line of a DECLARED
+/// push twin that acts on every change, the line to scope.
+fn scope_gap(
+    pair: &GateDecl,
+    push_scope: &crate::check::Scope,
+    relevant: &[String],
+    twin_line: Option<usize>,
+) -> WhyNot {
+    let known = |line: usize| Some(line).filter(|n| *n > 0);
+    let (cause, at) = if pair.files {
+        (GapCause::Files, known(pair.lineno))
+    } else if push_scope.is_unscoped() {
+        (GapCause::UnscopedTwin, twin_line)
+    } else {
+        (GapCause::Unresolved, known(pair.lineno))
+    };
+    WhyNot::ScopeGap {
+        scope: scope_label(&pair.scope),
+        uncovered: relevant
+            .iter()
+            .filter(|file| !pair.scope.covers(file))
+            .cloned()
+            .collect(),
+        cause,
+        at,
+    }
+}
+
+/// The `amont.conf` line of the `pre-push` declaration named `name`, if there
+/// is one: the line to edit when its twin acts on every change.
+fn declared_twin_line(manifest: &crate::manifest::Manifest, name: &str) -> Option<usize> {
+    manifest
+        .externals
+        .iter()
+        .find(|e| e.stage == crate::check::Stage::PrePush && e.short_name == name)
+        .map(|e| e.lineno)
+        .filter(|n| *n > 0)
+}
+
+/// The lines that say why a same-named commit-time declaration did not vouch:
+/// the reason, then for a scope gap an indented line naming the `amont.conf`
+/// line to edit. Pure, so the words and their width are tested.
+///
+/// On a terminal the first line is cut to 80 columns (the sign and its space
+/// stand for two of them), and only its variable part is cut, so its ending,
+/// `— running it here`, always survives. Piped, nothing is cut: a CI log keeps
+/// every path. Every value from the manifest or the repository is sanitised.
+pub(crate) fn reason_lines(name: &str, why: &WhyNot, terminal: bool) -> Vec<String> {
     let name = crate::ui::sanitize(name);
-    let head = |body: String| {
-        // The sign and its space stand for the two columns of the prefix.
-        let line = crate::tree_lint::fit_line("  ", &body, "");
-        crate::say!("{sign} {}", &line[2..]);
+    let first = |prefix: String, variable: String, suffix: &str| -> String {
+        if terminal {
+            let line = crate::tree_lint::fit_line(&format!("  {prefix}"), &variable, suffix);
+            line.strip_prefix("  ").unwrap_or(&line).to_string()
+        } else {
+            format!("{prefix}{variable}{suffix}")
+        }
     };
     match why {
         WhyNot::ScopeGap {
             scope,
             uncovered,
             cause,
+            at,
         } => {
             let shown: Vec<String> = uncovered
                 .iter()
                 .take(3)
-                .map(|p| crate::ui::sanitize(p))
+                .map(|path| crate::ui::sanitize(path))
                 .collect();
             let paths = match uncovered.len().saturating_sub(3) {
                 0 => shown.join(", "),
                 more => format!("{} and {more} more", shown.join(", ")),
             };
-            head(format!(
-                "{name} at commit covers {scope}, not {paths} — running it here"
-            ));
-            let at = match crate::manifest::declaration_line(
-                std::path::Path::new(&super::common::repo_root()),
-                crate::check::Stage::PreCommit,
-                &name,
-            ) {
-                Some(n) => format!("{} line {n}", crate::manifest::MANIFEST),
+            let head = first(
+                format!(
+                    "{name} at commit covers {}, not ",
+                    crate::ui::sanitize(scope)
+                ),
+                paths,
+                " — running it here",
+            );
+            let at = match at {
+                Some(line) => format!("{} line {line}", crate::manifest::MANIFEST),
                 None => crate::manifest::MANIFEST.to_string(),
             };
-            let first = shown.first().map(String::as_str).unwrap_or("it");
-            match cause {
+            let first_path = shown.first().map(String::as_str).unwrap_or("it");
+            let fix = match cause {
                 GapCause::Files => {
-                    crate::say!("    a files declaration is not widened: add {first} to {at}")
+                    format!("    a files declaration is not widened: add {first_path} to {at}")
                 }
                 GapCause::UnscopedTwin => {
-                    crate::say!("    its push twin acts on every change: widen its scope in {at}")
+                    format!("    its push twin runs on every change: scope that line in {at}")
                 }
-                GapCause::Unresolved => crate::say!(
+                GapCause::Unresolved => format!(
                     "    its push twin's files were not applied: a {} bug, please report it",
                     crate::names::BIN
                 ),
-            }
+            };
+            vec![head, fix]
         }
-        WhyNot::Warn => head(format!(
-            "{name} at commit is a warn check, which vouches for nothing — running it here"
-        )),
-        WhyNot::Skipped => head(format!(
-            "{name} at commit is skipped here (hook.skip) — running it here"
-        )),
-        WhyNot::NotOptedIn(markers) => head(format!(
-            "{name} at commit is not opted in here (needs {}) — running it here",
-            markers.join(" | ")
-        )),
-        WhyNot::Unidentified => head(format!(
-            "{name} at commit cannot be identified (its program was not found) — running it here"
-        )),
+        WhyNot::Warn => vec![first(
+            String::new(),
+            name,
+            " at commit is warn-only, so it vouches for nothing — running it here",
+        )],
+        WhyNot::Skipped => vec![first(
+            String::new(),
+            name,
+            " at commit is skipped here (hook.skip) — running it here",
+        )],
+        WhyNot::NotOptedIn(markers) => {
+            let markers: Vec<String> = markers.iter().map(|m| crate::ui::sanitize(m)).collect();
+            vec![first(
+                String::new(),
+                name,
+                &format!(
+                    " at commit is not opted in (needs {}) — running it here",
+                    markers.join(" | ")
+                ),
+            )]
+        }
+        WhyNot::Unidentified => vec![first(
+            String::new(),
+            name,
+            " at commit: its program was not found — running it here",
+        )],
+    }
+}
+
+/// Say why a same-named commit-time declaration did not vouch, before the push
+/// runs the gate. Exit codes are untouched: this is a line, not a verdict.
+pub(crate) fn say_why_not(name: &str, why: &WhyNot) {
+    let mut lines = reason_lines(name, why, std::io::stdout().is_terminal()).into_iter();
+    if let Some(head) = lines.next() {
+        crate::say!("{} {head}", crate::ui::warning_sign());
+    }
+    for rest in lines {
+        crate::say!("{rest}");
     }
 }
 
@@ -320,13 +391,11 @@ pub(crate) fn pair_verdict(
     // word. Judged against the REPOSITORY, once, and never against a commit's
     // changed files: see `repo_opted_in`.
     if !repo_opted_in(&pair.scope) {
-        return PairVerdict::NotPaired(Some(WhyNot::NotOptedIn(
-            pair.scope.opt_in.iter().map(|m| m.to_string()).collect(),
-        )));
+        return PairVerdict::NotPaired(Some(not_opted_in(&pair.scope)));
     }
     // The complete token of the commit-time declaration. Unknown identity (its
     // program cannot be found) means its stamps vouch for nothing: the push
-    // side runs on its own word, quietly, as if there were no pair.
+    // says so, then runs on its own word.
     let Some(pair_token) = manifest
         .externals
         .iter()
@@ -380,21 +449,12 @@ pub(crate) fn pair_verdict(
             // word covers nothing here. Said out loud, as "running it here"
             // and never as partial coverage, which would read as
             // reassurance: it names what the declaration misses.
-            return PairVerdict::NotPaired(Some(WhyNot::ScopeGap {
-                scope: scope_label(&pair.scope),
-                uncovered: relevant
-                    .iter()
-                    .filter(|f| !pair.scope.covers(f))
-                    .cloned()
-                    .collect(),
-                cause: if pair.files {
-                    GapCause::Files
-                } else if push_scope.is_unscoped() {
-                    GapCause::UnscopedTwin
-                } else {
-                    GapCause::Unresolved
-                },
-            }));
+            return PairVerdict::NotPaired(Some(scope_gap(
+                &pair,
+                push_scope,
+                &relevant,
+                declared_twin_line(manifest, name),
+            )));
         }
         let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
         let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
@@ -541,6 +601,9 @@ pub(crate) struct GateDecl {
     /// paths, so its stamp vouches for that commit's files and never for the
     /// tree. Such a pair cannot cover a ref by its tip ([`pair_verdict`]).
     pub files: bool,
+    /// The 1-based `amont.conf` line that declares it, for a message that
+    /// sends a person to the line to edit (`0` when unknown).
+    pub lineno: usize,
 }
 
 /// The extensions this check treats as "JS worth testing". Exported so
@@ -863,23 +926,10 @@ pub fn run(
                 continue;
             }
             let why = if !repo_opted_in(&d.scope) {
-                Some(WhyNot::NotOptedIn(
-                    d.scope.opt_in.iter().map(|m| m.to_string()).collect(),
-                ))
+                Some(not_opted_in(&d.scope))
             } else if !d.scope.covers_all(&js_changed) {
-                Some(WhyNot::ScopeGap {
-                    scope: scope_label(&d.scope),
-                    uncovered: js_changed
-                        .iter()
-                        .filter(|f| !d.scope.covers(f))
-                        .cloned()
-                        .collect(),
-                    cause: if d.files {
-                        GapCause::Files
-                    } else {
-                        GapCause::Unresolved
-                    },
-                })
+                let js_scope = crate::check::Scope::files(JS_EXTS);
+                Some(scope_gap(d, &js_scope, &js_changed, None))
             } else {
                 None
             };
@@ -900,13 +950,21 @@ pub fn run(
                     .iter()
                     .find(|e| e.id == d.id)
                     .and_then(|e| crate::gate_identity::external_token(e, &d.script));
+                let Some(token) = token else {
+                    // Nothing to vouch with: say so once, and the script runs.
+                    if !said_why.contains(&d.script) {
+                        say_why_not(&d.script, &WhyNot::Unidentified);
+                        said_why.push(d.script.clone());
+                    }
+                    continue;
+                };
                 let unstamped = per_commit
                     .iter()
                     .filter(|(_, files)| d.scope.touches(files))
                     .filter(|(commit, _)| {
-                        !token
-                            .as_ref()
-                            .is_some_and(|t| stamps.get(commit).is_some_and(|s| s.contains(t)))
+                        !stamps
+                            .get(commit)
+                            .is_some_and(|stamped| stamped.contains(&token))
                     })
                     .count();
                 if unstamped == 0 {
@@ -1125,5 +1183,76 @@ mod tests {
             packages_to_test(&pkgs, &["src".to_string()]),
             vec!["".to_string()]
         );
+    }
+
+    fn every_reason(path: &str) -> Vec<WhyNot> {
+        vec![
+            WhyNot::ScopeGap {
+                scope: "*.rs".into(),
+                uncovered: vec![path.into()],
+                cause: GapCause::Files,
+                at: Some(3),
+            },
+            WhyNot::Warn,
+            WhyNot::Skipped,
+            WhyNot::NotOptedIn(vec!["marker".into()]),
+            WhyNot::Unidentified,
+        ]
+    }
+
+    /// The first line of every reason fits 80 columns with the sign and its
+    /// space in front, for an ordinary name, and ends in `running it here`:
+    /// the part a reader needs must never be the part that gets cut.
+    #[test]
+    fn every_reason_fits_its_line_and_keeps_its_ending() {
+        for why in every_reason("rustfmt.toml") {
+            let head = &reason_lines("cargo-test", &why, false)[0];
+            assert!(head.chars().count() + 2 <= 80, "{head}");
+            assert!(head.ends_with("— running it here"), "{head}");
+        }
+    }
+
+    /// On a terminal a long path, or a long name, is cut, never the ending.
+    #[test]
+    fn on_a_terminal_only_the_variable_part_is_cut() {
+        let long = "crates/a/very/deep/package/directory/src/components/widgets/Button.stories.tsx";
+        for why in every_reason(long) {
+            let head = &reason_lines("cargo-test", &why, true)[0];
+            assert!(head.chars().count() + 2 <= 80, "{head}");
+            assert!(head.ends_with("— running it here"), "{head}");
+        }
+        let name = "a-rather-long-check-name-indeed-for-a-gate";
+        for why in [
+            WhyNot::Warn,
+            WhyNot::Skipped,
+            WhyNot::NotOptedIn(vec!["marker".into()]),
+            WhyNot::Unidentified,
+        ] {
+            let head = &reason_lines(name, &why, true)[0];
+            assert!(head.chars().count() + 2 <= 80, "{head}");
+            assert!(head.ends_with("— running it here"), "{head}");
+        }
+    }
+
+    /// Piped, nothing is cut: a CI log keeps every path.
+    #[test]
+    fn piped_nothing_is_cut() {
+        let long = "crates/a/very/deep/package/directory/src/components/widgets/Button.stories.tsx";
+        let why = WhyNot::ScopeGap {
+            scope: "*.rs".into(),
+            uncovered: vec![long.into()],
+            cause: GapCause::Files,
+            at: None,
+        };
+        assert!(reason_lines("cargo-test", &why, false)[0].contains(long));
+    }
+
+    /// Everything the manifest or the repository supplies is sanitised, the
+    /// scope and the markers included.
+    #[test]
+    fn values_from_the_manifest_are_sanitised() {
+        let why = WhyNot::NotOptedIn(vec!["mark\u{1b}[31mer".into()]);
+        let head = &reason_lines("cargo-test", &why, false)[0];
+        assert!(!head.contains('\u{1b}'), "{head:?}");
     }
 }

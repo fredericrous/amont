@@ -375,7 +375,7 @@ fn a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped() {
         "the rustfmt.toml commit ran the commit-time gate"
     );
     assert!(
-        said.contains("rustfmt.toml is read by pre-push-cargo-test — testing at commit"),
+        said.contains("rustfmt.toml is read by pre-push-cargo-test — running it at commit"),
         "a commit that tests only through its twin's files says why: {said}"
     );
 
@@ -491,7 +491,9 @@ fn a_warn_pair_is_not_widened_to_its_twins_files() {
 
     let (_code, out) = push_out(&r, &base, &head(&r));
     assert!(
-        out.contains("cargo-test at commit is a warn check, which vouches for nothing"),
+        out.contains(
+            "cargo-test at commit is warn-only, so it vouches for nothing — running it here"
+        ),
         "a warn pair says so, then the push runs: {out}"
     );
 }
@@ -555,8 +557,14 @@ fn list_shows_what_a_declaration_also_fires_on_because_of_its_twin() {
     );
     let text = r.run(&["list", "--stage", "pre-commit"]).stdout;
     assert!(
-        text.contains("also fires on") && text.contains("Cargo.lock"),
-        "the text view says so too, with every path when piped: {text}"
+        text.contains("also fires on")
+            && text.contains("Cargo.lock")
+            && text.contains("(read by pre-push-cargo-test)"),
+        "the text view says so too, with every path when piped, naming the twin: {text}"
+    );
+    assert!(
+        row.contains("\"scope_twin\":\"pre-push-cargo-test\""),
+        "the twin's id is reported beside its files: {row}"
     );
 }
 
@@ -643,7 +651,7 @@ fn a_pair_that_is_not_opted_in_names_its_marker() {
     assert_eq!(runs(&r), 0, "not opted in: nothing ran at commit");
     let (_code, out) = push_out(&r, &base, &head(&r));
     assert!(
-        out.contains("cargo-test at commit is not opted in here (needs marker) — running it here"),
+        out.contains("cargo-test at commit is not opted in (needs marker) — running it here"),
         "{out}"
     );
 }
@@ -661,8 +669,33 @@ fn a_pair_whose_program_is_missing_says_it_cannot_be_identified() {
     r.commit("feat: nothing could run"); // Repo::commit IS --no-verify
     let (_code, out) = push_out(&r, &base, &head(&r));
     assert!(
-        out.contains("cargo-test at commit cannot be identified (its program was not found)"),
+        out.contains("cargo-test at commit: its program was not found — running it here"),
         "{out}"
+    );
+}
+
+/// The default for a bare push is to refuse a gate that has no stamp, before
+/// any connection opens. That refusal is where the silent rerun used to go
+/// unexplained, so it carries the reason too, ahead of the refusal lines.
+#[test]
+fn a_refused_push_says_why_the_pair_did_not_vouch() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs  block  files node gate.js\n");
+    r.git(&["config", "--unset", "amont.pushGates"]);
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&r, "chore: tune rustfmt");
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_ne!(code, 0, "the push is refused: {out}");
+    assert!(out.contains("push refused"), "{out}");
+    let reason = out
+        .find("cargo-test at commit covers *.rs, not rustfmt.toml — running it here")
+        .unwrap_or_else(|| panic!("the refusal names no reason: {out}"));
+    let refusal = out.find("push refused").expect("the refusal");
+    assert!(
+        reason < refusal,
+        "the reason comes before the refusal: {out}"
     );
 }
 
@@ -874,7 +907,7 @@ fn a_stamped_tip_cannot_cover_files_outside_the_pairs_scope() {
         "{out}"
     );
     assert!(
-        out.contains("its push twin acts on every change: widen its scope in amont.conf line 1"),
+        out.contains("its push twin runs on every change: scope that line in amont.conf line 2"),
         "{out}"
     );
 }

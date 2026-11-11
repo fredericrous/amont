@@ -684,10 +684,17 @@ mod tests {
     fn a_union_fires_where_either_scope_would() {
         let own = Scope::files(&[".rs"]);
         let twin = Scope::new(&[".rs", "Cargo.toml", "Cargo.lock"], &["Cargo.toml"]);
-        let u = own.union(&twin);
-        assert!(u.covers("src/a.rs") && u.covers("Cargo.lock") && u.covers("crates/a/Cargo.toml"));
-        assert!(!u.covers("README.md"));
-        assert!(u.opt_in.is_empty(), "the declaration keeps its own opt-in");
+        let widened_scope = own.union(&twin);
+        assert!(
+            widened_scope.covers("src/a.rs")
+                && widened_scope.covers("Cargo.lock")
+                && widened_scope.covers("crates/a/Cargo.toml")
+        );
+        assert!(!widened_scope.covers("README.md"));
+        assert!(
+            widened_scope.opt_in.is_empty(),
+            "the declaration keeps its own opt-in"
+        );
         let same = own.union(&Scope::files(&[".rs"]));
         assert!(
             std::ptr::eq(same.files, own.files),
@@ -700,7 +707,7 @@ mod tests {
     /// twin's patterns into it would narrow it.
     #[test]
     fn an_unscoped_scope_is_never_narrowed_by_a_union() {
-        let u = Scope::ALWAYS.union(&Scope::files(&[".rs"]));
-        assert!(u.is_unscoped() && u.touches(&["README.md".into()]));
+        let widened_scope = Scope::ALWAYS.union(&Scope::files(&[".rs"]));
+        assert!(widened_scope.is_unscoped() && widened_scope.touches(&["README.md".into()]));
     }
 }

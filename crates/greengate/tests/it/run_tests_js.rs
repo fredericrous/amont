@@ -680,6 +680,41 @@ fn a_script_declaration_also_fires_on_the_js_files_its_push_gate_runs_for() {
     assert_eq!(typecheck_runs(&r), 1, "the push re-ran the script:\n{out}");
 }
 
+/// A declaration whose program is not installed has no identity to stamp, so
+/// the push says that, instead of blaming the commits for carrying no record.
+#[test]
+fn a_script_declaration_whose_program_is_missing_says_so() {
+    if missing("npm") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage(
+        "package.json",
+        r#"{"name":"t","scripts":{"typecheck":"exit 0","test":"exit 0"}}"#,
+    );
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("src/a.ts", "export const x = 1\n");
+    r.commit("feat: a ts file");
+    r.stage(
+        "amont.conf",
+        "pre-commit  typecheck  *.ts  block  no-such-program-for-this-test\n",
+    );
+    r.commit("chore: typecheck at commit time");
+    trust_manifest(&r);
+
+    let (code, out) = push_range_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("typecheck at commit: its program was not found — running it here"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("no record of it"),
+        "re-committing would not help, so it must not say so: {out}"
+    );
+}
+
 /// A `files` declaration is handed the matched paths, so it is never widened:
 /// a push whose files it does not cover says what it misses and where to fix
 /// it, in the words the pair gates use, then runs the script.

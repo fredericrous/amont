@@ -31,15 +31,17 @@ missing here.
   `typecheck`, `test:unit` and `test`, the npm push gate. A `files` declaration,
   a `warn` one, and one whose twin has no patterns are left as written. The
   commit says so when it tests only through its twin's files
-  (`cargo-test: Cargo.lock is read by pre-push-cargo-test — testing at commit`).
+  (`cargo-test: Cargo.lock is read by pre-push-cargo-test — running it at commit`).
 - When a same-named commit-time declaration does not vouch for a push, the push
   now says why before it runs the gate: what the declaration covers and what it
   misses (with the `amont.conf` line to edit), that it is a `warn` check, that
   `hook.skip` switched it off, which opt-in marker is missing, or that its
-  program was not found. These were silent. Exit codes are unchanged.
-- `greengate list --json` gains a trailing `scope_from_twin` array, and the text
-  view a line under a widened row. `scope_files` and the columns before it are
-  as they were.
+  program was not found. These were silent, a refused push included. Exit codes
+  are unchanged.
+- `greengate list --json` gains trailing `scope_from_twin` and `scope_twin`
+  fields, and the text view a continuation line under a widened row.
+  `scope_files` and the fields before them are as they were; read `--json`, not
+  the indented lines.
 
 ## v3.0.1
 

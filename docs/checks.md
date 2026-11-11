@@ -107,6 +107,7 @@ these to decide what it may remove; `unknown` must never be read as absent.
 | `scope_opt_in` | files whose presence opts the repository in |
 | `command` | the command a declared check runs, else `null` |
 | `scope_from_twin` | files a `pre-commit` declaration also fires on because its push twin reads them (`[]` when it is not widened) |
+| `scope_twin` | the push gate whose files those are (`pre-push-cargo-test`), else `null` |
 
 A field named here and absent there — or the reverse — is a bug this page's
 own test fails on, because a reader who guesses a field name gets `null`
@@ -429,13 +430,17 @@ declaration now fires at commit on its own files **and** its twin's, and says
 so when only the twin's are staged:
 
 ```text
-cargo-test: Cargo.lock is read by pre-push-cargo-test — testing at commit
+cargo-test: Cargo.lock is read by pre-push-cargo-test — running it at commit
 ```
 
 The twin is the built-in of that short name, a `pre-push` line of the same name
 in this file (wherever it sits), or, for `typecheck`, `test:unit` and `test`, the
-npm push gate (`.js`, `.jsx`, `.ts`, `.tsx`, `.vue`). `greengate list` shows the
-files a row gained in its trailing `scope_from_twin` field. Three declarations
+npm push gate (`.js`, `.jsx`, `.ts`, `.tsx`, `.vue`); when a declared `pre-push`
+line and the built-in gate both exist, the commit-time line covers what either
+acts on. `greengate list --json` reports the files a row gained in its trailing
+`scope_from_twin` field, and the gate that reads them in `scope_twin`; the text
+view prints them on a continuation line under the row, so a script reads
+`--json`. Three declarations
 are left as written: a `files` one (its command is handed the matched paths, and
 handing a linter `Cargo.lock` is wrong), a `warn` one (it vouches for nothing,
 so widening it would only add a run), and one whose twin has no patterns at all
@@ -447,15 +452,18 @@ instead of running it in silence:
 ```text
 ⚠ cargo-test at commit covers *.rs, not rustfmt.toml — running it here
     a files declaration is not widened: add rustfmt.toml to amont.conf line 3
-⚠ cargo-test at commit is a warn check, which vouches for nothing — running it here
+⚠ cargo-test at commit is warn-only, so it vouches for nothing — running it here
 ⚠ cargo-test at commit is skipped here (hook.skip) — running it here
-⚠ cargo-test at commit is not opted in here (needs marker) — running it here
-⚠ cargo-test at commit cannot be identified (its program was not found) — running it here
+⚠ cargo-test at commit is not opted in (needs marker) — running it here
+⚠ cargo-test at commit: its program was not found — running it here
 ```
 
-With no same-named commit-time declaration there is nothing to explain and the
-push says nothing, as before. Exit codes are unchanged: it is a line, not a
-verdict.
+The same lines come before the refusal when a bare push is refused (the default,
+ahead of any connection), so that case is explained too. On a terminal a long
+path is cut to fit 80 columns and the ending `— running it here` is kept; piped,
+nothing is cut. With no same-named commit-time declaration there is nothing to
+explain and the push says nothing, as before. Exit codes are unchanged: it is a
+line, not a verdict.
 
 This is worth reaching for when a suite is fast enough to run on every
 commit. When it is not — a four-minute suite is not a per-commit cost anyone

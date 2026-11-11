@@ -240,6 +240,9 @@ pub struct CheckListing {
     /// row. A trailing field, so a reader of the columns before it is not
     /// disturbed.
     pub scope_from_twin: Vec<String>,
+    /// The id of the push gate whose files `scope_from_twin` lists
+    /// (`pre-push-cargo-test`); `None` when the row is not widened.
+    pub scope_twin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,8 +355,15 @@ pub fn gather_checks(
             // adds is reported beside it, in `scope_from_twin`.
             let own_scope = match external.map(|e| &e.kind) {
                 Some(manifest::Kind::Runnable { scope, .. }) => *scope,
-                _ => check.scope(),
+                Some(manifest::Kind::Unusable { .. }) | None => check.scope(),
             };
+            let scope_twin = external.and_then(|e| match &e.kind {
+                manifest::Kind::Runnable {
+                    trigger: Some(trigger),
+                    ..
+                } => Some(trigger.twin.clone()),
+                manifest::Kind::Runnable { .. } | manifest::Kind::Unusable { .. } => None,
+            });
             let effective_scope = check.scope();
             let scope_from_twin: Vec<String> = effective_scope
                 .files
@@ -399,6 +409,7 @@ pub fn gather_checks(
                 scope_opt_in: own_scope.opt_in.iter().map(|s| s.to_string()).collect(),
                 command,
                 scope_from_twin,
+                scope_twin,
             });
         }
     }
@@ -507,7 +518,11 @@ pub fn print_text(listings: &[CheckListing], all: bool) {
                 .map(|t| ui::sanitize(t))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let line = format!("      also fires on {paths} (its push twin reads them)");
+            let read_by = l.scope_twin.as_deref().unwrap_or("its push twin");
+            let line = format!(
+                "      also fires on {paths} (read by {})",
+                ui::sanitize(read_by)
+            );
             if std::io::stdout().is_terminal() {
                 println!("{}", tree_lint::fit_line("", &line, ""));
             } else {
@@ -687,6 +702,7 @@ pub fn print_json(
                 json::string_array_field("scope_opt_in", &l.scope_opt_in),
                 json::opt_string_field("command", l.command.as_deref()),
                 json::string_array_field("scope_from_twin", &l.scope_from_twin),
+                json::opt_string_field("scope_twin", l.scope_twin.as_deref()),
             ])
         })
         .collect();
@@ -820,13 +836,13 @@ pub fn list_checks(opts: ListOptions) -> i32 {
     };
     // Loaded HERE, with the repository this command is standing in — the
     // owned-manifest shape every entrypoint now follows. See manifest::load.
-    let mut manifest = manifest::load(std::path::Path::new(&hooks::common::repo_root()));
     // The policy is OWNED here and borrowed downstream. The invariant that
     // used to be a comment — install immediately after load, before any
     // config read — is now the borrow checker's: nothing downstream can read
-    // configuration without being handed this.
-    let settings = crate::config::Settings::new(manifest.policy.clone());
-    manifest.resolve_triggers(&settings);
+    // configuration without being handed this. `load_resolved` also resolves
+    // the commit-time triggers.
+    let (manifest, settings) =
+        manifest::load_resolved(std::path::Path::new(&hooks::common::repo_root()));
     let listings = gather_checks(&settings, opts.stage, &paths, &manifest);
     let bypasses = bypass::read();
     let downgrades = downgrade::read();

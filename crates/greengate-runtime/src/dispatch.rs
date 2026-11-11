@@ -1606,6 +1606,23 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
                 .first()
                 .map(|t| t.chars().take(8).collect())
                 .unwrap_or_default();
+            // Why a pair did not vouch comes BEFORE the refusal: refusing is the
+            // default for a bare push, so a refused push is where a silent
+            // "it would have run the suite again" went unexplained. Each gate
+            // is asked again, which costs a few git reads on a path that is
+            // about to stop the push anyway.
+            for check in pre_push_checks
+                .iter()
+                .filter(|c| missing.contains(&c.name()))
+            {
+                if let Decision::Run {
+                    unpaired: Some((name, why)),
+                    ..
+                } = decide(*check)
+                {
+                    crate::hooks::run_tests::say_why_not(&name, &why);
+                }
+            }
             let lines = match land {
                 Some(line) => land_refusal(line, ctx.push.get(), &missing),
                 None => push_refusal(
