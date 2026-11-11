@@ -235,7 +235,8 @@ fleet's shims are re-baked.
   `amont.conf`/`amont.pack` (renamed with the tracked files); the refusal
   and the hint both say "run the command again" (tui); `doctor` could say
   a reverse is holding (backend); the reverse's lock binding (lang:rust,
-  optional).
+  optional); a `--reverse` while a 4.0 detached run is pending should refuse
+  like the forward run does (platform).
 
 ## Verification
 
