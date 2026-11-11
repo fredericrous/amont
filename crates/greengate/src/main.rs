@@ -1014,13 +1014,14 @@ fn run_mode(args: &[OsString]) -> i32 {
         .map(str::to_owned);
     // Loaded ahead of the push-ref decision below, which asks the manifest
     // whether a named check is a pre-push one.
-    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+    let mut manifest = greengate_runtime::manifest::load(std::path::Path::new(
         &greengate_runtime::hooks::common::repo_root(),
     ));
     // INVARIANT: the policy is installed immediately after EVERY
     // manifest::load, before any config read in the process — check_timeout
     // and friends cache on first read.
     let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    manifest.resolve_triggers(&settings);
     // `--quiet` / `--raw` decide `amont.quiet` for this run only; the last
     // one given wins, like any repeated flag.
     if let Some(flag) = args.iter().rev().find(|a| *a == "--quiet" || *a == "--raw") {
@@ -1144,10 +1145,11 @@ fn load_here() -> (
     greengate_runtime::manifest::Manifest,
     greengate_runtime::config::Settings,
 ) {
-    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+    let mut manifest = greengate_runtime::manifest::load(std::path::Path::new(
         &greengate_runtime::hooks::common::repo_root(),
     ));
     let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    manifest.resolve_triggers(&settings);
     (manifest, settings)
 }
 
@@ -1322,13 +1324,14 @@ fn run_hook(hooks_dir: &std::path::Path, hook: &str, args: &[OsString]) -> i32 {
     // everything downstream through the Ctx. git invokes hooks with the
     // repository as the working directory, so `repo_root()`'s answer is the
     // repository this hook is about.
-    let manifest = greengate_runtime::manifest::load(std::path::Path::new(
+    let mut manifest = greengate_runtime::manifest::load(std::path::Path::new(
         &greengate_runtime::hooks::common::repo_root(),
     ));
     // INVARIANT: the policy is installed immediately after EVERY
     // manifest::load, before any config read in the process — check_timeout
     // and friends cache on first read.
     let settings = greengate_runtime::config::Settings::new(manifest.policy.clone());
+    manifest.resolve_triggers(&settings);
     let ctx = registry::Ctx {
         name: hook,
         args,

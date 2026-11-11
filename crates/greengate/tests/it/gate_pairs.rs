@@ -347,6 +347,373 @@ fn an_unstamped_commit_brings_the_builtin_back() {
     );
 }
 
+/// A commit-time declaration stands in for the push gate of its name, and the
+/// push gate acts on more files than the declaration's patterns: `rustfmt.toml`
+/// (like `Cargo.lock`) is `pre-push-cargo-test`'s, and `*.rs` is all the
+/// declaration names. A commit changing only such a file fired neither, earned
+/// no stamp, and the push silently ran the whole suite again (2026-11-10, a
+/// six-crate land that held for two hours). The declaration now fires on its
+/// twin's files too. `rustfmt.toml` here, not `Cargo.lock`, because a lockfile
+/// push also owes `pre-push-audit-rust`, a gate of its own.
+#[test]
+fn a_commit_that_only_changes_its_twins_other_files_is_tested_and_stamped() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_paired_repo();
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    let commit = r.git(&["commit", "-q", "-m", "chore: tune rustfmt"]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&commit.stdout),
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    assert!(commit.status.success(), "hooked commit failed: {said}");
+    assert_eq!(
+        runs(&r),
+        1,
+        "the rustfmt.toml commit ran the commit-time gate"
+    );
+    assert!(
+        said.contains("rustfmt.toml is read by pre-push-cargo-test — testing at commit"),
+        "a commit that tests only through its twin's files says why: {said}"
+    );
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("cargo-test") && out.contains("gated at commit instead"),
+        "the stamped rustfmt.toml commit must gate the push: {out}"
+    );
+}
+
+/// The blocker the plan's panel found: widening only the coverage question
+/// would let an UNSTAMPED twin-only commit (made before the upgrade, or with
+/// `--no-verify`) count as "not in the pair's scope", so the push said gated
+/// over a suite that ran nowhere. The per-commit stamp count uses the widened
+/// scope too.
+#[test]
+fn an_unstamped_twin_only_commit_still_makes_the_push_run_the_suite() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_paired_repo();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    r.commit("chore: dodge the gate"); // Repo::commit IS --no-verify
+    assert_eq!(runs(&r), 0, "nothing ran at commit");
+
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        !out.contains("gated at commit instead"),
+        "an unstamped rustfmt.toml commit was reported as gated: {out}"
+    );
+    assert!(
+        out.contains("no record of it"),
+        "the push must say the commit carries no record: {out}"
+    );
+}
+
+/// A `files` declaration is handed the matched paths as arguments, and
+/// handing a linter `Cargo.lock` is wrong, so it is never widened.
+#[test]
+fn a_files_pair_is_not_widened_to_its_twins_files() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  cargo-test  *.rs  block  files node gate.js\n",
+    );
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&r, "chore: tune rustfmt");
+    assert_eq!(
+        runs(&r),
+        0,
+        "a files declaration does not fire on rustfmt.toml"
+    );
+
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        !out.contains("gated at commit instead"),
+        "a narrow files pair cannot gate a rustfmt.toml push: {out}"
+    );
+    assert!(
+        out.contains("cargo-test at commit covers *.rs, not rustfmt.toml — running it here"),
+        "the push says what the declaration misses: {out}"
+    );
+    assert!(
+        out.contains("a files declaration is not widened: add rustfmt.toml to amont.conf line 1"),
+        "and which line to edit: {out}"
+    );
+}
+
+/// A warn declaration vouches for nothing, so widening it would only add a
+/// commit-time run nobody can rely on.
+#[test]
+fn a_warn_pair_is_not_widened_to_its_twins_files() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  cargo-test  *.rs  warn  node gate.js\n",
+    );
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&r, "chore: tune rustfmt");
+    assert_eq!(runs(&r), 0, "a warn declaration is not widened");
+
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        out.contains("cargo-test at commit is a warn check, which vouches for nothing"),
+        "a warn pair says so, then the push runs: {out}"
+    );
+}
+
+/// The severity a repository's settings give the declaration decides it, not
+/// the word on its line: a warn line overridden to block widens, and the
+/// declaration then fires on a file its twin reads.
+#[test]
+fn a_warn_pair_overridden_to_block_is_widened() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.severity.pre-commit-cargo-test", "block"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    r.stage(
+        "amont.conf",
+        "pre-commit  cargo-test  *.rs  warn  node gate.js\n",
+    );
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&r, "chore: tune rustfmt");
+    assert_eq!(
+        runs(&r),
+        1,
+        "the overridden-to-block declaration is widened"
+    );
+}
+
+/// `list` says what a widened row also fires on, in a trailing field, and
+/// leaves the columns before it as the declaration wrote them.
+#[test]
+fn list_shows_what_a_declaration_also_fires_on_because_of_its_twin() {
+    if missing("node") {
+        return;
+    }
+    let (r, _base) = builtin_paired_repo();
+    let json = r.run(&["list", "--json", "--stage", "pre-commit"]).stdout;
+    let row = json
+        .split("{\"id\":\"pre-commit-cargo-test\"")
+        .nth(1)
+        .and_then(|rest| rest.split("{\"id\":").next())
+        .unwrap_or_else(|| panic!("no pre-commit-cargo-test row: {json}"));
+    assert!(
+        row.contains("\"scope_files\":[\".rs\"]"),
+        "scope_files stays what the line says: {row}"
+    );
+    assert!(
+        row.contains("\"scope_from_twin\":[")
+            && row.contains("Cargo.lock")
+            && row.contains("rustfmt.toml"),
+        "the twin's files are reported beside it: {row}"
+    );
+    let text = r.run(&["list", "--stage", "pre-commit"]).stdout;
+    assert!(
+        text.contains("also fires on") && text.contains("Cargo.lock"),
+        "the text view says so too, with every path when piped: {text}"
+    );
+}
+
+/// And the other direction: a block line a repository's settings downgrade to
+/// warn vouches for nothing any more, so it is not widened.
+#[test]
+fn a_block_pair_overridden_to_warn_is_not_widened() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.git(&["config", "amont.severity.pre-commit-cargo-test", "warn"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    r.stage(
+        "amont.conf",
+        "pre-commit  cargo-test  *.rs  block  node gate.js\n",
+    );
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+
+    r.stage("rustfmt.toml", "max_width = 100\n");
+    hooked_commit(&r, "chore: tune rustfmt");
+    assert_eq!(
+        runs(&r),
+        0,
+        "a block line downgraded to warn is not widened"
+    );
+}
+
+/// The built-in twin's repository with one commit-time line, for the tests of
+/// why a pair did not vouch.
+fn builtin_repo_with(conf: &str) -> (Repo, String) {
+    let r = Repo::new();
+    r.git(&["config", "amont.pushGates", "inline"]);
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.stage(
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    );
+    r.stage("src/lib.rs", "pub fn f() {}\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage("amont.conf", conf);
+    r.commit("chore: the commit-time half");
+    trust_and_install(&r);
+    (r, base)
+}
+
+/// `hook.skip` switches the commit-time declaration off, so it vouches for
+/// nothing; the push says so instead of running in silence.
+#[test]
+fn a_skipped_pair_says_it_is_skipped() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs  block  node gate.js\n");
+    r.git(&["config", "--add", "hook.skip", "pre-commit-cargo-test"]);
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    hooked_commit(&r, "feat: skipped at commit");
+    assert_eq!(runs(&r), 0, "hook.skip: nothing ran at commit");
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        out.contains("cargo-test at commit is skipped here (hook.skip) — running it here"),
+        "{out}"
+    );
+}
+
+/// A commit-time declaration whose opt-in marker the repository lacks never
+/// ran, so it has nothing to vouch with, and the push says which marker.
+#[test]
+fn a_pair_that_is_not_opted_in_names_its_marker() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_repo_with("pre-commit  cargo-test  *.rs+marker  block  node gate.js\n");
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    hooked_commit(&r, "feat: no marker here");
+    assert_eq!(runs(&r), 0, "not opted in: nothing ran at commit");
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        out.contains("cargo-test at commit is not opted in here (needs marker) — running it here"),
+        "{out}"
+    );
+}
+
+/// A declaration whose program cannot be found has no identity to stamp, so it
+/// vouches for nothing, and the push says so.
+#[test]
+fn a_pair_whose_program_is_missing_says_it_cannot_be_identified() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) =
+        builtin_repo_with("pre-commit  cargo-test  *.rs  block  no-such-program-for-this-test\n");
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    r.commit("feat: nothing could run"); // Repo::commit IS --no-verify
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        out.contains("cargo-test at commit cannot be identified (its program was not found)"),
+        "{out}"
+    );
+}
+
+/// With no same-named commit-time declaration there is nothing to explain, and
+/// the push stays as quiet as it always was.
+#[test]
+fn a_gate_with_no_pair_says_nothing_about_one() {
+    if missing("node") {
+        return;
+    }
+    let (r, base) = builtin_repo_with("pre-commit  other  *.md  block  node gate.js\n");
+    r.stage("src/added.rs", "pub fn g() {}\n");
+    r.commit("feat: unrelated");
+    let (_code, out) = push_out(&r, &base, &head(&r));
+    assert!(
+        !out.contains("at commit covers") && !out.contains("vouches for nothing"),
+        "{out}"
+    );
+}
+
+/// A declared pre-push twin is found wherever it sits in the file, and its
+/// scope is what the commit-time line widens to.
+#[test]
+fn a_declared_twin_later_in_the_file_widens_the_commit_time_line() {
+    if missing("node") {
+        return;
+    }
+    let r = Repo::new();
+    r.stage("gate.js", "require('fs').appendFileSync('gate.log','x')\n");
+    r.commit("chore: base");
+    let base = head(&r);
+    r.stage(
+        "amont.conf",
+        "pre-commit  check  *.txt  block  node gate.js\n\
+         pre-push    check  *.txt,*.md  block  node gate.js\n",
+    );
+    r.commit("chore: the pair");
+    trust_and_install(&r);
+
+    r.stage("notes.md", "words\n");
+    hooked_commit(&r, "docs: a note");
+    assert_eq!(runs(&r), 1, "the markdown commit ran the commit-time gate");
+
+    let (code, out) = push_out(&r, &base, &head(&r));
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("gated at commit instead"),
+        "the stamped markdown commit must gate the push: {out}"
+    );
+}
+
 /// Run the pre-push dispatcher over several ref lines at once.
 fn push_lines(r: &Repo, lines: &str) -> (i32, String) {
     let mut child = crate::common::amont_cmd()
@@ -501,6 +868,15 @@ fn a_stamped_tip_cannot_cover_files_outside_the_pairs_scope() {
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("gated at commit"), "{out}");
     assert_eq!(runs(&r), 2, "the push side ran on its own word: {out}");
+    // And it says why, instead of running again in silence.
+    assert!(
+        out.contains("check at commit covers *.txt, not a.md"),
+        "{out}"
+    );
+    assert!(
+        out.contains("its push twin acts on every change: widen its scope in amont.conf line 1"),
+        "{out}"
+    );
 }
 
 /// Codex's case: a repository-owned gate script changed at the tip, outside

@@ -1192,6 +1192,9 @@ enum Decision {
     Skip(Skip),
     Run {
         unstamped_pair: Option<(String, usize)>,
+        /// A same-named commit-time declaration that did not vouch, and why:
+        /// the push says so before it runs the gate.
+        unpaired: Option<(String, crate::hooks::run_tests::WhyNot)>,
     },
 }
 
@@ -1480,6 +1483,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         if crate::hooks::audit::is_audit(check.name()) {
             return Decision::Run {
                 unstamped_pair: None,
+                unpaired: None,
             };
         }
         if stamped_push_gate(check)
@@ -1536,6 +1540,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
         let Some((name, push_scope)) = pairing else {
             return Decision::Run {
                 unstamped_pair: None,
+                unpaired: None,
             };
         };
         match crate::hooks::run_tests::pair_verdict(
@@ -1556,9 +1561,11 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             crate::hooks::run_tests::PairVerdict::Unstamped(n) => Decision::Run {
                 unstamped_pair: Some((name.to_string(), n)),
+                unpaired: None,
             },
-            crate::hooks::run_tests::PairVerdict::NotPaired => Decision::Run {
+            crate::hooks::run_tests::PairVerdict::NotPaired(why) => Decision::Run {
                 unstamped_pair: None,
+                unpaired: why.map(|why| (name.to_string(), why)),
             },
         }
     };
@@ -1740,6 +1747,7 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             Decision::Run {
                 unstamped_pair: Some((name, n)),
+                ..
             } => {
                 // `amont.unstampedPush refuse`: never run a suite with
                 // the remote's connection held open — say how to earn
@@ -1776,7 +1784,12 @@ pub fn pre_push(ctx: &Ctx) -> Verdict {
             }
             Decision::Run {
                 unstamped_pair: None,
-            } => {}
+                unpaired,
+            } => {
+                if let Some((name, why)) = unpaired {
+                    crate::hooks::run_tests::say_why_not(&name, &why);
+                }
+            }
         }
         let sub = Ctx {
             name: check.name(),

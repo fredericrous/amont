@@ -26,6 +26,11 @@ use std::process::{Command, Stdio};
 /// hour ago.
 const GATE: [&str; 3] = ["typecheck", "test:unit", "test"];
 
+/// Whether `name` is one of the scripts the npm push gate runs ([`GATE`]).
+pub(crate) fn is_gate_script(name: &str) -> bool {
+    GATE.contains(&name)
+}
+
 /// GATE entries this repository already runs at COMMIT time, and so must not
 /// run again here.
 ///
@@ -93,20 +98,34 @@ pub(crate) fn blocking_commit_decls(
     declared
         .iter()
         .filter_map(|ext| {
-            let crate::manifest::Kind::Runnable { scope, files, .. } = &ext.kind else {
+            let crate::manifest::Kind::Runnable { files, .. } = &ext.kind else {
                 return None;
             };
-            (ext.stage == crate::check::Stage::PreCommit
-                && severities.of(ext) == crate::check::Severity::Block
-                && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s)))
-            .then(|| GateDecl {
+            is_blocking_commit_decl(ext, &severities, &skips).then(|| GateDecl {
                 script: ext.short_name.clone(),
                 id: ext.id.clone(),
-                scope: *scope,
+                // What it fires on and is judged on: the resolved trigger
+                // (its own scope united with its push twin's), else its own.
+                scope: ext.effective_scope(),
                 files: *files,
             })
         })
         .collect()
+}
+
+/// Whether `ext` is a commit-time declaration that blocks and is not switched
+/// off: the ones whose runs earn stamps. The ONE predicate
+/// [`blocking_commit_decls`] and [`crate::manifest::Manifest::resolve_triggers`]
+/// share, so the two cannot disagree about which declarations count.
+pub(crate) fn is_blocking_commit_decl(
+    ext: &crate::manifest::External,
+    severities: &crate::registry::Overrides,
+    skips: &[String],
+) -> bool {
+    matches!(ext.kind, crate::manifest::Kind::Runnable { .. })
+        && ext.stage == crate::check::Stage::PreCommit
+        && severities.of(ext) == crate::check::Severity::Block
+        && !skips.iter().any(|s| crate::skip_suppresses(&ext.id, s))
 }
 
 /// Names this manifest declares at pre-commit, before any config is read —
@@ -132,6 +151,109 @@ pub(crate) enum Coverage {
     Tips(Vec<String>),
 }
 
+/// Why a same-named commit-time declaration did not vouch for a push. Each of
+/// these used to be a silent `NotPaired`, and a silent rerun of the whole suite
+/// is how a land held for two hours (2026-11-10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WhyNot {
+    /// Its scope does not cover these pushed files.
+    ScopeGap {
+        /// What the declaration covers, as written (`*.rs`).
+        scope: String,
+        uncovered: Vec<String>,
+        cause: GapCause,
+    },
+    /// It is a warn check, which vouches for nothing.
+    Warn,
+    /// `hook.skip` switches it off here.
+    Skipped,
+    /// The repository lacks the marker that turns it on.
+    NotOptedIn(Vec<String>),
+    /// Its program was not found, so its stamps vouch for nothing.
+    Unidentified,
+}
+
+/// What left a declaration narrower than the files its push twin acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GapCause {
+    /// A `files` declaration is handed the matched paths, so it is never
+    /// widened.
+    Files,
+    /// The twin acts on every change, which widening would not follow.
+    UnscopedTwin,
+    /// Nothing explains it: the trigger was not resolved (a missed
+    /// `resolve_triggers` call), which is a bug here and not in the repository.
+    Unresolved,
+}
+
+/// Say why a same-named commit-time declaration did not vouch, before the push
+/// runs the gate. The first line keeps to 80 columns and opens with the
+/// warning sign; a scope gap adds an indented line naming the `amont.conf`
+/// line to edit. Exit codes are untouched: this is a line, not a verdict.
+pub(crate) fn say_why_not(name: &str, why: &WhyNot) {
+    let sign = crate::ui::warning_sign();
+    let name = crate::ui::sanitize(name);
+    let head = |body: String| {
+        // The sign and its space stand for the two columns of the prefix.
+        let line = crate::tree_lint::fit_line("  ", &body, "");
+        crate::say!("{sign} {}", &line[2..]);
+    };
+    match why {
+        WhyNot::ScopeGap {
+            scope,
+            uncovered,
+            cause,
+        } => {
+            let shown: Vec<String> = uncovered
+                .iter()
+                .take(3)
+                .map(|p| crate::ui::sanitize(p))
+                .collect();
+            let paths = match uncovered.len().saturating_sub(3) {
+                0 => shown.join(", "),
+                more => format!("{} and {more} more", shown.join(", ")),
+            };
+            head(format!(
+                "{name} at commit covers {scope}, not {paths} — running it here"
+            ));
+            let at = match crate::manifest::declaration_line(
+                std::path::Path::new(&super::common::repo_root()),
+                crate::check::Stage::PreCommit,
+                &name,
+            ) {
+                Some(n) => format!("{} line {n}", crate::manifest::MANIFEST),
+                None => crate::manifest::MANIFEST.to_string(),
+            };
+            let first = shown.first().map(String::as_str).unwrap_or("it");
+            match cause {
+                GapCause::Files => {
+                    crate::say!("    a files declaration is not widened: add {first} to {at}")
+                }
+                GapCause::UnscopedTwin => {
+                    crate::say!("    its push twin acts on every change: widen its scope in {at}")
+                }
+                GapCause::Unresolved => crate::say!(
+                    "    its push twin's files were not applied: a {} bug, please report it",
+                    crate::names::BIN
+                ),
+            }
+        }
+        WhyNot::Warn => head(format!(
+            "{name} at commit is a warn check, which vouches for nothing — running it here"
+        )),
+        WhyNot::Skipped => head(format!(
+            "{name} at commit is skipped here (hook.skip) — running it here"
+        )),
+        WhyNot::NotOptedIn(markers) => head(format!(
+            "{name} at commit is not opted in here (needs {}) — running it here",
+            markers.join(" | ")
+        )),
+        WhyNot::Unidentified => head(format!(
+            "{name} at commit cannot be identified (its program was not found) — running it here"
+        )),
+    }
+}
+
 /// What a declared PRE-PUSH external should do about a same-named
 /// commit-time declaration — the general form of the npm gate's stamp
 /// suppression, for names the GATE list never heard of. Declaring `test`
@@ -139,8 +261,11 @@ pub(crate) enum Coverage {
 /// side earns per-commit stamps, and the pre-push side runs only for pushes
 /// carrying commits with no record of it, unless a ref's tip itself passed.
 pub(crate) enum PairVerdict {
-    /// No blocking commit-time pair covers this push — run normally.
-    NotPaired,
+    /// No blocking commit-time pair covers this push — run normally. With the
+    /// reason, when a same-named commit-time declaration exists and did not
+    /// vouch: the push says so, then runs the gate. `None` when there is no
+    /// such declaration, or nothing for it to vouch for.
+    NotPaired(Option<WhyNot>),
     /// Every judged ref is covered — skip, saying so, and how.
     Gated(Coverage),
     /// A pair exists but this many pushed commits carry no record of it —
@@ -177,25 +302,27 @@ pub(crate) fn pair_verdict(
 ) -> PairVerdict {
     // Cheap name test before any config read or git spawn: most pre-push
     // gates have no commit-time namesake.
-    if !manifest
+    let Some(commit_side) = manifest
         .externals
         .iter()
-        .any(|e| e.stage == crate::check::Stage::PreCommit && e.short_name == name)
-    {
-        return PairVerdict::NotPaired;
-    }
+        .find(|e| e.stage == crate::check::Stage::PreCommit && e.short_name == name)
+    else {
+        return PairVerdict::NotPaired(None);
+    };
     let Some(pair) = blocking_commit_decls(settings, &manifest.externals)
         .into_iter()
         .find(|d| d.script == name)
     else {
-        return PairVerdict::NotPaired;
+        return PairVerdict::NotPaired(why_not_blocking(settings, commit_side));
     };
     // A declaration this repository has not opted into never ran at commit
     // time, so it has nothing to vouch with — the push side runs on its own
     // word. Judged against the REPOSITORY, once, and never against a commit's
     // changed files: see `repo_opted_in`.
     if !repo_opted_in(&pair.scope) {
-        return PairVerdict::NotPaired;
+        return PairVerdict::NotPaired(Some(WhyNot::NotOptedIn(
+            pair.scope.opt_in.iter().map(|m| m.to_string()).collect(),
+        )));
     }
     // The complete token of the commit-time declaration. Unknown identity (its
     // program cannot be found) means its stamps vouch for nothing: the push
@@ -206,7 +333,7 @@ pub(crate) fn pair_verdict(
         .find(|e| e.id == pair.id)
         .and_then(|e| crate::gate_identity::external_token(e, &pair.script))
     else {
-        return PairVerdict::NotPaired;
+        return PairVerdict::NotPaired(Some(WhyNot::Unidentified));
     };
     let zero = git::stdout(&["hash-object", "--stdin"])
         .map(|h| "0".repeat(h.len()))
@@ -249,10 +376,25 @@ pub(crate) fn pair_verdict(
         }
         judged_any = true;
         if !pair.scope.covers_all(&relevant) {
-            // The pair has not judged everything this push changes — its
-            // word covers nothing here, silently: claiming partial coverage
-            // out loud would read as reassurance.
-            return PairVerdict::NotPaired;
+            // The pair has not judged everything this push changes, so its
+            // word covers nothing here. Said out loud, as "running it here"
+            // and never as partial coverage, which would read as
+            // reassurance: it names what the declaration misses.
+            return PairVerdict::NotPaired(Some(WhyNot::ScopeGap {
+                scope: scope_label(&pair.scope),
+                uncovered: relevant
+                    .iter()
+                    .filter(|f| !pair.scope.covers(f))
+                    .cloned()
+                    .collect(),
+                cause: if pair.files {
+                    GapCause::Files
+                } else if push_scope.is_unscoped() {
+                    GapCause::UnscopedTwin
+                } else {
+                    GapCause::Unresolved
+                },
+            }));
         }
         let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);
         let ids: Vec<String> = per_commit.iter().map(|(c, _)| c.clone()).collect();
@@ -312,7 +454,7 @@ pub(crate) fn pair_verdict(
         unstamped += missing.len() - excused.len();
     }
     if !judged_any {
-        return PairVerdict::NotPaired;
+        return PairVerdict::NotPaired(None);
     }
     // Never `Gated` when a deferral covers a commit: `Gated` puts the twin
     // in `passed`, which the signed attestation names, and CI would then skip
@@ -328,6 +470,45 @@ pub(crate) fn pair_verdict(
             Coverage::Tips(tips)
         })
     }
+}
+
+/// A scope as a person writes it: `*.rs`, `Cargo.toml`, `dir/**/*.md`.
+fn scope_label(scope: &crate::check::Scope) -> String {
+    scope
+        .files
+        .iter()
+        .chain(scope.names.iter())
+        .chain(scope.dirs.iter())
+        .map(|t| {
+            if t.starts_with('.') {
+                format!("*{t}")
+            } else {
+                (*t).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Why a runnable commit-time declaration that is not among the blocking ones
+/// did not vouch: `hook.skip` switches it off, or it is a warn check. `None`
+/// for one that is not runnable at all (an untrusted manifest, a broken line),
+/// which the dispatchers already say once per stage.
+fn why_not_blocking(
+    settings: &crate::config::Settings,
+    ext: &crate::manifest::External,
+) -> Option<WhyNot> {
+    if !matches!(ext.kind, crate::manifest::Kind::Runnable { .. }) {
+        return None;
+    }
+    let skipped = crate::configured_skips(settings)
+        .iter()
+        .any(|s| crate::skip_suppresses(&ext.id, s));
+    Some(if skipped {
+        WhyNot::Skipped
+    } else {
+        WhyNot::Warn
+    })
 }
 
 /// Has this repository opted into `scope`? The index is the only honest
@@ -621,6 +802,7 @@ pub fn run(
     let declared_gate = gated_at_commit(settings, declared);
     let mut announced: Vec<String> = Vec::new();
     let mut warned: Vec<String> = Vec::new();
+    let mut said_why: Vec<String> = Vec::new();
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -673,6 +855,39 @@ pub fn run(
             .iter()
             .filter(|d| d.scope.covers_all(&js_changed) && repo_opted_in(&d.scope))
             .collect();
+        // A declaration that stood in for a script and did not cover this push
+        // used to be dropped without a word, and the script ran again. Said
+        // once per script, in the pair gates' words.
+        for d in &declared_gate {
+            if said_why.contains(&d.script) {
+                continue;
+            }
+            let why = if !repo_opted_in(&d.scope) {
+                Some(WhyNot::NotOptedIn(
+                    d.scope.opt_in.iter().map(|m| m.to_string()).collect(),
+                ))
+            } else if !d.scope.covers_all(&js_changed) {
+                Some(WhyNot::ScopeGap {
+                    scope: scope_label(&d.scope),
+                    uncovered: js_changed
+                        .iter()
+                        .filter(|f| !d.scope.covers(f))
+                        .cloned()
+                        .collect(),
+                    cause: if d.files {
+                        GapCause::Files
+                    } else {
+                        GapCause::Unresolved
+                    },
+                })
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                say_why_not(&d.script, &why);
+                said_why.push(d.script.clone());
+            }
+        }
         let mut already: Vec<String> = Vec::new();
         if !candidates.is_empty() {
             let per_commit = crate::pushrefs::commits_and_files_for(r, &zero);

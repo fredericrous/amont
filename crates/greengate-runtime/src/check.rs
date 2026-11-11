@@ -180,6 +180,43 @@ impl Scope {
     }
 
     /// No file gate at all — every change is in scope.
+    /// What fires when EITHER `self` or `twin` would: both scopes' file
+    /// patterns, with `self`'s own opt-in and `not_during`. The scope a
+    /// commit-time declaration fires on once its push twin's files count too
+    /// (`Manifest::resolve_triggers`).
+    ///
+    /// An unscoped `self` already fires on everything, and merging patterns
+    /// into it would NARROW it, so it is returned as it is. The slices are
+    /// leaked like every declared scope (see `manifest::leak`), once, and only
+    /// when the twin adds something.
+    pub fn union(&self, twin: &Scope) -> Scope {
+        fn merged(
+            own: &'static [&'static str],
+            twin: &'static [&'static str],
+        ) -> &'static [&'static str] {
+            let mut all: Vec<&'static str> = own.to_vec();
+            for item in twin {
+                if !all.contains(item) {
+                    all.push(item);
+                }
+            }
+            if all.len() == own.len() {
+                return own;
+            }
+            Box::leak(all.into_boxed_slice())
+        }
+        if self.is_unscoped() {
+            return *self;
+        }
+        Scope {
+            files: merged(self.files, twin.files),
+            names: merged(self.names, twin.names),
+            dirs: merged(self.dirs, twin.dirs),
+            opt_in: self.opt_in,
+            not_during: self.not_during,
+        }
+    }
+
     pub fn is_unscoped(&self) -> bool {
         self.files.is_empty() && self.names.is_empty() && self.dirs.is_empty()
     }
@@ -638,5 +675,32 @@ mod tests {
         assert!(!s.covers("claude-plugin-old/SKILL.md"));
         assert!(!s.covers("claude-plugin/SKILL.rs"));
         assert!(!s.covers("docs/claude-plugin/x.md"));
+    }
+
+    /// The scope a declaration fires on once its push twin's files count:
+    /// the patterns of both, the declaration's own opt-in, nothing leaked
+    /// when the twin adds nothing.
+    #[test]
+    fn a_union_fires_where_either_scope_would() {
+        let own = Scope::files(&[".rs"]);
+        let twin = Scope::new(&[".rs", "Cargo.toml", "Cargo.lock"], &["Cargo.toml"]);
+        let u = own.union(&twin);
+        assert!(u.covers("src/a.rs") && u.covers("Cargo.lock") && u.covers("crates/a/Cargo.toml"));
+        assert!(!u.covers("README.md"));
+        assert!(u.opt_in.is_empty(), "the declaration keeps its own opt-in");
+        let same = own.union(&Scope::files(&[".rs"]));
+        assert!(
+            std::ptr::eq(same.files, own.files),
+            "nothing added, nothing leaked"
+        );
+        assert_eq!(same, own);
+    }
+
+    /// An unscoped declaration already fires on everything: merging the
+    /// twin's patterns into it would narrow it.
+    #[test]
+    fn an_unscoped_scope_is_never_narrowed_by_a_union() {
+        let u = Scope::ALWAYS.union(&Scope::files(&[".rs"]));
+        assert!(u.is_unscoped() && u.touches(&["README.md".into()]));
     }
 }

@@ -419,6 +419,7 @@ pub fn rehearse(
     let budget = crate::config::integer_or(settings, REHEARSAL_TIMEOUT, 120, 1..=3600);
     let budget = Duration::from_secs(u64::try_from(budget).unwrap_or(120));
     let mut tokens = Vec::new();
+    // Builds no check: it reads only the tool pins, so no trigger to resolve.
     let pins = crate::manifest::load(snapshot).pins;
     for g in gates {
         let cwd = cwd_of(snapshot, g);
@@ -562,6 +563,7 @@ fn warm_later(cold: &[String]) {
 /// held is left to whoever holds it. Exit 0 whatever the lint found: a
 /// warm-up proves nothing, it only makes the next commit's run cheap.
 pub fn warm(root: &Path) -> i32 {
+    // Builds no check: it reads only the tree gates, so no trigger to resolve.
     let manifest = crate::manifest::load(root);
     if manifest.tree.is_empty() {
         eprintln!("{BIN} warm: no trusted tree gate here");

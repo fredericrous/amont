@@ -889,6 +889,24 @@ pub fn stage_checks(stage: Stage) -> impl Iterator<Item = &'static Builtin> {
     CHECKS.iter().filter(move |check| check.stage == stage)
 }
 
+/// The scope of the built-in pre-push gate that a commit-time declaration
+/// named `short` stands in for: the gate of that short name (`cargo-test`),
+/// or, for a script the npm push gate runs (`typecheck`, `test`), that gate's.
+/// `None` when no built-in gate is its twin. A declared pre-push twin is found
+/// by the manifest itself (`manifest::attach_twin_scopes`). Returns the gate's
+/// id with its scope, so a commit can say which gate reads the files it tests.
+pub fn push_twin_scope(short: &str) -> Option<(&'static str, Scope)> {
+    let mut push = stage_checks(Stage::PrePush);
+    let twin = push
+        .find(|check| check.pairing_name() == short)
+        .or_else(|| {
+            hooks::run_tests::is_gate_script(short)
+                .then(|| stage_checks(Stage::PrePush).find(|c| c.name() == "pre-push-run-tests-js"))
+                .flatten()
+        });
+    twin.map(|check| (check.name(), check.scope()))
+}
+
 /// Every check for one stage — built-ins first, then whatever this repository
 /// declares in `amont.conf`.
 ///

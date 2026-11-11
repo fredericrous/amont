@@ -758,8 +758,9 @@ fn prestage(
         Ok(root) => root,
         Err(e) => return Staged::refused(Vec::new(), PrestageState::Refused, e),
     };
-    let manifest = crate::manifest::load(std::path::Path::new(&root));
+    let mut manifest = crate::manifest::load(std::path::Path::new(&root));
     let settings = crate::config::Settings::new(manifest.policy.clone());
+    manifest.resolve_triggers(&settings);
     // The range starts at the remote's tip: a tip this clone never fetched
     // (a force push elsewhere) would make it unwalkable. Fetch it, or refuse.
     // A fetch moves objects, so it gets the check budget (`amont.timeout`),

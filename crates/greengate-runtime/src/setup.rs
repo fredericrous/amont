@@ -68,6 +68,8 @@ pub fn command(args: &[std::ffi::OsString]) -> Result<(), String> {
     // state the global store used to be in when nothing had installed it.
     let settings = match crate::hooks::common::repo_root_checked() {
         Ok(root) => {
+            // Builds no check, so it resolves no trigger: it reads only the
+            // policy, to display effective values.
             let manifest = crate::manifest::load(std::path::Path::new(&root));
             crate::config::Settings::new(manifest.policy.clone())
         }

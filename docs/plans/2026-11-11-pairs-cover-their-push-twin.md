@@ -161,7 +161,7 @@ runners or flags. The repository says what its root scripts do.
 
 ## Phases
 
-- [ ] Phase 1 — pairs fire on their twin's scope.
+- [x] Phase 1 — pairs fire on their twin's scope.
   - `crates/greengate-runtime/src/manifest.rs`:
     - **Who gets a trigger.** Each non-`files` pre-commit Runnable external
       with a twin gets `trigger: Option<Scope>`, the union leaked once like
@@ -213,7 +213,7 @@ runners or flags. The repository says what its root scripts do.
       with `--no-verify`) makes the push run the suite (`Unstamped`),
       never `Gated`;
     - `greengate list` shows the widened scope with its source.
-- [ ] Phase 2 — a push says why a pair did not vouch.
+- [x] Phase 2 — a push says why a pair did not vouch.
   - `crates/greengate-runtime/src/hooks/run_tests.rs`: a `NotPaired` reason
     enum.
   - `crates/greengate-runtime/src/dispatch.rs`: the reason lines.
@@ -266,6 +266,9 @@ runners or flags. The repository says what its root scripts do.
   needs the network in an offline, dependency-free hook, and a wrong
   "covered" skips tests that ran nowhere. An LLM may propose the
   declaration when a repository is set up, for the person to review.
+- 2026-11-11 — Phases 1 and 2 land in one commit: the reason lines read the
+  state Phase 1 introduces (a scope gap now means a `files` declaration, an
+  unscoped twin, or a missed resolve), so neither stands alone.
 - 2026-11-10 — Name why a pair did not vouch, reversing the deliberate
   silence at run_tests.rs:252-254, because the line says "running it here",
   not partial coverage, so it cannot read as reassurance.
