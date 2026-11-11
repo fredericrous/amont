@@ -68,7 +68,7 @@ const CANCEL_SECS: u64 = 10;
 /// The bound on a quiet clean-up by label after a `create` timed out.
 const LABEL_DELETE_SECS: u64 = 5;
 /// The label every Job carries, valued by its run ([`run_label`]).
-const RUN_LABEL_KEY: &str = "greengate.run";
+const RUN_LABEL_KEY: &str = crate::names::RUN_LABEL;
 const POLL: Duration = Duration::from_millis(500);
 const MIB: u64 = 1024 * 1024;
 
@@ -1758,7 +1758,7 @@ fn parse_job(json: &str) -> Option<JobFacts> {
         uid: str_at(metadata, "uid").map(str::to_string),
         gate: str_at(
             metadata.and_then(|m| m.get("annotations")),
-            "greengate.dev/gate",
+            crate::names::GATE_ANNOTATION,
         )
         .map(str::to_string),
         end,

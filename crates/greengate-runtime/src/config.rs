@@ -489,8 +489,11 @@ pub fn host_integer_or(
 /// `greengate.idleLoadScale` → `GREENGATE_IDLE_LOAD_SCALE`: the environment name a
 /// host key answers to.
 pub fn host_env_name(key: &str) -> String {
-    let mut out = String::from("GREENGATE");
-    for part in key.trim_start_matches("greengate.").split('.') {
+    let mut out = String::from(crate::names::ENV_PREFIX);
+    for part in key
+        .trim_start_matches(crate::names::CONFIG_PREFIX)
+        .split('.')
+    {
         out.push('_');
         for c in part.chars() {
             if c.is_ascii_uppercase() {

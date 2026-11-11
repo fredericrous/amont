@@ -126,8 +126,21 @@ pub const LIST_FORMAT: &str = "greengate-list-v1";
 pub const MIGRATE_LOCK: &str = "greengate-migrate.lock";
 pub const MIGRATED_MARKER: &str = "greengate-migrated";
 
+/// The marker `greengate migrate --reverse` leaves in the common dir: the
+/// first-run migration stands down until it is gone, so a 4.0 hook does
+/// not move a rolled-back repository forward again before 3.x is installed.
+pub const REVERSED_MARKER: &str = "greengate-reversed";
+
 /// The name this tool holds a host slot under (`greengate slots`).
 pub const SLOT_HOLDER: &str = "greengate";
+
+/// The label every Job and Workflow of one run carries, read by `collect`
+/// and the batched cluster reads.
+pub const RUN_LABEL: &str = "greengate.run";
+
+/// The annotations naming a cluster Job's gate and tree.
+pub const GATE_ANNOTATION: &str = "greengate.dev/gate";
+pub const TREE_ANNOTATION: &str = "greengate.dev/tree";
 
 #[cfg(test)]
 mod tests {

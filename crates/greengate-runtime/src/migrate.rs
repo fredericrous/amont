@@ -128,7 +128,6 @@ pub enum Direction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repo {
     pub common: PathBuf,
-    pub worktrees: Vec<PathBuf>,
 }
 
 impl Repo {
@@ -150,7 +149,13 @@ impl Repo {
             Ok(text) => absolute(&private, Path::new(text.trim())),
             Err(_) => private.clone(),
         };
-        let worktrees = match std::fs::read_dir(common.join("worktrees")) {
+        Some(Repo { common })
+    }
+
+    /// Each linked worktree's private git dir, listed when asked: the hot
+    /// path checks the done-marker first and never lists them.
+    pub fn worktrees(&self) -> Vec<PathBuf> {
+        match std::fs::read_dir(self.common.join("worktrees")) {
             Ok(entries) => {
                 let mut dirs: Vec<PathBuf> = entries
                     .filter_map(Result::ok)
@@ -161,12 +166,14 @@ impl Repo {
                 dirs
             }
             Err(_) => Vec::new(),
-        };
-        Some(Repo { common, worktrees })
+        }
     }
 
-    fn git_dirs(&self) -> impl Iterator<Item = &Path> {
-        std::iter::once(self.common.as_path()).chain(self.worktrees.iter().map(PathBuf::as_path))
+    /// The common dir, then each linked worktree's private one.
+    pub fn git_dirs(&self) -> Vec<PathBuf> {
+        std::iter::once(self.common.clone())
+            .chain(self.worktrees())
+            .collect()
     }
 
     /// The done-marker: present once this repository was migrated.
@@ -207,42 +214,148 @@ pub fn old_held_store(git_dir: &Path) -> Option<PathBuf> {
     store.is_dir().then_some(store)
 }
 
-/// Before any command but `--help`, `--version` and `restore`: migrate the
-/// repository the process stands in, once, then the machine's global keys,
-/// once. `Err` is the message the command is refused with.
-pub fn ensure(cwd: &Path) -> Result<(), String> {
-    ensure_global()?;
-    let Some(repo) = Repo::locate(cwd) else {
-        return Ok(());
-    };
-    if repo.marker().exists() {
-        return Ok(());
-    }
-    migrate_repo(&repo, Direction::Forward, &system_git)
+/// Why a migration stopped. Its `Display` is the line a refused command
+/// prints; the variants are what a caller or a test tells apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrateError {
+    /// A 3.x check parked unstaged changes here (forward), or a 4.0 one did
+    /// (reverse): they are put back first, never moved.
+    HeldStore { path: PathBuf },
+    /// A detached cluster run 3.x submitted is still pending: its Workflow
+    /// carries 3.x's label, which 4.0 cannot collect.
+    PendingDetached { path: PathBuf },
+    /// Both spellings of one name exist and are not a log to merge.
+    BothExist { source: PathBuf, target: PathBuf },
+    /// Another process held the migration lock past its deadline.
+    Locked { path: PathBuf },
+    /// A file operation failed.
+    Io {
+        op: &'static str,
+        path: PathBuf,
+        why: String,
+    },
+    /// git refused or could not run.
+    Git { args: String, why: String },
 }
 
-/// Migrate `repo` in `direction`, under its lock, and (forward) write the
-/// done-marker; reverse removes it. `git` runs a git command with the
-/// repository's common dir as `GIT_DIR`, and answers its stdout.
-pub fn migrate_repo(repo: &Repo, direction: Direction, git: &GitFn<'_>) -> Result<(), String> {
-    let _lock = lock(&repo.common.join(n::MIGRATE_LOCK))?;
-    if direction == Direction::Forward && repo.marker().exists() {
-        return Ok(());
-    }
-    if direction == Direction::Forward {
-        for dir in repo.git_dirs() {
-            if let Some(store) = old_held_store(dir) {
-                return Err(format!(
-                    "{} holds unstaged changes a greengate 3.x check parked; put them back with \
-                     `{} restore` in that worktree, then run the command again",
-                    store.display(),
-                    n::BIN
-                ));
+impl std::fmt::Display for MigrateError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrateError::HeldStore { path } => write!(
+                out,
+                "{} holds unstaged changes a check parked; put them back with `{} restore` \
+                 in that worktree, then run the command again",
+                path.display(),
+                n::BIN
+            ),
+            MigrateError::PendingDetached { path } => write!(
+                out,
+                "{} lists a detached cluster run greengate 3.x submitted; collect it with \
+                 3.x (`amont cluster collect`) or let it expire, then run the command again",
+                path.display()
+            ),
+            MigrateError::BothExist { source, target } => write!(
+                out,
+                "both {} and {} exist; remove the one you do not need (`rm -r <path>`), \
+                 then run `{} migrate`",
+                source.display(),
+                target.display(),
+                n::BIN
+            ),
+            MigrateError::Locked { path } => write!(
+                out,
+                "another {} is migrating this repository ({} is held); run the command again",
+                n::BIN,
+                path.display()
+            ),
+            MigrateError::Io { op, path, why } => {
+                write!(out, "could not {op} {}: {why}", path.display())
             }
+            MigrateError::Git { args, why } => write!(out, "git {args} failed: {why}"),
         }
     }
-    for dir in repo.git_dirs() {
-        move_state(dir, direction)?;
+}
+
+fn io<'a>(op: &'static str, path: &'a Path) -> impl FnOnce(std::io::Error) -> MigrateError + 'a {
+    move |e| MigrateError::Io {
+        op,
+        path: path.to_path_buf(),
+        why: e.to_string(),
+    }
+}
+
+/// How long a migration waits for another process that holds its lock: a
+/// migration takes well under a second, so a longer hold is a stuck peer.
+const LOCK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the first-run migration did, for `greengate migrate` to say.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Moved {
+    /// Names moved in the git dirs.
+    pub state: usize,
+    /// Config keys moved.
+    pub keys: usize,
+}
+
+/// Before any command but `--help`, `--version`, `restore`, `uninstall`,
+/// `migrate`, `doctor` and a `--dry-run`: migrate the repository the
+/// process stands in, once, then the machine's global keys, once.
+pub fn ensure(cwd: &Path, git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+    let mut moved = ensure_global(git)?;
+    let here = ensure_repo(cwd, git)?;
+    moved.state += here.state;
+    moved.keys += here.keys;
+    Ok(moved)
+}
+
+/// The repository half of [`ensure`]: the one `cwd` stands in, once, unless
+/// a reverse asked 4.0 to leave it alone.
+pub fn ensure_repo(cwd: &Path, git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+    let Some(repo) = Repo::locate(cwd) else {
+        return Ok(Moved::default());
+    };
+    if repo.marker().exists() || repo.common.join(n::REVERSED_MARKER).exists() {
+        return Ok(Moved::default());
+    }
+    migrate_repo(&repo, Direction::Forward, git)
+}
+
+/// Migrate `repo` in `direction`, under its lock. Forward writes the
+/// done-marker and clears a reverse; reverse removes the done-marker and
+/// leaves the reversed one, so a 4.0 hook does not move it forward again.
+pub fn migrate_repo(
+    repo: &Repo,
+    direction: Direction,
+    git: &GitFn<'_>,
+) -> Result<Moved, MigrateError> {
+    let lock_path = repo.common.join(n::MIGRATE_LOCK);
+    let _lock = greenharness_slots::lock_within(&lock_path, LOCK_DEADLINE)
+        .map_err(io("lock", &lock_path))?
+        .ok_or_else(|| MigrateError::Locked {
+            path: lock_path.clone(),
+        })?;
+    if direction == Direction::Forward && repo.marker().exists() {
+        return Ok(Moved::default());
+    }
+    let dirs = repo.git_dirs();
+    for dir in &dirs {
+        let held = match direction {
+            Direction::Forward => old_held_store(dir),
+            Direction::Reverse => Some(dir.join(n::HELD_STORE)).filter(|p| p.is_dir()),
+        };
+        if let Some(path) = held {
+            return Err(MigrateError::HeldStore { path });
+        }
+    }
+    if direction == Direction::Forward {
+        let pending = repo.common.join("amont").join("cluster-pending");
+        if holds_records(&pending) {
+            return Err(MigrateError::PendingDetached { path: pending });
+        }
+    }
+    let mut moved = Moved::default();
+    for dir in &dirs {
+        moved.state += move_state(dir, direction)?;
     }
     // A config file that names no section of the namespace being moved
     // holds no key of it: skip git. This keeps the first run of a
@@ -252,25 +365,46 @@ pub fn migrate_repo(repo: &Repo, direction: Direction, git: &GitFn<'_>) -> Resul
         repo.common.join("config.worktree"),
     ];
     if may_hold(&local_files, direction) {
-        move_keys(&Scope::Local(repo.common.clone()), direction, git)?;
+        moved.keys += move_keys(&Scope::Local(repo.common.clone()), direction, git)?;
     }
+    let reversed = repo.common.join(n::REVERSED_MARKER);
     match direction {
-        Direction::Forward => std::fs::write(
-            repo.marker(),
-            format!("{}-v1\n{}\n", n::MIGRATED_MARKER, env!("CARGO_PKG_VERSION")),
-        )
-        .map_err(|e| format!("could not write {}: {e}", repo.marker().display())),
-        Direction::Reverse => match std::fs::remove_file(repo.marker()) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                Err(format!("could not remove {}: {e}", repo.marker().display()))
-            }
-            _ => Ok(()),
-        },
+        Direction::Forward => {
+            let text = format!("{}-v1\n{}\n", n::MIGRATED_MARKER, env!("CARGO_PKG_VERSION"));
+            std::fs::write(repo.marker(), text).map_err(io("write", &repo.marker()))?;
+            remove_if_present(&reversed)?;
+        }
+        Direction::Reverse => {
+            remove_if_present(&repo.marker())?;
+            std::fs::write(&reversed, format!("{}-v1\n", n::REVERSED_MARKER))
+                .map_err(io("write", &reversed))?;
+        }
+    }
+    Ok(moved)
+}
+
+fn remove_if_present(path: &Path) -> Result<(), MigrateError> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io("remove", path)(e)),
+        _ => Ok(()),
     }
 }
 
-/// Move every name of [`MOVES`] in `dir`, in `direction`.
-pub fn move_state(dir: &Path, direction: Direction) -> Result<(), String> {
+/// Whether a 3.x pending file still lists a record: anything but an empty
+/// `"records":[]`. A file that cannot be read counts as holding one.
+fn holds_records(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            compact.contains("\"records\":[{")
+        }
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Move every name of [`MOVES`] in `dir`, in `direction`; how many moved.
+pub fn move_state(dir: &Path, direction: Direction) -> Result<usize, MigrateError> {
+    let mut moved = 0;
     for m in MOVES {
         let (from, to, header) = match direction {
             Direction::Forward => (m.old, m.new, m.header),
@@ -281,41 +415,32 @@ pub fn move_state(dir: &Path, direction: Direction) -> Result<(), String> {
         if !source.exists() {
             continue;
         }
+        moved += 1;
         if source.is_dir() && target.is_dir() {
             merge_dirs(&source, &target)?;
             continue;
         }
         if target.exists() {
-            return Err(format!(
-                "both {} and {} exist; keep one (the newer is {}), then run the command again",
-                source.display(),
-                target.display(),
-                target.display()
-            ));
+            return Err(MigrateError::BothExist { source, target });
         }
         if let Some((old_header, new_header)) = header {
             rewrite_header(&source, old_header, new_header)?;
         }
-        std::fs::rename(&source, &target).map_err(|e| {
-            format!(
-                "could not move {} to {}: {e}",
-                source.display(),
-                target.display()
-            )
-        })?;
+        std::fs::rename(&source, &target).map_err(io("move", &source))?;
     }
-    Ok(())
+    Ok(moved)
 }
 
 /// Move what `source` holds into `target`, which already exists (a tool or
 /// a test of the other version wrote there first): a child only in
-/// `source` is moved; a `.log` in both is appended, `source`'s lines first;
-/// any other clash is refused before anything moves. `source` is removed
-/// once empty.
-fn merge_dirs(source: &Path, target: &Path) -> Result<(), String> {
-    let read = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+/// `source` is moved; a `.log` in both becomes `source`'s lines then
+/// `target`'s, written whole and renamed into place before `source`'s copy
+/// is removed (a crash between the two repeats those lines once); any other
+/// clash is refused before anything moves. `source` is removed once empty.
+fn merge_dirs(source: &Path, target: &Path) -> Result<(), MigrateError> {
+    let read = |dir: &Path| -> Result<Vec<PathBuf>, MigrateError> {
         let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
-            .map_err(|e| format!("could not read {}: {e}", dir.display()))?
+            .map_err(io("read", dir))?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .collect();
@@ -328,11 +453,10 @@ fn merge_dirs(source: &Path, target: &Path) -> Result<(), String> {
         let log = child.extension().is_some_and(|e| e == "log");
         let both_dirs = child.is_dir() && there.is_dir();
         if there.exists() && !log && !both_dirs {
-            return Err(format!(
-                "both {} and {} exist; keep one, then run the command again",
-                child.display(),
-                there.display()
-            ));
+            return Err(MigrateError::BothExist {
+                source: child.clone(),
+                target: there,
+            });
         }
     }
     for child in children {
@@ -340,37 +464,26 @@ fn merge_dirs(source: &Path, target: &Path) -> Result<(), String> {
         if child.is_dir() && there.is_dir() {
             merge_dirs(&child, &there)?;
         } else if there.exists() {
-            let mut joined = std::fs::read(&child)
-                .map_err(|e| format!("could not read {}: {e}", child.display()))?;
-            joined.extend(
-                std::fs::read(&there)
-                    .map_err(|e| format!("could not read {}: {e}", there.display()))?,
-            );
-            std::fs::write(&there, joined)
-                .map_err(|e| format!("could not write {}: {e}", there.display()))?;
-            std::fs::remove_file(&child)
-                .map_err(|e| format!("could not remove {}: {e}", child.display()))?;
+            let mut joined = std::fs::read(&child).map_err(io("read", &child))?;
+            joined.extend(std::fs::read(&there).map_err(io("read", &there))?);
+            let staged = there.with_extension("log.greengate-merge");
+            std::fs::write(&staged, joined).map_err(io("write", &staged))?;
+            std::fs::rename(&staged, &there).map_err(io("replace", &there))?;
+            std::fs::remove_file(&child).map_err(io("remove", &child))?;
         } else {
-            std::fs::rename(&child, &there).map_err(|e| {
-                format!(
-                    "could not move {} to {}: {e}",
-                    child.display(),
-                    there.display()
-                )
-            })?;
+            std::fs::rename(&child, &there).map_err(io("move", &child))?;
         }
     }
-    std::fs::remove_dir(source).map_err(|e| format!("could not remove {}: {e}", source.display()))
+    std::fs::remove_dir(source).map_err(io("remove", source))
 }
 
 /// Replace every line of `file` that is exactly `old` with `new`, through a
 /// temporary file and a rename, so a crash leaves one whole version.
-fn rewrite_header(file: &Path, old: &str, new: &str) -> Result<(), String> {
+fn rewrite_header(file: &Path, old: &str, new: &str) -> Result<(), MigrateError> {
     if !file.is_file() {
         return Ok(());
     }
-    let text =
-        std::fs::read(file).map_err(|e| format!("could not read {}: {e}", file.display()))?;
+    let text = std::fs::read(file).map_err(io("read", file))?;
     let Ok(text) = String::from_utf8(text) else {
         return Ok(());
     };
@@ -386,9 +499,9 @@ fn rewrite_header(file: &Path, old: &str, new: &str) -> Result<(), String> {
         out.push_str(if body == old { new } else { body });
         out.push_str(end);
     }
-    let tmp = file.with_extension("greengate-migrate.tmp");
-    std::fs::write(&tmp, out).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, file).map_err(|e| format!("could not replace {}: {e}", file.display()))
+    let staged = file.with_extension("greengate-migrate.tmp");
+    std::fs::write(&staged, out).map_err(io("write", &staged))?;
+    std::fs::rename(&staged, file).map_err(io("replace", file))
 }
 
 /// Where config keys are moved.
@@ -400,16 +513,44 @@ pub enum Scope {
     Global,
 }
 
-/// A git command for [`move_keys`]: `(GIT_DIR or None, args)` → stdout, or
-/// `None` when git failed. A seam, so the tests drive a scratch repository.
-pub type GitFn<'a> = dyn Fn(Option<&Path>, &[&str]) -> Option<String> + 'a;
+/// A git command for [`move_keys`]: `(GIT_DIR or None, args)` →
+/// `Ok(Some(stdout))` on exit 0, `Ok(None)` on exit 1 (git's "nothing
+/// matched"), `Err` on any other end. A seam, so the tests drive a scratch
+/// repository and `main` composes the real one.
+pub type GitFn<'a> = dyn Fn(Option<&Path>, &[&str]) -> Result<Option<String>, String> + 'a;
 
-/// Move the `amont.*` keys of `scope` to `greengate.*` (or back). A key the
-/// target already holds keeps its own values: the old ones are dropped, the
-/// new name wins. `amont.agent.*` is greenpiste's, never moved. A
-/// `cluster.namespace` of `amont-gates` is dropped on the way forward: 4.0's
-/// default namespace is `greengate-gates`.
-pub fn move_keys(scope: &Scope, direction: Direction, git: &GitFn<'_>) -> Result<(), String> {
+fn run_git(
+    git: &GitFn<'_>,
+    dir: Option<&Path>,
+    args: &[&str],
+) -> Result<Option<String>, MigrateError> {
+    git(dir, args).map_err(|why| MigrateError::Git {
+        args: args.join(" "),
+        why,
+    })
+}
+
+/// The NUL-separated values `git config -z` prints for one key.
+fn values(raw: &str) -> Vec<String> {
+    raw.split('\0')
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Move the `amont.*` keys of `scope` to `greengate.*` (or back); how many
+/// keys moved. Each value the old key holds is added to the new one unless
+/// already there (a migration interrupted between two `--add`s resumes
+/// without losing one), and the old key goes only once every value is
+/// present. A new key that holds a value of its own was set by the person:
+/// the new name wins, and the old values are dropped. `amont.agent.*` is
+/// greenpiste's, never moved. A `cluster.namespace` of `amont-gates` is
+/// dropped on the way forward: 4.0's default namespace is `greengate-gates`.
+pub fn move_keys(
+    scope: &Scope,
+    direction: Direction,
+    git: &GitFn<'_>,
+) -> Result<usize, MigrateError> {
     let (from, to) = match direction {
         Direction::Forward => (old::CONFIG_PREFIX, n::CONFIG_PREFIX),
         Direction::Reverse => (n::CONFIG_PREFIX, old::CONFIG_PREFIX),
@@ -419,71 +560,96 @@ pub fn move_keys(scope: &Scope, direction: Direction, git: &GitFn<'_>) -> Result
         Scope::Global => (None, "--global"),
     };
     let pattern = format!("^{}", from.replace('.', r"\."));
-    let listed = git(
+    let listed = run_git(
+        git,
         dir,
         &["config", flag, "--name-only", "--get-regexp", &pattern],
-    )
+    )?
     .unwrap_or_default();
-    let mut keys: Vec<&str> = listed.lines().filter(|k| !k.is_empty()).collect();
-    keys.dedup();
+    // One line per VALUE, in file order: a key whose values another key
+    // separates is listed twice, apart.
+    let keys: std::collections::BTreeSet<&str> = listed
+        .lines()
+        .filter(|k| !k.is_empty() && !k.starts_with(old::FOREIGN_PREFIX))
+        .collect();
+    let mut moved = 0;
     for key in keys {
-        if key.starts_with(old::FOREIGN_PREFIX) {
-            continue;
-        }
         let rest = &key[from.len()..];
         let target = format!("{to}{rest}");
-        let target_set = git(dir, &["config", flag, "--get-all", &target]).is_some();
-        if !target_set {
-            let values = git(dir, &["config", flag, "--get-all", key]).unwrap_or_default();
-            for value in values.lines() {
+        let old_values = values(
+            &run_git(git, dir, &["config", flag, "-z", "--get-all", key])?.unwrap_or_default(),
+        );
+        let new_values = values(
+            &run_git(git, dir, &["config", flag, "-z", "--get-all", &target])?.unwrap_or_default(),
+        );
+        let owned_by_person = new_values.iter().any(|v| !old_values.contains(v));
+        if !owned_by_person {
+            for value in &old_values {
                 let dropped = direction == Direction::Forward
                     && rest.eq_ignore_ascii_case("cluster.namespace")
                     && value == old::CLUSTER_NAMESPACE;
-                if dropped {
+                if dropped || new_values.contains(value) {
                     continue;
                 }
-                git(dir, &["config", flag, "--add", &target, value]).ok_or_else(|| {
-                    format!("could not set {target} in the {} config", &flag[2..])
-                })?;
+                run_git(git, dir, &["config", flag, "--add", &target, value])?;
             }
         }
-        git(dir, &["config", flag, "--unset-all", key])
-            .ok_or_else(|| format!("could not remove {key} from the {} config", &flag[2..]))?;
+        run_git(git, dir, &["config", flag, "--unset-all", key])?;
+        moved += 1;
     }
-    Ok(())
+    Ok(moved)
 }
 
 /// The machine's global keys, once: a marker in greengate's config folder,
-/// written under a lock there. A held `~/.gitconfig.lock` (another git
-/// writing) is waited for, a few seconds at most.
-fn ensure_global() -> Result<(), String> {
+/// written under a lock there. A config that names no `[amont` section
+/// needs no git, and then a config folder that cannot be made (a read-only
+/// HOME in a container) is no reason to refuse; the files are read again
+/// on the next run, which costs no process either. A held
+/// `~/.gitconfig.lock` (another git writing) is retried for a few seconds.
+fn ensure_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
     let Some(dir) = config_dir() else {
-        return Ok(());
+        return Ok(Moved::default());
     };
     let marker = dir.join(n::MIGRATED_MARKER);
     if marker.exists() {
-        return Ok(());
+        return Ok(Moved::default());
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
-    let _lock = lock(&dir.join(n::MIGRATE_LOCK))?;
+    let holds = may_hold(&global_config_files(), Direction::Forward);
+    if std::fs::create_dir_all(&dir).is_err() && !holds {
+        return Ok(Moved::default());
+    }
+    std::fs::create_dir_all(&dir).map_err(io("make", &dir))?;
+    let lock_path = dir.join(n::MIGRATE_LOCK);
+    let _lock = greenharness_slots::lock_within(&lock_path, LOCK_DEADLINE)
+        .map_err(io("lock", &lock_path))?
+        .ok_or(MigrateError::Locked { path: lock_path })?;
     if marker.exists() {
-        return Ok(());
+        return Ok(Moved::default());
     }
-    if !may_hold(&global_config_files(), Direction::Forward) {
-        return std::fs::write(&marker, format!("{}-v1\n", n::MIGRATED_MARKER))
-            .map_err(|e| format!("could not write {}: {e}", marker.display()));
-    }
-    let mut last = Ok(());
-    for _ in 0..50 {
-        last = move_keys(&Scope::Global, Direction::Forward, &system_git);
-        if last.is_ok() {
-            break;
+    let mut moved = Moved::default();
+    if holds {
+        let mut last = Err(MigrateError::Locked { path: dir.clone() });
+        for _ in 0..50 {
+            last = move_keys(&Scope::Global, Direction::Forward, git);
+            if last.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        moved.keys = last?;
     }
-    last?;
     std::fs::write(&marker, format!("{}-v1\n", n::MIGRATED_MARKER))
-        .map_err(|e| format!("could not write {}: {e}", marker.display()))
+        .map_err(io("write", &marker))?;
+    Ok(moved)
+}
+
+/// Forget that the global keys were moved, so the next [`ensure`] reads
+/// the global config again: `greengate migrate --global`.
+pub fn forget_global() -> Result<(), MigrateError> {
+    match config_dir() {
+        Some(dir) => remove_if_present(&dir.join(n::MIGRATED_MARKER)),
+        None => Ok(()),
+    }
 }
 
 /// Whether any of `files` names a section of the namespace `direction`
@@ -536,12 +702,10 @@ fn global_config_files() -> Vec<PathBuf> {
 
 /// Move the machine's global keys back: `greengate migrate --reverse
 /// --global`.
-pub fn reverse_global() -> Result<(), String> {
-    move_keys(&Scope::Global, Direction::Reverse, &system_git)?;
-    if let Some(dir) = config_dir() {
-        let _ = std::fs::remove_file(dir.join(n::MIGRATED_MARKER));
-    }
-    Ok(())
+pub fn reverse_global(git: &GitFn<'_>) -> Result<Moved, MigrateError> {
+    let keys = move_keys(&Scope::Global, Direction::Reverse, git)?;
+    forget_global()?;
+    Ok(Moved { state: 0, keys })
 }
 
 /// greengate's folder of machine state: `$XDG_CONFIG_HOME/greengate`, else
@@ -556,7 +720,7 @@ pub fn config_dir() -> Option<PathBuf> {
 
 /// What `greengate doctor` reports: the 3.x names still visible from here,
 /// one line each, with the command that moves them.
-pub fn leftovers(cwd: &Path) -> Vec<String> {
+pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Vec<String> {
     let mut out = Vec::new();
     let mut env: Vec<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
@@ -566,7 +730,8 @@ pub fn leftovers(cwd: &Path) -> Vec<String> {
     for k in env {
         let rest = &k["AMONT_".len()..];
         let new = match rest {
-            "HOST_SLOT" | "SLOT_DIR" => format!("GREENHARNESS_{rest}"),
+            "HOST_SLOT" => greenharness_slots::HELD_ENV.to_string(),
+            "SLOT_DIR" => greenharness_slots::DIR_ENV.to_string(),
             _ => format!("{}_{rest}", n::ENV_PREFIX),
         };
         out.push(format!(
@@ -574,34 +739,33 @@ pub fn leftovers(cwd: &Path) -> Vec<String> {
         ));
     }
     let pattern = r"^amont\.";
-    if let Some(listed) = system_git(
-        None,
-        &["config", "--global", "--name-only", "--get-regexp", pattern],
-    ) {
-        for key in listed
-            .lines()
-            .filter(|k| !k.starts_with(old::FOREIGN_PREFIX))
-        {
-            out.push(format!(
-                "global config: {key} is ignored by greengate 4.0; `{} migrate` moves it",
-                n::BIN
-            ));
-        }
+    let listed = |dir: Option<&Path>, flag: &str| -> Vec<String> {
+        git(
+            dir,
+            &["config", flag, "--name-only", "--get-regexp", pattern],
+        )
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .lines()
+        .filter(|k| !k.starts_with(old::FOREIGN_PREFIX))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    };
+    for key in listed(None, "--global") {
+        out.push(format!(
+            "global config: {key} is ignored by greengate 4.0; `{} migrate --global` moves it",
+            n::BIN
+        ));
     }
     if let Some(repo) = Repo::locate(cwd) {
-        if let Some(listed) = system_git(
-            Some(&repo.common),
-            &["config", "--local", "--name-only", "--get-regexp", pattern],
-        ) {
-            for key in listed
-                .lines()
-                .filter(|k| !k.starts_with(old::FOREIGN_PREFIX))
-            {
-                out.push(format!(
-                    "local config: {key} is ignored by greengate 4.0; `{} migrate` moves it",
-                    n::BIN
-                ));
-            }
+        for key in listed(Some(&repo.common), "--local") {
+            out.push(format!(
+                "local config: {key} is ignored by greengate 4.0; `{} migrate` moves it",
+                n::BIN
+            ));
         }
         for dir in repo.git_dirs() {
             for m in MOVES {
@@ -613,7 +777,7 @@ pub fn leftovers(cwd: &Path) -> Vec<String> {
                     ));
                 }
             }
-            if let Some(store) = old_held_store(dir) {
+            if let Some(store) = old_held_store(&dir) {
                 out.push(format!(
                     "state: {} holds parked changes; `{} restore` puts them back",
                     store.display(),
@@ -625,9 +789,8 @@ pub fn leftovers(cwd: &Path) -> Vec<String> {
     out
 }
 
-/// git, with `GIT_DIR` set to `dir` when one is given: stdout on success,
-/// `None` on a failure or when git cannot run.
-pub fn system_git(dir: Option<&Path>, args: &[&str]) -> Option<String> {
+/// git, with `GIT_DIR` set to `dir` when one is given, as [`GitFn`] says.
+pub fn system_git(dir: Option<&Path>, args: &[&str]) -> Result<Option<String>, String> {
     let mut cmd = std::process::Command::new("git");
     if let Some(dir) = dir {
         cmd.env("GIT_DIR", dir);
@@ -636,46 +799,16 @@ pub fn system_git(dir: Option<&Path>, args: &[&str]) -> Option<String> {
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// An exclusive lock on `path`, waited for (a migration takes well under a
-/// second); released when the guard drops, and by the kernel if the process
-/// dies, so a crash never leaves the repository locked.
-#[cfg(unix)]
-fn lock(path: &Path) -> Result<std::fs::File, String> {
-    use std::os::unix::io::AsRawFd;
-    extern "C" {
-        #[link_name = "flock"]
-        fn libc_flock(fd: i32, op: i32) -> i32;
+        .map_err(|e| e.to_string())?;
+    match out.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned())),
+        Some(1) => Ok(None),
+        code => Err(format!(
+            "exit {}: {}",
+            code.map_or("signal".to_string(), |c| c.to_string()),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
     }
-    const LOCK_EX: i32 = 2;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-    // SAFETY: a valid fd we own; flock touches no memory.
-    if unsafe { libc_flock(file.as_raw_fd(), LOCK_EX) } != 0 {
-        return Err(format!("could not lock {}", path.display()));
-    }
-    Ok(file)
-}
-
-/// No `flock` here: the migration runs unlocked, as every other writer of
-/// this state does on Windows.
-#[cfg(not(unix))]
-fn lock(path: &Path) -> Result<std::fs::File, String> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -683,14 +816,17 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let d =
+        let scratch_dir =
             std::env::temp_dir().join(format!("greengate-migrate-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        let _ = std::fs::remove_dir_all(&scratch_dir); // a fresh dir; absent is fine
+        std::fs::create_dir_all(&scratch_dir).unwrap();
+        scratch_dir
     }
 
-    fn git_in(repo: &Path) -> impl Fn(Option<&Path>, &[&str]) -> Option<String> + '_ {
+    /// git in `repo`, its global config a file of its own, as [`GitFn`].
+    fn git_in(
+        repo: &Path,
+    ) -> impl Fn(Option<&Path>, &[&str]) -> Result<Option<String>, String> + '_ {
         move |_dir, args| {
             let out = std::process::Command::new("git")
                 .current_dir(repo)
@@ -698,11 +834,20 @@ mod tests {
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .args(args)
                 .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+                .map_err(|e| e.to_string())?;
+            match out.status.code() {
+                Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned())),
+                Some(1) => Ok(None),
+                code => Err(format!("{code:?}")),
+            }
         }
+    }
+
+    /// The values of `key`, newline-joined; empty when unset.
+    fn get(git: &GitFn<'_>, key: &str) -> String {
+        git(None, &["config", "--get-all", key])
+            .unwrap()
+            .unwrap_or_default()
     }
 
     fn init(dir: &Path) {
@@ -773,7 +918,7 @@ mod tests {
         // Both names: refused, nothing moved.
         std::fs::write(gd.join("amont-downgrades"), "amont-downgrade-v1\n").unwrap();
         let err = move_state(&gd, Direction::Forward).unwrap_err();
-        assert!(err.contains("both"), "{err}");
+        assert!(matches!(err, MigrateError::BothExist { .. }), "{err}");
         assert!(gd.join("amont-downgrades").is_file());
     }
 
@@ -785,11 +930,17 @@ mod tests {
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join("amont-skew"), "amont-skew-v1\n3.0.0\n").unwrap();
         let repo = Repo::locate_with(&root, None).unwrap();
-        assert_eq!(repo.worktrees, vec![wt.clone()]);
+        assert_eq!(repo.worktrees(), vec![wt.clone()]);
         std::fs::create_dir_all(wt.join("amont-held")).unwrap();
         let git = git_in(&root);
         let err = migrate_repo(&repo, Direction::Forward, &git).unwrap_err();
-        assert!(err.contains("restore"), "{err}");
+        assert_eq!(
+            err,
+            MigrateError::HeldStore {
+                path: wt.join("amont-held")
+            }
+        );
+        assert!(err.to_string().contains("restore"), "{err}");
         assert!(
             wt.join("amont-skew").is_file(),
             "nothing moved while refused"
@@ -810,8 +961,9 @@ mod tests {
         let git = git_in(&root);
         for args in [
             ["config", "--add", "amont.trusted", "aaa"],
-            ["config", "--add", "amont.trusted", "bbb"],
             ["config", "--add", "amont.timeout", "600"],
+            // Another key between two values: listed twice, apart.
+            ["config", "--add", "amont.trusted", "bbb"],
             ["config", "--add", "greengate.timeout", "900"],
             ["config", "--add", "amont.cluster.namespace", "amont-gates"],
             ["config", "--add", "amont.agent.suppressions", "allow"],
@@ -819,53 +971,132 @@ mod tests {
             git(None, &args).unwrap();
         }
         let repo = Repo::locate_with(&root, None).unwrap();
-        migrate_repo(&repo, Direction::Forward, &git).unwrap();
-        assert_eq!(
-            git(None, &["config", "--get-all", "greengate.trusted"]).unwrap(),
-            "aaa\nbbb\n"
-        );
-        assert_eq!(
-            git(None, &["config", "--get", "greengate.timeout"]).unwrap(),
-            "900\n"
-        );
-        assert_eq!(
-            git(
-                None,
-                &["config", "--get-all", "greengate.cluster.namespace"]
-            ),
-            None
-        );
-        assert_eq!(git(None, &["config", "--get", "amont.trusted"]), None);
-        assert_eq!(git(None, &["config", "--get", "amont.timeout"]), None);
-        assert_eq!(
-            git(None, &["config", "--get", "amont.agent.suppressions"]).unwrap(),
-            "allow\n"
-        );
+        let moved = migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        assert_eq!(moved.keys, 3, "trusted, timeout, cluster.namespace");
+        assert_eq!(get(&git, "greengate.trusted"), "aaa\nbbb\n");
+        assert_eq!(get(&git, "greengate.timeout"), "900\n", "the new name wins");
+        assert_eq!(get(&git, "greengate.cluster.namespace"), "");
+        assert_eq!(get(&git, "amont.trusted"), "");
+        assert_eq!(get(&git, "amont.timeout"), "");
+        assert_eq!(get(&git, "amont.agent.suppressions"), "allow\n");
 
-        // And back: the reverse restores the 3.x names.
+        // And back: the reverse restores the 3.x names, and 4.0 then leaves
+        // the repository alone until asked.
         migrate_repo(&repo, Direction::Reverse, &git).unwrap();
-        assert_eq!(
-            git(None, &["config", "--get-all", "amont.trusted"]).unwrap(),
-            "aaa\nbbb\n"
-        );
-        assert_eq!(git(None, &["config", "--get", "greengate.trusted"]), None);
+        assert_eq!(get(&git, "amont.trusted"), "aaa\nbbb\n");
+        assert_eq!(get(&git, "greengate.trusted"), "");
         assert!(!repo.marker().exists());
+        assert!(repo.common.join(n::REVERSED_MARKER).is_file());
+        // The repository half only: the global half reads this machine's
+        // config home, which a unit test must not touch.
+        ensure_repo(&root, &git).unwrap();
+        assert_eq!(
+            get(&git, "amont.trusted"),
+            "aaa\nbbb\n",
+            "a reverse is not undone"
+        );
+    }
+
+    #[test]
+    fn a_copy_cut_off_between_two_values_resumes_without_losing_one() {
+        let root = scratch("partial");
+        init(&root);
+        let git = git_in(&root);
+        for args in [
+            ["config", "--add", "amont.trusted", "aaa"],
+            ["config", "--add", "amont.trusted", "bbb"],
+            ["config", "--add", "amont.trusted", "ccc"],
+            // The first run stopped after one `--add`.
+            ["config", "--add", "greengate.trusted", "aaa"],
+        ] {
+            git(None, &args).unwrap();
+        }
+        move_keys(&Scope::Local(root.join(".git")), Direction::Forward, &git).unwrap();
+        assert_eq!(get(&git, "greengate.trusted"), "aaa\nbbb\nccc\n");
+        assert_eq!(get(&git, "amont.trusted"), "");
+    }
+
+    #[test]
+    fn a_git_that_fails_stops_the_move_and_keeps_the_old_key() {
+        let root = scratch("git-fails");
+        init(&root);
+        let real = git_in(&root);
+        real(None, &["config", "--add", "amont.trusted", "aaa"]).unwrap();
+        let failing = |dir: Option<&Path>, args: &[&str]| -> Result<Option<String>, String> {
+            if args.contains(&"--add") {
+                return Err("exit 255: could not lock config file".into());
+            }
+            real(dir, args)
+        };
+        let err = move_keys(
+            &Scope::Local(root.join(".git")),
+            Direction::Forward,
+            &failing,
+        )
+        .unwrap_err();
+        assert!(matches!(err, MigrateError::Git { .. }), "{err}");
+        assert_eq!(get(&real, "amont.trusted"), "aaa\n", "the old key stays");
+    }
+
+    #[test]
+    fn a_detached_run_3x_left_pending_refuses_the_move() {
+        let root = scratch("pending");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::create_dir_all(gd.join("amont")).unwrap();
+        let pending = gd.join("amont/cluster-pending");
+        std::fs::write(
+            &pending,
+            "{\"format\":1,\"records\":[{\"name\":\"amont-rh-1\"}]}\n",
+        )
+        .unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        let git = git_in(&root);
+        assert_eq!(
+            migrate_repo(&repo, Direction::Forward, &git).unwrap_err(),
+            MigrateError::PendingDetached {
+                path: pending.clone()
+            }
+        );
+        std::fs::write(&pending, "{\"format\":1,\"records\":[]}\n").unwrap();
+        migrate_repo(&repo, Direction::Forward, &git).unwrap();
+        assert!(gd.join("greengate/cluster-pending").is_file());
+    }
+
+    #[test]
+    fn a_reverse_refuses_while_4_0_holds_parked_changes() {
+        let root = scratch("reverse-held");
+        init(&root);
+        let gd = root.join(".git");
+        std::fs::create_dir_all(gd.join(n::HELD_STORE)).unwrap();
+        let repo = Repo::locate_with(&root, None).unwrap();
+        let git = git_in(&root);
+        assert!(matches!(
+            migrate_repo(&repo, Direction::Reverse, &git).unwrap_err(),
+            MigrateError::HeldStore { .. }
+        ));
     }
 
     #[test]
     fn only_a_file_naming_the_namespace_may_hold_its_keys() {
         let root = scratch("may-hold");
-        let f = root.join("config");
-        std::fs::write(&f, "[core]\n\tbare = false\n[amontx]\n\ta = 1\n").unwrap();
-        assert!(!may_hold(std::slice::from_ref(&f), Direction::Forward));
+        let config_file = root.join("config");
+        std::fs::write(&config_file, "[core]\n\tbare = false\n[amontx]\n\ta = 1\n").unwrap();
+        assert!(!may_hold(
+            std::slice::from_ref(&config_file),
+            Direction::Forward
+        ));
         for section in ["[amont]", "[Amont \"severity\"]", "  [amont.cluster]"] {
-            std::fs::write(&f, format!("[core]\n{section}\n\tx = 1\n")).unwrap();
+            std::fs::write(&config_file, format!("[core]\n{section}\n\tx = 1\n")).unwrap();
             assert!(
-                may_hold(std::slice::from_ref(&f), Direction::Forward),
+                may_hold(std::slice::from_ref(&config_file), Direction::Forward),
                 "{section}"
             );
         }
-        assert!(!may_hold(std::slice::from_ref(&f), Direction::Reverse));
+        assert!(!may_hold(
+            std::slice::from_ref(&config_file),
+            Direction::Reverse
+        ));
         assert!(!may_hold(&[root.join("absent")], Direction::Forward));
     }
 
@@ -891,9 +1122,10 @@ mod tests {
         std::fs::create_dir_all(gd.join("amont")).unwrap();
         std::fs::write(gd.join("amont/cluster-pending"), "a").unwrap();
         std::fs::write(gd.join("greengate/cluster-pending"), "b").unwrap();
-        assert!(move_state(&gd, Direction::Forward)
-            .unwrap_err()
-            .contains("both"));
+        assert!(matches!(
+            move_state(&gd, Direction::Forward).unwrap_err(),
+            MigrateError::BothExist { .. }
+        ));
         assert!(gd.join("amont/cluster-pending").is_file());
     }
 

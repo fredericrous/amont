@@ -61,6 +61,7 @@ mod large_files;
 mod linters;
 mod load_sites;
 mod merge_conflict;
+mod migrate;
 mod names;
 mod npm_packaging;
 mod pack_add;

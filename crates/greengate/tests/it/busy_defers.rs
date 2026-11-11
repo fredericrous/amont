@@ -68,6 +68,7 @@ fn hook(
     env: &[(&str, &str)],
 ) -> (i32, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_greengate"));
+    crate::common::sandbox_env(&mut cmd);
     cmd.arg("--hooks-dir")
         .arg(repo.path(".git/hooks"))
         .arg(name)
@@ -104,7 +105,7 @@ fn hook(
 }
 
 fn trust(repo: &Repo) {
-    let out = Command::new(env!("CARGO_BIN_EXE_greengate"))
+    let out = crate::common::sandbox_env(&mut Command::new(env!("CARGO_BIN_EXE_greengate")))
         .arg("trust")
         .current_dir(&repo.dir)
         .stdin(Stdio::null())
@@ -979,14 +980,9 @@ fn waits(slots: &Path) -> Vec<serde_json::Value> {
 
 /// `amont slot run` as an outside waiter on `slots`, running `script`.
 fn outside_waiter(slots: &Path, script: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_greengate"))
+    crate::common::sandbox_env(&mut Command::new(env!("CARGO_BIN_EXE_greengate")))
         .args(["slot", "run", "--", "sh", "-c", script])
         .current_dir(crate::common::sandbox().join("cwd"))
-        .env("XDG_CONFIG_HOME", crate::common::sandbox().join("config"))
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            crate::common::sandbox().join("gitconfig"),
-        )
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", slots)
         .env("GREENGATE_HOST_SLOTS", "1")
@@ -1144,14 +1140,9 @@ fn a_failing_gate_after_a_handoff_frees_the_slot() {
         })
         .unwrap_or_default();
     assert!(leftovers.is_empty(), "a who file stayed: {leftovers:?}");
-    let status = Command::new(env!("CARGO_BIN_EXE_greengate"))
+    let status = crate::common::sandbox_env(&mut Command::new(env!("CARGO_BIN_EXE_greengate")))
         .args(["slots", "--json"])
         .current_dir(crate::common::sandbox().join("cwd"))
-        .env("XDG_CONFIG_HOME", crate::common::sandbox().join("config"))
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            crate::common::sandbox().join("gitconfig"),
-        )
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", &slots)
         .env("GREENGATE_HOST_SLOTS", "1")

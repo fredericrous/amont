@@ -27,7 +27,7 @@ fn a_closed_pipe_kills_list_quietly() {
     }
     r.write("amont.conf", &manifest);
 
-    let out = std::process::Command::new("sh")
+    let out = crate::common::sandbox_env(&mut std::process::Command::new("sh"))
         .arg("-c")
         .arg(format!(
             "'{}' list | head -c 1 > /dev/null",

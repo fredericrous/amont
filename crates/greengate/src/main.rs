@@ -87,11 +87,14 @@ const USAGE: &str = concat!(
     "                 into cluster tokens now (every commit and push does it)\n",
     "  restore        bring back unstaged changes a killed pre-commit left parked\n",
     "  migrate        move greengate 3.x's state and amont.* keys in this\n",
-    "                 repository to greengate's names (every command does it\n",
-    "                 once by itself) [--reverse: back to 3.x's, before a\n",
-    "                 downgrade; with --global, the machine's keys too]\n",
+    "                 repository, and the machine's global keys, to greengate's\n",
+    "                 names (every command does it once by itself)\n",
+    "                 [--global: read the machine's keys again]\n",
+    "                 [--reverse: back to 3.x's names, before a downgrade; 4.0\n",
+    "                 then leaves the repository alone until `migrate`]\n",
     "  doctor         list greengate 3.x names still set here: AMONT_*\n",
-    "                 variables, amont.* keys, state left in .git; exits 1 if any\n",
+    "                 variables, amont.* keys, state left in .git; exits 1 when\n",
+    "                 any is left (not an error), 0 when none\n",
     "  agents-md      write the agent-guidance block into AGENTS.md, plus the\n",
     "                 CLAUDE.md signpost pointing at it (both generated, both\n",
     "                 checked) [--check: report drift only] [--path <file>]\n",
@@ -431,7 +434,14 @@ fn main() {
             std::process::exit(2);
         }
         Invocation::Sub { name, args } => {
-            if !matches!(name, Sub::Restore | Sub::Migrate | Sub::Doctor) {
+            // Not before a verb that must work on 3.x state as it is
+            // (restore, uninstall), the migration's own verbs, or a dry run,
+            // which promises to change nothing.
+            let exempt = matches!(
+                name,
+                Sub::Restore | Sub::Uninstall | Sub::Migrate | Sub::Doctor
+            ) || args.iter().any(|a| a == "--dry-run");
+            if !exempt {
                 migrate_first();
             }
             std::process::exit(run_sub(name, &args))
@@ -453,8 +463,17 @@ fn main() {
 /// runs on half-moved state.
 fn migrate_first() {
     let cwd = std::env::current_dir().unwrap_or_default();
-    if let Err(why) = greengate_runtime::migrate::ensure(&cwd) {
-        eprintln!("{BIN}: {}", greengate_runtime::ui::sanitize(&why));
+    if let Err(why) =
+        greengate_runtime::migrate::ensure(&cwd, &greengate_runtime::migrate::system_git)
+    {
+        eprintln!(
+            "{BIN}: {}",
+            greengate_runtime::ui::sanitize(&why.to_string())
+        );
+        eprintln!(
+            "{BIN}: moving greengate 3.x's names to greengate's stopped; what it did not reach \
+             keeps its old name, and the next command tries again (`{BIN} doctor` lists what is left)"
+        );
         std::process::exit(1);
     }
 }
@@ -462,25 +481,66 @@ fn migrate_first() {
 /// `greengate migrate [--reverse] [--global]`.
 fn migrate_command(args: &[OsString]) -> Result<(), String> {
     use greengate_runtime::migrate::{self, Direction, Repo};
+    let git = &migrate::system_git;
     let reverse = args.iter().any(|a| a == "--reverse");
     let global = args.iter().any(|a| a == "--global");
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let repo = Repo::locate(&cwd);
     if reverse {
-        let repo = Repo::locate(&cwd).ok_or("not inside a git repository")?;
-        migrate::migrate_repo(&repo, Direction::Reverse, &migrate::system_git)?;
-        if global {
-            migrate::reverse_global()?;
+        let mut moved = migrate::Moved::default();
+        if let Some(repo) = &repo {
+            moved =
+                migrate::migrate_repo(repo, Direction::Reverse, git).map_err(|e| e.to_string())?;
+        } else if !global {
+            return Err(
+                "not inside a git repository (`--global` moves the machine's keys alone)".into(),
+            );
         }
-        println!("moved this repository's state and keys back to greengate 3.x's names");
+        if global {
+            moved.keys += migrate::reverse_global(git)
+                .map_err(|e| e.to_string())?
+                .keys;
+        }
+        eprintln!(
+            "moved {} names and {} keys back to greengate 3.x's; greengate 4.0 leaves {} alone \
+             until `{BIN} migrate` is run there",
+            moved.state,
+            moved.keys,
+            if repo.is_some() {
+                "this repository"
+            } else {
+                "them"
+            }
+        );
         return Ok(());
     }
-    // Asked for by name: run again even where the marker says done, so a
-    // 3.x run after a rollback is moved too.
-    if let Some(repo) = Repo::locate(&cwd) {
-        let _ = std::fs::remove_file(repo.marker());
+    // Asked for by name: run again even where a marker says done, so a 3.x
+    // run after a rollback is moved too.
+    if let Some(repo) = &repo {
+        for marker in [
+            repo.marker(),
+            repo.common.join(greengate_runtime::names::REVERSED_MARKER),
+        ] {
+            match std::fs::remove_file(&marker) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!("could not remove {}: {e}", marker.display()));
+                }
+                _ => {}
+            }
+        }
     }
-    migrate::ensure(&cwd)?;
-    println!("this repository and this machine use greengate's names");
+    if global {
+        migrate::forget_global().map_err(|e| e.to_string())?;
+    }
+    let moved = migrate::ensure(&cwd, git).map_err(|e| e.to_string())?;
+    if moved.state + moved.keys == 0 {
+        eprintln!("nothing of greengate 3.x's to move here");
+    } else {
+        eprintln!(
+            "moved {} names and {} keys to greengate's",
+            moved.state, moved.keys
+        );
+    }
     Ok(())
 }
 
@@ -711,7 +771,10 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Migrate => report(migrate_command(args)),
         Sub::Doctor => {
             let cwd = std::env::current_dir().unwrap_or_default();
-            let found = greengate_runtime::migrate::leftovers(&cwd);
+            let found = greengate_runtime::migrate::leftovers(
+                &cwd,
+                &greengate_runtime::migrate::system_git,
+            );
             for line in &found {
                 println!("{}", greengate_runtime::ui::sanitize(line));
             }

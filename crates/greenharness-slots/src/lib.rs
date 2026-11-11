@@ -194,6 +194,33 @@ pub fn safe_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// An exclusive lock on `path`, retried until `deadline` has passed:
+/// `Ok(Some(file))` held until the file drops (and by the kernel if the
+/// process dies), `Ok(None)` when another holder kept it past the deadline.
+/// On a platform without `flock` (Windows) no lock is taken and the answer
+/// is `Ok(Some(file))` at once: callers there run unlocked, as every other
+/// writer of the same state does.
+pub fn lock_within(path: &Path, deadline: Duration) -> io::Result<Option<std::fs::File>> {
+    if !SUPPORTED {
+        return std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map(Some);
+    }
+    let until = Instant::now() + deadline;
+    loop {
+        if let Some(file) = platform::try_lock(path)? {
+            return Ok(Some(file));
+        }
+        if Instant::now() >= until {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Whether slots work on this platform (`flock`): not on Windows.
 pub const SUPPORTED: bool = platform::SUPPORTED;
 

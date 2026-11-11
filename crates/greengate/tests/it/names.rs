@@ -62,9 +62,9 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "a commit-tree message stored in git",
     ),
     (
-        "greengate-runtime/src/slot_cmd.rs",
-        4,
-        "the slot holder name other tools read (3a-2)",
+        "greengate-runtime/src/migrate.rs",
+        1,
+        "the 3.x command a refusal tells the person to run",
     ),
     (
         "greengate-runtime/src/trust.rs",
@@ -300,7 +300,11 @@ fn data_hits(text: &str) -> usize {
                     .collect::<String>()
             })
         };
-        let hit = if let Some(word) = next_word('.') {
+        // A name built with `format!` (`amont-{x}`) is one too.
+        let built = rest.starts_with("-{") || rest.starts_with(".{");
+        let hit = if built {
+            true
+        } else if let Some(word) = next_word('.') {
             !word.is_empty() && !["conf", "pack", "exe"].contains(&word.as_str())
         } else if let Some(word) = next_word('-') {
             !word.is_empty() && !["fleet", "agent"].contains(&word.as_str())
@@ -417,6 +421,7 @@ fn each_planted_data_name_is_counted() {
         count_with(r#"let m = "<!-- amont:start -->";"#, data_hits),
         1
     );
+    assert_eq!(count_with(r#"let d = format!("amont-{x}");"#, data_hits), 1);
     assert_eq!(
         count_with(
             r#"let a = "amont.conf"; let b = "amont-fleet"; let c = "__AMONT_BIN__"; let d = "greengate.timeout";"#,

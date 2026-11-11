@@ -9,6 +9,9 @@
 //! `--max-wait` (default 90 s, under Claude Code's 120 s Bash timeout) exits
 //! 75 without running anything, unless `--on-timeout run` says otherwise.
 
+/// The holder name a `slot run` queues under, as `greengate slots` shows it.
+const SLOT_RUN_HOLDER: &str = concat!(crate::bin!(), " slot run");
+
 use crate::names::BIN;
 use std::ffi::OsString;
 use std::process::Command;
@@ -156,7 +159,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     let mut waiter = match greenharness_slots::Waiter::new(
         sizing,
         weight,
-        greenharness_slots::Holder::here("amont slot run", &label),
+        greenharness_slots::Holder::here(SLOT_RUN_HOLDER, &label),
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -191,7 +194,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
         if run_on_timeout {
             greenharness_slots::record_wait_jobs(
                 &dir,
-                "amont slot run",
+                SLOT_RUN_HOLDER,
                 weight,
                 Some(jobs),
                 waited,
@@ -203,7 +206,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
             );
             return spawn(program, rest, Launch::Unqueued, Some(jobs));
         }
-        greenharness_slots::record_wait(&dir, "amont slot run", weight, waited, "timeout");
+        greenharness_slots::record_wait(&dir, SLOT_RUN_HOLDER, weight, waited, "timeout");
         eprintln!(
             "{BIN}: no host slot freed in {}s; `{label}` did not run (exit {BUSY_EXIT}). \
              Retry the same command later, or let CI run it.",
@@ -213,7 +216,7 @@ fn run(own: &[OsString], cmd: &[OsString]) -> i32 {
     };
     greenharness_slots::record_wait_jobs(
         &dir,
-        "amont slot run",
+        SLOT_RUN_HOLDER,
         weight,
         Some(jobs),
         waited,

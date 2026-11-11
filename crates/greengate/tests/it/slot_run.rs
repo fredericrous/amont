@@ -25,13 +25,9 @@ fn slot_dir(tag: &str) -> PathBuf {
 
 fn amont(slots: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_greengate"));
+    crate::common::sandbox_env(&mut cmd);
     cmd.args(args)
         .current_dir(crate::common::sandbox().join("cwd"))
-        .env("XDG_CONFIG_HOME", crate::common::sandbox().join("config"))
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            crate::common::sandbox().join("gitconfig"),
-        )
         .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GREENHARNESS_SLOT_DIR", slots)
         .env("GREENGATE_HOST_SLOTS", "1");
