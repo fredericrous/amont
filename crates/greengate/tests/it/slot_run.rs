@@ -52,6 +52,21 @@ fn text(out: &Output) -> String {
     )
 }
 
+/// `slots --json` carries the core count and a stable token for its source.
+#[test]
+fn slots_json_names_the_cores_and_their_source() {
+    let slots = slot_dir("json-cores");
+    let out = amont(&slots, &["slots", "--json"])
+        .output()
+        .expect("amont slots --json");
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        json.contains("\"cores\":8,\"cores_source\":\"env\""),
+        "{json}"
+    );
+    let _ = std::fs::remove_dir_all(&slots); // best-effort: a scratch dir
+}
+
 /// Wait until `amont slots --json` shows a holder, so a test never races the
 /// first wrapper's admission with a sleep.
 fn until_held(slots: &Path) -> String {

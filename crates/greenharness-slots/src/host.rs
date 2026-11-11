@@ -65,11 +65,25 @@ impl Source {
         }
     }
 
-    /// Whether a person set this value (an override), rather than detection.
-    pub fn is_override(self) -> bool {
-        matches!(self, Source::Env | Source::Global | Source::System)
+    /// A stable token for machine output (`slots --json`): `env`, `global`,
+    /// `system`, `detected`, `logical_fallback`, `limited_by_affinity`. Unlike
+    /// [`Source::name`], it never changes once released.
+    pub fn token(self) -> &'static str {
+        match self {
+            Source::Env => "env",
+            Source::Global => "global",
+            Source::System => "system",
+            Source::Detected => "detected",
+            Source::LogicalFallback => "logical_fallback",
+            Source::LimitedByAffinity => "limited_by_affinity",
+        }
     }
 }
+
+/// The warning when git cannot list config with scopes: the host keys are
+/// not read. One text for every client.
+pub const NO_SCOPES_WARNING: &str = "git cannot list config with scopes, so the host keys are \
+     not read; using the detected sizing\n  Fix: check that git runs (git config --global --list)";
 
 /// A value and the source it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,26 +178,27 @@ fn read_key(
     using: &str,
 ) -> (Option<Resolved<i64>>, Vec<String>) {
     let mut warnings = Vec::new();
-    let problem = |raw: &str| -> Option<String> {
+    // Parsed once: the value used is the value checked.
+    let accept = |raw: &str| -> Result<i64, String> {
         match raw.trim().parse::<i64>() {
-            Ok(v) if range.contains(&v) => None,
-            Ok(v) => Some(format!("{v}, outside {}..={}", range.start(), range.end())),
-            Err(_) => Some(format!("{raw:?}, not a whole number")),
+            Ok(v) if range.contains(&v) => Ok(v),
+            Ok(v) => Err(format!("{v}, outside {}..={}", range.start(), range.end())),
+            Err(_) => Err(format!("{raw:?}, not a whole number")),
         }
     };
 
     if let Some(raw) = env(env_name).filter(|v| !v.trim().is_empty()) {
-        match problem(&raw) {
-            None => {
+        match accept(&raw) {
+            Ok(value) => {
                 return (
                     Some(Resolved {
-                        value: raw.trim().parse().unwrap_or_default(),
+                        value,
                         source: Source::Env,
                     }),
                     warnings,
                 )
             }
-            Some(why) => warnings.push(format!(
+            Err(why) => warnings.push(format!(
                 "{env_name} is {why}; reading git config instead\n  Fix: unset {env_name}"
             )),
         }
@@ -196,8 +211,8 @@ fn read_key(
         .find(|(scope, k, _)| *k == wanted && (scope == "global" || scope == "system"));
     if host.is_none() && rows.iter().any(|(_, k, _)| *k == wanted) {
         warnings.push(format!(
-            "{key} is set in this repository's config, which a host key never reads; \
-             using {using}\n  Fix: git config --unset {key}, then git config --global {key} <n>"
+            "{key} in this repository is ignored (host keys are global); using {using}\n  \
+             Fix: git config --unset {key}, then git config --global {key} <n>"
         ));
     }
     let Some((scope, _, raw)) = host else {
@@ -208,15 +223,9 @@ fn read_key(
     } else {
         Source::Global
     };
-    match problem(raw) {
-        None => (
-            Some(Resolved {
-                value: raw.trim().parse().unwrap_or_default(),
-                source,
-            }),
-            warnings,
-        ),
-        Some(why) => {
+    match accept(raw) {
+        Ok(value) => (Some(Resolved { value, source }), warnings),
+        Err(why) => {
             warnings.push(format!(
                 "{key} in git config --{scope} is {why}; using {using}\n  \
                  Fix: git config --{scope} --unset {key}"
@@ -276,11 +285,7 @@ pub fn from_host(detected: Resolved<u32>) -> HostSizing {
         detected,
     );
     if rows.is_none() {
-        sizing.warnings.push(
-            "git cannot list config with scopes, so the host keys are not read; using the \
-             detected sizing\n  Fix: check that git runs (git config --global --list)"
-                .to_string(),
-        );
+        sizing.warnings.push(NO_SCOPES_WARNING.to_string());
     }
     sizing
 }
@@ -500,6 +505,23 @@ mod tests {
                 source: Source::LimitedByAffinity
             }
         );
+    }
+
+    /// Machine output gets stable tokens, never the display names.
+    #[test]
+    fn every_source_has_a_stable_token() {
+        let all = [
+            (Source::Env, "env"),
+            (Source::Global, "global"),
+            (Source::System, "system"),
+            (Source::Detected, "detected"),
+            (Source::LogicalFallback, "logical_fallback"),
+            (Source::LimitedByAffinity, "limited_by_affinity"),
+        ];
+        for (source, token) in all {
+            assert_eq!(source.token(), token);
+            assert!(token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
     }
 
     #[test]

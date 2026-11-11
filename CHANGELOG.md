@@ -25,11 +25,12 @@ missing here.
 
 - A waiter says why it waits, after whom it waits behind: another waiter
   ahead, slots full, the load at or above the core count, or the
-  one-per-minute ramp, and ends with `see greengate slots`.
+  one-per-minute ramp, and points once to `greengate slots`.
 - `greengate slots` names the threads where they differ from the cores, and
   tags a count that plain detection did not set; `--json` gains `cores` and
-  `cores_source`. `greengate doctor` prints the host sizing and each key's
-  source on stderr.
+  `cores_source` (a stable token: `env`, `global`, `system`, `detected`,
+  `logical_fallback`, `limited_by_affinity`). `greengate doctor` prints the
+  host cores and the host slots on stderr, one line each with its source.
 
 ### Fixed
 
