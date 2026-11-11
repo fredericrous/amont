@@ -444,5 +444,7 @@ has one slot queue, and no held store was lost.
 - Phase 4 (amont), round 1: lang:rust, backend, unix, architect approve; implementation-review, tui, platform approve-with-changes —
   the 3.x kubeconfig hint and a `doctor` line for a 3.x kubeconfig (fixed), comments and a pin reason (fixed), the live run recorded and the detached lane deferred (above).
   Kept: local alias constants for the names (low, rust/architect). homelab#1167: implementation-review and platform approve after one delta (image pin, a dedicated Vault reader, the fence move named).
+  Delta: all seven approve (tui approve-with-changes). Deliberate: the doctor and hint lines keep their word order (tui, low). Carried to Phase 5:
+  `old_kubeconfig` matches `/.config/amont/` only, so this machine's value is checked by hand in the install window (architect, rust; a unit table rides the census), and the hint's folder from `names::STATE_DIR` (architect, low).
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
