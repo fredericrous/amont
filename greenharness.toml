@@ -10,7 +10,7 @@
 
 [extension]
 name = "greengate"
-version = "3.2.0"
+version = "4.0.0"
 harness = ">=0.3"
 summary = "what a commit or a push may carry: git hooks"
 needs = []
