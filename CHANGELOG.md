@@ -20,8 +20,9 @@ missing here.
   workspace names (`pnpm-workspace.yaml`, else `package.json` `workspaces`); a
   package outside them, or a file greengate cannot read, still runs. A local
   `git config` can only remove names from the committed line. The push prints
-  one line for the members it skipped, naming the root's command, and announces
-  each package it runs. greengate 3.1 and earlier report the new line as an
+  one line for the members it skipped, naming the root's command, says when a
+  declared workspace could not be read, and announces each package it runs (a
+  count of the packages that run). greengate 3.1 and earlier report the new line as an
   unknown key at every run, without blocking, until upgraded.
 
 ## v3.1.0

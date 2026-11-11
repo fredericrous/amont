@@ -15,6 +15,7 @@
 //! makes the answer `None`, and a member the answer does not cover runs: the
 //! safe side, where the worst outcome is a suite that ran twice.
 
+use super::json_scan::{string_end, top_level_value};
 use std::path::Path;
 
 /// Where a workspace's members are: the include globs, and the `!` ones that
@@ -143,9 +144,11 @@ impl Members {
 /// quoted scalar. A bare `*` in a glob (`- packages/*`) is not one.
 fn is_yaml_reference(line: &str) -> bool {
     let trimmed = line.trim_start().trim_start_matches('-').trim_start();
-    trimmed.starts_with('&')
-        || (trimmed.starts_with('*') && trimmed.len() > 1 && !trimmed.contains('/'))
-        || trimmed.starts_with("<<")
+    let alias = trimmed
+        .strip_prefix('*')
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    trimmed.starts_with('&') || alias || trimmed.starts_with("<<")
 }
 
 /// `line` without a trailing ` # comment`, quotes respected.
@@ -233,76 +236,6 @@ fn matches_path(glob: &[String], path: &[&str]) -> bool {
     }
 }
 
-/// The text of the value of the top-level `key` of a JSON document, when that
-/// value is an array or an object (brackets included). A depth-tracking scan
-/// like the one that finds `"scripts"`: a string only counts as a key at depth
-/// 1 with a `:` after it, so the same word elsewhere cannot answer.
-fn top_level_value<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    let bytes = json.as_bytes();
-    let (mut depth, mut i) = (0usize, 0usize);
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                let start = i + 1;
-                let close = super::run_tests::string_end(bytes, start)?;
-                let content = &json[start..close];
-                i = close + 1;
-                if depth != 1 {
-                    continue;
-                }
-                let mut j = i;
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= bytes.len() || bytes[j] != b':' || content != key {
-                    continue;
-                }
-                let mut k = j + 1;
-                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                    k += 1;
-                }
-                let (open, shut) = match bytes.get(k)? {
-                    b'[' => (b'[', b']'),
-                    b'{' => (b'{', b'}'),
-                    _ => return None,
-                };
-                let end = bracket_end(bytes, k, open, shut)?;
-                return Some(&json[k..=end]);
-            }
-            b'{' | b'[' => {
-                depth += 1;
-                i += 1;
-            }
-            b'}' | b']' => {
-                depth = depth.saturating_sub(1);
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// Index of the `shut` matching the `open` at `from`, string-aware.
-fn bracket_end(bytes: &[u8], from: usize, open: u8, shut: u8) -> Option<usize> {
-    let (mut depth, mut i) = (0usize, from);
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = super::run_tests::string_end(bytes, i + 1)?,
-            c if c == open => depth += 1,
-            c if c == shut => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
 /// The strings of a JSON array of plain strings, or `None` for anything else:
 /// another kind of item, or a string with an escape in it.
 fn string_items(array: &str) -> Option<Vec<String>> {
@@ -319,7 +252,7 @@ fn string_items(array: &str) -> Option<Vec<String>> {
         if bytes[i] != b'"' {
             return None;
         }
-        let close = super::run_tests::string_end(bytes, i + 1)?;
+        let close = string_end(bytes, i + 1)?;
         let content = &inner[i + 1..close];
         if content.contains('\\') {
             return None;
@@ -395,7 +328,7 @@ mod tests {
     #[test]
     fn a_pnpm_root_reads_only_its_workspace_file() {
         let dir = std::env::temp_dir().join(format!("amont-js-ws-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir is harmless
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("package.json"), r#"{"workspaces":["pkg/*"]}"#).unwrap();
         std::fs::write(dir.join("pnpm-workspace.yaml"), "packages:\n  - 'apps/*'\n").unwrap();
@@ -407,7 +340,7 @@ mod tests {
         );
         std::fs::remove_file(dir.join("pnpm-workspace.yaml")).unwrap();
         assert!(members_of(&dir).unwrap().covers("pkg/a"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir is harmless
     }
 
     /// Whatever cannot be read answers nothing, and an uncovered member runs.

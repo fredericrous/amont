@@ -149,7 +149,9 @@ runners or flags. The repository says what its root scripts do.
   runs. An unreadable or unparsable workspace file, or a member path with a
   newline or non-UTF-8 byte, counts as not covered, so the member runs.
 - **What it says.** One summary line for all covered members:
-  `3 packages covered by the root's test (declared in amont.conf) — not repeating them`.
+  `3 packages skipped, covered by the root's test (declared in amont.conf): \`pnpm -r test\``.
+  A declared line whose workspace cannot be read says so once and runs the
+  members.
 - **The hint (the person's addition).** When `S` ran in the root and in at
   least one changed member in this push, and `rootRunsMembers` is not set
   at all, the push prints two lines after the runs, once per script:
@@ -260,6 +262,12 @@ runners or flags. The repository says what its root scripts do.
 
 - 2026-11-10 — ADR-0019 is unchanged: the tip's stamp still gates a covered ref. This plan only makes more tips stamped.
 - 2026-11-10 — Phase 3 is separable from Phases 1-2 and ships as 3.2.0, after 3.1.0.
+- 2026-11-11 — Phase 3 review fix pass: the summary line drops the parentheses
+  around the command and cuts only the command on a terminal; `N of M` counts only
+  the packages that run; a declared line on an unreadable workspace says so once.
+- 2026-11-11 — `rootRunsMembers` is a cross-repository contract: renaming it costs
+  edits in every repository that declares it, and greengate 3.1 and earlier warn on
+  the key.
 - 2026-11-10 — Widen a pair's commit trigger to its twin's scope, rather
   than warn and leave each repository to widen its own line, because the
   person chose it and ADR-0009 puts the suite at commit.
@@ -341,15 +349,15 @@ failure it would show.
    - Input: touch one file in a member package, then run the branch
      binary's `run pre-push`.
    - Expected: the root runs `pnpm -r test` once, one summary line says
-     `1 package covered by the root's test (declared in amont.conf)`, and
+     `1 package skipped, covered by the root's test (declared in amont.conf)`, and
      the member's own `npm run test` does not run.
    - Failure it shows: the member's `npm run test` runs after the root's.
    - Observed (2026-11-11): a fixture built from website-builder's real
      `pnpm-workspace.yaml` and its 30 real package manifests (apps/builder-api
      and packages/blob-store changed; the scripts replaced by loggers, since its
      real suite needs installs), with `set rootRunsMembers test` trusted. The
-     push printed `2 packages covered by the root's test, \`node log.cjs root\`,
-     declared in amont.conf — not repeating them` and the log shows `root`
+     push printed `2 packages skipped, covered by the root's test (declared in
+     amont.conf): \`node log.cjs root\`` and the log shows `root`
      only. (The root's real command is `pnpm -r --workspace-concurrency=2
      test`, which the summary line would have shown.)
 5. **JS undeclared root, the same copy without the line.**

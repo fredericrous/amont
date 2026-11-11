@@ -8,6 +8,7 @@
 //! is new, so everything it carries is in range.
 
 use super::common::program;
+use super::json_scan::string_end;
 use crate::check::Outcome;
 use crate::git;
 use std::io::IsTerminal;
@@ -723,21 +724,6 @@ fn scripts_object(pkg_json: &str) -> Option<&str> {
     None
 }
 
-/// Index of the closing quote of the string whose content starts at `from`.
-pub(super) fn string_end(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut escaped = false;
-    for (i, &c) in bytes.iter().enumerate().skip(from) {
-        if escaped {
-            escaped = false;
-        } else if c == b'\\' {
-            escaped = true;
-        } else if c == b'"' {
-            return Some(i);
-        }
-    }
-    None
-}
-
 /// Index of the `}` matching the `{` at `open`, string-aware.
 fn object_end(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0usize;
@@ -799,6 +785,9 @@ pub fn packages_to_test(pkg_dirs: &[String], changed_dirs: &[String]) -> Vec<Str
         .collect()
 }
 
+/// The key `set rootRunsMembers` stores its value under.
+const ROOT_RUNS_KEY: &str = "amont.rootRunsMembers";
+
 /// What a repository says about which of its ROOT package's scripts already run
 /// every workspace member (`set rootRunsMembers`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -806,33 +795,38 @@ pub(crate) enum RootDeclaration {
     /// Nothing declared: a root and a member that both ran a script may be a
     /// repeat, and the push says how to declare it.
     Unset,
-    /// These scripts run every member from the root; none at all for `none`.
-    Declared(Vec<String>),
+    /// These of the gate's scripts run every member from the root; none at all
+    /// for `none`. Names are the gate's own: anything else is dropped.
+    Declared(Vec<&'static str>),
 }
 
-/// The committed declaration, held to what a local `git config` may do to it:
-/// remove names, or set `none`, and never add one. A machine that could add a
-/// name would skip members' tests that no committed, trusted line vouches for.
-/// A local `none` with nothing committed only silences the hint.
-pub(crate) fn root_declaration(settings: &crate::config::Settings) -> RootDeclaration {
-    const KEY: &str = "amont.rootRunsMembers";
-    let names = |raw: &str| -> Vec<String> {
-        if raw.trim().eq_ignore_ascii_case("none") {
-            return Vec::new();
-        }
-        raw.split(',')
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect()
-    };
-    let committed = settings.policy().settings.get(KEY).map(|raw| names(raw));
-    // Local config when there is one, else the committed line itself.
-    let effective = crate::config::string_value(settings, KEY).map(|raw| names(&raw));
-    match (committed, effective) {
+/// The gate's scripts named in a `rootRunsMembers` value: `none` is none, and a
+/// name the gate does not run is dropped (the parser already refused one in the
+/// committed line, so only a local value can carry one).
+fn gate_scripts_named(raw: &str) -> Vec<&'static str> {
+    if raw.trim().eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    raw.split(',')
+        .map(str::trim)
+        .filter_map(|name| GATE.iter().copied().find(|script| *script == name))
+        .collect()
+}
+
+/// The declaration, held to what a local `git config` may do to the committed
+/// line: remove names, or set `none`, and never add one. A machine that could
+/// add a name would skip members' tests that no committed, trusted line vouches
+/// for. A local `none` with nothing committed only silences the hint. Pure: the
+/// raw values are read by [`root_declaration`].
+fn declared_from(committed: Option<&str>, effective: Option<&str>) -> RootDeclaration {
+    match (
+        committed.map(gate_scripts_named),
+        effective.map(gate_scripts_named),
+    ) {
         (Some(committed), Some(effective)) => RootDeclaration::Declared(
             committed
                 .into_iter()
-                .filter(|name| effective.contains(name))
+                .filter(|script| effective.contains(script))
                 .collect(),
         ),
         (Some(committed), None) => RootDeclaration::Declared(committed),
@@ -841,20 +835,87 @@ pub(crate) fn root_declaration(settings: &crate::config::Settings) -> RootDeclar
     }
 }
 
+/// What this repository declares: the committed line, from a trusted
+/// `amont.conf`, and the effective value after any local `git config`.
+pub(crate) fn root_declaration(settings: &crate::config::Settings) -> RootDeclaration {
+    let effective = crate::config::string_value(settings, ROOT_RUNS_KEY);
+    declared_from(
+        settings
+            .policy()
+            .settings
+            .get(ROOT_RUNS_KEY)
+            .map(String::as_str),
+        effective.as_deref(),
+    )
+}
+
+/// The scripts of `root_runs` the declaration says run every member.
+fn covering_scripts(
+    root_runs: &[&'static str],
+    declaration: &RootDeclaration,
+) -> Vec<&'static str> {
+    match declaration {
+        RootDeclaration::Declared(names) => root_runs
+            .iter()
+            .copied()
+            .filter(|script| names.contains(script))
+            .collect(),
+        RootDeclaration::Unset => Vec::new(),
+    }
+}
+
+/// Does an `amont.conf` this machine does not trust carry a
+/// `set rootRunsMembers` line? Its policy is withheld, but the file can still be
+/// read: only then does "trust it" tell the person something true.
+fn untrusted_line_declares(root: &str) -> bool {
+    crate::manifest::read_lines(std::path::Path::new(root))
+        .iter()
+        .any(|line| {
+            matches!(line, crate::manifest::Line::Policy {
+                what: crate::manifest::PolicyLine::Set { key, .. }, ..
+            } if key == ROOT_RUNS_KEY)
+        })
+}
+
+/// What the root covers in one push: the scripts it runs that are declared to
+/// run every member, and where the members are.
+struct RootCoverage {
+    covering: Vec<&'static str>,
+    members: Option<super::js_workspace::Members>,
+}
+
+impl RootCoverage {
+    /// The scripts a package does not run again because the root's run covers
+    /// it: the covering scripts for a member of the workspace, none for the
+    /// root itself or a package outside the globs.
+    fn skip_for(&self, folder: &str) -> &[&'static str] {
+        let covered = !folder.is_empty()
+            && self
+                .members
+                .as_ref()
+                .is_some_and(|members| members.covers(folder));
+        if covered {
+            &self.covering
+        } else {
+            &[]
+        }
+    }
+}
+
 /// The command `script` runs, as `package.json` writes it, when it is a plain
 /// string: what a stale declaration would be read against. `None` for a script
 /// that is absent or written with an escape.
-pub fn script_command(pkg_json: &str, script: &str) -> Option<String> {
+pub(crate) fn script_command(pkg_json: &str, script: &str) -> Option<String> {
     let body = scripts_object(pkg_json)?;
     let needle = format!("\"{script}\"");
     let mut from = 0;
     while let Some(i) = body[from..].find(&needle) {
         let at = from + i;
         let after = body[at + needle.len()..].trim_start();
-        if let Some(value) = after.strip_prefix(':') {
-            let value = value.trim_start().strip_prefix('"')?;
-            let close = string_end(value.as_bytes(), 0)?;
-            let command = &value[..close];
+        if let Some(after_colon) = after.strip_prefix(':') {
+            let quoted_command = after_colon.trim_start().strip_prefix('"')?;
+            let close = string_end(quoted_command.as_bytes(), 0)?;
+            let command = &quoted_command[..close];
             return (!command.contains('\\')).then(|| command.to_string());
         }
         from = at + needle.len();
@@ -862,31 +923,81 @@ pub fn script_command(pkg_json: &str, script: &str) -> Option<String> {
     None
 }
 
-/// The two lines that say a script ran at the root and in members with nothing
-/// declaring that the root already runs them: a repeat, if it does, and the
-/// line to add. Pure, so the words and their width are tested. `untrusted`
-/// when `amont.conf` has policy it withholds, so a line there does not count.
-pub(crate) fn repeat_hint_lines(script: &str, members: usize, untrusted: bool) -> Vec<String> {
+/// Whether the `amont.conf` that could declare the root's scripts counts here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trust {
+    /// A declaration in it would count: the hint says how to add one.
+    Counted,
+    /// It carries a `set rootRunsMembers` line this machine does not trust, so
+    /// the line does not count until it is trusted.
+    Withheld,
+}
+
+/// The lines that say a script ran at the root and in members with nothing
+/// declaring that the root already runs them: a repeat, if it does, and what to
+/// do. Pure, so the words and their width are tested: the first line carries the
+/// sign, so it fits 78 columns, and so does every other line.
+pub(crate) fn repeat_hint_lines(script: &str, members: usize, trust: Trust) -> Vec<String> {
     let plural = if members == 1 { "" } else { "s" };
-    let how = if untrusted {
-        format!(
-            "    {} is not trusted, so a set rootRunsMembers line there does not count: {} trust",
-            crate::manifest::MANIFEST,
-            crate::names::BIN
-        )
-    } else {
-        format!(
+    let mut lines = vec![format!(
+        "{} ran at the root and in {members} package{plural} — a repeat if the root runs them",
+        crate::ui::sanitize(script)
+    )];
+    match trust {
+        Trust::Counted => lines.push(format!(
             "    declare it in {}: set rootRunsMembers {script}   (or: none)",
             crate::manifest::MANIFEST
-        )
+        )),
+        Trust::Withheld => {
+            lines.push(format!(
+                "    {} is not trusted: its rootRunsMembers line does not count",
+                crate::manifest::MANIFEST
+            ));
+            lines.push(format!("    run: {} trust", crate::names::BIN));
+        }
+    }
+    lines
+}
+
+/// The one line that says how many members a declared root script skipped, so
+/// tests that did not run are never silent: the count, what covers them, and
+/// the root's command so a declaration gone stale reads against what it claims.
+/// On a terminal only the command is cut, so the count and the cause survive.
+pub(crate) fn skip_summary_line(
+    skipped: usize,
+    script: &str,
+    command: Option<&str>,
+    width: LineWidth,
+) -> String {
+    let plural = if skipped == 1 { "" } else { "s" };
+    let head = format!(
+        "{skipped} package{plural} skipped, covered by the root's {} (declared in {})",
+        crate::ui::sanitize(script),
+        crate::manifest::MANIFEST
+    );
+    let Some(command) = command else {
+        return head;
     };
-    vec![
-        format!(
-            "{} ran at the root and in {members} package{plural} — a repeat if the root runs them",
-            crate::ui::sanitize(script)
-        ),
-        how,
-    ]
+    let command = crate::ui::sanitize(command);
+    match width {
+        // No room for even a few characters of the command: the count and the
+        // cause are what must survive, so the command goes.
+        LineWidth::Cut if head.chars().count() + 3 + 1 + 12 > 80 => head,
+        LineWidth::Cut => crate::tree_lint::fit_line(&format!("{head}: `"), &command, "`"),
+        LineWidth::Whole => format!("{head}: `{command}`"),
+    }
+}
+
+/// The line said before a script runs in a package, so a second run of the same
+/// script reads as a second run and not as the first one stalling. The folder
+/// comes from a git path, so it is sanitised like every other value here.
+pub(crate) fn announcement_line(script: &str, nth: usize, of: usize, folder: &str) -> String {
+    let place = if folder.is_empty() {
+        "the root".to_string()
+    } else {
+        crate::ui::sanitize(folder)
+    };
+    format!("npm run {script}: {nth} of {of}, in {place}")
 }
 
 /// The GATE, minus what a `pre-commit` declaration already covers.
@@ -900,47 +1011,42 @@ pub fn gate_for(pkg_json: &str, already: &[&str]) -> Vec<&'static str> {
         .collect()
 }
 
-/// The scripts `run_gate` ran, or `None` when one failed.
-type Ran = Option<Vec<&'static str>>;
+/// How one package's gate went.
+enum GateRun {
+    /// Every script passed; these are the ones that ran.
+    Passed(Vec<&'static str>),
+    /// A script failed or timed out.
+    Failed,
+}
 
-/// Where in this push's list of packages a gate run is: for its announcement.
+/// Where in this push's list of runs a package is: for its announcement.
 #[derive(Clone, Copy)]
 struct Place {
     nth: usize,
     of: usize,
 }
 
-/// Run the gate's scripts in one package. `Some` with the scripts that ran
-/// when it passed (or had none to run), `None` when one failed.
+/// A package's directory in the checkout the gate runs in.
+fn package_dir(root: &str, folder: &str) -> String {
+    if folder.is_empty() {
+        root.to_string()
+    } else {
+        format!("{root}/{folder}")
+    }
+}
+
+/// Run `scripts` in one package, announcing each before it runs.
 fn run_gate(
     settings: &crate::config::Settings,
     root: &str,
     folder: &str,
-    already: &[&str],
+    scripts: &[&'static str],
     place: Place,
-) -> Ran {
-    let dir = if folder.is_empty() {
-        root.to_string()
-    } else {
-        format!("{root}/{folder}")
-    };
-    let Ok(pkg) = std::fs::read_to_string(format!("{dir}/package.json")) else {
-        return Some(Vec::new());
-    };
+) -> GateRun {
+    let dir = package_dir(root, folder);
     let mut ran = Vec::new();
-    for script in gate_for(&pkg, already) {
-        // Said before it runs, one line per script, so a second run of the
-        // same script reads as a second run and not as the first one stalling.
-        crate::say!(
-            "npm run {script}: {} of {}, in {}",
-            place.nth,
-            place.of,
-            if folder.is_empty() {
-                "the root"
-            } else {
-                folder
-            }
-        );
+    for &script in scripts {
+        crate::say!("{}", announcement_line(script, place.nth, place.of, folder));
         // Same hazard as cargo test: git exports GIT_DIR to hooks, and a JS
         // test that shells out to git would then operate on this repo rather
         // than its own fixture.
@@ -953,15 +1059,15 @@ fn run_gate(
             Ok(super::common::Ran::Status(status)) if status.success() => ran.push(script),
             Ok(super::common::Ran::TimedOut(budget)) => {
                 super::common::say_timed_out(script, budget);
-                return None;
+                return GateRun::Failed;
             }
             // The gate's own exit code is not propagated: git only
             // distinguishes zero from non-zero, and npm's codes said nothing
             // the message above has not already said.
-            Ok(_) | Err(_) => return None,
+            Ok(_) | Err(_) => return GateRun::Failed,
         }
     }
-    Some(ran)
+    GateRun::Passed(ran)
 }
 
 pub fn run(
@@ -998,10 +1104,17 @@ pub fn run(
     let mut announced: Vec<String> = Vec::new();
     let mut warned: Vec<String> = Vec::new();
     let mut said_why: Vec<String> = Vec::new();
-    // What the repository declares about its root scripts, read once; and the
-    // scripts whose repeat hint has been said, once per script per push.
+    // What the repository declares about its root scripts, read once; whether
+    // its `amont.conf` counts; and what has been said once per push: the repeat
+    // hint per script, and that a declared workspace could not be read.
     let root_declaration = root_declaration(settings);
+    let trust = if manifest.policy_withheld.is_some() && untrusted_line_declares(&root) {
+        Trust::Withheld
+    } else {
+        Trust::Counted
+    };
     let mut hinted: Vec<&'static str> = Vec::new();
+    let mut said_unreadable = false;
 
     for r in refs {
         let local_oid = r.local_oid.as_str();
@@ -1170,81 +1283,83 @@ pub fn run(
             .as_deref()
             .map(|pkg| gate_for(pkg, &already_strs))
             .unwrap_or_default();
-        let covering: Vec<&'static str> = match &root_declaration {
-            RootDeclaration::Declared(names) => root_runs
-                .iter()
-                .copied()
-                .filter(|script| names.iter().any(|name| name == script))
-                .collect(),
-            RootDeclaration::Unset => Vec::new(),
-        };
+        let covering = covering_scripts(&root_runs, &root_declaration);
         let members = if covering.is_empty() {
             None
         } else {
             super::js_workspace::members_of(std::path::Path::new(&where_))
         };
-        let covered_here = |folder: &str| -> Vec<&'static str> {
-            let covered = !folder.is_empty() && members.as_ref().is_some_and(|m| m.covers(folder));
-            if covered {
-                covering.clone()
+        // Declared, trusted, and unreadable: the members run (the safe side),
+        // and the person is told why a declared line seems to do nothing.
+        if !covering.is_empty() && members.is_none() && !said_unreadable {
+            said_unreadable = true;
+            crate::say!(
+                "{} rootRunsMembers is declared, but the workspace could not be read — running the members",
+                crate::ui::warning_sign()
+            );
+        }
+        let coverage = RootCoverage { covering, members };
+
+        // What each package runs here, and what the root's run lets it skip.
+        let mut plan: Vec<(String, Vec<&'static str>)> = Vec::new();
+        let mut skipped: Vec<(&'static str, usize)> = Vec::new();
+        for folder in folders {
+            let defined =
+                std::fs::read_to_string(format!("{}/package.json", package_dir(&where_, &folder)))
+                    .map(|pkg| gate_for(&pkg, &[]))
+                    .unwrap_or_default();
+            // The root's own skips are what a declared commit-time command
+            // covers; a member's are what the root runs.
+            let skip: &[&str] = if folder.is_empty() {
+                &already_strs
             } else {
-                Vec::new()
+                coverage.skip_for(&folder)
+            };
+            let (skipped_here, to_run): (Vec<&'static str>, Vec<&'static str>) = defined
+                .into_iter()
+                .partition(|script| skip.contains(script));
+            if !folder.is_empty() {
+                for script in skipped_here {
+                    match skipped.iter_mut().find(|(name, _)| *name == script) {
+                        Some((_, count)) => *count += 1,
+                        None => skipped.push((script, 1)),
+                    }
+                }
             }
+            if !to_run.is_empty() {
+                plan.push((folder, to_run));
+            }
+        }
+        // One line per script for all the members it skips: said always, quiet
+        // or not, because a line that says tests were NOT run is exactly the
+        // kind this project does not let get hidden.
+        let width = if std::io::stdout().is_terminal() {
+            LineWidth::Cut
+        } else {
+            LineWidth::Whole
         };
-        // One line per script for all the members it skips, naming the root's
-        // command so a declaration gone stale reads against what it claims.
-        for &script in &covering {
-            let skipped = folders
-                .iter()
-                .filter(|folder| covered_here(folder).contains(&script))
-                .filter(|folder| {
-                    std::fs::read_to_string(format!("{where_}/{folder}/package.json"))
-                        .is_ok_and(|pkg| defines_script(&pkg, script))
-                })
-                .count();
-            if skipped == 0 {
+        for &script in GATE.iter() {
+            let Some(&(_, count)) = skipped.iter().find(|(name, _)| *name == script) else {
                 continue;
-            }
+            };
             let command = root_pkg
                 .as_deref()
                 .and_then(|pkg| script_command(pkg, script));
-            let plural = if skipped == 1 { "" } else { "s" };
-            let head = format!("{skipped} package{plural} covered by the root's {script}, ");
-            let tail = format!(
-                "declared in {} — not repeating {}",
-                crate::manifest::MANIFEST,
-                if skipped == 1 { "it" } else { "them" }
+            crate::say!(
+                "{}",
+                skip_summary_line(count, script, command.as_deref(), width)
             );
-            let line = match command {
-                Some(command) if std::io::stdout().is_terminal() => crate::tree_lint::fit_line(
-                    &format!("{head}`"),
-                    &crate::ui::sanitize(&command),
-                    &format!("`, {tail}"),
-                ),
-                Some(command) => format!("{head}`{}`, {tail}", crate::ui::sanitize(&command)),
-                None => format!("{head}{tail}"),
-            };
-            // Always said, quiet or not: a line that says tests were NOT run is
-            // exactly the kind this project does not let get hidden.
-            crate::say!("{line}");
         }
 
-        let total = folders.len();
+        let total = plan.len();
         let mut ran_in_members: Vec<(&'static str, usize)> = Vec::new();
         let mut ran_at_root: Vec<&'static str> = Vec::new();
-        for (index, folder) in folders.into_iter().enumerate() {
-            // The root's own `already` is what the declared commit-time
-            // command covers; a covered member's is what the root runs.
-            let skip: Vec<&str> = if folder.is_empty() {
-                already_strs.clone()
-            } else {
-                covered_here(&folder)
-            };
+        for (index, (folder, scripts)) in plan.into_iter().enumerate() {
             let place = Place {
                 nth: index + 1,
                 of: total,
             };
-            let Some(ran) = run_gate(settings, &where_, &folder, &skip, place) else {
+            let GateRun::Passed(ran) = run_gate(settings, &where_, &folder, &scripts, place) else {
                 return Outcome::Failed;
             };
             for script in ran {
@@ -1260,14 +1375,12 @@ pub fn run(
             }
         }
         // A script that ran at the root AND in members, with nothing declared,
-        // may be a repeat: said once per script, with the line to add.
+        // may be a repeat: said once per script, with what to do about it.
         if root_declaration == RootDeclaration::Unset {
             for (script, members) in ran_in_members {
                 if ran_at_root.contains(&script) && !hinted.contains(&script) {
                     hinted.push(script);
-                    let mut lines =
-                        repeat_hint_lines(script, members, manifest.policy_withheld.is_some())
-                            .into_iter();
+                    let mut lines = repeat_hint_lines(script, members, trust).into_iter();
                     if let Some(head) = lines.next() {
                         crate::say!("{} {head}", crate::ui::warning_sign());
                     }
@@ -1527,13 +1640,13 @@ mod tests {
         );
     }
 
-    /// The repeat hint's first line fits 80 columns with the sign, for every
-    /// script the gate runs, and names the line to add; untrusted, it says why a
-    /// line there would not count.
+    /// The repeat hint's lines fit 80 columns (the first with the sign), for
+    /// every script the gate runs, and name the line to add; withheld, they say
+    /// why a line there would not count and how to trust it.
     #[test]
     fn the_repeat_hint_fits_its_line_and_names_the_fix() {
         for script in crate::manifest::NPM_GATE_SCRIPTS {
-            let lines = repeat_hint_lines(script, 30, false);
+            let lines = repeat_hint_lines(script, 30, Trust::Counted);
             assert!(lines[0].chars().count() + 2 <= 80, "{}", lines[0]);
             assert!(lines[0].contains("a repeat if the root runs them"));
             assert!(
@@ -1541,15 +1654,85 @@ mod tests {
                 "{}",
                 lines[1]
             );
+            for line in &lines[1..] {
+                assert!(line.chars().count() <= 80, "{line}");
+            }
         }
-        let one = repeat_hint_lines("test", 1, false);
+        let one = repeat_hint_lines("test", 1, Trust::Counted);
         assert!(one[0].contains("in 1 package —"), "{}", one[0]);
-        let untrusted = repeat_hint_lines("test", 2, true);
-        assert!(untrusted[1].contains("is not trusted"), "{}", untrusted[1]);
-        assert!(!untrusted[1].contains("declare it in"), "{}", untrusted[1]);
+        let withheld = repeat_hint_lines("test", 2, Trust::Withheld);
+        assert!(withheld[1].contains("is not trusted"), "{}", withheld[1]);
+        assert!(withheld[2].contains("trust"), "{}", withheld[2]);
+        for line in &withheld[1..] {
+            assert!(line.chars().count() <= 80, "{line}");
+            assert!(!line.contains("declare it in"), "{line}");
+        }
     }
 
-    /// A local `git config` is held to the committed line.
+    /// The summary line keeps its count and its cause on a terminal, for every
+    /// script the gate runs, and cuts only the command.
+    #[test]
+    fn the_skip_summary_fits_its_line() {
+        for script in crate::manifest::NPM_GATE_SCRIPTS {
+            let head = skip_summary_line(30, script, None, LineWidth::Cut);
+            assert!(head.chars().count() <= 80, "{head}");
+            assert!(head.contains("30 packages skipped"), "{head}");
+            let cut = skip_summary_line(30, script, Some(&"x".repeat(200)), LineWidth::Cut);
+            assert!(cut.chars().count() <= 80, "{cut}");
+            assert!(cut.contains("covered by the root's"), "{cut}");
+        }
+        assert!(
+            skip_summary_line(1, "test", None, LineWidth::Whole).starts_with("1 package skipped")
+        );
+    }
+
+    /// The announcement counts a run, names its place, and sanitises the folder.
+    #[test]
+    fn the_announcement_names_its_place() {
+        assert_eq!(
+            announcement_line("test", 1, 3, ""),
+            "npm run test: 1 of 3, in the root"
+        );
+        assert_eq!(
+            announcement_line("test", 2, 3, "packages/a"),
+            "npm run test: 2 of 3, in packages/a"
+        );
+        assert!(!announcement_line("test", 2, 3, "a\u{1b}[31mb").contains('\u{1b}'));
+    }
+
+    /// A local `git config` is held to the committed line: it removes names or
+    /// sets `none`, and never adds one.
+    #[test]
+    fn a_local_value_only_removes_what_is_committed() {
+        use RootDeclaration::{Declared, Unset};
+        assert_eq!(
+            declared_from(Some("test,typecheck"), Some("test")),
+            Declared(vec!["test"])
+        );
+        assert_eq!(declared_from(Some("test"), Some("none")), Declared(vec![]));
+        assert_eq!(declared_from(Some("none"), Some("test")), Declared(vec![]));
+        assert_eq!(declared_from(None, Some("none")), Declared(vec![]));
+        assert_eq!(declared_from(None, Some("test")), Unset);
+        assert_eq!(declared_from(None, None), Unset);
+        assert_eq!(declared_from(Some("test"), None), Declared(vec!["test"]));
+        assert_eq!(
+            declared_from(Some("test,bogus"), None),
+            Declared(vec!["test"])
+        );
+    }
+
+    /// Only the root's scripts that are declared cover members.
+    #[test]
+    fn only_declared_root_scripts_cover() {
+        let declared = RootDeclaration::Declared(vec!["test"]);
+        assert_eq!(
+            covering_scripts(&["test", "typecheck"], &declared),
+            vec!["test"]
+        );
+        assert!(covering_scripts(&["test"], &RootDeclaration::Unset).is_empty());
+    }
+
+    /// Nothing declared reads as unset.
     #[test]
     fn nothing_declared_is_unset() {
         let settings = crate::config::Settings::default();

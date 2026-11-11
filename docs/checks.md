@@ -519,7 +519,7 @@ push says what it skipped, naming the root's command so a stale declaration
 reads against what it claims:
 
 ```text
-3 packages covered by the root's test, `pnpm -r test`, declared in amont.conf — not repeating them
+3 packages skipped, covered by the root's test (declared in amont.conf): `pnpm -r test`
 ```
 
 When a script ran at the root **and** in a changed member and nothing is
@@ -532,8 +532,11 @@ says how to declare it, once per script:
 ```
 
 `set rootRunsMembers none` silences it for a repository whose root does not run
-its members. If `amont.conf` is untrusted the hint says so, because a line there
-does not count until `greengate trust`.
+its members. If an untrusted `amont.conf` carries the line, the hint says it does
+not count until `greengate trust`. A declared script whose workspace cannot be
+read runs its members and says so once, so a line that seems to do nothing is
+explained. On a terminal the root's command is the part cut from the summary line,
+never the count or the cause.
 
 Things to know:
 
