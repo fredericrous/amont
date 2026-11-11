@@ -544,14 +544,7 @@ pub const CHECKS: &[Builtin] = &[
         severity: Severity::Block,
         fix: Fix::None,
         reach: Reach::Convention,
-        run: |ctx| {
-            hooks::run_tests::run(
-                ctx.settings,
-                ctx.push.get(),
-                &ctx.manifest.externals,
-                ctx.name,
-            )
-        },
+        run: |ctx| hooks::run_tests::run(ctx.settings, ctx.push.get(), ctx.manifest, ctx.name),
     },
     Builtin {
         name: "pre-push-cargo-test",

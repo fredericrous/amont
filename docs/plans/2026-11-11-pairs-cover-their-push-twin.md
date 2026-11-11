@@ -149,7 +149,9 @@ runners or flags. The repository says what its root scripts do.
   runs. An unreadable or unparsable workspace file, or a member path with a
   newline or non-UTF-8 byte, counts as not covered, so the member runs.
 - **What it says.** One summary line for all covered members:
-  `3 packages covered by the root's test (declared in amont.conf) — not repeating them`.
+  `3 packages skipped, covered by the root's test (declared in amont.conf): \`pnpm -r test\``.
+  A declared line whose workspace cannot be read says so once and runs the
+  members.
 - **The hint (the person's addition).** When `S` ran in the root and in at
   least one changed member in this push, and `rootRunsMembers` is not set
   at all, the push prints two lines after the runs, once per script:
@@ -230,7 +232,7 @@ runners or flags. The repository says what its root scripts do.
     `a_stamped_tip_cannot_cover_files_outside_the_pairs_scope` also asserts
     its line, plus one test per reason.
   - `crates/greengate/tests/it/run_tests_js.rs`: the JS wording.
-- [ ] Phase 3 — a declared root covers its members, and a possible repeat
+- [x] Phase 3 — a declared root covers its members, and a possible repeat
   is announced.
   - `crates/greengate-runtime/src/manifest.rs`: `rootRunsMembers` joins the
     `set` allowlist: policy, strict, once, like `onBusy`; a comma-separated
@@ -260,6 +262,17 @@ runners or flags. The repository says what its root scripts do.
 
 - 2026-11-10 — ADR-0019 is unchanged: the tip's stamp still gates a covered ref. This plan only makes more tips stamped.
 - 2026-11-10 — Phase 3 is separable from Phases 1-2 and ships as 3.2.0, after 3.1.0.
+- 2026-11-11 — Phase 3 review fix pass: the summary line drops the parentheses
+  around the command and cuts only the command on a terminal; `N of M` counts only
+  the packages that run; a declared line on an unreadable workspace says so once.
+- 2026-11-11 — The hint of a withheld file gets a third line (`run: greengate trust`)
+  and is said only when the untrusted file carries a `rootRunsMembers` line; a
+  declared line whose workspace globs are not understood says so in two lines and
+  runs the members. Delta review: `amont.conf` is read again for the untrusted
+  check, deliberate (one message, no new loader state).
+- 2026-11-11 — `rootRunsMembers` is a cross-repository contract: renaming it costs
+  edits in every repository that declares it, and greengate 3.1 and earlier warn on
+  the key.
 - 2026-11-10 — Widen a pair's commit trigger to its twin's scope, rather
   than warn and leave each repository to widen its own line, because the
   person chose it and ADR-0009 puts the suite at commit.
@@ -285,6 +298,12 @@ runners or flags. The repository says what its root scripts do.
   `scope_from_twin` and `scope_twin`; the reasons also print before a refused
   push; the commit-time line unions every twin (a declared `pre-push` line and
   the built-in gate); entrypoints load through `manifest::load_resolved`.
+- 2026-11-11 — Phase 3 changes found while implementing it: the summary line of
+  skipped members goes through `say!`, not the quiet-suppressible success
+  helper, because a line that says tests were not run must not be hideable; the
+  workspace globs match `<glob>/package.json`, so `libs/**` also covers `libs`;
+  a stale `target/debug/greengate` once made the real-layout check look broken,
+  so that check rebuilds the binary first.
 - 2026-11-10 — Name why a pair did not vouch, reversing the deliberate
   silence at run_tests.rs:252-254, because the line says "running it here",
   not partial coverage, so it cannot read as reassurance.
@@ -335,9 +354,16 @@ failure it would show.
    - Input: touch one file in a member package, then run the branch
      binary's `run pre-push`.
    - Expected: the root runs `pnpm -r test` once, one summary line says
-     `1 package covered by the root's test (declared in amont.conf)`, and
+     `1 package skipped, covered by the root's test (declared in amont.conf)`, and
      the member's own `npm run test` does not run.
    - Failure it shows: the member's `npm run test` runs after the root's.
+   - Observed (2026-11-11, re-run on the fix-pass binary): a fixture with
+     website-builder's real `pnpm-workspace.yaml` and 22 package manifests
+     (apps/builder-api and packages/blob-store changed; scripts replaced by
+     loggers), `set rootRunsMembers test` trusted. The push printed `2 packages
+     skipped, covered by the root's test (declared in amont.conf): \`node
+     log.cjs root\`` and `npm run test: 1 of 1, in the root`; the log shows
+     `root` only.
 5. **JS undeclared root, the same copy without the line.**
    - Input: the same touch.
    - Expected: the root and the member both run, and the hint prints once
@@ -345,6 +371,12 @@ failure it would show.
      `set rootRunsMembers none` the hint is gone.
    - Failure it shows: a silent repeat, or a hint on every push after it
      was silenced.
+   - Observed (2026-11-11): the same fixture without the line. `npm run test`
+     ran 1 of 3 in the root, 2 of 3 in apps/builder-api, 3 of 3 in
+     packages/blob-store, and the hint printed once: `test ran at the root and
+     in 2 packages — a repeat if the root runs them`, then `declare it in
+     amont.conf: set rootRunsMembers test   (or: none)`. `none` is covered by
+     `run_tests_js::a_root_declared_to_run_no_members_stops_the_hint`.
 6. **Commit cost.**
    - Input: a `Cargo.lock`-only commit here, and a `package.json`-only commit
      in website-builder, timed with 3.0.1 and with the branch.
@@ -373,7 +405,8 @@ failure it would show.
 - backend: approve-with-changes, then approve. Fixed: refusal path, twin union, shared reasons. Deliberate: no test for the unscoped-twin wording with no line.
 - lang:rust: approve-with-changes three times. Fixed: comments, `Option` line numbers, one `decide`. Deliberate: the `RefCell` in the refusal path, tuple `twins`.
 - tui: approve-with-changes, then approve. Fixed: line endings at 80 columns, wording, `list` row. Deliberate: scope label and fix line never cut.
-- unix, architect: approve on the delta; unix's stream note holds (`say!` prints to stdout). Phase 3, then Phase 4's release, follow.
+- unix, architect: approve on the delta; unix's stream note holds (`say!` prints to stdout).
+- Phase 3 (JS declared roots), two delta rounds, all six seats approve. Fixed: unreadable-workspace warning (width, wording, file), `Trust` enum, plan-first `N of M`, one JSON scanner, one key constant, doc order. Deliberate: `amont.conf` read twice for the untrusted check; `…: …` on a very long head; a comment says "three digits" where the test goes to four. Phase 4's 3.2.0 release follows.
 
 ## Outcome
 

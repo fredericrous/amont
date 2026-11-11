@@ -492,6 +492,65 @@ tree and runs the gate; a gate that *failed* records nothing, so a
 rejection is never reused. `git config amont.commitStamps false` turns the
 reuse off.
 
+### A monorepo's root script that already runs its members
+
+`pre-push-run-tests-js` runs each gate script (`typecheck`, `test:unit`, `test`)
+in the root package and in every changed workspace member. When the root's own
+script is recursive (`"test": "pnpm -r test"`), each changed member runs twice:
+once inside the root's run, once on its own. greengate cannot tell that a script
+is recursive without a list of runners and flags to maintain, so the repository
+says so, in `amont.conf`:
+
+```text
+set rootRunsMembers test,typecheck
+```
+
+The value is a comma-separated list of the gate's script names, or `none` (the
+root runs no members). It is policy like `onBusy`: it counts only from a trusted
+`amont.conf`, it is strict, and it is set once.
+
+For a declared script, a changed member is **not run again** when the root
+package runs that script in this push and the member is inside the workspace: a
+`pnpm-workspace.yaml` `packages` list for a pnpm root (and only that file), else
+the root `package.json` `workspaces` (an array or `{"packages": [...]}`), with
+`*`, `**`, `?` and `!` negations. A package outside the globs still runs, and so
+does a member when the file cannot be read in a form greengate understands. The
+push says what it skipped, naming the root's command so a stale declaration
+reads against what it claims:
+
+```text
+3 packages skipped, covered by the root's test (declared in amont.conf): `pnpm -r test`
+```
+
+When a script ran at the root **and** in a changed member and nothing is
+declared, the push cannot know whether that was a repeat, so it runs both and
+says how to declare it, once per script:
+
+```text
+⚠ test ran at the root and in 2 packages — a repeat if the root runs them
+    declare it in amont.conf: set rootRunsMembers test   (or: none)
+```
+
+`set rootRunsMembers none` silences it for a repository whose root does not run
+its members. If an untrusted `amont.conf` carries the line, the hint says it does
+not count until `greengate trust`. A declared script whose workspace cannot be
+read runs its members and says so once, so a line that seems to do nothing is
+explained. On a terminal the root's command is the part cut from the summary line,
+never the count or the cause.
+
+Things to know:
+
+- A wrong declaration skips tests that ran nowhere. Read the summary line, and
+  declare only a root script that runs every member with no filter.
+- A local `git config amont.rootRunsMembers` can only **remove** names from the
+  committed line (or set `none`); it can never add one.
+- A root whose script was gated at commit time does not run it at push, so its
+  members run: a safe repeat, never a skipped suite.
+- Each package that runs is announced, `npm run test: 2 of 3, in packages/a`.
+- greengate 3.1 and earlier do not know the key and report the line as
+  `not a policy-settable key` at every run, without blocking, until they are
+  upgraded.
+
 ### Rehearsing the push gate
 
 A push-time gate that passes stamps the tips it vouched for — the same
