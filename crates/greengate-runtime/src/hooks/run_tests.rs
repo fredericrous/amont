@@ -11,6 +11,7 @@ use super::common::program;
 use super::json_scan::{string_end, top_level_value};
 use crate::check::Outcome;
 use crate::git;
+use crate::manifest::ROOT_RUNS_KEY;
 use std::io::IsTerminal;
 use std::process::{Command, Stdio};
 
@@ -716,8 +717,6 @@ pub fn packages_to_test(pkg_dirs: &[String], changed_dirs: &[String]) -> Vec<Str
         .cloned()
         .collect()
 }
-
-use crate::manifest::ROOT_RUNS_KEY;
 
 /// What a repository says about which of its ROOT package's scripts already run
 /// every workspace member (`set rootRunsMembers`).
@@ -1647,11 +1646,25 @@ mod tests {
             let cut = skip_summary_line(30, script, Some(&"x".repeat(200)), LineWidth::Cut);
             assert!(cut.chars().count() <= 80, "{cut}");
             assert!(cut.contains("covered by the root's"), "{cut}");
-            assert!(cut.ends_with(": …") || cut.ends_with("…`"), "{cut}");
+            // Every gate script's head leaves no room for the command, so the
+            // marker branch is the one taken.
+            assert!(cut.ends_with(": …"), "{cut}");
         }
         assert!(
             skip_summary_line(1, "test", None, LineWidth::Whole).starts_with("1 package skipped")
         );
+    }
+
+    /// The warning sign and the space after it.
+    const SIGN_COLUMNS: usize = 2;
+
+    /// A non-object top-level `scripts` answers "no scripts"; a nested
+    /// `scripts` key later in the file never stands in for it.
+    #[test]
+    fn a_non_object_scripts_key_is_not_replaced_by_a_nested_one() {
+        let pkg = r#"{"scripts":"none","other":{"scripts":{"test":"x"}}}"#;
+        assert_eq!(scripts_object(pkg), None);
+        assert!(!defines_script(pkg, "test"));
     }
 
     /// The unreadable-workspace lines fit 80 columns, the first with its sign,
@@ -1660,8 +1673,12 @@ mod tests {
     fn the_unreadable_workspace_lines_fit_and_name_the_file() {
         for file in ["package.json", "pnpm-workspace.yaml"] {
             let lines = unreadable_workspace_lines(file);
-            assert!(lines[0].chars().count() + 2 <= 80, "{}", lines[0]);
-            assert!(lines[1].chars().count() <= 80, "{}", lines[1]);
+            assert!(
+                lines[0].chars().count() + SIGN_COLUMNS <= LINE_COLUMNS,
+                "{}",
+                lines[0]
+            );
+            assert!(lines[1].chars().count() <= LINE_COLUMNS, "{}", lines[1]);
             assert!(lines[1].contains(file), "{}", lines[1]);
         }
     }
