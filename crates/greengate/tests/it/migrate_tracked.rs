@@ -130,7 +130,7 @@ fn both_manifests_are_refused_and_nothing_moves() {
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(refused.stderr.contains("both"), "{}", refused.stderr);
     assert!(
-        refused.stderr.contains("`git rm` the"),
+        refused.stderr.contains("(`git rm` it)"),
         "{}",
         refused.stderr
     );

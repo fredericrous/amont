@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use greengate_runtime::migrate::{system_git, tracked, MigrateError};
+use greengate_runtime::migrate::{system_git, tracked};
 use serde::Serialize;
 
 /// The sweep commit's subject.
@@ -128,7 +128,7 @@ pub fn run(repo_abs: &Path) -> Outcome {
     if branch.as_deref() != Some(BRANCH) {
         return Outcome::Skipped {
             why: format!(
-                "on {}, not {BRANCH}: `git switch -c {BRANCH} <default branch>` there",
+                "on {}, not {BRANCH}: `git switch -c {BRANCH} origin/HEAD` there (or the default branch)",
                 branch.as_deref().unwrap_or("a detached HEAD")
             ),
         };
@@ -146,7 +146,7 @@ pub fn run(repo_abs: &Path) -> Outcome {
     let staged = match tracked::migrate_tracked(repo_abs, &system_git) {
         Ok(staged) => staged,
         // Checked before anything moves: nothing to undo.
-        Err(refused @ MigrateError::BothCommitted { .. }) => {
+        Err(refused) if refused.staged_nothing() => {
             return Outcome::Skipped {
                 why: refused.to_string(),
             }

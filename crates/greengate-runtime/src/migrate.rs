@@ -241,6 +241,14 @@ pub enum MigrateError {
 
 impl std::error::Error for MigrateError {}
 
+impl MigrateError {
+    /// Refused before anything moved, so nothing is staged or renamed: the
+    /// order of the checks lives here, beside the code that sets it.
+    pub fn staged_nothing(&self) -> bool {
+        matches!(self, MigrateError::BothCommitted { .. })
+    }
+}
+
 impl std::fmt::Display for MigrateError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -291,8 +299,8 @@ impl std::fmt::Display for MigrateError {
             ),
             MigrateError::BothCommitted { source, target } => write!(
                 out,
-                "both {} and {} are here; keep the one that is meant, `git rm` the \
-                 other and commit, then run `{} migrate --tracked` again",
+                "both {} and {} are here; keep the one that is meant, remove the \
+                 other (`git rm` it) and commit, then run `{} migrate --tracked` again",
                 source.display(),
                 target.display(),
                 n::BIN

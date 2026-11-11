@@ -210,6 +210,15 @@ fn a_failure_after_the_rename_started_is_undone() {
     );
     let agents = halfway.join("AGENTS.md");
     std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // Root writes through mode bits: no failure to provoke there.
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open(&agents)
+        .is_ok()
+    {
+        let _ = std::fs::remove_dir_all(&root); // best-effort cleanup of a scratch dir
+        return;
+    }
 
     let (code, out) = fleet(&root, &["fix", "--apply", "--migrate"]);
     std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o644)).unwrap();
