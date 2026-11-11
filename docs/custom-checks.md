@@ -1,6 +1,6 @@
-# Custom checks — `amont.conf`
+# Custom checks — `greengate.conf`
 
-A repository can declare checks of its own. Put a `amont.conf` at the
+A repository can declare checks of its own. Put a `greengate.conf` at the
 repository root, **commit it**, and the hooks run it alongside the built-ins.
 
 ```
@@ -98,12 +98,12 @@ prints, and lets the commit through. It is your choice, per check.
 from the repository root, through the same program resolution the built-ins
 use — so `npx` and friends work on Windows, where a bare `Command::new` cannot
 start a `.cmd`. On `pre-push` it runs once per pushed ref, over that ref's
-changed files, and — with [`amont.testPushedTree`](configuration.md#amonttestpushedtree--test-what-you-are-pushing)
+changed files, and — with [`greengate.testPushedTree`](configuration.md#greengatetestpushedtree--test-what-you-are-pushing)
 — in a throwaway checkout of that ref's tip rather than your working tree,
 exactly as the built-in test suites do. A scoped `pre-push` gate does not run
 while git holds the connection open: by default a bare `git push` whose gates
 have not run on its tree is refused, and `greengate land` runs them first
-([`amont.pushGates`](configuration.md#amontpushgates--never-run-a-heavy-gate-on-an-open-connection)).
+([`greengate.pushGates`](configuration.md#greengatepushgates--never-run-a-heavy-gate-on-an-open-connection)).
 
 ## Your command gets the file list
 
@@ -111,7 +111,7 @@ Two ways, both carrying exactly the paths the scope matched — the same set the
 gate above judged, which a wrapper re-running `git diff --cached` can diverge
 from (`greengate run --all-files` overrides the set in-process):
 
-- **`$AMONT_FILES`**, always: the matched paths, newline-separated, relative
+- **`$GREENGATE_FILES`**, always: the matched paths, newline-separated, relative
   to the repository root. Empty when the set would not fit in an environment
   variable (very large change sets) — treat empty as "derive it yourself".
 - **the `files` marker**, opt-in: prefix the command with `files ` and the
@@ -130,7 +130,7 @@ A pair declared without `files` is read as judging the whole tree: when its
 commit-time side passed on the tip of a push, the push-side twin is skipped
 for the whole ref, older unstamped commits included
 ([ADR-0019](../adr/0019-a-stamped-tip-covers-its-ref.md)). A command that
-judges only `$AMONT_FILES`, or picks the staged paths itself (`lint-staged`,
+judges only `$GREENGATE_FILES`, or picks the staged paths itself (`lint-staged`,
 `git diff --cached`, `--staged`), must carry the `files` marker if it has a
 `pre-push` twin, or a later passing commit would vouch for files it never
 looked at. On 2026-11-06 no such pair existed in the fleet: the three
@@ -145,30 +145,30 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
   `skipped — the commit only edits existing documentation`. A `docs-skip` on a
   `pre-push` line is a parse error.
 
-  This is a trade, and the `adr` line in greengate's own `amont.conf` takes it: a
+  This is a trade, and the `adr` line in greengate's own `greengate.conf` takes it: a
   documentation edit that adds a link to a file that does not exist will pass
   commit time. A skipped check is **not** recorded as having passed: it earns
   no commit-time stamp, so a same-named `pre-push` declaration still runs and
   an attestation never tells CI the gate is covered. CI and the push-side
   checks see it.
 
-- **`$AMONT_INDEX_FILE`** and **`$AMONT_INDEX_GIT_DIR`**, at pre-commit
+- **`$GREENGATE_INDEX_FILE`** and **`$GREENGATE_INDEX_GIT_DIR`**, at pre-commit
   whenever git names an index: the absolute path of the index `git commit` is
   sealing, and the absolute git dir of the repository it belongs to. A
   command runs with no `GIT_*` variable (a test suite's fixture repositories
   must not write into this one), so under `git commit -a` or
   `git commit <paths>`, whose index is a temporary file git names only to the
   hooks, a command reading `git diff --cached` alone sees the old index. Read
-  the staged state with `GIT_INDEX_FILE="$AMONT_INDEX_FILE" git diff --cached`,
+  the staged state with `GIT_INDEX_FILE="$GREENGATE_INDEX_FILE" git diff --cached`,
   and only where your own `git rev-parse --absolute-git-dir` is
-  `$AMONT_INDEX_GIT_DIR`: anywhere else (a suite's fixture repository) the
+  `$GREENGATE_INDEX_GIT_DIR`: anywhere else (a suite's fixture repository) the
   index is not yours, and the variables are ignored. Treat the index as
   read-only: under a plain `git commit` it is git's own lock file. Neither
   variable is set on a `pre-push` command, and a suite that runs pre-commit
   can unset both for its fixtures, as it does the `GIT_*` ones.
 - **the `index` marker**, opt-in, pre-commit only: prefix the command with
   `index ` when it reads the index through git and cannot be taught
-  `$AMONT_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
+  `$GREENGATE_INDEX_FILE`: it is handed `GIT_INDEX_FILE` too, the one git
   variable a declared command keeps. Declare it only on a command that makes
   no repositories of its own. When greengate cannot locate the index, every
   pre-commit command is refused rather than run blind, with git's reason. `index` on a `pre-push` line, or
@@ -187,7 +187,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
 - **the `heavy` marker**, opt-in: prefix the command with `heavy ` when it
   compiles or executes the product (a test suite, a type checker, a build).
   A heavy check takes one of the machine's
-  [host slots](configuration.md#amonthostslots--how-many-heavy-checks-one-machine-runs-at-once)
+  [host slots](configuration.md#greengatehostslots--how-many-heavy-checks-one-machine-runs-at-once)
   before it runs, and the repository's busy policy (`set onBusy`) says what
   it does when none frees. A check that moves a built-in heavy gate
   (`pre-commit cargo-test`) is heavy without the marker. An greengate older than
@@ -201,9 +201,9 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
 - **the `platform=any` marker**, opt-in: prefix the command with
   `platform=any ` when the gate's verdict does not depend on the platform it
   runs on (a lint, a type check, a cycle check, never a test suite that
-  executes the product). In a repository whose trusted `amont.conf` also says
+  executes the product). In a repository whose trusted `greengate.conf` also says
   `set executor cluster`, and on a machine with a cluster configured
-  ([`amont.executor`](configuration.md#amontexecutor--where-a-platformany-gate-runs)),
+  ([`greengate.executor`](configuration.md#greengateexecutor--where-a-platformany-gate-runs)),
   the gate runs as one Kubernetes Job on the homelab cluster instead of here,
   and takes no host slot (ADR-0016). The cluster proves only passes: any
   failure, there or of the cluster, re-runs the gate here, unchanged, and the
@@ -223,7 +223,7 @@ looked at. On 2026-11-06 no such pair existed in the fleet: the three
 
 A `platform=any` pre-push gate of a repository that says `set executor cluster`
 may also be handed to a **detached Argo Workflow** by `greengate rehearse
---cluster` (or `git config amont.rehearse.cluster true` for the post-commit
+--cluster` (or `git config greengate.rehearse.cluster true` for the post-commit
 rehearsal): the rehearsal submits it and returns, and the next commit or push
 collects the pass, whether or not the laptop was awake meanwhile (ADR-0017). The
 rules above hold unchanged: no `fix`, no `files`, the verdict independent of the
@@ -232,9 +232,9 @@ of the tree (depth 1), so the gate must read only the working tree and need no
 git history. And it gets the gate's command as written, in the pinned image, with
 `clusterPrepare` first when set: a gate whose tool exists only on your machine
 fails there, and runs here: in `greengate land` (or in the push itself under
-`amont.pushGates inline`). The machine keys, what a pass needs and
+`greengate.pushGates inline`). The machine keys, what a pass needs and
 the off switches are in
-[configuration](configuration.md#amontrehearsecluster--a-rehearsal-that-outlives-the-laptop).
+[configuration](configuration.md#greengaterehearsecluster--a-rehearsal-that-outlives-the-laptop).
 
 ## There is no shell
 
@@ -255,7 +255,7 @@ A command that **cannot be started at all** — a typo'd path, a tool nobody
 installed — is neither. It is reported as a gap:
 
 ```
-⚠ amont.conf: lint-shell could not run scripts/lint-shel.sh — No such file
+⚠ greengate.conf: lint-shell could not run scripts/lint-shel.sh — No such file
 ⚠ 1 check(s) could not run: lint-shell
 ```
 
@@ -270,7 +270,7 @@ The same rule applies to the manifest itself. A malformed line still produces a
 check — one that reports on every commit and says which line and what was wrong:
 
 ```
-⚠ amont.conf: oops — line 3: severity "LOUD" must be `block` or `warn`
+⚠ greengate.conf: oops — line 3: severity "LOUD" must be `block` or `warn`
 ```
 
 Silently ignoring it would mean a check somebody committed months ago has never
@@ -293,7 +293,7 @@ or a whole trigger — and a target that names no check here is reported once
 per run, with its line number, rather than silently doing nothing.
 
 **Trust-gated, like everything else this file says.** Untrusted policy is
-inert and announced (`amont.conf policy not applied: …`) — a repository you
+inert and announced (`greengate.conf policy not applied: …`) — a repository you
 cloned to read cannot weaken your safety net until you consent, and the
 trust prompt shows the policy lines you are consenting to.
 
@@ -304,7 +304,7 @@ committed decision; your LOCAL config in that repository still beats it —
 the developer owns their machine, and every documented escape hatch keeps
 working. Between DIFFERENT keys naming the same check, key specificity
 decides regardless of source: a policy `severity pre-commit-clippy …`
-outranks a local `amont.severity.pre-commit`, and vice versa a local full id
+outranks a local `greengate.severity.pre-commit`, and vice versa a local full id
 outranks a policy trigger. Skips are a union of all sources — nothing can
 un-skip, so there is no conflict to order.
 
@@ -346,7 +346,7 @@ is a whole command. It runs in the snapshot, through the shell, before any
 suite, and consent covers it exactly as it covers a declared check's
 command: policy binds only on a trusted manifest, the trust prompt prints
 the command, and editing the line revokes the trust. See
-[configuration](configuration.md#amontsnapshotdeps--how-a-snapshot-gets-its-javascript-dependencies).
+[configuration](configuration.md#greengatesnapshotdeps--how-a-snapshot-gets-its-javascript-dependencies).
 
 A `set` value runs to the end of the line, so a command with spaces and
 flags is written plainly:
@@ -360,7 +360,7 @@ set snapshotCarry .env
 strict like `planExempt`: any other value, or the key set twice, is a broken
 line. `set onBusy defer` moves a heavy gate to CI when the machine is busy,
 so declare it only where CI runs that gate; see
-[configuration](configuration.md#amontonbusy--what-a-heavy-check-does-on-a-busy-host).
+[configuration](configuration.md#greengateonbusy--what-a-heavy-check-does-on-a-busy-host).
 
 `executor` (`cluster` or `local`, default `local`) and `clusterPrepare` (a
 shell command) are strict the same way: another `executor` value, or either
@@ -369,13 +369,13 @@ repository's `platform=any` gates to the cluster; `set clusterPrepare <cmd>`
 is what the Job's `prepare` container runs in the checkout before the gate
 (`pnpm install --frozen-lockfile --prefer-offline --ignore-scripts`, say).
 Both are policy: they bind only from a trusted manifest, and the trust
-prompt shows them. A local `git config amont.executor local` turns the
+prompt shows them. A local `git config greengate.executor local` turns the
 cluster off for one clone; nothing local can turn it on, or name the prepare
 command. See
-[configuration](configuration.md#amontexecutor--where-a-platformany-gate-runs).
+[configuration](configuration.md#greengateexecutor--where-a-platformany-gate-runs).
 
 Any other
-key is refused with its line number — most deliberately `amont.fix`,
+key is refused with its line number — most deliberately `greengate.fix`,
 because a committed file must not change what already-trusted commands
 may DO to your working tree (see below). One caveat worth reading before
 committing it: `set timeout` accepts the full configured range, including
@@ -400,8 +400,8 @@ by `hook.skip` or by a severity override, so it would run anonymously. Two lines
 with the same name on _different_ stages are two ids, and both run.
 
 **Grant its own trust, or reach the machine-level knobs.** Policy stops at
-severities, skips, and the allowlisted `set` keys: `amont.fix` (rewriting
-your working tree), the trust decision itself, `amont.conventions`, and
+severities, skips, and the allowlisted `set` keys: `greengate.fix` (rewriting
+your working tree), the trust decision itself, `greengate.conventions`, and
 the observability opt-outs stay per-machine — a committed file must not
 change what already-approved commands are permitted to DO, which is a
 different consent than "I read these commands".
@@ -415,7 +415,7 @@ does not get a turn.
 ## A manifest is inert until you trust it
 
 A repository you cloned can declare checks, and running them is a decision you
-make — not one `git clone` makes for you. So nothing in `amont.conf` runs
+make — not one `git clone` makes for you. So nothing in `greengate.conf` runs
 until somebody accepts it here:
 
 ```sh
@@ -431,7 +431,7 @@ Until then the checks are **reported, not dropped** — the point is that you ca
 see there is a decision waiting:
 
 ```
-⚠ amont.conf: lint-shell — declared in an untrusted amont.conf …
+⚠ greengate.conf: lint-shell — declared in an untrusted greengate.conf …
 ⚠ 1 check(s) could not run: lint-shell
 ```
 
@@ -524,7 +524,7 @@ manifest, no tree gate runs. A pack may not carry one.
 ### When a tree gate runs, and what it proves
 
 At commit, a tree gate starts beside the pre-commit checks. It gets at most
-`amont.treeLintSlack` seconds (default 2) after those checks finish. It
+`greengate.treeLintSlack` seconds (default 2) after those checks finish. It
 starts only when its cache is **warm**: a full run already completed in the
 gate's current *namespace*. The namespace is a hash of:
 
@@ -541,7 +541,7 @@ When nothing long is in scope, as on a docs-only commit where no test run
 covers it, a gate that would outlast the slack is **skipped**, not started
 and cancelled: the commit stays fast, and CI lints. It shows up as `slow`
 in the evidence. A cold gate does not slow the commit either: greengate starts
-`greengate warm --worker` in the background (log: `.git/amont-warm.log`), and the
+`greengate warm --worker` in the background (log: `.git/greengate-warm.log`), and the
 next commit can prove it. `greengate warm` does the same in the foreground. There
 is no background warm-up on Windows, where tree gates do not run at all.
 
@@ -571,8 +571,8 @@ pre-commit  format  *.js  block  fix npx prettier --write
 
 Two conditions, both deliberate:
 
-- **Off unless you ask.** `git config amont.fix true`, per repository — and
-  the consequence is worth stating in bold: **with `amont.fix` off, a
+- **Off unless you ask.** `git config greengate.fix true`, per repository — and
+  the consequence is worth stating in bold: **with `greengate.fix` off, a
   `fix`-declared check does not run at all**, not even in check-only mode.
   It reports "not run" (a warn, never a block) on every commit, because the
   one command you declared is a rewriting command and running it would edit
@@ -592,7 +592,7 @@ aside first, so the tree contains what you staged and nothing else — anything 
 formatter touches is by definition part of this commit. Work you deliberately
 kept back is never swept in.
 
-The built-in `prettier` check does this too, under the same `amont.fix` gate.
+The built-in `prettier` check does this too, under the same `greengate.fix` gate.
 
 ## Turning one off
 
@@ -600,7 +600,7 @@ Exactly as for a built-in:
 
 ```sh
 git config hook.skip lint-shell                 # do not run it
-git config amont.severity.lint-shell warn    # run it, do not let it block
+git config greengate.severity.lint-shell warn    # run it, do not let it block
 ```
 
 Both surfaces read the same three names, and **nothing matches by substring**:
@@ -613,7 +613,7 @@ and skipping `lint-js` leaves `lint-json-yaml` alone.
 
 |                             | runs | reports                       | blocks |
 | --------------------------- | ---- | ----------------------------- | ------ |
-| `amont.severity.<key> warn` | yes  | yes                           | no     |
+| `greengate.severity.<key> warn` | yes  | yes                           | no     |
 | `hook.skip <key>`           | no   | no (only that it was skipped) | no     |
 
 A downgrade keeps the check working and keeps you looking at what it finds; you
@@ -633,7 +633,7 @@ greengate list
 pre-commit
   ● merge-conflict
   ● lint-shell (declared)
-  ✗ oops (declared)            amont.conf line 3: severity "LOUD" …
+  ✗ oops (declared)            greengate.conf line 3: severity "LOUD" …
 pre-push
   ● branch-protect
   ● smoke (declared)
@@ -651,7 +651,7 @@ A check you wrote could always be run; until `greengate add` it could not be
 **shared**, except by pasting a line into somebody's manifest or upstreaming it
 into greengate itself.
 
-A **pack** is any git repository with an `amont.pack` at its root, written in
+A **pack** is any git repository with an `greengate.pack` at its root, written in
 exactly the syntax above:
 
 ```text
@@ -666,7 +666,7 @@ github:fredericrous/amont-pack-java @ 2f5dbd9 declares:
     pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
     pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 
-amont.conf changed — these commands cannot run until you review them:
+greengate.conf changed — these commands cannot run until you review them:
     greengate trust
 ```
 
@@ -683,7 +683,7 @@ Its README is the long-form version of this section.
 This is the whole design, and it is what separates it from the ecosystem
 model pre-commit built. pre-commit **clones a repository and executes it**,
 building an isolated environment per hook. `greengate add` copies rows into _your_
-`amont.conf`, and stops:
+`greengate.conf`, and stops:
 
 - the rows land between `# greengate:pack:start` / `# greengate:pack:end` markers with
   the pack's **commit id**, so what you got is recorded next to what you run;
@@ -739,13 +739,13 @@ half-applied pack is a manifest neither side asked for.
 
 ### Publishing one
 
-A pack repository is the `amont.pack` and nothing else — no schema to satisfy,
+A pack repository is the `greengate.pack` and nothing else — no schema to satisfy,
 no registry to join, no build step. The example above is three files, and two
 of them are the README and the licence:
 
 ```text
 amont-pack-java/
-├── amont.pack
+├── greengate.pack
 ├── README.md
 └── LICENSE
 ```

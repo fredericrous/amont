@@ -22,8 +22,8 @@ husky.
 > `amont-fleet` beside it as copies, so hooks baked to the old name keep
 > working; the `amont-*` crates stay at 2.3.1 and npm's `amont` at 2.3.0 (now
 > `cargo install greengate`, `npm i -D @greenharness/greengate`,
-> `brew install fredericrous/tap/greengate`). Config keys, `amont.conf` and
-> `AMONT_*` variables are unchanged. See [Installing](docs/install.md).
+> `brew install fredericrous/tap/greengate`). Config keys, `greengate.conf` and
+> `GREENGATE_*` variables are unchanged. See [Installing](docs/install.md).
 
 `greengate list` says what runs in the repository you are standing in — here, a
 Python one:
@@ -77,8 +77,8 @@ greengate run --all-files      # does my working tree pass?
 greengate check src/main.rs    # these files, in the format editors already parse
 greengate rehearse --wait      # the push gate on a snapshot of HEAD, before you push
 greengate land                 # push this branch, then read the remote back to prove it moved
-greengate trust                # review what this repository's amont.conf declares
-git config amont.severity.clippy warn   # runs, reports, does not block
+greengate trust                # review what this repository's greengate.conf declares
+git config greengate.severity.clippy warn   # runs, reports, does not block
 git config hook.skip clippy             # does not run at all
 ```
 

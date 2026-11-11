@@ -25,7 +25,7 @@ one check from that downgrade.
 skipping `lint-js` leaves `lint-json-yaml` alone — a skip can never silently
 couple two checks whose names happen to share a prefix.
 
-**Where committed policy sits.** A trusted `amont.conf` can carry
+**Where committed policy sits.** A trusted `greengate.conf` can carry
 [`severity`, `skip`, and `set` lines](custom-checks.md#repo-policy--severity-skip-and-set-lines).
 For one key, the ladder is: built-in default < system < global < **policy** <
 local < worktree < command — the team's committed decision beats your global
@@ -60,15 +60,15 @@ For one commit only, without touching config:
 git -c hook.skip=clippy commit -m "fix: …"
 ```
 
-## `amont.severity.<key>` — run it, but do not block
+## `greengate.severity.<key>` — run it, but do not block
 
 Takes the same three spellings, and keeps the signal: the check still runs and
 still reports, it just stops failing the commit.
 
 ```sh
-git config amont.severity.clippy warn       # runs, reports, does not block
-git config amont.severity.pre-commit warn   # the whole trigger
-git config amont.severity.clippy block      # back to blocking
+git config greengate.severity.clippy warn       # runs, reports, does not block
+git config greengate.severity.pre-commit warn   # the whole trigger
+git config greengate.severity.clippy block      # back to blocking
 ```
 
 `warn` is usually the right first move when adopting a check into an existing
@@ -76,26 +76,26 @@ repository: you get the report immediately and pay down the backlog on your own
 schedule, rather than choosing between a blocked commit and a `hook.skip` you
 will forget to remove.
 
-## `amont.commit.*` — what a commit message must look like
+## `greengate.commit.*` — what a commit message must look like
 
 Four keys, and `greengate setup` walks you through all of them:
 
 | key | default | means |
 |---|---|---|
-| `amont.commit.gitmoji` | `none` | where the type's emoji goes |
-| `amont.commit.subjectMax` | `72` | longest the whole subject may be |
-| `amont.commit.descriptionMax` | `50` | longest the part after `type: ` may be |
-| `amont.commit.bodyWrap` | `72` | column the body is hard-wrapped at; `0` never wraps |
+| `greengate.commit.gitmoji` | `none` | where the type's emoji goes |
+| `greengate.commit.subjectMax` | `72` | longest the whole subject may be |
+| `greengate.commit.descriptionMax` | `50` | longest the part after `type: ` may be |
+| `greengate.commit.bodyWrap` | `72` | column the body is hard-wrapped at; `0` never wraps |
 
 These matter more than they look, because `commit-msg` is the one hook
-`hook.skip` and `amont.severity` do **not** reach, and git exempts it from
+`hook.skip` and `greengate.severity` do **not** reach, and git exempts it from
 `--no-verify`. Without these keys the only answers to "I do not want a gitmoji
 in every subject" were to comply or to uninstall.
 
 ### The four placements
 
 ```sh
-git config amont.commit.gitmoji prefix
+git config greengate.commit.gitmoji prefix
 ```
 
 | | stored as | |
@@ -117,8 +117,8 @@ its own output — an amend, a rebase reword — changes nothing.
 ### The limits
 
 ```sh
-git config amont.commit.descriptionMax 68
-git config amont.commit.bodyWrap 0
+git config greengate.commit.descriptionMax 68
+git config greengate.commit.bodyWrap 0
 ```
 
 `68` is the useful number if 50 feels tight: it still fits a 72-column subject
@@ -134,16 +134,16 @@ limit can never accommodate) is reported by `greengate list`, not by the hook:
 the commit path says what is in effect, and the config-reading commands say
 what makes no sense.
 
-## `amont.conventions`
+## `greengate.conventions`
 
 ```console
-$ git config --global amont.conventions declared
+$ git config --global greengate.conventions declared
 ```
 
 `everywhere` (the default) or `declared`. In `declared` mode the house
 rules — commit-message shape, branch patterns, lint/format gates, test
 suites, audits, auto-rebase — run only in repositories that commit an
-`amont.conf` (an empty one declares), while the safety net (merge-conflict,
+`greengate.conf` (an empty one declares), while the safety net (merge-conflict,
 secrets, large-files, ban-terms) keeps running everywhere. This is what
 makes a machine-wide standing grant (`greengate enroll`, `init.templateDir`)
 safe on a machine that also clones other people's projects. A held-back
@@ -151,21 +151,21 @@ stage announces itself in one line; `greengate list` reports the state, and
 `--json` carries it as `"conventions_apply"`. An unrecognised value falls
 back to `everywhere`, loudly.
 
-## `amont.largeFileWarn` / `amont.largeFileBlock`
+## `greengate.largeFileWarn` / `greengate.largeFileBlock`
 
 ```console
-$ git config amont.largeFileWarn 25
-$ git config amont.largeFileBlock 500
+$ git config greengate.largeFileWarn 25
+$ git config greengate.largeFileBlock 500
 ```
 
 The two thresholds of [`pre-commit-large-files`](checks.md#pre-commit), in
 megabytes: a staged file over the first is named (default 10), one over the
 second blocks (default 100 — GitHub's own refusal line).
 
-## `amont.recordBypasses` — whether a dodged gate is tallied
+## `greengate.recordBypasses` — whether a dodged gate is tallied
 
 ```sh
-git config amont.recordBypasses false   # default true
+git config greengate.recordBypasses false   # default true
 ```
 
 When a commit that a commit-time gate declaration covered lands without that
@@ -181,10 +181,10 @@ that reading should be a documented off-switch rather than an argument —
 though the count is also the first place a slow or flaky check becomes
 visible as the thing people route around.
 
-## `amont.recordDowngrades` — whether a warning is tallied
+## `greengate.recordDowngrades` — whether a warning is tallied
 
 ```sh
-git config amont.recordDowngrades false   # default true
+git config greengate.recordDowngrades false   # default true
 ```
 
 The companion to the switch above, for the other half of the signal. When a
@@ -193,7 +193,7 @@ appends one line to `$(git rev-parse --git-common-dir)/amont-downgrades`, and
 `greengate list` shows the tally as "problems that did not block".
 
 That file is what makes a **trial** readable: set
-`amont.severity.pre-commit warn`, work for a fortnight, then read which checks
+`greengate.severity.pre-commit warn`, work for a fortnight, then read which checks
 your team would actually have fought. See
 [Trying it before you impose it](checks.md#trying-it-before-you-impose-it).
 
@@ -205,10 +205,10 @@ Nothing is recorded by a rehearsal (`greengate run`), and nothing by a check tha
 actually blocked: the first is not a commit, and the second has nothing to
 report.
 
-## `amont.progress` — one check, one block
+## `greengate.progress` — one check, one block
 
 ```sh
-git config amont.progress false   # default true
+git config greengate.progress false   # default true
 ```
 
 On (the default): everything a pre-commit check says — its own lines and its
@@ -299,10 +299,10 @@ The git directory is the worktree's own. A receipt that cannot be written
 prints a warning naming the path and does not change the exit code. Receipts
 older than seven days are deleted by the next land.
 
-## `amont.quiet` — say it once, or once per check
+## `greengate.quiet` — say it once, or once per check
 
 ```sh
-git config amont.quiet never    # auto (default) | never | always
+git config greengate.quiet never    # auto (default) | never | always
 ```
 
 A hook that passes prints one line per check, and on a clean run that is the
@@ -344,10 +344,10 @@ One consequence worth knowing: the `✓ N check(s) passed` roll-up comes from a
 full stage. Running a single check — `greengate run pre-commit-yamllint` — has no
 roll-up to print, so under quiet it succeeds in silence.
 
-## `amont.pushStamps` — remember what the push gate already proved
+## `greengate.pushStamps` — remember what the push gate already proved
 
 ```sh
-git config amont.pushStamps false   # default true
+git config greengate.pushStamps false   # default true
 ```
 
 A push-time gate that passes stamps the pushed tips in
@@ -358,10 +358,10 @@ gates (test suites) are stamped or skipped, and only for content the suite
 actually tested — see "Rehearsing the push gate" on the checks page. `false`
 turns off both the writing and the honouring.
 
-## `amont.order` — attempt the push gates in the order the record justifies
+## `greengate.order` — attempt the push gates in the order the record justifies
 
 ```sh
-git config amont.order evidence   # default: declared
+git config greengate.order evidence   # default: declared
 ```
 
 `declared` is the registry's order, and it is what every repository gets
@@ -378,16 +378,16 @@ because discovering a protected branch after a test suite is the waste this
 is meant to remove. With no record the declared order is kept exactly. When
 the order does differ, the push says so.
 
-Settable in a committed `amont.conf` (`set order evidence`) as well as by
+Settable in a committed `greengate.conf` (`set order evidence`) as well as by
 `git config`, because which suite is worth attempting first is a property of
 the project. It is the only `set` key that changes how checks are RUN rather
 than what they are — safe on the terms above, and a local `git config` still
 outranks it. See [gate evidence](gate-evidence.md).
 
-## `amont.commitStamps` — do not repeat a commit-time gate on the same tree
+## `greengate.commitStamps` — do not repeat a commit-time gate on the same tree
 
 ```sh
-git config amont.commitStamps false   # default true
+git config greengate.commitStamps false   # default true
 ```
 
 A blocking commit-time gate that already ran clean against exactly the tree
@@ -400,10 +400,10 @@ declaration, or a gate that failed all run the gate. `false` turns the reuse
 off; the record is still written. See "Moving a gate entry earlier" on the
 checks page.
 
-## `amont.failFast` — skip the heavy checks of a commit already refused
+## `greengate.failFast` — skip the heavy checks of a commit already refused
 
 ```sh
-git config amont.failFast false   # default true
+git config greengate.failFast false   # default true
 ```
 
 Pre-commit runs its Light checks first and starts the Heavy ones (clippy, go
@@ -415,14 +415,14 @@ starts its Heavy checks once the slowest Light check has finished.
 `<common-dir>/amont-waves` records that wait and what was skipped, one line
 per commit.
 
-The order, stated once: `AMONT_FAIL_FAST` (`true` or `false`, one run), then
-`git config amont.failFast` (any scope), then a trusted `set failFast` in
-`amont.conf`, then on. `false` runs every check at once, as before 2.1.
+The order, stated once: `GREENGATE_FAIL_FAST` (`true` or `false`, one run), then
+`git config greengate.failFast` (any scope), then a trusted `set failFast` in
+`greengate.conf`, then on. `false` runs every check at once, as before 2.1.
 
-## `amont.rehearseOnCommit` — run the push gate in the background after every commit
+## `greengate.rehearseOnCommit` — run the push gate in the background after every commit
 
 ```sh
-git config amont.rehearseOnCommit true   # default false
+git config greengate.rehearseOnCommit true   # default false
 ```
 
 `post-commit` starts `greengate rehearse` for you: a detached worker checks out
@@ -436,22 +436,22 @@ work. Off by default because every commit then costs a suite's worth of CPU
 in the background. A finished `git rebase` starts one too (`post-rewrite`),
 since it leaves no commit on the branch stamped. See "Rehearsing in the background" on the checks page for
 what it prints and what `greengate rehearse --wait`, `--status` and `--stop` do.
-Needs `amont.pushStamps` (the default) — the stamp is the hand-off. Unix
+Needs `greengate.pushStamps` (the default) — the stamp is the hand-off. Unix
 only for now: on Windows a detached child would hold its parent's pipes
 until the suite ended, so the hook says so instead and `greengate rehearse
 --wait` runs the rehearsal in the foreground.
 
-## `amont.rehearsalWait` — how long a push waits for a running rehearsal
+## `greengate.rehearsalWait` — how long a push waits for a running rehearsal
 
 ```sh
-git config amont.rehearsalWait 300   # default 300; 0 waits indefinitely
+git config greengate.rehearsalWait 300   # default 300; 0 waits indefinitely
 ```
 
 A push that finds a rehearsal of its own tree still running waits for it:
 less remaining work than a fresh run, and no extra CPU. That wait happens
 *after* git has opened its connection to the remote, though, so it is the
 same idle connection the rehearsal exists to keep short — and it used to be
-bounded only by the worker's own `amont.timeout`, an hour by default and
+bounded only by the worker's own `greengate.timeout`, an hour by default and
 unbounded at `0`. Five minutes is under every idle timeout we have measured
 (Forgejo's git timeout is six), so a wait that expires still leaves the
 connection alive for the gate that follows it. When it expires, the gate
@@ -459,10 +459,10 @@ runs in the push and the rehearsal is left running — it may still finish and
 stamp the tree for next time. `greengate rehearse --wait` has no budget: nothing
 is connected there.
 
-## `amont.pushGates` — never run a heavy gate on an open connection
+## `greengate.pushGates` — never run a heavy gate on an open connection
 
 ```sh
-git config amont.pushGates inline   # default refuse
+git config greengate.pushGates inline   # default refuse
 ```
 
 git opens its connection to the remote before it runs `pre-push`, so a test
@@ -481,7 +481,7 @@ once, before any gate starts, naming the gates and how to run them first:
 `inline` runs them in the push, as before 2.0. A deletion owes nothing, and a
 gate that completed earlier without passing is not asked for again while its
 record holds: a warning for good, a failure under `warn` severity while the
-gate is still `warn`, a missing tool for an hour. With `amont.pushStamps
+gate is still `warn`, a missing tool for an hour. With `greengate.pushStamps
 false` nothing can be stamped, so the refusal names that setting instead of
 offering a rehearsal, and `greengate land` refuses before running anything.
 
@@ -497,10 +497,10 @@ run), `ran`, `failed`, `refused`, `interrupted`, or empty when land stopped
 before it. `ref` is the ref pushed (`refs/heads/…` or `refs/tags/…`);
 `branch` is empty for a tag.
 
-## `amont.auditMaxAge` — how long an audit's record answers
+## `greengate.auditMaxAge` — how long an audit's record answers
 
 ```sh
-git config amont.auditMaxAge 24   # hours, 1..720; default 24
+git config greengate.auditMaxAge 24   # hours, 1..720; default 24
 ```
 
 The dependency audits (`pre-push-audit-{go,js,python,rust}`) depend on the
@@ -511,39 +511,39 @@ recorded in `refs/notes/amont-audit` (local, never pushed), keyed by the
 lockfiles' content for a branch push and by the tree for a `v*` tag. A push
 with a fresh record replays it, judged against today's waivers and that
 push's stakes, without running the tool. A record answers for
-`amont.auditMaxAge` hours; one that could not check anything (offline, tool
+`greengate.auditMaxAge` hours; one that could not check anything (offline, tool
 missing) for one hour.
 
-## `amont.unstampedPush` — refuse a push nothing has tested yet
+## `greengate.unstampedPush` — refuse a push nothing has tested yet
 
 ```sh
-git config amont.unstampedPush refuse   # default run
+git config greengate.unstampedPush refuse   # default run
 ```
 
 When a check is declared at both stages and a pushed commit carries no
 record of the commit-time run — rewritten by a rebase or an amend, or made
 with `--no-verify` — the push runs the check itself, with git's connection
 to the remote held open for as long as the suite takes. That happens only
-under `amont.pushGates inline`: by default, `amont.pushGates refuse` turns the
+under `greengate.pushGates inline`: by default, `greengate.pushGates refuse` turns the
 push away before the check runs, and `greengate land` runs it first. Under
 `inline`, a long suite can outlive the forge's idle timeout, and the push
-fails *after* passing. There, `amont.unstampedPush refuse` turns that push
+fails *after* passing. There, `greengate.unstampedPush refuse` turns that push
 away at once instead, and says how to earn the stamp with nothing waiting on
 it: `greengate rehearse --wait`, then push again.
 A rehearsal of the tree that is still running or has failed is reported the
-same way. Pairs with `amont.rehearseOnCommit`, which usually earns the stamp
+same way. Pairs with `greengate.rehearseOnCommit`, which usually earns the stamp
 before you push.
 
-## `amont.snapshotDeps` — how a snapshot gets its JavaScript dependencies
+## `greengate.snapshotDeps` — how a snapshot gets its JavaScript dependencies
 
 ```sh
-git config amont.snapshotDeps install   # default; or reuse, off
+git config greengate.snapshotDeps install   # default; or reuse, off
 ```
 
 A worktree git just created is a checkout, not a workspace: no
 `node_modules`, and a suite started there fails on `Cannot find module`
 having tested nothing. Every snapshot — the background rehearsal's and
-`amont.testPushedTree`'s alike — is prepared before any suite runs, one
+`greengate.testPushedTree`'s alike — is prepared before any suite runs, one
 *unit* at a time: each directory holding a tracked `package-lock.json`,
 `pnpm-lock.yaml` or `yarn.lock`, read from the snapshot's own index, so the
 pushed commit decides, not `HEAD` and not what you have staged. A nested
@@ -554,8 +554,8 @@ than one manager's lockfile is settled by `package.json`'s
 A `bun.lock` or `bun.lockb` is a unit too, so that a push which does not
 touch it is skipped like any other — but greengate does not install bun
 dependencies: a unit the push needs fails the preparation with the fix
-named, `amont.snapshotPrepare` set to the install command, or
-`amont.snapshotDeps off`. Failing there is deliberate: a gate run over a
+named, `greengate.snapshotPrepare` set to the install command, or
+`greengate.snapshotDeps off`. Failing there is deliberate: a gate run over a
 checkout with no dependencies fails every workspace at once, and that reads
 like a broken branch rather than a missing install.
 
@@ -600,10 +600,10 @@ skipped — a repository with side projects of their own (spikes, examples)
 no longer pays an install for each on every snapshot. A unit the push does
 not touch cannot hold a failure the push introduced; a gate that reaches
 into one anyway finds no dependencies and fails loudly, never falsely
-passes, and `amont.snapshotPrepare` is the override. With no upstream to
+passes, and `greengate.snapshotPrepare` is the override. With no upstream to
 measure against, every unit is prepared.
 
-A failed install is the snapshot's failure; see `amont.snapshotPrepare`
+A failed install is the snapshot's failure; see `greengate.snapshotPrepare`
 below for what each caller then does. Nothing is needed for a Rust crate
 (cargo resolves from the shared registry; the build is cold, which is the
 cost the `testPushedTree` section describes).
@@ -618,16 +618,16 @@ where it finds one; if it cannot tell, it fails rather than guess. Both
 halves must be a version carrying this — the greengate that runs the rehearsal
 writes the marker, and the greengate the pushed commit's lockfile installs
 reads it — so bumping only one of them is not enough. The install and
-`amont.snapshotPrepare` also get `AMONT_SNAPSHOT=1`, for a custom `prepare`
+`greengate.snapshotPrepare` also get `GREENGATE_SNAPSHOT=1`, for a custom `prepare`
 script that wants to know; the marker, not the variable, is the guard.
 
-## `amont.snapshotCarry` — untracked files a snapshot needs
+## `greengate.snapshotCarry` — untracked files a snapshot needs
 
 ```sh
-git config amont.snapshotCarry ".env .npmrc"
+git config greengate.snapshotCarry ".env .npmrc"
 ```
 
-or committed, `set snapshotCarry .env` in `amont.conf`. The files a suite
+or committed, `set snapshotCarry .env` in `greengate.conf`. The files a suite
 reads and git does not track — a `.env`, an `.npmrc` with a registry token —
 are copied from the working tree into the snapshot, **before** the
 dependencies, so an install can use them. Only untracked content may be
@@ -639,10 +639,10 @@ in the working tree, the snapshot, or inside a carried directory. Every
 refusal is listed in one message and fails the preparation; an entry that is
 simply absent (no `.env` in CI) is skipped and said.
 
-## `amont.snapshotPrepare` — the escape hatch
+## `greengate.snapshotPrepare` — the escape hatch
 
 ```sh
-git config amont.snapshotPrepare "pnpm prisma generate"
+git config greengate.snapshotPrepare "pnpm prisma generate"
 ```
 
 Or committed, so every clone has it:
@@ -651,13 +651,13 @@ Or committed, so every clone has it:
 set snapshotPrepare pnpm prisma generate
 ```
 
-in `amont.conf` (see [custom checks](custom-checks.md)). A local `git
+in `greengate.conf` (see [custom checks](custom-checks.md)). A local `git
 config` still outranks the committed value.
 
 For what greengate cannot know — a code generator, a database client, a build
 step. It runs through the shell inside the snapshot after the carry, with
-`$AMONT_SOURCE_WORKTREE` naming the working tree the snapshot came from.
-When it is set it **owns the dependencies**: `amont.snapshotDeps` stands
+`$GREENGATE_SOURCE_WORKTREE` naming the working tree the snapshot came from.
+When it is set it **owns the dependencies**: `greengate.snapshotDeps` stands
 down, so a repository whose command already installs does not install twice.
 
 A preparation that fails — carry, install or this command — is the
@@ -668,10 +668,10 @@ stamp would have vouched for. In a rehearsal the worker records the failure
 with its reason (`greengate rehearse --status` shows it), exits 2, and the next
 push treats it as a failed rehearsal.
 
-## `amont.autoRebase` — whether pre-push may sync a behind branch for you
+## `greengate.autoRebase` — whether pre-push may sync a behind branch for you
 
 ```sh
-git config amont.autoRebase false   # default true
+git config greengate.autoRebase false   # default true
 ```
 
 On (the default, and the behaviour every install so far has had):
@@ -687,10 +687,10 @@ never runs a rebase you did not type; a behind branch stops the push with the
 command to run. A hook that rewrites your branch is a bigger claim than most
 teams want a "check" to make — this is the key that unmakes it.
 
-## `amont.idleTimeout` — how long a check may be silent
+## `greengate.idleTimeout` — how long a check may be silent
 
 ```sh
-git config amont.idleTimeout 300  # seconds; default 120, 0 disables
+git config greengate.idleTimeout 300  # seconds; default 120, 0 disables
 ```
 
 A hung tool is silent — a captive portal, a deadlocked lock file, a prompt
@@ -701,7 +701,7 @@ this key. Two minutes catches a real hang faster than the old ten-minute wall
 clock did, and lets a chatty twenty-five-minute suite finish.
 
 Only commands whose output greengate observes answer to this clock — every
-check runs its tools that way by default. With `amont.progress false` the
+check runs its tools that way by default. With `greengate.progress false` the
 tool inherits your terminal, nobody sees the bytes, and only the ceiling
 below applies.
 
@@ -714,31 +714,31 @@ budget, at most 30 seconds), greengate also measures the CPU its process tree is
 using — the command, its descendants, and the work of every child they have
 already reaped. A check keeps its budget as long as that tree does at least
 0.1 of a core of work; it is killed only when it has been **silent and idle**
-for the whole budget. A quiet suite then runs on to `amont.timeout`, and the
+for the whole budget. A quiet suite then runs on to `greengate.timeout`, and the
 progress line says it is busy (`· quiet 2m10s · ~3.9 cores`).
 
 The trade-off is written down in ADR-0008: a silent tool that *spins* — a
 busy loop, a polling watcher — now answers to the ceiling rather than this
 budget, and the ceiling message says so. Work done by a daemon outside the
 tree (a build daemon, a container engine) is not counted. On Windows, or with
-`amont.idleCpuCredit false`, silence alone counts, and the messages say CPU
+`greengate.idleCpuCredit false`, silence alone counts, and the messages say CPU
 was not measured rather than claiming it was idle.
 
 When sampling is on but a measurement is incomplete — the walk came back
 partial on a loaded machine, or no sample has landed yet — the check answers
-to the **extended budget**, this budget × `amont.idleLoadScale` (eight
+to the **extended budget**, this budget × `greengate.idleLoadScale` (eight
 minutes by default), never to the bare two minutes: a kill must rest on a
 measurement somebody made. One partial snapshot no longer throws the
 measurement away; the next complete one spans the gap, may count as busy,
 and never as measured idle (ADR-0009).
 
 ```sh
-git config amont.idleCpuCredit false  # silence alone, everywhere
+git config greengate.idleCpuCredit false  # silence alone, everywhere
 ```
 
-`AMONT_CPU_TRACE=<file>` appends the processes each measurement saw — a
+`GREENGATE_CPU_TRACE=<file>` appends the processes each measurement saw — a
 diagnostic for when a check was kept alive, or killed, and you want to know
-what greengate was looking at. `AMONT_CPU_MAX_PROCS=<n>` caps the walk, which
+what greengate was looking at. `GREENGATE_CPU_MAX_PROCS=<n>` caps the walk, which
 forces an incomplete measurement on purpose.
 
 ### Waiting is not stuck
@@ -747,7 +747,7 @@ A tool that is waiting on a lock says so and then says nothing: cargo
 prints `Blocking waiting for file lock on build directory` while another
 cargo — a second worktree, rust-analyzer, a build in another session —
 holds it, and uv prints `Waiting to acquire … lock for …`. Those exact lines,
-on stderr, pause this clock: the wait answers to `amont.lockWait` instead,
+on stderr, pause this clock: the wait answers to `greengate.lockWait` instead,
 and the progress line says `· cargo lock 1m30s/10m00s`. A check that passes
 after such a wait says how long it waited and for what.
 
@@ -759,7 +759,7 @@ retried: a command you wrote may not be safe to run twice.
 
 The silence budget also stretches with the host's load: on a machine whose
 one-minute load average is twice its core count, two minutes become four,
-up to `amont.idleLoadScale`. The progress line and the kill message name
+up to `greengate.idleLoadScale`. The progress line and the kill message name
 the stretched figure, the load and the key.
 
 Worst case for a genuinely stuck, silent tool, at the defaults:
@@ -768,16 +768,16 @@ Worst case for a genuinely stuck, silent tool, at the defaults:
 |---|---|
 | CPU measured idle, host not loaded | 2 minutes |
 | CPU measured idle, host loaded | up to 8 minutes (`idleLoadScale` 4) |
-| CPU could not be measured | 8 minutes, even with `amont.timeout 0` |
-| in a declared cargo or uv lock wait | 10 minutes (`amont.lockWait`) |
-| retried after a wait-like last line | both attempts inside one `amont.timeout` |
-| waiting for a host slot | up to `amont.timeout`, before it starts |
-| anything | `amont.timeout`, one hour |
+| CPU could not be measured | 8 minutes, even with `greengate.timeout 0` |
+| in a declared cargo or uv lock wait | 10 minutes (`greengate.lockWait`) |
+| retried after a wait-like last line | both attempts inside one `greengate.timeout` |
+| waiting for a host slot | up to `greengate.timeout`, before it starts |
+| anything | `greengate.timeout`, one hour |
 
-## `amont.timeout` — the ceiling one check's command may run for
+## `greengate.timeout` — the ceiling one check's command may run for
 
 ```sh
-git config amont.timeout 900     # seconds; default 3600, 0 disables
+git config greengate.timeout 900     # seconds; default 3600, 0 disables
 ```
 
 The backstop behind `idleTimeout`: a tool that keeps printing and never
@@ -807,34 +807,34 @@ this and 30 seconds — a probe answers in a second or two when the network
 is there at all, and a captive portal must not get ten minutes to say
 nothing. `0` disables these deadlines too.
 
-## `amont.lockWait` — how long a check may wait on a lock
+## `greengate.lockWait` — how long a check may wait on a lock
 
 ```sh
-git config amont.lockWait 900   # seconds; default 600, 0 = until the ceiling
+git config greengate.lockWait 900   # seconds; default 600, 0 = until the ceiling
 ```
 
 How long a tool may sit in a declared lock wait (see "Waiting is not
 stuck" above) before it is killed. The kill message names the lock and who
-probably holds it. `0` leaves the wait to `amont.timeout`; with that off
+probably holds it. `0` leaves the wait to `greengate.timeout`; with that off
 too, the extended silence budget bounds it, so nothing waits forever.
-Settable from `amont.conf` (`set lockWait 900`): how long a workspace's cold
+Settable from `greengate.conf` (`set lockWait 900`): how long a workspace's cold
 build holds its lock is the project's to know.
 
-## Host keys: `amont.idleLoadScale`, `greengate.hostSlots` and `greengate.hostCores`
+## Host keys: `greengate.idleLoadScale`, `greengate.hostSlots` and `greengate.hostCores`
 
 These describe the machine, not the repository, so they are read from
 `--global` or `--system` git config only. A value set in a repository is
-ignored, with one warning naming the key and `--global`; `amont.conf`
+ignored, with one warning naming the key and `--global`; `greengate.conf`
 cannot set them. Precedence, highest first: the environment variable
-(`AMONT_IDLE_LOAD_SCALE`, `GREENGATE_HOST_SLOTS`, `GREENGATE_HOST_CORES`),
+(`GREENGATE_IDLE_LOAD_SCALE`, `GREENGATE_HOST_SLOTS`, `GREENGATE_HOST_CORES`),
 then `--global`, then `--system`, then the default. An invalid environment
 value is warned about and the next source is read; an invalid git value is
 warned about and the default is used.
 
-### `amont.idleLoadScale` — how far a loaded host stretches the silence budget
+### `greengate.idleLoadScale` — how far a loaded host stretches the silence budget
 
 ```sh
-git config --global amont.idleLoadScale 2   # default 4, 1 = never stretch, up to 16
+git config --global greengate.idleLoadScale 2   # default 4, 1 = never stretch, up to 16
 ```
 
 The silence budget is multiplied by the host's one-minute load average over
@@ -842,10 +842,10 @@ its core count, floored at 1 and capped at this. The same factor sets the
 extended budget a check answers to while its CPU could not be measured.
 Linux and macOS read the load; elsewhere the factor is 1.
 
-### `amont.hostSlots` — how many heavy checks one machine runs at once
+### `greengate.hostSlots` — how many heavy checks one machine runs at once
 
 ```sh
-git config --global amont.hostSlots 2   # default: automatic, from the machine; 0 = off
+git config --global greengate.hostSlots 2   # default: automatic, from the machine; 0 = off
 ```
 
 Clippy, `go vet`, pyright and the test suites compile or execute the
@@ -854,7 +854,7 @@ agents running them at once thrash the same cores and the same cargo lock.
 So a heavy check takes one of these slots before its first tool runs, and
 waits — its clocks not yet started — while all are taken; the progress line
 says `· queued 42s (slots 2/2)`. A check that turns out to have nothing to
-do never queues. A check declared in `amont.conf` is heavy when its line
+do never queues. A check declared in `greengate.conf` is heavy when its line
 carries the `heavy` marker, or when it moves a built-in heavy gate (its name
 is that gate's short name, as `pre-commit cargo-test` is for
 `pre-push-cargo-test`).
@@ -864,11 +864,11 @@ The slots are `flock` locks on files in `/tmp/greenharness-slots-<uid>`
 session shares one queue whatever its `$TMPDIR`. greengate refuses that
 directory unless it is a real directory you own with mode 0700, and then
 runs the check unqueued with one line saying why. What a slot that never
-frees means is the repository's [busy policy](#amontonbusy--what-a-heavy-check-does-on-a-busy-host):
-by default, after `amont.timeout`, the check runs unqueued with a note. Waiters are served first come,
+frees means is the repository's [busy policy](#greengateonbusy--what-a-heavy-check-does-on-a-busy-host):
+by default, after `greengate.timeout`, the check runs unqueued with a note. Waiters are served first come,
 first served. A held slot is released when the check ends, and by the kernel
 if greengate dies. An greengate started by a check that holds a slot
-(`AMONT_HOST_SLOT` set) does not queue. Windows has no slots.
+(`GREENHARNESS_HOST_SLOT` set) does not queue. Windows has no slots.
 
 Unset, the count follows the machine (ADR-0021): at most half the physical
 cores (`max(1, cores/2)`, see [`greengate.hostCores`](#greengatehostcores--the-core-count-the-slots-are-sized-from)).
@@ -902,17 +902,17 @@ suits better; `12` there restores the sizing from before ADR-0021.
 `GREENGATE_HOST_CORES` overrides it for one process. relais reads the same
 key through the slots crate. See [docs/host-slots.md](host-slots.md#cores).
 
-### `amont.onBusy` — what a heavy check does on a busy host
+### `greengate.onBusy` — what a heavy check does on a busy host
 
 ```
-set onBusy defer   # in amont.conf; default wait
+set onBusy defer   # in greengate.conf; default wait
 set slotWait 60    # seconds, 1 to 3600; only under defer
 ```
 
 The host keys above say how many heavy checks one machine runs; this one,
 set by the repository (ADR-0013), says what happens when no slot frees.
 
-- **`wait`** (the default): wait up to `amont.timeout`, then run unqueued,
+- **`wait`** (the default): wait up to `greengate.timeout`, then run unqueued,
   with a note.
 - **`defer`**: wait up to `slotWait`, then **defer the check to CI**. It does
   not run, it never blocks (a `block` check included), it earns no stamp and
@@ -921,7 +921,7 @@ set by the repository (ADR-0013), says what happens when no slot frees.
 
   ```
   ! 1 check(s) deferred to CI, no host slot freed: pre-commit-cargo-test
-    run now: AMONT_ON_BUSY=wait greengate run pre-commit-cargo-test · stop deferring: set onBusy wait
+    run now: GREENGATE_ON_BUSY=wait greengate run pre-commit-cargo-test · stop deferring: set onBusy wait
   ```
 
 Declare `defer` only where the repository's CI runs every heavy gate: a
@@ -940,31 +940,31 @@ Three rules keep `defer` from deferring work it should not:
   the remote's connection held open. That line can only move a gate to CI,
   never stamp it.
 
-Precedence, highest first: `AMONT_ON_BUSY` in the environment
-(`AMONT_ON_BUSY=wait git push` runs what the file would defer), then
-`git config amont.onBusy` in the repository, then `set onBusy` in a trusted
-`amont.conf`, then `--global`, then `wait`: the same ladder as every `set`
+Precedence, highest first: `GREENGATE_ON_BUSY` in the environment
+(`GREENGATE_ON_BUSY=wait git push` runs what the file would defer), then
+`git config greengate.onBusy` in the repository, then `set onBusy` in a trusted
+`greengate.conf`, then `--global`, then `wait`: the same ladder as every `set`
 key. A rehearsal (`greengate rehearse`) always waits: it is how a gate runs
 with no push waiting on it. Load from processes outside the hooks holds no
 slot and causes no deferral.
 
-### `amont.executor` — where a `platform=any` gate runs
+### `greengate.executor` — where a `platform=any` gate runs
 
 ```
-set executor cluster              # in amont.conf; default local
+set executor cluster              # in greengate.conf; default local
 set clusterPrepare pnpm install --frozen-lockfile --prefer-offline --ignore-scripts
 ```
 
 ```sh
-git config --global amont.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml
-git config --global amont.cluster.image 'forgejo.example/gate-runner:1.2.0@sha256:<64 hex>'
+git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml
+git config --global greengate.cluster.image 'forgejo.example/gate-runner:1.2.0@sha256:<64 hex>'
 ```
 
 A gate declared `platform=any` (see
 [custom checks](custom-checks.md#your-command-gets-the-file-list)) in a repository whose
-trusted `amont.conf` says `set executor cluster` runs as one Kubernetes Job
+trusted `greengate.conf` says `set executor cluster` runs as one Kubernetes Job
 on the homelab cluster, not on this machine (ADR-0016). It takes no
-[host slot](#amonthostslots--how-many-heavy-checks-one-machine-runs-at-once):
+[host slot](#greengatehostslots--how-many-heavy-checks-one-machine-runs-at-once):
 the cluster has its own slots.
 
 **The cluster proves only passes.** greengate reads the verdict from what
@@ -992,7 +992,7 @@ A cluster pass is recorded in `refs/notes/amont-gate-cluster`, on the judged
 tree, under its own identity: the gate's command and flags, the
 `clusterPrepare` command, the image digest and the version of the cluster
 contract. The laptop's own executable is not part of it, so a gate whose tool
-exists only in the image is still reused. Changing `amont.cluster.image`
+exists only in the image is still reused. Changing `greengate.cluster.image`
 makes the gate run again. A cluster pass never becomes a local stamp
 (`refs/notes/amont-gate`) or a laptop attestation.
 
@@ -1000,30 +1000,30 @@ The machine keys, read from git config (`--global` is the usual place):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `amont.cluster.kubeconfig` | none: required | The kubeconfig greengate passes as `kubectl --kubeconfig`. The default context is never used. `~` is expanded. |
-| `amont.cluster.image` | none: required | The gate-runner image, pinned as `name:tag@sha256:<digest>`. Without `@sha256:` the gate runs here. |
-| `amont.cluster.namespace` | `amont-gates` | The namespace of the Jobs. |
-| `amont.cluster.slots` | `2` | How many Jobs, `amont-gate-slot-0` and up, may run at once. At most 2. |
-| `amont.cluster.maxBundleMiB` | `50` | Above this size, the bundle of the judged tree is not sent and the gate runs here. |
-| `amont.cluster.startWait` | `30` | Seconds the pod has to reach `fetch` Running before the gate runs here. |
+| `greengate.cluster.kubeconfig` | none: required | The kubeconfig greengate passes as `kubectl --kubeconfig`. The default context is never used. `~` is expanded. |
+| `greengate.cluster.image` | none: required | The gate-runner image, pinned as `name:tag@sha256:<digest>`. Without `@sha256:` the gate runs here. |
+| `greengate.cluster.namespace` | `greengate-gates` | The namespace of the Jobs. |
+| `greengate.cluster.slots` | `2` | How many Jobs, `greengate-gate-slot-0` and up, may run at once. At most 2. |
+| `greengate.cluster.maxBundleMiB` | `50` | Above this size, the bundle of the judged tree is not sent and the gate runs here. |
+| `greengate.cluster.startWait` | `30` | Seconds the pod has to reach `fetch` Running before the gate runs here. |
 
-The Job's deadline is [`amont.timeout`](#amonttimeout--the-ceiling-one-checks-command-may-run-for) plus 60 seconds, so
-`amont.timeout 0` (no ceiling) keeps every gate here. Off switches: unset
-`amont.cluster.kubeconfig`, or `git config amont.executor local` in one
+The Job's deadline is [`greengate.timeout`](#greengatetimeout--the-ceiling-one-checks-command-may-run-for) plus 60 seconds, so
+`greengate.timeout 0` (no ceiling) keeps every gate here. Off switches: unset
+`greengate.cluster.kubeconfig`, or `git config greengate.executor local` in one
 clone, or `set executor local` in the file.
 
-### `amont.rehearse.cluster` — a rehearsal that outlives the laptop
+### `greengate.rehearse.cluster` — a rehearsal that outlives the laptop
 
 ```sh
-git config --global amont.cluster.snapshotRemote 'git@git.example:amont-snapshots/{repo}.git'
-git config --global amont.cluster.snapshotFetch  'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}.git'
-git config --global amont.cluster.mirrorRemote   'git@git.example:amont-snapshots/{repo}-mirror.git'   # optional
-git config --global amont.cluster.mirror         'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}-mirror.git'   # optional
-git config --global amont.rehearse.cluster true   # default false
+git config --global greengate.cluster.snapshotRemote 'git@git.example:amont-snapshots/{repo}.git'
+git config --global greengate.cluster.snapshotFetch  'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}.git'
+git config --global greengate.cluster.mirrorRemote   'git@git.example:amont-snapshots/{repo}-mirror.git'   # optional
+git config --global greengate.cluster.mirror         'http://forgejo-http.forgejo.svc.cluster.local:3000/amont-snapshots/{repo}-mirror.git'   # optional
+git config --global greengate.rehearse.cluster true   # default false
 ```
 
-`greengate rehearse --cluster`, or `amont.rehearse.cluster true` for the
-post-commit rehearsal ([`amont.rehearseOnCommit`](#amontrehearseoncommit--run-the-push-gate-in-the-background-after-every-commit)),
+`greengate rehearse --cluster`, or `greengate.rehearse.cluster true` for the
+post-commit rehearsal ([`greengate.rehearseOnCommit`](#greengaterehearseoncommit--run-the-push-gate-in-the-background-after-every-commit)),
 sends the gates the rehearsal would run and the cluster may take to one Argo
 Workflow, and returns (ADR-0017). A gate goes only if it is `platform=any`, in
 a trusted manifest that says `set executor cluster`, and nothing vouches for it
@@ -1038,12 +1038,12 @@ The code goes in one of two ways:
 
 - **A snapshot.** A commit of HEAD's tree with HEAD as its parent, dated now,
   pushed with your own git credentials to `refs/snapshots/<run label>` on
-  `amont.cluster.snapshotRemote`, then read back with `git ls-remote`. A push
+  `greengate.cluster.snapshotRemote`, then read back with `git ls-remote`. A push
   that is not read back submits nothing: the gates run here and
   `amont/cluster.log` says why.
 - **The mirror.** When `git ls-remote <mirrorRemote>` advertises an object equal
   to HEAD, nothing is pushed and the cluster fetches that commit from
-  `amont.cluster.mirror`. Mirror detection is the only thing the laptop does
+  `greengate.cluster.mirror`. Mirror detection is the only thing the laptop does
   with `mirrorRemote`, which is why it is its own key rather than a naming
   convention on the snapshot remote; set both or neither.
 
@@ -1052,17 +1052,17 @@ segment of `origin`'s URL, without `.git`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `amont.cluster.snapshotRemote` | none: required | The URL the laptop pushes the snapshot to. Pushed over ssh with your own credentials; no prompt is ever shown. |
-| `amont.cluster.snapshotFetch` | none: required | The URL the cluster fetches the same repository from (an in-cluster address, `http://` only for `*.svc.cluster.local`). |
-| `amont.cluster.mirrorRemote` | none | The pull mirror's URL as this machine lists it. |
-| `amont.cluster.mirror` | none | The pull mirror's URL as the cluster fetches it. |
-| `amont.rehearse.cluster` | `false` | The post-commit rehearsal goes detached on its own. |
+| `greengate.cluster.snapshotRemote` | none: required | The URL the laptop pushes the snapshot to. Pushed over ssh with your own credentials; no prompt is ever shown. |
+| `greengate.cluster.snapshotFetch` | none: required | The URL the cluster fetches the same repository from (an in-cluster address, `http://` only for `*.svc.cluster.local`). |
+| `greengate.cluster.mirrorRemote` | none | The pull mirror's URL as this machine lists it. |
+| `greengate.cluster.mirror` | none | The pull mirror's URL as the cluster fetches it. |
+| `greengate.rehearse.cluster` | `false` | The post-commit rehearsal goes detached on its own. |
 
 With none of them set there is no detached lane: a rehearsal is what it was.
-The kubeconfig, image, namespace and `amont.timeout` are the Job lane's, above;
+The kubeconfig, image, namespace and `greengate.timeout` are the Job lane's, above;
 the Workflow is created as the kubeconfig's user. `greengate rehearse --status`
 shows each pending Workflow's phase and the gates collected, `--stop` asks the
-cluster to terminate them, and `kubectl get wf -n amont-gates` follows a run.
+cluster to terminate them, and `kubectl get wf -n greengate-gates` follows a run.
 
 **What a pass needs.** Collect reads the pod, not the Workflow: `fetch`
 terminated 0 reporting the expected tree, `prepare` 0 when set, `main`
@@ -1084,21 +1084,21 @@ The record of what is pending is `$GIT_COMMON_DIR/amont/cluster-pending`;
 deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are
 pruned by the cluster. Unix only.
 
-## `amont.minVersion` — the greengate this repository means
+## `greengate.minVersion` — the greengate this repository means
 
 ```sh
-git config amont.minVersion 1.11.0
+git config greengate.minVersion 1.11.0
 ```
 
 Rarely set by hand — the committable spelling is `set minVersion 1.11.0`
-in a trusted [`amont.conf`](custom-checks.md#repo-policy--severity-skip-and-set-lines),
+in a trusted [`greengate.conf`](custom-checks.md#repo-policy--severity-skip-and-set-lines),
 which is the point: a binary one release behind answers every hook name
 and simply *lacks* a check, silently, and nothing in the repository could
 say which greengate the team meant. A binary older than the floor gets one
 warning line per stage naming both versions. Warn-only, deliberately:
 blocking commits for being out of date teaches `--no-verify`, and a
 binary too old to know this key cannot honour it anyway.
-## `amont.knownIdentity` — identities usual-name has vouched for
+## `greengate.knownIdentity` — identities usual-name has vouched for
 
 Written by the tool, not by you: when `pre-commit-usual-name` finds your
 `user.name <user.email>` in history once, it records the identity here
@@ -1108,19 +1108,19 @@ scale cliff on a long history. Multi-valued; `greengate uninstall` removes it
 with the rest of greengate's bookkeeping. Delete a value to make the check walk
 again.
 
-## `amont.fix` — let a check repair what it finds
+## `greengate.fix` — let a check repair what it finds
 
 ```sh
-git config amont.fix true
+git config greengate.fix true
 ```
 
 Off unless you ask. A hook that edits your files without being asked is a
 larger surprise than one that complains. See
 [custom checks](custom-checks.md#letting-a-check-fix-what-it-finds).
 
-## `amont.planExempt` — reusing gates across a plans-only commit
+## `greengate.planExempt` — reusing gates across a plans-only commit
 
-`set planExempt off` in a committed `amont.conf` turns off the canonical-tree
+`set planExempt off` in a committed `greengate.conf` turns off the canonical-tree
 route (attest 1.5.0): a result is then reused only on the exact tree, or by a
 spec's declared inputs. It exists for a repository whose gate reads the
 *contents* of a plan, which the canonical route would otherwise skip when only
@@ -1132,9 +1132,9 @@ a plan changed.
   reading that matches only exactly `set planExempt off`, and a shape they
   would read as "on" must not look like "off" here.
 - `off` only narrows what is reused, so it is honoured trusted or not, and by
-  every producer and verifier, CI included. An unreadable `amont.conf`
+  every producer and verifier, CI included. An unreadable `greengate.conf`
   counts as off.
-- Because `amont.conf` is part of the canonical tree, adding or removing the
+- Because `greengate.conf` is part of the canonical tree, adding or removing the
   line changes the fingerprint and the next push runs everything once.
 - **Deprecated as the opt-out's home** (attest 1.6.0, decisions ADR-0037): the
   opt-out is now `@plan-exempt off` in `.github/attest-inputs` (or
@@ -1143,13 +1143,13 @@ a plan changed.
   attest 1.6.0 know only this one. `greengate list` says so on stderr while only
   this line is present. A repository whose `attest-inputs` already declares
   gates adds the directive only once its CI pins attest 1.7.0 or later and its
-  `amont.conf` sets `minVersion 1.58.0`, because to older tools the directive
+  `greengate.conf` sets `minVersion 1.58.0`, because to older tools the directive
   invalidates the spec.
 
-## `amont.testPushedTree` — test what you are pushing
+## `greengate.testPushedTree` — test what you are pushing
 
 ```sh
-git config amont.testPushedTree true
+git config greengate.testPushedTree true
 ```
 
 By default `pre-push` runs your suite against the **working tree**, and says
@@ -1158,16 +1158,16 @@ an uncommitted fix makes a broken commit look green.
 
 With this set, the suite runs in a throwaway checkout of the commits being
 pushed, and your tree is not touched. This covers every pre-push gate that
-runs a suite — the built-ins and any `pre-push` line in your `amont.conf`
+runs a suite — the built-ins and any `pre-push` line in your `greengate.conf`
 alike, each once per pushed ref. It costs a second checkout and a build
 that cannot reuse your `target/` cache, which is why it is opt-in rather than
 the default. A checkout that needs a step before it can run anything — a
-pnpm install, say — names it in `amont.snapshotPrepare`, above.
+pnpm install, say — names it in `greengate.snapshotPrepare`, above.
 
-## `amont.attest` / `amont.attestKey` — sign what pre-push proved, for CI
+## `greengate.attest` / `greengate.attestKey` — sign what pre-push proved, for CI
 
 ```sh
-git config amont.attest true
+git config greengate.attest true
 ```
 
 Off by default. With it on, a push whose pre-push block gates all passed
@@ -1175,12 +1175,12 @@ leaves an `ssh-keygen`-signed note on each pushed tip in
 `refs/notes/amont-attest` — binding the pushed **tree**, the names of the
 gates that passed, and the greengate version — and pushes that ref to the same
 remote, so CI can verify the note and skip the test steps it names.
-`amont.attestKey` points at the signing key; unset, it means
+`greengate.attestKey` points at the signing key; unset, it means
 `~/.ssh/amont-attest`. The verifying side, the trust statement being made,
 and why every failure falls back to CI running the tests are in
 [the CI backstop](ci.md#skipping-what-pre-push-already-proved).
 
-## `amont.trusted`
+## `greengate.trusted`
 
 Set by `greengate trust`, read by everything that decides whether a declared
 external may run. `--local` only, never committed. Do not set it by hand — see
@@ -1200,17 +1200,17 @@ git config --global commit.template ~/.config/git/git-templates/message
 | variable | effect |
 |---|---|
 | `GIT_HOOKS_BIN` | Absolute path to the binary a shim should use. First candidate in the shim's resolution order. |
-| `AMONT_BIN_DIR` | Where `greengate install` and the installer script put binaries. Default `~/.local/bin`. |
-| `AMONT_VERSION` | Pins the version the installer script fetches. |
-| `AMONT_ATTEST_PUSH` | Set by greengate itself on the notes push [`amont.attest`](#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci) makes, so the recursive pre-push stands down. Not for humans. |
-| `AMONT_FAIL_FAST` | `false` runs this commit's checks in one wave, `true` in two; outranks [`amont.failFast`](#amontfailfast--skip-the-heavy-checks-of-a-commit-already-refused). |
+| `GREENGATE_BIN_DIR` | Where `greengate install` and the installer script put binaries. Default `~/.local/bin`. |
+| `GREENGATE_VERSION` | Pins the version the installer script fetches. |
+| `GREENGATE_ATTEST_PUSH` | Set by greengate itself on the notes push [`greengate.attest`](#greengateattest--greengateattestkey--sign-what-pre-push-proved-for-ci) makes, so the recursive pre-push stands down. Not for humans. |
+| `GREENGATE_FAIL_FAST` | `false` runs this commit's checks in one wave, `true` in two; outranks [`greengate.failFast`](#greengatefailfast--skip-the-heavy-checks-of-a-commit-already-refused). |
 | `NO_COLOR` | Honoured, as is a non-tty stdout: output to a pipe, a file or a CI log carries no colour. `TERM=dumb` too. |
 | `FORCE_COLOR` | Colour through a pipe anyway, for a caller that renders it (non-empty, not `0` or `false`). `NO_COLOR` and `TERM=dumb` still win. |
 
 ## Repository-declared checks
 
 A repository can add checks of its own without anybody forking anything, in a
-committed `amont.conf`. They obey every control on this page, addressed the
+committed `greengate.conf`. They obey every control on this page, addressed the
 same three ways, and they are inert until trusted.
 
 Full reference: [custom checks](custom-checks.md) ·
@@ -1230,10 +1230,10 @@ scope of anything you set:
 
 ```
 commit style
-  gitmoji            suffix     amont.commit.gitmoji (global)
+  gitmoji            suffix     greengate.commit.gitmoji (global)
   subject max        72
-  description max    68         amont.commit.descriptionMax (global)
-  body wrap          off        amont.commit.bodyWrap (local)
+  description max    68         greengate.commit.descriptionMax (global)
+  body wrap          off        greengate.commit.bodyWrap (local)
 
   `greengate setup` to change any of these
 ```

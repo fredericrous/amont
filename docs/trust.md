@@ -7,7 +7,7 @@ That is the whole claim. This page is how it is enforced and where it stops.
 ## The problem it solves
 
 A repository can declare checks of its own in a committed
-[`amont.conf`](custom-checks.md), and those declarations are shell
+[`greengate.conf`](custom-checks.md), and those declarations are shell
 commands. Committing the file is the point — it is how a team shares a check.
 
 The consequence is that cloning a repository and committing to it would
@@ -25,7 +25,7 @@ A manifest is **inert until trusted**. Its declared checks are listed by
 `greengate list` with the reason they will not fire:
 
 ```
-declared in an untrusted amont.conf — review it, then `greengate trust`
+declared in an untrusted greengate.conf — review it, then `greengate trust`
 ```
 
 ```sh
@@ -40,14 +40,14 @@ prompt that does not show the file is a prompt that trains people to press `y`.
 
 `greengate trust` outside a repository is refused rather than falling back to
 `.`. Trust is recorded per repository, keyed by the root that resolves — so a
-`.` fallback would let `greengate trust` in `~` read `~/amont.conf`, show
+`.` fallback would let `greengate trust` in `~` read `~/greengate.conf`, show
 its declarations, and record trust against a repository that does not exist, in
 a state no later `--revoke` would find.
 
 ## Consent is bound to content, not to a path
 
 The record is a **fingerprint of the file**, stored in `--local` git config
-under `amont.trusted` — local, never committed, so a repository cannot
+under `greengate.trusted` — local, never committed, so a repository cannot
 declare itself trusted.
 
 The key is **multi-valued**: it holds every manifest you have accepted here,
@@ -57,7 +57,7 @@ checkout's manifest reported every other checkout on a different branch as
 `TRUSTED ONCE, AND CHANGED SINCE` and stopped its declared checks, until
 somebody re-accepted there and broke the first one. With a worktree per task
 the record never settled. Since consent is keyed on content rather than on
-place, a set is the honest shape: two worktrees with the same `amont.conf`
+place, a set is the honest shape: two worktrees with the same `greengate.conf`
 need one acceptance between them.
 
 One consequence, stated rather than buried: reverting a manifest to bytes you
@@ -71,13 +71,13 @@ distinctly from "never trusted", because *somebody changed it* is a different
 thing to tell a reader than *you have not looked at this yet*:
 
 ```
-amont.conf changed since it was trusted — review it, then `greengate trust`
+greengate.conf changed since it was trusted — review it, then `greengate trust`
 ```
 
 That is a **gap**, not a block, when the change arrived from somewhere else:
 the checks it declares show as "could not run" and your commit proceeds,
 because a command that never ran has judged nothing. It is a **block** when
-the commit at hand is the one changing `amont.conf`
+the commit at hand is the one changing `greengate.conf`
 (`pre-commit-manifest-trust`). You are the author of that content, and
 without it every check the file declares would stand down for exactly the
 commit that introduces them — letting everything else in that commit through
@@ -85,7 +85,7 @@ ungated. The check names the fix and trusts nothing itself; accepting is still
 `greengate trust`, and still yours. It stays quiet during a merge, rebase,
 cherry-pick or revert, where a manifest arriving from another branch is the
 pulled case. Downgrade it like any check:
-`git config amont.severity.pre-commit-manifest-trust warn`.
+`git config greengate.severity.pre-commit-manifest-trust warn`.
 
 ## Why `git hash-object --no-filters`
 
@@ -104,8 +104,8 @@ SipHash, it costs no dependency, and **you can reproduce it by hand** to check
 what you trusted:
 
 ```sh
-git hash-object --no-filters amont.conf
-git config --local --get-all amont.trusted   # every manifest accepted here
+git hash-object --no-filters greengate.conf
+git config --local --get-all greengate.trusted   # every manifest accepted here
 ```
 
 `--no-filters` is the load-bearing flag. Without it, git applies the clean
@@ -140,7 +140,7 @@ how its own consent is rendered any more than it can pick how it is hashed.
 ## A vendored pack is consented to like anything else
 
 `greengate add` ([custom checks](custom-checks.md#shipping-a-check--packs)) copies
-declarations from somebody else's repository into your `amont.conf`. It grants
+declarations from somebody else's repository into your `greengate.conf`. It grants
 no trust, and it gets no exemption:
 
 - the append changes the file's content, so the fingerprint no longer matches
@@ -168,7 +168,7 @@ a marketing claim:
   you installed, and are governed by
   [`hook.skip` and severity](opting-out.md), not by trust.
 - **It does not protect a repository you wrote the manifest in.** Your own
-  `amont.conf` is trusted by you, once.
+  `greengate.conf` is trusted by you, once.
 - **SHA-1 is the floor**, in a repository using git's default object format.
   See above for why that trade was taken.
 

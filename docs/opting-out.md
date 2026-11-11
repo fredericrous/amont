@@ -35,7 +35,7 @@ Bypassing stays a supported escape hatch, and it is now *counted*: a commit
 that dodged a commit-time gate adds a line to a local ledger
 (`$(git rev-parse --git-common-dir)/amont-bypasses`) that `greengate list`
 summarises as "unverified commits". Local means local — the file is never
-pushed and never leaves the machine. `git config amont.recordBypasses false`
+pushed and never leaves the machine. `git config greengate.recordBypasses false`
 turns the counting off; `greengate uninstall`, or deleting the file, erases it.
 
 Neither `commit-msg` nor `prepare-commit-msg` takes `hook.skip` or a severity
@@ -83,8 +83,8 @@ everyone believes is running.
 ### Usually better: warn instead of skip
 
 ```sh
-git config amont.severity.clippy warn
-git config amont.severity.pre-commit warn
+git config greengate.severity.clippy warn
+git config greengate.severity.pre-commit warn
 ```
 
 The check still runs and still reports; it just stops failing the commit. You
@@ -103,7 +103,7 @@ greengate-fleet uninstall --root ~/Developer
 This removes **our six shims and nothing else**. A hook you wrote yourself is
 left alone and named in the output, whatever it is; a hook it cannot even read
 is named too, rather than passed over in silence. `hook.skip` and
-`amont.severity` are never touched — those are your statements about your
+`greengate.severity` are never touched — those are your statements about your
 repository.
 
 If `init.templateDir` is still set, uninstall says so loudly and gives you the
@@ -126,7 +126,7 @@ so that removing our hooks never means removing yours.
 If `greengate list` shows a check with:
 
 ```
-declared in an untrusted amont.conf — review it, then `greengate trust`
+declared in an untrusted greengate.conf — review it, then `greengate trust`
 ```
 
 then that repository has declared checks and they are **already not running**.

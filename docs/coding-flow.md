@@ -23,7 +23,7 @@ spinner line per check still running (`⠹ clippy   2.3s`), shrinking as they
 finish, while each finished check's full output lands above it as one
 contiguous block — never interleaved with another check's, however many run
 at once. Piped or in CI the region stays silent and only the blocks appear.
-`git config amont.progress false` restores plain streaming output.
+`git config greengate.progress false` restores plain streaming output.
 
 Most of them will say nothing, because most are inert in any given repository:
 a check fires only when the commit touches files it understands *and* the
@@ -69,7 +69,7 @@ your commits actually touched.
 
 By default that suite runs against your **working tree**, and says so — which
 is fast, and is not what you are pushing. `git config
-amont.testPushedTree true` runs it against a throwaway checkout of the
+greengate.testPushedTree true` runs it against a throwaway checkout of the
 commits being pushed instead. See [the checks](checks.md).
 
 Where a check can only recommend rather than act, it recommends. `pull-rebase`

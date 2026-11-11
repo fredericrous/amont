@@ -22,7 +22,7 @@ language-aware checks that already know when to stay out of the way.
   with your credentials, has the smallest supply chain this project could
   arrange: none.
 - **A cloned repository cannot run code on your machine.** Repositories declare
-  their own checks in a committed `amont.conf` — and those declarations are
+  their own checks in a committed `greengate.conf` — and those declarations are
   inert until you review them and say `greengate trust`. No other hook manager
   puts a review gate between `git clone` and running the repository's commands.
   [The trust model](trust.md).
@@ -51,7 +51,7 @@ has to earn is not "delightful", it is "harmless".
   not even an HTTP client linked to phone home with. The network a push does
   touch is git's own and the tools you opted into: `pull-rebase` runs
   `git ls-remote`/`git fetch` against your upstream (off with
-  `git config amont.autoRebase false`, see
+  `git config greengate.autoRebase false`, see
   [configuration](configuration.md)), and the `audit-*` checks call
   `cargo audit`, `npm audit`, `pip-audit` and `govulncheck`.
 - **Over a thousand tests**, run on Linux, macOS and Windows, alongside
@@ -83,7 +83,7 @@ deliberately does not:
   session notice asks `greengate agents-md --check` whether the guidance block
   an agent is about to believe has gone stale.
 - [**attest**](https://github.com/fredericrous/attest) — the CI half of
-  `amont.attest`: when every pre-push block gate passed locally, greengate
+  `greengate.attest`: when every pre-push block gate passed locally, greengate
   leaves a **signed** note on the tree it tested, and this single-purpose
   verifier lets CI skip work provably already done. Fail-open by
   construction, and separate precisely so that greengate itself never runs in

@@ -10,7 +10,7 @@ useful than a list that quietly loses the ones somebody already thought about.
   `clippy`, `cargo test`), YAML (`yamllint`) and Kubernetes (`kubeconform`,
   `kube-linter`, Argo) all have checks now. See [the checks](checks.md).
 - **A repository declaring its own checks**, which was the general answer to
-  most of the "add a hook for X" requests: `amont.conf` means a check that
+  most of the "add a hook for X" requests: `greengate.conf` means a check that
   belongs to one repository does not need to be in everybody's binary. See
   [custom checks](custom-checks.md).
 
@@ -29,7 +29,7 @@ useful than a list that quietly loses the ones somebody already thought about.
 - **`pre-push`: require a JIRA id in the branch name.** `prepare-commit-msg`
   already extracts one when it is there; requiring it is a different, more
   opinionated thing, and probably belongs in a repository's own
-  `amont.conf` rather than in the built-in `branch-pattern`.
+  `greengate.conf` rather than in the built-in `branch-pattern`.
 - **`pre-push`: prevent a force-push to a remote branch with a different
   name.** The original note asks "almost impossible?" and does not answer it.
 - **`commit-msg`: a message alias** — `"."` expanding to
@@ -48,8 +48,8 @@ be reimplemented as a hook.
 
 Ask whether it belongs in the binary at all. A check that is right for your
 repository — a house lint, a schema check, a smoke test — can be declared in
-`amont.conf` today, shared with your team by committing it, and skipped or
-downgraded by the same `hook.skip` and `amont.severity` keys as any built-in —
+`greengate.conf` today, shared with your team by committing it, and skipped or
+downgraded by the same `hook.skip` and `greengate.severity` keys as any built-in —
 or by committed `severity`/`skip` policy lines in the same file.
 A built-in earns its place by being right for *most* repositories, and by being
 inert in the rest.

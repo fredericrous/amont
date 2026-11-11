@@ -8,6 +8,45 @@ missing here.
 
 ## Unreleased
 
+### Breaking
+
+greengate 4.0 reads and writes only greengate's names: there is no
+period where both spellings work. The first 4.0 command in a repository
+moves what greengate 3.x left there, once.
+
+- **Configuration and environment.** `amont.*` git config keys are now
+  `greengate.*`, and `AMONT_*` variables are `GREENGATE_*`. The host-slot
+  pair is `GREENHARNESS_HOST_SLOT` / `GREENHARNESS_SLOT_DIR`, and the slot
+  directory is `greenharness-slots`. The first 4.0 command moves a
+  repository's local keys and the machine's global keys; an `amont.*` key
+  or `AMONT_*` variable left behind is ignored, and `greengate doctor`
+  lists each one with the command that moves it.
+- **State in `.git`.** Ledgers, markers and the state folder (`amont-*`,
+  `amont/`) are moved to `greengate-*` and `greengate/`, in every
+  worktree, with their headers rewritten. A 3.x `amont-held` store is
+  never moved: the command is refused until `greengate restore` has put
+  its changes back. `greengate migrate --reverse` moves everything back
+  before a downgrade, and leaves a marker so 4.0 does not move it forward
+  again until `greengate migrate` is run.
+- **Committed files.** 4.0 still reads `amont.conf`, `amont.pack` and the
+  `<!-- amont:start -->` markers when the new ones are absent.
+  `greengate migrate --tracked` renames them (`git mv`; the content and
+  its trust are kept) and stages the result.
+  `greengate-fleet fix --apply --migrate` makes that commit in each
+  repository of a root, on a `chore/greengate-names` branch.
+- **Cluster gates** run in the `greengate-gates` namespace, as
+  `greengate-gate-runner`, with `greengate-*` Job and Workflow names and
+  `app.kubernetes.io/managed-by: greengate`. Repoint
+  `greengate.cluster.kubeconfig` at the kubeconfig the homelab's
+  `scripts/greengate-gates-kubeconfig.sh` writes
+  (`~/.config/greengate/kube/homelab.yaml`); `greengate doctor` names a
+  value still under `~/.config/amont/`.
+- **`greengate trust`** without `--show` prints its listing and verdict
+  on stderr; `trust --show` is the command whose stdout is data.
+- **Unchanged:** the `amont` and `amont-fleet` executables (hook shims
+  still call them), the `refs/notes/amont-*` namespaces, and the
+  `amont-snapshots` repository.
+
 ### Changed
 
 - The host slots count physical cores (ADR-0021). On a machine with

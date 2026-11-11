@@ -48,7 +48,7 @@ replace a per-clone ritual forever. Repositories cloned *before* the
 grant are the one thing it does not reach: `greengate init` wires one,
 `greengate-fleet install --root ~/work` wires all of them.
 
-## The repository declaration: `amont.conf`, and `--conventions declared`
+## The repository declaration: `greengate.conf`, and `--conventions declared`
 
 The objection to a standing grant is real: the same machine clones the
 team's services *and* upstream open-source projects, and those did not
@@ -56,7 +56,7 @@ agree to your commit-subject shape, your branch naming, or your
 auto-rebase. A grant that imposes house rules on somebody else's
 repository is a grant people revoke.
 
-`--conventions declared` (or `git config --global amont.conventions
+`--conventions declared` (or `git config --global greengate.conventions
 declared` by hand) splits the checks in two:
 
 - **The safety net runs everywhere**: merge-conflict markers, leaked
@@ -67,11 +67,11 @@ declared` by hand) splits the checks in two:
 - **The conventions wait for a declaration**: commit-message shape,
   branch patterns, lint and format gates, test suites, audits,
   auto-rebase. They run only in a repository that has **committed an
-  `amont.conf`** — even an empty one:
+  `greengate.conf`** — even an empty one:
 
 ```console
-$ echo "# this repository subscribes to greengate" > amont.conf
-$ git add amont.conf && git commit -m "chore: declare greengate"
+$ echo "# this repository subscribes to greengate" > greengate.conf
+$ git add greengate.conf && git commit -m "chore: declare greengate"
 ```
 
 Presence is the declaration; presence executes nothing, so it needs no
@@ -92,7 +92,7 @@ opts into `declared`.
    $ greengate enroll --conventions declared
    ```
 2. **Each repository, once ever** (committed, travels with the clone):
-   - commit an `amont.conf` — empty declares; [custom checks](custom-checks.md),
+   - commit an `greengate.conf` — empty declares; [custom checks](custom-checks.md),
      [committed policy](custom-checks.md#repo-policy--severity-skip-and-set-lines)
      (`severity`/`skip` lines for the built-ins) and `tool` pins can come
      later;
@@ -115,7 +115,7 @@ no guard.
 So measure first. On your own machine, in a repository you work in daily:
 
 ```sh
-git config amont.severity.pre-commit warn
+git config greengate.severity.pre-commit warn
 ```
 
 Everything runs and reports; nothing blocks. A fortnight later, `greengate list`
@@ -129,7 +129,7 @@ problems that did not block
 ```
 
 Then decide *per check*, with evidence, before anyone else is affected —
-`amont.severity.<check> warn` keeps the ones you want advisory. A check firing
+`greengate.severity.<check> warn` keeps the ones you want advisory. A check firing
 sixty times in a fortnight is a conversation to have with your team, not a
 default to inflict on them.
 
@@ -149,7 +149,7 @@ exist.
 - **Version skew.** Enrolled machines resolve whatever binary they have;
   two teammates on different greengate versions run different check sets until
   a shim is newer than a binary (which warns). Commit the floor:
-  `set minVersion 1.11.0` in `amont.conf` makes every older binary say so
+  `set minVersion 1.11.0` in `greengate.conf` makes every older binary say so
   on each commit — warn-only, but no longer silent. Pin the exact version
   in your installer of choice if you need more than a floor.
 - **Machines that never enrolled.** The fleet dashboard sees one

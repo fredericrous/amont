@@ -35,16 +35,16 @@ Both numbers are defaults, not laws — see
 
 ## If the defaults do not fit
 
-`commit-msg` is the one hook `hook.skip` and `amont.severity` do not reach —
+`commit-msg` is the one hook `hook.skip` and `greengate.severity` do not reach —
 `--no-verify` skips it for a single commit (git's rule, and an emergency
 exit, not a dial). So it is the one hook whose opinions
 have to be adjustable in themselves, and they are — four `git config` keys,
 walked by `greengate setup` and listed in
-[configuration](configuration.md#amontcommit--what-a-commit-message-must-look-like):
+[configuration](configuration.md#greengatecommit--what-a-commit-message-must-look-like):
 
 ```sh
 greengate setup                                   # ask me the four questions
-git config amont.commit.descriptionMax 68     # or set one directly
+git config greengate.commit.descriptionMax 68     # or set one directly
 ```
 
 **68 is the number worth knowing** if 50 feels tight. It is the longest
@@ -56,7 +56,7 @@ By default **nothing decorates your subject**: you write `feat: add a cart` and
 that is what is stored. If you want the type's gitmoji, choose where it goes:
 
 ```sh
-git config amont.commit.gitmoji suffix
+git config greengate.commit.gitmoji suffix
 ```
 
 | | stored as |
@@ -101,7 +101,7 @@ authority — what you read here is what the hook enforces and prepends.
 `commit-msg` also reformats what you wrote, rather than rejecting it for
 whitespace:
 
-- hard-wraps the body at 72 columns (`amont.commit.bodyWrap`, or `0` to
+- hard-wraps the body at 72 columns (`greengate.commit.bodyWrap`, or `0` to
   leave a pasted stack trace or a fenced code block exactly as it is);
 - ensures one blank line after the subject;
 - groups the trailing footers, with one blank line before them.

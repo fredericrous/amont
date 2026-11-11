@@ -145,8 +145,8 @@ Repo {
   languages         : Vec<String>    // manifests at the repo root — DISPLAY ONLY
   applicable        : Vec<String>    // checks that would ever fire here, from each Scope
   skips             : Vec<SkipEntry> // hook.skip, resolved: what it hits and where it came from
-  severities        : Vec<SeverityOverride>  // amont.severity.*, and which one git applies
-  declared          : Vec<DeclaredCheck>     // this repo's own amont.conf checks
+  severities        : Vec<SeverityOverride>  // greengate.severity.*, and which one git applies
+  declared          : Vec<DeclaredCheck>     // this repo's own greengate.conf checks
   trusted           : Option<bool>   // None when there is no manifest at all
   agents_md         : AgentsMdState  // UpToDate | Missing | Drifted | Malformed
   aval_hook         : AvalHook       // { state, ignored: Vec<String> } — see below
@@ -173,7 +173,7 @@ AvalHookState = NoCorpus  // no .adr.yaml — not applicable, and nothing was sp
               | Unknown{why}   // aval answered something it did not promise
 BakeState = Current       // == installed binary path
           | Stale(path)   // points somewhere else — the GUI-client failure mode
-          | Unbaked       // __AMONT_BIN__ placeholder intact
+          | Unbaked       // __GREENGATE_BIN__ placeholder intact
           | Mixed         // shims disagree with each other
 HooksDir  = In{path}      // inside the repo's worktree, or its git common dir
           | Outside{path} // reported, never created, never written to
@@ -278,7 +278,7 @@ display as covered-by.
 
 `attest` measures the step that retires greengate's opt-out from attest (decisions
 ADR-0037). `git-attest` 2.0.0 stops reading `set planExempt off` in
-`amont.conf`, so it waits for `repos_with_deprecated_opt_out` to reach zero.
+`greengate.conf`, so it waits for `repos_with_deprecated_opt_out` to reach zero.
 The sweep that gets it there adds `@plan-exempt off` to `attest-inputs`. Where
 the spec declares gates (`spec_with_gates`), the new line voids the input
 fingerprints of an attest before 1.6.0. So the sweep also waits for
@@ -295,7 +295,7 @@ false problems out of `pre-commit-cargo-fmt`.
 
 Shim comparison is against the rendered template for the intended binary path,
 not the raw tracked template. A correctly baked shim must never be reported as
-drifted merely because `__AMONT_BIN__` was replaced.
+drifted merely because `__GREENGATE_BIN__` was replaced.
 
 ## Screen 1 — Fleet overview (default)
 
@@ -336,7 +336,7 @@ drifted merely because `__AMONT_BIN__` was replaced.
 - A repository whose dispatchers are SYMLINKS no longer counts as `managed`,
   even when the link points at one of our own shims. That is the intended
   trade: `fix` reports it instead of writing through the link.
-- `DECL` counts the checks a repository declares in `amont.conf`, and reads
+- `DECL` counts the checks a repository declares in `greengate.conf`, and reads
   `2!1` when one of those lines cannot be parsed — a check somebody committed
   that has never once run. `2` and `2!1` describing the same repository is the
   distinction the column exists for.
@@ -345,8 +345,8 @@ drifted merely because `__AMONT_BIN__` was replaced.
   the last — so a local `block` beats a global `warn`. Counting every entry made
   the column report a downgrade that never happens; the shadowed entry is still
   shown in the detail pane, marked `overridden`, because somebody wrote it.
-  A trusted `amont.conf` contributes rows too — its skips and severity lines
-  appear with origin `amont.conf`, folded into the same ladder the dispatcher
+  A trusted `greengate.conf` contributes rows too — its skips and severity lines
+  appear with origin `greengate.conf`, folded into the same ladder the dispatcher
   uses (policy above global, below local), so a policy `warn` a local config
   re-blocks is shown but not counted.
 - `SKIPS` and `WARN` are deliberately two columns, not one total. A skipped check

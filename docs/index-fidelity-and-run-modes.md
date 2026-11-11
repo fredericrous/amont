@@ -50,7 +50,7 @@ backlog.
 > guards. `uninstall` also removes the shims from the template directory
 > and says so loudly if `init.templateDir` is still set.
 
-`amont.conf` is committed, which is the point: a team shares a check by
+`greengate.conf` is committed, which is the point: a team shares a check by
 committing it. The consequence had not been written down.
 
 `git clone` seeds `.git/hooks` from `init.templateDir`, so a fresh clone arrives
@@ -146,7 +146,7 @@ Explicit installation removes the case where you clone something to read it.
 It does not remove the case that matters most in open source: you clone a
 stranger's repository **because you intend to contribute**, you run
 `greengate install` because you want your own checks while you work, and their
-`amont.conf` runs on your first commit.
+`greengate.conf` runs on your first commit.
 
 `greengate install` means *I want my hooks here*. It does not mean *I have read
 this repository's committed commands and accept them*. Those are two different
@@ -171,7 +171,7 @@ $ greengate install
   ✓ installed /Users/me/.local/bin/amont
   ✓ baked 4 shims into .git/hooks
 
-  ⚠ amont.conf declares 2 checks that would run on your commits:
+  ⚠ greengate.conf declares 2 checks that would run on your commits:
       shellcheck  pre-commit  *.sh  block  scripts/lint-shell.sh
       smoke       pre-push    *     warn   make smoke
     Trust them? [y/N]
@@ -183,7 +183,7 @@ untrusted, and reports as `Unavailable` with a reason rather than being silently
 skipped:
 
 ```
-⚠ amont.conf declares 2 checks and is not trusted here — `greengate trust`
+⚠ greengate.conf declares 2 checks and is not trusted here — `greengate trust`
 ⚠ 2 check(s) could not run: shellcheck, smoke
 ```
 
@@ -221,7 +221,7 @@ tool should let you pick which one you would rather explain.
 
 ### `uninstall`, which is missing regardless
 
-We can disable a check (`hook.skip`), downgrade one (`amont.severity`) and
+We can disable a check (`hook.skip`), downgrade one (`greengate.severity`) and
 install everything. There is no supported way to take it off — a user who wants
 out deletes five files by hand and leaves a stale binary in `~/.local/bin`.
 
@@ -476,11 +476,11 @@ differently:
   held (pre-commit unstaged) version is parked in `$GIT_DIR/amont-preserved/`
   with a printed pointer. Before this guard existed, the restore overwrote the
   save silently — the one way this module could destroy something.
-- **A fixer** (`amont.fix true`) rewrites held files as its job, and telling
+- **A fixer** (`greengate.fix true`) rewrites held files as its job, and telling
   its writes apart from an editor's is not possible from inside the restore.
   With fixing on, the guard stands down and the documented contract holds
   unchanged: the tree returns to your unstaged version, the fix lives in the
-  index. `amont.fix` is an explicit opt-in; the guard protects everyone else.
+  index. `greengate.fix` is an explicit opt-in; the guard protects everyone else.
 
 The checkout that starts the hold is also scoped to exactly the held paths
 (spelled `:(literal)` — a file named `*.rs` is a name, not a glob), so a
@@ -490,7 +490,7 @@ dirty commit costs git a walk of the changed files, not of the whole tree.
 ## 2. `stage_fixed` — a formatter that fixes should re-stage
 
 > **Shipped**, under different names: the declaration is `Fix::Rewrite` on
-> a check in `registry.rs`, the opt-in is `git config amont.fix true`,
+> a check in `registry.rs`, the opt-in is `git config greengate.fix true`,
 > the re-staging is `hooks::common::restage`, and the result is
 > `Outcome::Fixed`. Three checks declare it — prettier, ruff and cargo-fmt
 > — and all three now genuinely repair; two of them declared the fix for a
@@ -532,7 +532,7 @@ pub enum Fix {
 }
 ```
 
-Enabled by config, off by default — `git config amont.fix true` — because a
+Enabled by config, off by default — `git config greengate.fix true` — because a
 hook that edits your files without being asked is a bigger surprise than one
 that complains. Reported as a new `Outcome::Fixed`, which is neither `Passed`
 (something happened) nor `Failed` (the commit proceeds).
@@ -598,7 +598,7 @@ comment about `parent()` being lexical while `join("..")` is not moves with it.
 **Only `not_during`, not lefthook's full set.** `ref:` conditions duplicate
 `hook.skip`, which is already per-repo and already visible in the dashboard;
 `run:` conditions are a shell escape hatch in a design that has deliberately
-refused shells (see `amont.conf`). Taking the useful third is not a failure
+refused shells (see `greengate.conf`). Taking the useful third is not a failure
 to copy the other two.
 
 ---
@@ -712,12 +712,12 @@ is what it did for everything until now.
 > **The one section still unbuilt.** `Scope::files` is suffix-only today —
 > `matches()` in `check.rs` calls `path.ends_with(ext)` and nothing reads a
 > file head. Nothing is waiting on it; it is here because it is the gap
-> `amont.conf` inherits from `Scope`, not because it is next.
+> `greengate.conf` inherits from `Scope`, not because it is next.
 
 pre-commit classifies files with `identify`, which reads shebangs, so an
 extensionless `scripts/deploy` starting `#!/bin/sh` is a shell file.
 
-Our `Scope.files` is suffix-only, and `amont.conf`'s `*.sh` inherits that —
+Our `Scope.files` is suffix-only, and `greengate.conf`'s `*.sh` inherits that —
 a repository whose scripts have no extension cannot scope an external check onto
 them at all.
 
@@ -868,7 +868,7 @@ own decision: a worktree or `git archive` of the tip is more expensive than
 anything else here, and the cost is the whole question.
 
 Shipped as `pushed_tree.rs`, and the cost is what made it OPT-IN:
-`git config amont.testPushedTree true`. The instrument is
+`git config greengate.testPushedTree true`. The instrument is
 `git worktree add --detach <tip>`, not the stash — a push is not a staging
 operation, so the difference that matters is tree-versus-the-commit-you-are-
 sending, which includes staged-but-uncommitted work too. Holding all of that

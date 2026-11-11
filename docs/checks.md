@@ -3,7 +3,7 @@
 Six git hooks are installed — `pre-commit`, `commit-msg`,
 `prepare-commit-msg`, `post-commit`, `post-rewrite`, `pre-push` — and behind them thirty-nine
 named checks, plus
-any your repository declares in [`amont.conf`](custom-checks.md).
+any your repository declares in [`greengate.conf`](custom-checks.md).
 
 This page is the catalogue. **It is not the answer to "what will run in my
 repository"** — for that, ask:
@@ -42,7 +42,7 @@ and a count is the wrong shape for either.
 ## Reading the table
 
 - **id** — `<trigger>-<name>`. Any of the three spellings (full id, short name,
-  trigger) can address it in `hook.skip` and `amont.severity`; see
+  trigger) can address it in `hook.skip` and `greengate.severity`; see
   [configuration](configuration.md).
 - **fires when** — the scope. `always` means it has no file condition.
 - **fixes** — the check can rewrite the file rather than only complain. Those
@@ -53,7 +53,7 @@ and a count is the wrong shape for either.
   is forced to read — a human scrolls past it, an agent reads "passed" and
   moves on — so a finding either blocks or it does not exist. A repository
   that wants the old behaviour downgrades the check:
-  `git config amont.severity.lint-js warn`.
+  `git config greengate.severity.lint-js warn`.
 - Checks marked **soft** warn and skip when their tool is missing, rather than
   blocking a commit, because CI is the hard gate and not every developer has
   every toolchain installed.
@@ -94,9 +94,9 @@ these to decide what it may remove; `unknown` must never be read as absent.
 | `id` | `<trigger>-<name>`, the full spelling |
 | `short_name` | the name without its trigger |
 | `stage` | which trigger runs it |
-| `source` | `builtin`, or `declared` for an `amont.conf` check |
+| `source` | `builtin`, or `declared` for an `greengate.conf` check |
 | `declared_severity` | what the check ships as (`warn` for a declared check that cannot run) |
-| `manifest_severity` | for a declared check, what its `amont.conf` line says, trusted or not; `null` for a builtin or a line that did not parse |
+| `manifest_severity` | for a declared check, what its `greengate.conf` line says, trusted or not; `null` for a builtin or a line that did not parse |
 | `effective_severity` | what it is here, after overrides |
 | `severity_overridden` | whether those two differ |
 | `severity_source` | `config` or `policy` when overridden, else `null` |
@@ -127,7 +127,7 @@ prefix; the description is at most 50 characters. Messages git itself writes
 with one blank line before them, and places the type's gitmoji wherever you
 asked for it — nowhere, by default.
 
-Every number above and the gitmoji placement are `amont.commit.*` settings;
+Every number above and the gitmoji placement are `greengate.commit.*` settings;
 `greengate setup` walks them. See
 [if the defaults do not fit](commit-convention.md#if-the-defaults-do-not-fit).
 
@@ -141,14 +141,14 @@ Only for a commit you are authoring. `-m`, `-t`, a merge, a squash and
 
 ## The safety net vs the conventions
 
-With `git config --global amont.conventions declared` — the mode
+With `git config --global greengate.conventions declared` — the mode
 [`greengate enroll`](team-rollout.md) offers for machines that also clone other
 people's projects — the checks split in two. Five are the **safety net**
 and run in every repository, declared or not: `merge-conflict`,
 `large-files`, both `secrets` checks, and `ban-terms` — findings that are
 mistakes in any codebase, with near-zero false positives. Everything else,
 the `commit-msg`/`prepare-commit-msg` hooks included, is a **convention**
-and runs only where the repository commits an `amont.conf`. The default
+and runs only where the repository commits an `greengate.conf`. The default
 mode, `everywhere`, keeps the distinction inert.
 
 ## `pre-commit`
@@ -168,13 +168,13 @@ its test suite:
 ```
 
 A skipped check earns no stamp, so the corrected commit runs it. A Light
-failure at `warn` does not skip anything. `git config amont.failFast false`
-(or `AMONT_FAIL_FAST=false` for one commit) runs every check at once, as
+failure at `warn` does not skip anything. `git config greengate.failFast false`
+(or `GREENGATE_FAIL_FAST=false` for one commit) runs every check at once, as
 before 2.1.
 
 | id | fires when | what it does |
 |---|---|---|
-| `pre-commit-agents-md` | `AGENTS.md`/`CLAUDE.md` carry the greengate markers | The generated guidance block is behind the greengate that would generate it now — an agent reading it follows last release's instructions. Warns with the `greengate agents-md` fix; with `amont.fix true` regenerates and re-stages. Silent without the markers (opt-in), and during merge/rebase/cherry-pick. **Never blocks.** **fixes** |
+| `pre-commit-agents-md` | `AGENTS.md`/`CLAUDE.md` carry the greengate markers | The generated guidance block is behind the greengate that would generate it now — an agent reading it follows last release's instructions. Warns with the `greengate agents-md` fix; with `greengate.fix true` regenerates and re-stages. Silent without the markers (opt-in), and during merge/rebase/cherry-pick. **Never blocks.** **fixes** |
 | `pre-commit-argo-lint` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Argo CD app lint. **soft** |
 | `pre-commit-ban-terms` | `.js` `.jsx` `.ts` `.tsx` `.vue` `.rs` `.py` | Refuses focused/debug leftovers in staged sources — `describe.only`, `fit(`, `debugger` in JS/TS, `dbg!(` in Rust, `breakpoint()` and `pdb.set_trace()` in Python. Scoped to what this commit touches, and re-checked against staged content with each language's comments and string literals blanked (a term named in prose is discussion, not code — and an f-string interpolation or template substitution is code, not prose). |
 | `pre-commit-branch-pattern` | always | Says at the **first commit** what [`pre-push-branch-pattern`](#pre-push) will refuse at push time, with the `git branch -m` fix — while renaming costs nothing. Quiet on a detached head, in a remoteless repository, and on any branch a remote already has. **Never blocks.** |
@@ -187,13 +187,13 @@ before 2.1.
 | `pre-commit-kubeconform` | `.yaml` `.yml` + `kustomization.yaml`/`.yml` | Schema-validates rendered manifests. **soft** |
 | `pre-commit-lint-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | ESLint at zero warnings (`--max-warnings 0`), only in repos that carry an eslint config. |
 | `pre-commit-lint-json-yaml` | `.json` `.yaml` `.yml` | Parses staged JSON/YAML so a syntax error never reaches the repo. **soft** |
-| `pre-commit-manifest-trust` | `amont.conf` | Blocks a commit that changes `amont.conf` while the checks it declares are untrusted — otherwise they stand down as "could not run" for exactly the commit that introduces them. Names the fix (`greengate trust`); never trusts anything itself. Not during a merge, rebase, cherry-pick or revert: a manifest arriving from another branch stays a gap. |
+| `pre-commit-manifest-trust` | `greengate.conf` | Blocks a commit that changes `greengate.conf` while the checks it declares are untrusted — otherwise they stand down as "could not run" for exactly the commit that introduces them. Names the fix (`greengate trust`); never trusts anything itself. Not during a merge, rebase, cherry-pick or revert: a manifest arriving from another branch stays a gap. |
 | `pre-commit-merge-conflict` | always | Refuses staged files still carrying conflict markers. |
 | `pre-commit-package-lock` | `package.json` | Keeps `package.json` and its lockfile in step, scoped per directory — one project's lockfile does not satisfy another's in a monorepo, and a `package.json` with no lockfile beside it never demands one. |
 | `pre-commit-prettier` | a prettier config is present | Format check. **fixes** |
 | `pre-commit-pyright` | `.py` `.pyi` + `pyrightconfig.json`/`.jsonc`/`pyproject.toml` | Type check. |
 | `pre-commit-ruff` | `.py` `.pyi` + `ruff.toml`/`.ruff.toml`/`pyproject.toml` | Lint and format. **fixes** |
-| `pre-commit-tree-parity` | `amont.conf`, `*.yml`, `*.yaml` (repositories with `amont.conf`) | Every `tree` gate must be matched by the workflow step skipped on it: the step's `run:` equals the gate's normalized command. Fails closed on what it cannot read with certainty. A step skipped on a built-in test gate (`pre-push-cargo-test` …) is compared with its local command and only warns. See [the CI backstop](ci.md#skipping-lint-tree-gates). |
+| `pre-commit-tree-parity` | `greengate.conf`, `*.yml`, `*.yaml` (repositories with `greengate.conf`) | Every `tree` gate must be matched by the workflow step skipped on it: the step's `run:` equals the gate's normalized command. Fails closed on what it cannot read with certainty. A step skipped on a built-in test gate (`pre-push-cargo-test` …) is compared with its local command and only warns. See [the CI backstop](ci.md#skipping-lint-tree-gates). |
 | `pre-commit-usual-name` | always | Warns the first time you commit under a given name/email, so a misconfigured `user.name` is noticed at commit one rather than commit twenty. **Never blocks.** |
 | `pre-commit-hadolint` | `Dockerfile` | Dockerfile lint. Matches that basename **exactly** — `Dockerfile.dev` and `Dockerfile.prod` do not, because scope name tokens are exact basenames. |
 | `pre-commit-helm-lint` | `.yaml` `.yml` `.tpl` + `Chart.yaml` | `helm lint`, once per chart directory the commit touched — resolved by walking up to the nearest `Chart.yaml`, not once per file. |
@@ -227,7 +227,7 @@ for a test suite.
 |---|---|---|
 | `pre-push-branch-protect` | always | Refuses a direct push to `main` or `master`. |
 | `pre-push-branch-pattern` | always | Requires `prefix/branch-name` (e.g. `feat/3002-image-crop`), unless the branch already exists on the remote. |
-| `pre-push-pull-rebase` | always | Rebases the branch onto **its own** upstream before pushing (then asks for a second push — the first one's refs predate the rebase), and warns — never acts — when the default branch has moved ahead. Acts only when the push carries the checked-out branch: a push of tags or of another branch leaves the checkout alone. Never touches a dirty tree, aborts cleanly on conflict, and `amont.autoRebase false` makes it a pure, networkless advisor. |
+| `pre-push-pull-rebase` | always | Rebases the branch onto **its own** upstream before pushing (then asks for a second push — the first one's refs predate the rebase), and warns — never acts — when the default branch has moved ahead. Acts only when the push carries the checked-out branch: a push of tags or of another branch leaves the checkout alone. Never touches a dirty tree, aborts cleanly on conflict, and `greengate.autoRebase false` makes it a pure, networkless advisor. |
 | `pre-push-run-tests-js` | `.js` `.jsx` `.ts` `.tsx` `.vue` + `package.json` | Runs each touched JS package's gate: `typecheck`, `test:unit`, `test`, whichever it defines, cheapest first. Skips any of those a `pre-commit` declaration already covers — see below. |
 | `pre-push-cargo-test` | `.rs` `Cargo.toml` `Cargo.lock` `rustfmt.toml` `clippy.toml` `rust-toolchain(.toml)` + `Cargo.toml` | `cargo test`. A version bump alone runs it, so it is rehearsed and stamped like a code change. |
 | `pre-push-go-test` | `.go` `go.mod` `go.sum` + `go.mod` | `go test ./...`, per touched module, against the pushed tree. |
@@ -242,9 +242,9 @@ does neither, ever.
 Git history never forgets a megabyte: an accidentally committed dataset or
 bundle is paid for by every clone forever, even after deletion — deleting
 adds a commit, it does not remove the bytes. At `pre-commit`, a staged file
-over `amont.largeFileWarn` MB (default 10) gets a named warning — a large
+over `greengate.largeFileWarn` MB (default 10) gets a named warning — a large
 asset can be deliberate, and this is the moment to decide — and one over
-`amont.largeFileBlock` MB (default 100, GitHub's own refusal line) blocks
+`greengate.largeFileBlock` MB (default 100, GitHub's own refusal line) blocks
 with the remedy named: git-lfs, or keep it out of history.
 
 ### The Python test gate — `pytest`
@@ -377,7 +377,7 @@ Two details that are answers rather than omissions:
 repositories that is too late — a type error is cheapest to hear about at the
 commit that caused it, not an hour later when you go to push.
 
-Move it by declaring it in [`amont.conf`](custom-checks.md) **under the name of
+Move it by declaring it in [`greengate.conf`](custom-checks.md) **under the name of
 the script**:
 
 ```text
@@ -451,7 +451,7 @@ instead of running it in silence:
 
 ```text
 ⚠ cargo-test at commit covers *.rs, not rustfmt.toml — running it here
-    a files declaration is not widened: add rustfmt.toml to amont.conf line 3
+    a files declaration is not widened: add rustfmt.toml to greengate.conf line 3
 ⚠ cargo-test at commit is warn-only, so it vouches for nothing — running it here
 ⚠ cargo-test at commit is skipped here (hook.skip) — running it here
 ⚠ cargo-test at commit is not opted in (needs marker) — running it here
@@ -487,9 +487,9 @@ again:
 
 The stamp on the tree answers the same way for a commit undone with
 `reset --soft` and made again. Anything that changes the content — one
-staged byte, the declaration's own line in `amont.conf` — is a different
+staged byte, the declaration's own line in `greengate.conf` — is a different
 tree and runs the gate; a gate that *failed* records nothing, so a
-rejection is never reused. `git config amont.commitStamps false` turns the
+rejection is never reused. `git config greengate.commitStamps false` turns the
 reuse off.
 
 ### A monorepo's root script that already runs its members
@@ -499,7 +499,7 @@ in the root package and in every changed workspace member. When the root's own
 script is recursive (`"test": "pnpm -r test"`), each changed member runs twice:
 once inside the root's run, once on its own. greengate cannot tell that a script
 is recursive without a list of runners and flags to maintain, so the repository
-says so, in `amont.conf`:
+says so, in `greengate.conf`:
 
 ```text
 set rootRunsMembers test,typecheck
@@ -507,7 +507,7 @@ set rootRunsMembers test,typecheck
 
 The value is a comma-separated list of the gate's script names, or `none` (the
 root runs no members). It is policy like `onBusy`: it counts only from a trusted
-`amont.conf`, it is strict, and it is set once.
+`greengate.conf`, it is strict, and it is set once.
 
 For a declared script, a changed member is **not run again** when the root
 package runs that script in this push and the member is inside the workspace: a
@@ -528,11 +528,11 @@ says how to declare it, once per script:
 
 ```text
 ⚠ test ran at the root and in 2 packages — a repeat if the root runs them
-    declare it in amont.conf: set rootRunsMembers test   (or: none)
+    declare it in greengate.conf: set rootRunsMembers test   (or: none)
 ```
 
 `set rootRunsMembers none` silences it for a repository whose root does not run
-its members. If an untrusted `amont.conf` carries the line, the hint says it does
+its members. If an untrusted `greengate.conf` carries the line, the hint says it does
 not count until `greengate trust`. A declared script whose workspace cannot be
 read runs its members and says so once, so a line that seems to do nothing is
 explained. On a terminal the root's command is the part cut from the summary line,
@@ -542,7 +542,7 @@ Things to know:
 
 - A wrong declaration skips tests that ran nowhere. Read the summary line, and
   declare only a root script that runs every member with no filter.
-- A local `git config amont.rootRunsMembers` can only **remove** names from the
+- A local `git config greengate.rootRunsMembers` can only **remove** names from the
   committed line (or set `none`); it can never add one.
 - A root whose script was gated at commit time does not run it at push, so its
   members run: a safe repeat, never a skipped suite.
@@ -582,12 +582,12 @@ are stamped or skipped; `branch-protect`, `secrets` and the other unscoped
 checks ask questions about the *push* and always run. A stamp is written
 only for content the suite actually tested:
 
-- with `amont.testPushedTree`, that is the tip itself, for each gate that
+- with `greengate.testPushedTree`, that is the tip itself, for each gate that
   actually ran in its checkout — the stamp is written from the record of
   which gates were handed the snapshot, never from the config flag —
   **unless the snapshot could not be made.** A `worktree add` that fails,
-  or a preparation that fails (a refused `amont.snapshotCarry`, an install,
-  an `amont.snapshotPrepare` that exits non-zero), falls back to the
+  or a preparation that fails (a refused `greengate.snapshotCarry`, an install,
+  an `greengate.snapshotPrepare` that exits non-zero), falls back to the
   working tree and says so; that tip is then stamped by nothing, because
   the suite that passed never saw its content;
 - in the default working-tree mode it is the tip only when `HEAD` *is* the
@@ -599,14 +599,14 @@ only for content the suite actually tested:
   counting it would mean any repository whose gates leave an artefact
   (a log, a coverage directory) stopped earning stamps permanently — which
   puts the suite back inside the push, the failure stamping exists to
-  prevent. Use `amont.testPushedTree` to close it;
+  prevent. Use `greengate.testPushedTree` to close it;
 - inside a rehearsal the checkout *is* the commit, because git made it, so
   what preparation added to make it runnable is not a reason to distrust
   it: dependencies installed from the commit's lockfile, and only
-  *untracked* carried files — `amont.snapshotCarry` refuses anything that
+  *untracked* carried files — `greengate.snapshotCarry` refuses anything that
   would overwrite committed content.
 
-`git config amont.pushStamps false` turns both the writing and the
+`git config greengate.pushStamps false` turns both the writing and the
 honouring off.
 
 ### Rehearsing in the background
@@ -621,22 +621,22 @@ $ git push
 ✓ pre-push-run-tests-js passed on this exact tree earlier — not repeating it here
 ```
 
-With `git config amont.rehearseOnCommit true`, `post-commit` spawns a
+With `git config greengate.rehearseOnCommit true`, `post-commit` spawns a
 detached worker — its own process group, output on
 `$GIT_DIR/amont-rehearsal.log`, nothing for git to wait for. The worker
-checks out `HEAD` into a throwaway worktree (the `amont.testPushedTree`
+checks out `HEAD` into a throwaway worktree (the `greengate.testPushedTree`
 machinery) and runs the ordinary pre-push dispatcher there, with the branch
 and its upstream as the ref line. The snapshot is what makes this safe while
 you keep editing: the suite reads a tree nobody is touching, and the stamp
 it earns is for exactly that tree. Only the test gates run — `branch-protect`,
 `secrets` and the auto-rebase ask about a push that is not happening, and
 run when it is. A fresh worktree has no `node_modules`, so the snapshot is
-prepared first: the untracked files `amont.snapshotCarry` names, then each
-lockfile's dependencies (`amont.snapshotDeps`: `npm ci` / `pnpm install
+prepared first: the untracked files `greengate.snapshotCarry` names, then each
+lockfile's dependencies (`greengate.snapshotDeps`: `npm ci` / `pnpm install
 --frozen-lockfile` / `yarn install --frozen-lockfile` (`--immutable` for
 yarn 2+) by default, or a clone of your installed tree that the package
 manager accepts; a bun lockfile is refused with the fix named), then
-`amont.snapshotPrepare` if set. The worker
+`greengate.snapshotPrepare` if set. The worker
 registers itself *before* preparing — `--status` reports `preparing`, a
 push waits for it, a newer commit cancels it, installer included — and a
 preparation that fails is recorded with its reason and fails the rehearsal
@@ -647,12 +647,12 @@ commit: after `git rebase`, nothing covers the branch. git calls
 `post-commit` for each replayed commit while the rebase is still in
 progress, and the rehearsal stands down then — the commit being made is not
 the one you will push. `post-rewrite` is the moment the rebased branch
-exists whole, and with `amont.rehearseOnCommit` it starts one rehearsal of
+exists whole, and with `greengate.rehearseOnCommit` it starts one rehearsal of
 the new tip. (`git commit --amend` needs nothing extra: its `post-commit`
 already rehearsed.)
 
 A push that arrives mid-rehearsal waits for it rather than starting the
-suite over — but not forever. `amont.rehearsalWait` (default 300s, `0` for
+suite over — but not forever. `greengate.rehearsalWait` (default 300s, `0` for
 no limit) bounds that wait, because it happens *after* git has opened its
 connection to the remote: holding it open for a wedged worker is the same
 failure the rehearsal exists to prevent. When the budget expires the gate
@@ -717,7 +717,7 @@ counts.** All of these leave the push gate exactly as it was:
   declaration on the `pre-push` stage — a declaration that never runs is not a
   check;
 - an effective severity of **`warn`**, whether declared or arrived at through
-  an `amont.severity.*` override — a check that lets a failing commit through
+  an `greengate.severity.*` override — a check that lets a failing commit through
   cannot stand in for one that blocks a failing push;
 - a push whose JS changes fall even partly **outside the declaration's
   scope** — `*.ts,*.tsx` above says nothing about a `.js` change, so a push
@@ -763,7 +763,7 @@ rather than guessing at intent. A rising count is the first symptom of a
 gate people have started routing around — a slow check, a flaky one — and
 until it was counted, the hooks detected that signal on every commit and
 threw it away. `greengate uninstall` deletes the file;
-`git config amont.recordBypasses false` stops the counting.
+`git config greengate.recordBypasses false` stops the counting.
 
 ### Trying it before you impose it
 
@@ -771,7 +771,7 @@ The question a team lead asks before adopting anything that can block a commit
 is *will this annoy my team into switching it off?* One line answers it:
 
 ```sh
-git config amont.severity.pre-commit warn
+git config greengate.severity.pre-commit warn
 ```
 
 Every blocking check still runs and still reports; nothing stops a commit. Work
@@ -783,7 +783,7 @@ problems that did not block
   pre-commit-ban-terms      4   last 1d ago
   pre-commit-secrets        1   last 3d ago
   66 events over 41 commits, since 12d ago
-  66 of them would have blocked — set amont.severity.<check> to keep one
+  66 of them would have blocked — set greengate.severity.<check> to keep one
   advisory when you go back to block
 ```
 
@@ -801,7 +801,7 @@ the same terms as the bypass ledger above: a plain local file, never a ref,
 never pushed, never sent anywhere. It follows that this **cannot aggregate
 across a team** — each developer's ledger is their own machine's, and a lead
 runs the trial on their own checkout or asks people to paste. `greengate uninstall`
-deletes the file; `git config amont.recordDowngrades false` stops the counting.
+deletes the file; `git config greengate.recordDowngrades false` stops the counting.
 
 A rehearsal (`greengate run`, `greengate run --all-files`) deliberately records
 nothing: it is not a commit, and letting it count would make the number mean
@@ -815,7 +815,7 @@ so. That is fast and usually what you want, but it is not what you are pushing:
 an uncommitted fix makes a broken commit look green.
 
 ```sh
-git config amont.testPushedTree true
+git config greengate.testPushedTree true
 ```
 
 turns on the accurate answer — the suite runs in a throwaway checkout of the
@@ -826,7 +826,7 @@ and a build that cannot reuse your `target/` cache, which is why it is opt-in.
 
 The gate stamps above stay local by design — an unsigned note is only as
 honest as whoever can write the ref. Their signed successor can travel:
-with `git config amont.attest true`, a push whose block gates all passed
+with `git config greengate.attest true`, a push whose block gates all passed
 leaves an `ssh-keygen`-signed note on each pushed tip in
 `refs/notes/amont-attest` and sends that ref along, and CI may then skip
 the test steps the attestation names — but only for exactly the attested
@@ -837,7 +837,7 @@ tests, lives in [the CI backstop](ci.md#skipping-what-pre-push-already-proved).
 ## Tree gates
 
 Besides the checks above, a repository may declare **tree gates** in
-`amont.conf` (`tree` lines, see [custom checks](custom-checks.md#whole-tree-gates--tree-lines)).
+`greengate.conf` (`tree` lines, see [custom checks](custom-checks.md#whole-tree-gates--tree-lines)).
 A tree gate runs a whole-tree lint or format command, the one CI runs, next
 to the pre-commit checks. It never decides the commit. When it passes on
 exactly the tree being committed, greengate stamps that tree. The push then
@@ -852,4 +852,4 @@ A check is a module plus one registry entry in
 [CONTRIBUTING.md](https://github.com/greenharness/greengate/blob/main/CONTRIBUTING.md).
 
 If the check belongs to your repository rather than to everybody's, declare it
-in [`amont.conf`](custom-checks.md) instead — no fork required.
+in [`greengate.conf`](custom-checks.md) instead — no fork required.
