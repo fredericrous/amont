@@ -289,6 +289,28 @@ pub fn cores_phrase(cores: u32, threads: u32, source: greenharness_slots::host::
     phrase
 }
 
+/// The host sizing line `doctor` prints: the core count and the slot count,
+/// each with the source that set it. Any warning about either key is printed
+/// separately, once, by `host_slots::host_sizing`.
+pub fn doctor_line() -> String {
+    let settings = crate::config::Settings::default();
+    let host = crate::host_slots::host_sizing(&settings);
+    let slots = match host.slots.value {
+        0 => "off".to_string(),
+        n if n < 0 => "auto".to_string(),
+        n => n.to_string(),
+    };
+    format!(
+        "host slots: {}; slots {slots} ({})",
+        cores_phrase(
+            host.cores.value,
+            greenharness_slots::logical_cores(),
+            host.cores.source
+        ),
+        host.slots.source.name()
+    )
+}
+
 pub fn slots_command(args: &[OsString]) -> i32 {
     if let Some(bad) = args.iter().find(|a| *a != "--json") {
         eprintln!("{BIN}: slots: unknown argument {:?}", bad.to_string_lossy());

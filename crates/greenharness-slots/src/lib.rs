@@ -507,6 +507,39 @@ pub struct Queue {
     /// Slots held by a client that writes no record (amont ≤ 1.61, old
     /// relais).
     pub unknown: usize,
+    /// Why this waiter was not admitted on this poll, when it was decided.
+    pub reason: Option<WaitReason>,
+}
+
+/// Why a waiter was not admitted: what a person reading the queue line can
+/// act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitReason {
+    /// Others are ahead of it in the queue.
+    Behind { ahead: usize },
+    /// Every slot is held.
+    SlotsFull { held: usize, cap: u32 },
+    /// A slot is free, but the one-minute load is at or above the core count.
+    /// The load is in tenths (`310` is 31.0), so the queue stays `Eq`.
+    Load { load_tenths: u32, cores: u32 },
+    /// A slot is free, but a holder was admitted under a minute ago.
+    Ramp,
+}
+
+impl WaitReason {
+    /// `load 31.0 >= 6 cores`, `slots full 3/3`, `2 ahead`, `ramp`.
+    pub fn describe(&self) -> String {
+        match self {
+            WaitReason::Behind { ahead } => format!("{ahead} ahead"),
+            WaitReason::SlotsFull { held, cap } => format!("slots full {held}/{cap}"),
+            WaitReason::Load { load_tenths, cores } => format!(
+                "load {}.{} >= {cores} cores",
+                load_tenths / 10,
+                load_tenths % 10
+            ),
+            WaitReason::Ramp => "one new holder per minute".to_string(),
+        }
+    }
 }
 
 /// The answer to one [`Waiter::poll`].
@@ -652,11 +685,30 @@ impl Waiter {
         };
         if !admit {
             let (holders, unknown) = read_holders(&self.dir, &held);
+            let reason = if position > 0 {
+                WaitReason::Behind { ahead: position }
+            } else if free.len() < weight {
+                WaitReason::SlotsFull {
+                    held: held.len(),
+                    cap,
+                }
+            } else {
+                match probe.load1 {
+                    Some(load1) if load1 >= f64::from(probe.cores) => WaitReason::Load {
+                        // In tenths, without a lossy cast: a load is a small
+                        // non-negative number, and anything else saturates.
+                        load_tenths: format!("{:.0}", load1 * 10.0).parse().unwrap_or(u32::MAX),
+                        cores: probe.cores,
+                    },
+                    _ => WaitReason::Ramp,
+                }
+            };
             return Ok(Poll::Waiting(Queue {
                 position,
                 waiting: live.len(),
                 holders,
                 unknown,
+                reason: Some(reason),
             }));
         }
         let mut files = Vec::new();
@@ -1269,9 +1321,30 @@ mod tests {
         let mut a = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "a")).unwrap();
         let _first = granted(a.poll_with(idle(t0)).unwrap());
         let mut b = Waiter::new_in(&d, Sizing::Auto, 1, Holder::here("t", "b")).unwrap();
-        waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
-        waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
+        let ramp = waiting(b.poll_with(idle(t0 + 10_000)).unwrap()); // ramp not elapsed
+        assert_eq!(ramp.reason, Some(WaitReason::Ramp));
+        let load = waiting(b.poll_with(busy(t0 + 61_000)).unwrap()); // load too high
+        assert_eq!(
+            load.reason,
+            Some(WaitReason::Load {
+                load_tenths: 200,
+                cores: 12
+            })
+        );
+        assert_eq!(load.reason.unwrap().describe(), "load 20.0 >= 12 cores");
         let _second = granted(b.poll_with(idle(t0 + 61_000)).unwrap());
+    }
+
+    /// With every slot held, a waiter says so, whatever the load.
+    #[test]
+    fn a_full_host_says_its_slots_are_full() {
+        let d = scratch("full");
+        let mut a = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "a")).unwrap();
+        let _held = granted(a.poll_with(idle(1_000_000)).unwrap());
+        let mut b = Waiter::new_in(&d, Sizing::Fixed(1), 1, Holder::here("t", "b")).unwrap();
+        let q = waiting(b.poll_with(idle(1_000_000)).unwrap());
+        assert_eq!(q.reason, Some(WaitReason::SlotsFull { held: 1, cap: 1 }));
+        assert_eq!(q.reason.unwrap().describe(), "slots full 1/1");
     }
 
     /// A sibling of a holder in the same process (one commit's checks)

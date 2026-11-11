@@ -891,6 +891,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             if found.is_empty() {
                 eprintln!("no greengate 3.x names left here");
             }
+            // Informational, on stderr: stdout and the exit code stay the
+            // leftover-names contract.
+            eprintln!("{}", greengate_runtime::slot_cmd::doctor_line());
             i32::from(!found.is_empty())
         }
         // `amont enroll` — the machine-level standing grant: template dir +

@@ -657,8 +657,11 @@ pub fn behind(queue: &greenharness_slots::Queue) -> String {
     if queue.unknown > 0 {
         who.push(format!("{} unknown (old client)", queue.unknown));
     }
+    let reason = queue
+        .reason
+        .map_or(String::new(), |r| format!(" ({})", r.describe()));
     format!(
-        "queued behind {} · {} waiting",
+        "queued behind {}{reason} · {} waiting",
         who.join(", "),
         queue.waiting.max(1)
     )
