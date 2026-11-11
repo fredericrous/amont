@@ -1,0 +1,21 @@
+amont-provenance-v1
+commit ac0e6f05325f1a43e69ccbbeedbe9bbddbc31350
+tree f5956b4237ba0e4b0920af06aebc135993b481f7
+canon 93c0e381937ff354356a564cf04441cfa5f335d0
+patch 6f7bc160456bf6472e12fa0fce63462936cbbfea
+plan docs/plans/2026-11-11-pairs-cover-their-push-twin.md 396b1a5b8ac13f74a36b37dc9b894d1314f0d19d9176bda8a744fd93aeacbd05
+review reviewed 85d255baf645232503bdceaff6ca4f0b90fbd3835cae8ccd34d0b2b44b15fad3
+code-review backend reviewed 85d255baf645232503bdceaff6ca4f0b90fbd3835cae8ccd34d0b2b44b15fad3
+code-review lang:rust reviewed 85d255baf645232503bdceaff6ca4f0b90fbd3835cae8ccd34d0b2b44b15fad3
+code-review unix carried 30613782a84e526accc85a0588a83d054dcb9f26091a866b0b68fabb23e9a970
+code-review tui reviewed 85d255baf645232503bdceaff6ca4f0b90fbd3835cae8ccd34d0b2b44b15fad3
+code-review architect carried 30613782a84e526accc85a0588a83d054dcb9f26091a866b0b68fabb23e9a970
+preview not-required
+producer amont-agent 3.28.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEAFIIyjABFWEIcWwNcfvh3+b19jGzhBWu1XuAXj4CAmP2oKAz
+aD6BYZp08tZOZCkNYFpVgo6arrxn6rG2AwKcYC
+-----END SSH SIGNATURE-----
