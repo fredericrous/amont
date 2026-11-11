@@ -174,6 +174,38 @@ fn doctor_names_a_3x_variable_left_set() {
     );
 }
 
+/// A kubeconfig left at 3.x's path logs in as the old namespace's runner:
+/// doctor names it and the two commands that fix it.
+#[test]
+fn doctor_names_a_3x_kubeconfig() {
+    let repo = Repo::new();
+    let global = repo.path("fake-gitconfig");
+    let set = std::process::Command::new("git")
+        .args(["config", "--file"])
+        .arg(&global)
+        .args([
+            "greengate.cluster.kubeconfig",
+            "/home/me/.config/amont/kube/homelab.yaml",
+        ])
+        .status()
+        .expect("git config");
+    assert!(set.success());
+    let out = crate::common::amont_cmd()
+        .arg("doctor")
+        .current_dir(&repo.dir)
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("cluster: greengate.cluster.kubeconfig is greengate 3.x's")
+            && stdout.contains("greengate-gates-kubeconfig.sh")
+            && stdout.contains("~/.config/greengate/kube/homelab.yaml"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn asking_for_help_moves_nothing() {
     let repo = Repo::new();

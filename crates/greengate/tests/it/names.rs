@@ -32,16 +32,6 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "the frozen AGENTS.md block (3a-1 keeps it byte-stable)",
     ),
     (
-        "greengate-runtime/src/cluster.rs",
-        1,
-        "a commit-tree message stored in git",
-    ),
-    (
-        "greengate-runtime/src/cluster/detached.rs",
-        1,
-        "a snapshot commit message stored in git",
-    ),
-    (
         "greengate-runtime/src/hookfile.rs",
         3,
         "test fixtures: shims a 2.x install wrote",
@@ -91,29 +81,19 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "a canon hashed into signed notes (3a-3)",
     ),
     (
-        "greengate-runtime/src/cluster.rs",
-        6,
-        "Kubernetes names (Phase 4)",
-    ),
-    (
         "greengate-runtime/src/cluster/detached.rs",
         2,
         "the amont-snapshots repository (a later step)",
     ),
     (
-        "greengate-runtime/src/cluster/detached/collect.rs",
-        3,
-        "Kubernetes names in a test (Phase 4)",
-    ),
-    (
         "greengate-runtime/src/cluster/detached/pending.rs",
-        2,
-        "the namespace and cluster contract (Phase 4)",
+        1,
+        "the cluster notes contract (plan 3a-3)",
     ),
     (
         "greengate-runtime/src/cluster/detached/workflow.rs",
-        7,
-        "Kubernetes names (Phase 4)",
+        1,
+        "the amont-snapshots repository (a later step)",
     ),
     (
         "greengate-runtime/src/finding.rs",
@@ -123,7 +103,7 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     (
         "greengate-runtime/src/gate_identity.rs",
         1,
-        "the cluster contract (Phase 4)",
+        "the cluster contract (plan 3a-3)",
     ),
     (
         "greengate-runtime/src/gate_stamp.rs",

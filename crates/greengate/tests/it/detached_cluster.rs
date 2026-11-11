@@ -75,7 +75,7 @@ impl Wf {
         Wf {
             name: after("\"metadata\":{\"name\":\""),
             label: after(
-                "\"labels\":{\"app.kubernetes.io/managed-by\":\"amont\",\"greengate.run\":\"",
+                "\"labels\":{\"app.kubernetes.io/managed-by\":\"greengate\",\"greengate.run\":\"",
             ),
             json,
         }
@@ -314,7 +314,7 @@ impl Lane {
     fn submitted(&self) -> Wf {
         let (code, text) = self.rehearse(&["--cluster"]);
         assert_eq!(code, 0, "{text}");
-        assert!(text.contains("submitted amont-rh-"), "{text}");
+        assert!(text.contains("submitted greengate-rh-"), "{text}");
         self.workflow()
     }
 
@@ -372,7 +372,7 @@ fn rehearse_cluster_pushes_the_snapshot_reads_it_back_and_creates_one_workflow()
     let (code, text) = l.rehearse(&["--wait", "--cluster"]);
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains("submitted amont-rh-") && text.contains("pre-push-lint pre-push-types"),
+        text.contains("submitted greengate-rh-") && text.contains("pre-push-lint pre-push-types"),
         "one line, with the gates: {text}"
     );
     assert!(text.contains("the next commit or push collects"), "{text}");
@@ -438,7 +438,7 @@ fn rehearse_cluster_returns_once_the_workflow_is_created() {
     assert_eq!(l.cluster.local_runs(), 0);
     assert!(l.pending().contains(&wf.name));
     // nothing but the Workflow's own run label identifies it
-    assert_eq!(wf.name, format!("amont-rh-{}", wf.label));
+    assert_eq!(wf.name, format!("greengate-rh-{}", wf.label));
 }
 
 /// The snapshot commit has HEAD as its parent and HEAD's tree, and is dated
@@ -1413,7 +1413,7 @@ fn submission_talks_on_stderr_and_stdout_stays_empty() {
         .expect("amont rehearse");
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("submitted amont-rh-"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("submitted greengate-rh-"));
 }
 
 /// `--stop` exits 1 when a patch failed, with the command to do it by hand.
@@ -1432,7 +1432,7 @@ fn stop_fails_loudly_when_a_workflow_cannot_be_terminated() {
     assert!(
         stderr.contains(&format!("could not terminate cluster run {}", wf.name))
             && stderr.contains("kubectl --kubeconfig '")
-            && stderr.contains(" -n amont-gates patch workflow"),
+            && stderr.contains(" -n greengate-gates patch workflow"),
         "{stderr}"
     );
 }

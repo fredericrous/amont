@@ -56,7 +56,7 @@ pub fn collect_if_declared(manifest: &crate::manifest::Manifest) {
 const NODE: &str = "talos-wk-3-gpu";
 const PRIORITY_CLASS: &str = "gate-batch";
 const PULL_SECRET: &str = "forgejo-registry-pull";
-const JOB_PREFIX: &str = "amont-gate-slot-";
+const JOB_PREFIX: &str = crate::names::JOB_PREFIX;
 const CACHE_PREFIX: &str = "gate-cache-";
 const TEMP_REF_PREFIX: &str = "refs/amont/cluster/";
 /// The platform a cluster pass is recorded under.
@@ -402,7 +402,7 @@ fn misconfigured(why: String, key_fix: &str) -> Fallback {
 fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, Fallback> {
     let keys = machine_keys();
     let kubeconfig = key(&keys, "greengate.cluster.kubeconfig").ok_or(Fallback::Unconfigured(
-        "greengate.cluster.kubeconfig is not set: `git config --global greengate.cluster.kubeconfig ~/.config/amont/kube/homelab.yaml`",
+        "greengate.cluster.kubeconfig is not set: `git config --global greengate.cluster.kubeconfig ~/.config/greengate/kube/homelab.yaml` (homelab scripts/greengate-gates-kubeconfig.sh writes it)",
     ))?;
     let kubeconfig = PathBuf::from(kubeconfig);
     if !kubeconfig.is_file() {
@@ -423,7 +423,8 @@ fn cluster_config(settings: &crate::config::Settings) -> Result<ClusterConfig, F
             )
         })?
         .to_string();
-    let namespace = key(&keys, "greengate.cluster.namespace").unwrap_or("amont-gates");
+    let namespace =
+        key(&keys, "greengate.cluster.namespace").unwrap_or(crate::names::CLUSTER_NAMESPACE);
     if !is_label(namespace) {
         return Err(misconfigured(
             format!("greengate.cluster.namespace {namespace:?} is not a namespace name"),
@@ -911,11 +912,11 @@ fn run_in(
 /// written.
 fn parentless_commit(tree: &str) -> Option<String> {
     let out = Command::new("git")
-        .args(["commit-tree", tree, "-m", "amont cluster gate"])
-        .env("GIT_AUTHOR_NAME", "amont")
-        .env("GIT_AUTHOR_EMAIL", "amont@localhost")
-        .env("GIT_COMMITTER_NAME", "amont")
-        .env("GIT_COMMITTER_EMAIL", "amont@localhost")
+        .args(["commit-tree", tree, "-m", "greengate cluster gate"])
+        .env("GIT_AUTHOR_NAME", crate::names::GIT_AUTHOR)
+        .env("GIT_AUTHOR_EMAIL", crate::names::GIT_EMAIL)
+        .env("GIT_COMMITTER_NAME", crate::names::GIT_AUTHOR)
+        .env("GIT_COMMITTER_EMAIL", crate::names::GIT_EMAIL)
         .env("GIT_AUTHOR_DATE", "@0 +0000")
         .env("GIT_COMMITTER_DATE", "@0 +0000")
         .stdin(Stdio::null())
@@ -1212,7 +1213,7 @@ struct Spec<'a> {
     run_label: &'a str,
 }
 
-/// Create `amont-gate-slot-<k>` for the first free `k`.
+/// Create `greengate-gate-slot-<k>` for the first free `k`.
 fn claim_slot(
     kube: &Kube,
     spec: &Spec,
@@ -1415,9 +1416,10 @@ fn job_manifest(spec: &Spec, slot: u32) -> String {
         init.push(container("prepare", &config.image, &argv, &work_mounts));
     }
     let gate = container("gate", &config.image, spec.argv, &work_mounts);
+    let managed_by = crate::names::MANAGED_BY;
     format!(
         "{{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\
-         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"amont\",{run_label_key}:{run_label}}},\
+         \"metadata\":{{\"name\":{name},\"labels\":{{\"app.kubernetes.io/managed-by\":\"{managed_by}\",{run_label_key}:{run_label}}},\
          \"annotations\":{{\"greengate.dev/gate\":{gate_id},\"greengate.dev/tree\":{tree}}}}},\
          \"spec\":{{\"backoffLimit\":0,\"activeDeadlineSeconds\":{deadline},\
          \"ttlSecondsAfterFinished\":300,\"template\":{{\"spec\":{{\
@@ -1965,7 +1967,7 @@ mod tests {
     fn cluster_config(prepare: Option<&str>) -> ClusterConfig {
         ClusterConfig {
             kubeconfig: PathBuf::from("/k"),
-            namespace: "amont-gates".into(),
+            namespace: "greengate-gates".into(),
             slots: 2,
             image: format!("reg/gate:1@sha256:{}", "a".repeat(64)),
             digest: format!("sha256:{}", "a".repeat(64)),
@@ -2029,7 +2031,7 @@ mod tests {
         );
         assert!(!json.contains("\"command\""));
         for needle in [
-            "\"name\":\"amont-gate-slot-1\"",
+            "\"name\":\"greengate-gate-slot-1\"",
             "\"claimName\":\"gate-cache-1\"",
             "\"subPath\":\"amont\"",
             "\"restartPolicy\":\"Never\"",
@@ -2132,7 +2134,7 @@ mod tests {
 
     #[test]
     fn facts_parse_from_kubectl_json() {
-        let json = r#"{"items":[{"metadata":{"name":"amont-gate-slot-0-x"},
+        let json = r#"{"items":[{"metadata":{"name":"greengate-gate-slot-0-x"},
           "status":{"phase":"Failed","conditions":[{"type":"DisruptionTarget","status":"True"}],
           "initContainerStatuses":[{"name":"fetch","state":{"terminated":{"exitCode":0,"message":"tree t"}}}],
           "containerStatuses":[{"name":"gate","imageID":"i@sha256:1","state":{"terminated":{"exitCode":137,"reason":"OOMKilled"}}}]}}]}"#;
@@ -2163,7 +2165,7 @@ mod tests {
     #[test]
     fn a_refusal_is_a_name_clash_the_quota_or_trouble() {
         assert_eq!(
-            refusal("Error from server (AlreadyExists): jobs.batch \"amont-gate-slot-0\" already exists"),
+            refusal("Error from server (AlreadyExists): jobs.batch \"greengate-gate-slot-0\" already exists"),
             Refusal::Taken
         );
         assert_eq!(

@@ -486,11 +486,11 @@ fn snapshot_commit(head: &str, tree: &str, label: &str) -> Result<String, Fallba
     let now = format!("@{} +0000", crate::gate_evidence::now());
     let out = std::process::Command::new("git")
         .args(["commit-tree", tree, "-p", head, "-m"])
-        .arg(format!("amont snapshot {label}"))
-        .env("GIT_AUTHOR_NAME", "amont")
-        .env("GIT_AUTHOR_EMAIL", "amont@localhost")
-        .env("GIT_COMMITTER_NAME", "amont")
-        .env("GIT_COMMITTER_EMAIL", "amont@localhost")
+        .arg(format!("greengate snapshot {label}"))
+        .env("GIT_AUTHOR_NAME", crate::names::GIT_AUTHOR)
+        .env("GIT_AUTHOR_EMAIL", crate::names::GIT_EMAIL)
+        .env("GIT_COMMITTER_NAME", crate::names::GIT_AUTHOR)
+        .env("GIT_COMMITTER_EMAIL", crate::names::GIT_EMAIL)
         .env("GIT_AUTHOR_DATE", &now)
         .env("GIT_COMMITTER_DATE", &now)
         .stdin(std::process::Stdio::null())
@@ -616,7 +616,7 @@ enum Uncertain {
     Lost(String),
 }
 
-/// Create the Workflow ONCE, as `amont-gate-runner` (the kubeconfig's user),
+/// Create the Workflow ONCE, as `greengate-gate-runner` (the kubeconfig's user),
 /// and return its UID. A create whose answer is lost is reconciled by `get`
 /// on its deterministic name and never repeated.
 fn create(kube: &Kube, record: &Pending, json: &str) -> Result<String, SubmitError> {
