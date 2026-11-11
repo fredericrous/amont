@@ -91,7 +91,7 @@ release workflow enforces for itself.
 The hook is the fast feedback; CI is the same verdict, slower and
 unskippable. When they disagree, it is almost always a tool version —
 pin the versions your workflow installs, and consider a
-[`tool` pin](custom-checks.md#pinning-tool-versions) in `amont.conf` so the
+[`tool` pin](custom-checks.md#pinning-tool-versions) in `greengate.conf` so the
 laptop warns when it drifts from what CI runs.
 
 ## Skipping what pre-push already proved
@@ -104,7 +104,7 @@ resource-constrained runner fleet. So greengate can leave a receipt:
 
 ```sh
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/amont-attest   # once, per machine
-git config amont.attest true                          # per repository
+git config greengate.attest true                          # per repository
 ```
 
 With the toggle on, a push whose pre-push block gates all passed writes a
@@ -223,7 +223,7 @@ reached covers nothing, with the reason on stderr. The spec in
 may be absent, and the gate re-runs the day it appears.
 
 What signs is the machine that ran the tests, so the trust statement is
-exactly "whoever holds `amont.attestKey` vouches for this tree" — the same
+exactly "whoever holds `greengate.attestKey` vouches for this tree" — the same
 trust you extend by pushing at all when you are the only committer. On a
 team, that key is a shared authority: hand one to each developer (one
 `allowed_signers` line each) or accept that any holder can mint "tests
@@ -298,8 +298,8 @@ and no completeness check is needed.
 - **The cost of the exemption:** a gate that reads the *contents* of a plan (a
   formatter or linter over the whole tree, a link checker) would be skipped on a
   plans-only change. Ignore `docs/plans` in that tool's configuration, or opt
-  the repository out with `set planExempt off` in `amont.conf` (see
-  [configuration](configuration.md#amontplanexempt--reusing-gates-across-a-plans-only-commit)).
+  the repository out with `set planExempt off` in `greengate.conf` (see
+  [configuration](configuration.md#greengateplanexempt--reusing-gates-across-a-plans-only-commit)).
 
 ### In CI: verify, run what is uncovered, sign what passed
 
@@ -358,9 +358,9 @@ signs nothing); against a hostile pull request the guarantee is write access. `.
 A signature made with a key added in a pull request covers nothing on `main`,
 whose own `allowed_signers` decides.
 
-A tracked file that configures a gate (`amont.conf`) must be a declared input
+A tracked file that configures a gate (`greengate.conf`) must be a declared input
 of that gate, or a change to its scope would be invisible to the fingerprint:
-a gate whose declaration omits a tracked `amont.conf` is not offered the
+a gate whose declaration omits a tracked `greengate.conf` is not offered the
 fingerprint route at all, and keeps the whole-tree behaviour.
 Settings outside tracked files are not in any fingerprint; they were not in the
 whole-tree key either.
@@ -369,7 +369,7 @@ whole-tree key either.
 
 Test gates are signed from `pre-push`. Lint and format are different: the
 pre-commit linters see staged files only, so their pass says nothing about
-the whole tree. A **tree gate** (a `tree` line in `amont.conf`) runs the
+the whole tree. A **tree gate** (a `tree` line in `greengate.conf`) runs the
 whole-tree command at commit, beside the other checks, and its pass is
 attested as `tree-<name>`:
 

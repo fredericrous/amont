@@ -66,7 +66,7 @@ advertisement:
   fails loudly, and the tool stays your problem. For turnkey environments
   around many exotic tools, pre-commit is the right call.
 - **lefthook's config is very expressive** — glob routing, piped commands,
-  scripts, tags, per-OS overrides — where [`amont.conf`](custom-checks.md)
+  scripts, tags, per-OS overrides — where [`greengate.conf`](custom-checks.md)
   is deliberately five columns and no shell.
 - **husky is nearly nothing**, which is a real virtue: two lines of shell in a
   committed file and you are done. An all-Node team that reviews everything may
@@ -84,7 +84,7 @@ Ideas taken from the others, with the full record in
 
 - **From pre-commit:** a repository declaring its own checks in a committed
   file, so a team shares a check by committing it rather than by each member
-  installing it by hand — taken as [`amont.conf`](custom-checks.md), with
+  installing it by hand — taken as [`greengate.conf`](custom-checks.md), with
   a [trust gate](trust.md) added in front, because a committed manifest is a
   committed *command* and cloning is not consent.
 - **From all three:** the observation that filename-prefixed

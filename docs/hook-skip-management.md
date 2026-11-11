@@ -23,14 +23,14 @@ Three exact comparisons. No substring. So:
 git config --add hook.skip pre-commit-clippy   # one check
 git config --add hook.skip clippy              # that check, either trigger
 git config --add hook.skip pre-commit          # all fifteen pre-commit checks
-git config amont.severity.clippy warn       # same vocabulary, other surface
+git config greengate.severity.clippy warn       # same vocabulary, other surface
 ```
 
 `hook.skip e` matches **nothing**. Where several severity keys reach one check,
 the most specific wins — full id > short name > trigger — so you can downgrade a
 whole trigger and then exempt one check from it.
 
-Declared checks in `amont.conf` have ids too, so `hook.skip pre-commit`
+Declared checks in `greengate.conf` have ids too, so `hook.skip pre-commit`
 covers them. See `docs/custom-checks.md`.
 
 ## History: the problem this was written to solve
@@ -78,8 +78,8 @@ within one commit.
 
 **Then the vocabulary**, which removed the hazard rather than reporting it. It
 was prompted by a different bug: `hook.skip` matched by substring and
-`amont.severity.<key>` matched exactly, on the same identifiers, so
-`hook.skip clippy` worked and `amont.severity.clippy warn` silently did
+`greengate.severity.<key>` matched exactly, on the same identifiers, so
+`hook.skip clippy` worked and `greengate.severity.clippy warn` silently did
 nothing. Fixing the disagreement meant picking one rule, and the only rule that
 serves both is exact naming.
 

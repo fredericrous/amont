@@ -28,7 +28,7 @@ run 1726903600 pre-push-audit-js fail 903
 ```
 
 `run <epoch> <gate> <outcome> <milliseconds>`. Line one is the stamp, exactly
-as it has always been — [`amont.pushStamps`](configuration.md#amontpushstamps--remember-what-the-push-gate-already-proved)
+as it has always been — [`greengate.pushStamps`](configuration.md#greengatepushstamps--remember-what-the-push-gate-already-proved)
 reads that line and nothing else, so every version of greengate that predates
 these lines reads a note that carries them and sees no change at all. The
 `run` lines are additive, optional, and are never consulted by any decision
@@ -54,7 +54,7 @@ Four things are worth knowing about the shape:
 - **It is local.** Notes in this ref are never pushed, never travel, and are
   deleted by `greengate uninstall` along with the rest of greengate's own
   bookkeeping. Nothing here is a statement to anybody else's system — that is
-  what [`amont.attest`](configuration.md#amontattest--amontattestkey--sign-what-pre-push-proved-for-ci)
+  what [`greengate.attest`](configuration.md#greengateattest--greengateattestkey--sign-what-pre-push-proved-for-ci)
   is for, and its signed payload is a separate, versioned contract that this
   does not touch.
 - **Only pre-push is recorded.** Pre-commit checks run concurrently and every
@@ -188,7 +188,7 @@ rest of the tool's rule.
 ## Evidence ordering (opt-in)
 
 ```sh
-git config amont.order evidence    # default: declared
+git config greengate.order evidence    # default: declared
 ```
 
 Pre-push runs its checks serially and stops at the first blocking failure
@@ -212,7 +212,7 @@ enforcement would be a much worse deal than a slow push:
   would have run still runs, and a gate is never assumed to pass because the
   record says it usually does. A prediction is not a run, and a check that
   does not run cannot be stamped or attested — the whole chain from
-  [the stamps](configuration.md#amontpushstamps--remember-what-the-push-gate-already-proved)
+  [the stamps](configuration.md#greengatepushstamps--remember-what-the-push-gate-already-proved)
   to [the attestation](ci.md) rests on a record of something that happened.
 - **It never moves the push-shaped checks.** Only the *scoped* gates — the
   suites and audits, the ones whose verdict is a function of the content —
@@ -227,8 +227,8 @@ enforcement would be a much worse deal than a slow push:
 - **It is reported.** When the order differs from the declared one, the push
   says so and names the order it took.
 
-It can be set per machine (`git config amont.order evidence`) or committed
-for the team (`set order evidence` in `amont.conf`, which is
+It can be set per machine (`git config greengate.order evidence`) or committed
+for the team (`set order evidence` in `greengate.conf`, which is
 [trust-gated](trust.md) like every other policy line). A local `git config`
 outranks the committed value, as it does for every key.
 

@@ -8,6 +8,76 @@ missing here.
 
 ## Unreleased
 
+### Breaking
+
+greengate 4.0 reads and writes only greengate's names: there is no
+period where both spellings work. The first 4.0 command in a repository
+moves what greengate 3.x left there, once.
+
+To upgrade, in this order (the full steps are in
+[install.md](docs/install.md#upgrading-from-3x-to-40)):
+
+1. Wait until no host slot is held (`greengate slots`) and no `amont`
+   process runs. The slot names switch once (below), so greengate, relais
+   and greenpiste go in together.
+2. Install greengate 4.0 with the matching relais and greenpiste.
+3. Run any `greengate` command in a repository: it moves that repository.
+   Then `greengate migrate --global` for the machine's keys.
+4. Rename each repository's committed names with `greengate migrate
+   --tracked` (or across a root, `greengate-fleet fix --apply --migrate`; see
+   below).
+5. Run `greengate doctor`. It exits 1 and names what is left (an `AMONT_*`
+   variable, an `amont.*` key, 3.x state, a `greengate.cluster.kubeconfig`
+   still under `~/.config/amont/`), with the command that moves it, until it
+   exits 0. It does not look at the committed names: the upgrade is done once
+   step 4 has moved every repository (any it skipped is named there).
+
+What changes:
+
+- **Configuration and environment.** `amont.*` git config keys are now
+  `greengate.*`, and `AMONT_*` variables are `GREENGATE_*`; greenpiste's own
+  `amont.agent.*` keys and `AMONT_AGENT_*` variables are not greengate's and
+  do not move. An `amont.*` key or `AMONT_*` variable left behind is
+  ignored, and `greengate doctor` lists each one.
+- **Host slots.** The pair is `GREENHARNESS_HOST_SLOT` /
+  `GREENHARNESS_SLOT_DIR`, and the directory is `greenharness-slots`. A lock
+  directory cannot be read under two names, so the three tools switch in one
+  install with no slot held; installed apart, the host runs two queues.
+- **State in `.git`.** Ledgers, markers and the state folder (`amont-*`,
+  `amont/`) are moved to `greengate-*` and `greengate/`, in every
+  worktree, with their headers rewritten. A 3.x `amont-held` store is
+  never moved: the command is refused until `greengate restore` has put
+  its changes back.
+- **Committed files.** 4.0 still reads `amont.conf`, `amont.pack`, the
+  `amont:pack:*` markers inside a manifest and the `<!-- amont:start -->`
+  markers where the new ones are absent, until a later release drops that
+  fallback: run the sweep before then. `greengate migrate --tracked` renames
+  the files (`git mv`; the content and its trust are kept), respells the
+  markers and stages the result, in the repository it runs in.
+  `greengate-fleet fix --apply --migrate` commits that in each repository of
+  a root that is already on a branch named `chore/greengate-names`; one on
+  another branch, or with uncommitted tracked changes, is skipped and named.
+- **Cluster gates** run in the `greengate-gates` namespace, as
+  `greengate-gate-runner`, with `greengate-*` Job and Workflow names and
+  `app.kubernetes.io/managed-by: greengate`. Repoint
+  `greengate.cluster.kubeconfig` at the kubeconfig the homelab's
+  `scripts/greengate-gates-kubeconfig.sh` writes
+  (`~/.config/greengate/kube/homelab.yaml`); `greengate doctor` names a
+  value still under `~/.config/amont/`.
+- **`greengate trust`** without `--show` prints its listing and verdict
+  on stderr, like its other messages; `greengate trust --show` is the
+  command whose stdout is data, so a script that read `trust`'s stdout
+  reads `trust --show` instead.
+- **Unchanged:** the `amont` and `amont-fleet` executables (hook shims
+  still call them), the `__AMONT_BIN__` shim placeholder, the
+  `refs/notes/amont-*` namespaces, and the `amont-snapshots` repository.
+
+To go back to 3.x, before installing it: run `greengate migrate --reverse`
+in each repository and `greengate migrate --reverse --global` once, revert
+each sweep commit, and point `amont.cluster.kubeconfig` at the 3.x
+kubeconfig. 4.0 leaves a reversed repository (or the machine's keys) alone
+until `greengate migrate` (or `greengate migrate --global`) is run again.
+
 ### Changed
 
 - The host slots count physical cores (ADR-0021). On a machine with

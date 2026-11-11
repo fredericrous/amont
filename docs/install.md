@@ -10,7 +10,7 @@ repository. Nothing about the first does the second.
 > running the current build. Copies, not links: a 2.x `amont install` copies
 > onto its target, and through a link it would overwrite greengate itself.
 > The names greengate reads from disk, git config and the environment
-> (`amont.conf`, `amont.*` keys, `AMONT_*`) are unchanged in 3.0.0. The
+> (`greengate.conf`, `amont.*` keys, `GREENGATE_*`) are unchanged in 3.0.0. The
 > `amont-*` crates on crates.io stay at 2.3.1, and `amont` on npm at 2.3.0.
 
 ## 1. Get the binary
@@ -30,7 +30,7 @@ irm https://raw.githubusercontent.com/greenharness/greengate/main/install/instal
 
 The installer resolves the latest release, downloads the archive for your
 platform, verifies it against the published `SHA256SUMS`, and writes the binary
-to `$AMONT_BIN_DIR` (default `~/.local/bin`) by atomic rename, so a
+to `$GREENGATE_BIN_DIR` (default `~/.local/bin`) by atomic rename, so a
 half-copied `greengate` never exists.
 
 It refuses to guess. If the checksum does not match it exits rather than
@@ -80,7 +80,7 @@ about to stop existing. The same is true of nix, asdf and mise.
 
 ### Installing somewhere else
 
-`$AMONT_BIN_DIR` moves the binary, and `install` bakes wherever it landed
+`$GREENGATE_BIN_DIR` moves the binary, and `install` bakes wherever it landed
 into the shims it writes — so a custom location resolves through the baked path
 and needs nothing further.
 
@@ -92,14 +92,14 @@ not where the binary went. `greengate install` says so when it sees the
 combination, and offers the two ways out: link the binary where the shims look,
 or set `$GIT_HOOKS_BIN`.
 
-`$AMONT_BIN_DIR` is an install-time setting only; the shim never reads it.
+`$GREENGATE_BIN_DIR` is an install-time setting only; the shim never reads it.
 The runtime override is `$GIT_HOOKS_BIN` — one variable able to redirect which
 binary executes on every commit is enough surface.
 
 Pin a version, or install elsewhere:
 
 ```sh
-AMONT_VERSION=v1.0.0 AMONT_BIN_DIR=~/bin \
+GREENGATE_VERSION=v1.0.0 GREENGATE_BIN_DIR=~/bin \
   curl -fsSL https://raw.githubusercontent.com/greenharness/greengate/main/install/install.sh | sh
 ```
 
@@ -249,7 +249,7 @@ That writes six shims into `.git/hooks` — `pre-commit`, `pre-push`,
 `commit-msg`, `prepare-commit-msg`, `post-commit`, `post-rewrite` — each of
 which resolves the binary at run time and dispatches into it. `post-rewrite`
 only starts a background rehearsal after a rebase, and only where
-`amont.rehearseOnCommit` asks for one. `post-commit` is the bookkeeping
+`greengate.rehearseOnCommit` asks for one. `post-commit` is the bookkeeping
 half of [moving a gate entry to commit time](checks.md#moving-a-gate-entry-earlier):
 it records that the moved check actually ran, so the push gate can trust the
 event rather than the declaration. Nothing runs in any repository you did not do this
@@ -363,7 +363,7 @@ being asked again. That is the convenience, and it is worth having: you never
 forget to install, and `greengate-fleet` never shows you an uncovered repo.
 
 It is also a standing grant, and worth stating in full. A cloned repository can
-declare its own checks in `amont.conf`. With this key set, those
+declare its own checks in `greengate.conf`. With this key set, those
 declarations are present in every repository you clone — including one you
 cloned only to read — and are one `greengate trust` away from running. They do
 **not** run before that; see [the trust model](trust.md). But if you set this
@@ -393,14 +393,14 @@ an installer that armed one repository runs to disarm it.
 Uninstall removes **our six shims and nothing else**. A hook you wrote
 yourself is left alone and named in the output, whatever it is — a hook it
 cannot even read is named too, rather than passed over in silence. `hook.skip`
-and `amont.severity` are never touched, because those are your statements
+and `greengate.severity` are never touched, because those are your statements
 about your repository, not ours.
 
 It does forget **its own bookkeeping**, and says which parts it forgot: the
 gate stamps and attestation notes, the bypass ledger, the version-skew
 marker, the known-identity memo — each of which only ever said "greengate
 checked this", which stops being true once the hooks are gone — and the
-`amont.conf` trust record. That last one is a deliberate choice: trust is
+`greengate.conf` trust record. That last one is a deliberate choice: trust is
 consent for a committed file to run commands, and uninstalling is a request
 to stop running them, so a later reinstall asks again rather than silently
 re-honouring a review from a year ago. Re-granting is one `greengate trust`,
@@ -409,7 +409,7 @@ every repository it disarms, instead of leaving that bookkeeping behind in
 all of them.
 
 What no uninstall ever touches is **work you have not committed**: an
-interrupted run's parked changes stay in `$GIT_DIR/amont-held`, and
+interrupted run's parked changes stay in `$GIT_DIR/greengate-held`, and
 `greengate restore` keeps working after the hooks are gone.
 
 It also takes the shims back out of the template directory, and — if
@@ -446,6 +446,44 @@ greengate-fleet fix --root ~/Developer     # or see what the whole fleet needs
 greengate-fleet fix --apply --root ~/Developer
 ```
 
+### Upgrading from 3.x to 4.0
+
+4.0 reads only greengate's names (see the CHANGELOG), so upgrade in this
+order. The host-slot names switch once, so greengate, relais and greenpiste
+are installed together while no slot is held; installing one alone leaves two
+slot queues on one machine.
+
+1. Wait for the slot directory to be empty (`greengate slots` lists who holds
+   one) and for no `amont` process to be running.
+2. Install greengate 4.0, the matching relais and the matching greenpiste.
+3. Run any `greengate` command in a repository. The first one moves what 3.x
+   left there (state in `.git`, the local `amont.*` keys) and then does what
+   you asked. A 3.x store of parked changes (`.git/amont-held`) stops it:
+   `greengate restore` puts the changes back, then run the command again.
+4. Run `greengate migrate --global` once for the machine's keys.
+5. Rename each repository's committed names: `greengate migrate --tracked`
+   (alone, it takes no other flag: with `--reverse` or `--global` it exits 2)
+   stages `amont.conf` → `greengate.conf`, `amont.pack` → `greengate.pack` and
+   the `AGENTS.md` / `CLAUDE.md` markers for you to commit. Across a root,
+   `greengate-fleet fix --migrate` lists the repositories that need it, and
+   `greengate-fleet fix --apply --migrate` commits it in each one that is
+   already on a branch named `chore/greengate-names`; a repository on another
+   branch, or with uncommitted changes to tracked files, is skipped and named.
+   4.0 reads the old committed names until a later release drops that
+   fallback.
+6. Run `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
+   `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
+   under `~/.config/amont/`, with the command that moves each. It does not
+   check the committed names (step 5 does); when it exits 0, this machine is
+   clean, and the upgrade is done once step 5 has moved every repository (any
+   it skipped is named there).
+
+To go back to 3.x, before installing it: `greengate migrate --reverse` in each
+repository and `greengate migrate --reverse --global` once, then revert each
+sweep commit and point `amont.cluster.kubeconfig` at the 3.x kubeconfig.
+4.0 leaves a reversed repository alone until `greengate migrate` (and
+`greengate migrate --global`) is run again.
+
 ## Windows
 
 Everything works, with one setup difference: there is no symlink.
@@ -459,10 +497,11 @@ The one-liner for this platform is PowerShell:
 irm https://raw.githubusercontent.com/greenharness/greengate/main/install/install.ps1 | iex
 ```
 
-It writes `amont.exe` and `greengate-fleet.exe` into
-`%USERPROFILE%\.local\bin`, which is where the shims look — they try both
-`greengate` and `amont.exe` there, so a binary in that directory resolves
-even in a shim whose path was never baked. CI runs this script on a real
+It writes `greengate.exe` and `greengate-fleet.exe`, each with its
+`amont.exe` / `amont-fleet.exe` copy, into `%USERPROFILE%\.local\bin`, which
+is where the shims look — they try `greengate`, `greengate.exe`, `amont` and
+`amont.exe` there, so a binary in that directory resolves even in a shim whose
+path was never baked. CI runs this script on a real
 Windows runner against a real published release, because a documented install
 path nobody executes is one you find out about from a bug report.
 

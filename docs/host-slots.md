@@ -9,7 +9,7 @@ relais's verification commands, and any command run through
 
 ## The directory
 
-`AMONT_SLOT_DIR`, else `$XDG_RUNTIME_DIR/greenharness-slots` on Linux, else
+`GREENHARNESS_SLOT_DIR`, else `$XDG_RUNTIME_DIR/greenharness-slots` on Linux, else
 `/tmp/greenharness-slots-<uid>`. It is a fixed path, never `$TMPDIR`, which macOS
 and agent sandboxes set per session. It must be a real directory owned by
 this user with mode 0700. Otherwise slots are off for the job, and it says
@@ -88,7 +88,7 @@ An invalid value is a warning that names the fix for its source
 Only the process that took the slot holds it. Slot descriptors are
 close-on-exec, so a command's children, and any daemon it leaves behind,
 never hold it. `greengate slot run` frees the slot when its command exits.
-`AMONT_HOST_SLOT=held` in a command's environment means its parent holds a
+`GREENHARNESS_HOST_SLOT=held` in a command's environment means its parent holds a
 slot, and an greengate or wrapper started under it does not queue again.
 
 ## Handoff inside a rehearsal
@@ -104,9 +104,9 @@ A plain push and a commit release their slot after each check.
 ## The ceiling in land's pre-stage
 
 Only in land's pre-stage, a heavy `warn` check waits at most
-`amont.warnSlotWait` seconds (default 600, range 1 to 3600, never above
-`amont.timeout`), then runs unqueued. Precedence: git config, then
-`set warnSlotWait <s>` in a trusted `amont.conf`, then the default. A `block`
+`greengate.warnSlotWait` seconds (default 600, range 1 to 3600, never above
+`greengate.timeout`), then runs unqueued. Precedence: git config, then
+`set warnSlotWait <s>` in a trusted `greengate.conf`, then the default. A `block`
 gate and a background rehearsal wait as before.
 
 ## Width
@@ -128,8 +128,8 @@ verification commands.
   A `MAKEFLAGS` that carries flags but no job bound gains ` -j{jobs}`.
 - **Unqueued runs are bounded too.** A check that runs after its slot wait
   timed out runs when the host is busiest.
-- **Nothing is set** when slots are off (`amont.hostSlots 0`), unsupported
-  (Windows), or the command is nested under a holder (`AMONT_HOST_SLOT=held`),
+- **Nothing is set** when slots are off (`greengate.hostSlots 0`), unsupported
+  (Windows), or the command is nested under a holder (`GREENHARNESS_HOST_SLOT=held`),
   whose bounds it inherits.
 - `greengate slots` shows each holder's `jobs`, or `-` for a record written
   without it.
@@ -144,7 +144,7 @@ holder record.
 ## Commands
 
 - `greengate slot run [--weight N] [--max-wait S] [--on-timeout run|exit] -- <cmd…>`
-  waits for a slot, then runs the command with `AMONT_HOST_SLOT=held` and
+  waits for a slot, then runs the command with `GREENHARNESS_HOST_SLOT=held` and
   passes its exit status through. After `--max-wait` (default 90 s, under
   Claude Code's 120 s Bash timeout) it exits 75 and runs nothing, unless
   `--on-timeout run` is given.

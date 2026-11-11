@@ -150,7 +150,7 @@ check that finds something must not stop the chain — it has not invalidated
 anything.
 
 **A severity override is a better escape hatch than `hook.skip`.**
-`git config amont.severity.<check> warn` downgrades a check instead of
+`git config greengate.severity.<check> warn` downgrades a check instead of
 disabling it. `hook.skip` is all-or-nothing and, as measured, invisible enough
 that a one-line config edit could disable everything unnoticed. A downgrade keeps
 the signal
@@ -175,7 +175,7 @@ exists to replace.
 **And the dashboard has to show it.** A downgrade is quieter than a skip: the
 check runs, prints its failure in red, and the commit passes. Nothing on screen
 distinguishes it from enforcement, so the fleet view carries a `WARN` column and
-a per-repo `amont.severity` block. That block separates three cases a config
+a per-repo `greengate.severity` block. That block separates three cases a config
 line cannot: a real downgrade, an explicit `block` (the default written out), and
 a line that changes nothing because the check name or the value is misspelt.
 
@@ -241,7 +241,7 @@ worse flaw than the lexicographic ordering usually cited against the old
 filename-prefix mechanism.
 
 ```
-# amont.conf — stage  name        scope     severity  command
+# greengate.conf — stage  name        scope     severity  command
 pre-commit        shellcheck  *.sh      block     scripts/lint-shell.sh
 pre-push          smoke       *         warn      make smoke
 ```

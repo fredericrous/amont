@@ -420,6 +420,12 @@ fleet's shims are re-baked.
   every repository; `migrate --reverse` tested once on a scratch
   repository.
 
+  Phase 5 prep, observed before the push (this change: docs, CHANGELOG, the carried trust test; the release and the install window are the next change):
+  - `mdbook build docs` succeeds; every in-page anchor link resolves except one broken on main before this change (`checks.md#the-stamp-contract`).
+  - A scratch repository, this branch's binary: `trust` prints nothing on stdout and its listing and verdict on stderr; the second `trust` says "already trusted" on stderr; `trust --show` prints the manifest name, listing and state on stdout → `trust_talks_on_stderr_and_trust_show_answers_on_stdout` passes (`trust_display`, `names`: 34).
+  - The CHANGELOG and `docs/install.md` give the ordered upgrade (empty slot directory, install the three, first command, `migrate --global`, `migrate --tracked` or the fleet sweep, `doctor` last) and the rollback the code supports (`migrate --reverse` per repository and `--global`, revert the sweep commits, repoint the kubeconfig).
+  - Still to observe in the install window: 4.0.0 released and installed; this machine migrated (a commit and a push pass); the detached lane on a real repository; the sweep merged in every repository; `migrate --reverse` on a scratch repository.
+
 ## Outcome
 
 A day after the sweep: every repository's hook runs on greengate names
@@ -446,5 +452,10 @@ has one slot queue, and no held store was lost.
   Kept: local alias constants for the names (low, rust/architect). homelab#1167: implementation-review and platform approve after one delta (image pin, a dedicated Vault reader, the fence move named).
   Delta: all seven approve (tui approve-with-changes). Deliberate: the doctor and hint lines keep their word order (tui, low). Carried to Phase 5:
   `old_kubeconfig` matches `/.config/amont/` only, so this machine's value is checked by hand in the install window (architect, rust; a unit table rides the census), and the hint's folder from `names::STATE_DIR` (architect, low).
+
+- Phase 5 prep (docs, CHANGELOG, trust test): implementation-review, backend, platform, unix, tui, architect approve-with-changes, then approve on the delta (lang:rust approve);
+  fixed: state paths 4.0 really writes, the shim placeholder, the Windows install text, an ordered upgrade and the rollback the code supports, the temporary old-name fallback, the names that stay, doctor last, trust's stdout contract.
+  Deliberate (tui, low): the CHANGELOG's upgrade list and install.md's number the rename step 4 and 5 (install.md splits install and first command in two); both name it in words too, and both end on the same completion condition.
+  Kept: the `amont_cmd()` test-harness name; `amont-snapshots` named as kept (a later step); the CHANGELOG's `## Unreleased` becomes `## 4.0.0` in the release commit.
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
