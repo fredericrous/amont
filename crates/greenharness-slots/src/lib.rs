@@ -543,6 +543,7 @@ impl Probe {
 pub struct Waiter {
     dir: PathBuf,
     sizing: Sizing,
+    machine: Machine,
     weight: u32,
     holder: Holder,
     ticket: Option<(PathBuf, File)>,
@@ -597,6 +598,7 @@ impl Waiter {
         Ok(Waiter {
             dir: dir.to_path_buf(),
             sizing,
+            machine,
             weight,
             holder,
             ticket: Some((visible, file)),
@@ -605,7 +607,12 @@ impl Waiter {
 
     /// Ask once, without blocking.
     pub fn poll(&mut self) -> io::Result<Poll> {
-        self.poll_with(Probe::now())
+        // The machine the waiter was sized for, so an override of the core
+        // count reaches the load test as well as the width.
+        self.poll_with(Probe {
+            cores: self.machine.cores,
+            ..Probe::now()
+        })
     }
 
     /// [`Waiter::poll`] against a given load and clock.
@@ -721,8 +728,13 @@ pub fn status(sizing: Sizing) -> io::Result<Status> {
 }
 
 pub fn status_in(dir: &Path, sizing: Sizing) -> io::Result<Status> {
+    status_in_on(dir, sizing, Machine::detect())
+}
+
+/// [`status_in`] for a given machine: the cap is the sizing's on its cores.
+pub fn status_in_on(dir: &Path, sizing: Sizing, machine: Machine) -> io::Result<Status> {
     safe_dir(dir).map_err(io::Error::other)?;
-    let cap = sizing.cap();
+    let cap = sizing.cap_for(machine.cores);
     let waiting = live_tickets_readonly(dir)?;
     let Some(_admission) = platform::try_lock(&dir.join("admission"))? else {
         let held: Vec<u32> = (0..cap).collect();
@@ -1588,6 +1600,17 @@ mod tests {
         .unwrap();
         assert_eq!(w.holder.jobs, Some(4));
         drop(w);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Status reports the cap for the machine it is given, not the host's.
+    #[test]
+    fn status_caps_from_the_machine_it_is_given() {
+        let d = scratch("status-machine");
+        let st = status_in_on(&d, Sizing::Auto, Machine { cores: 4 }).unwrap();
+        assert_eq!(st.cap, 2);
+        let st = status_in_on(&d, Sizing::Auto, Machine { cores: 12 }).unwrap();
+        assert_eq!(st.cap, 6);
         let _ = fs::remove_dir_all(&d);
     }
 
