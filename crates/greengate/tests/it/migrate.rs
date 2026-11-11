@@ -190,14 +190,18 @@ fn a_refusal_keeps_its_lines_and_the_rm_line_pastes() {
     let out = repo.run(&["list"]);
     assert_eq!(out.code, 1, "{}", out.stderr);
     assert!(!out.stderr.contains("\\x0a"), "{}", out.stderr);
-    // The binary names the path as the filesystem resolves it.
-    let rm = format!(
-        "  rm {}",
-        std::fs::canonicalize(&pending).unwrap().display()
-    );
+    // One line is the `rm` command alone, naming the pending file: the
+    // path is spelled as the binary resolved it (`/private/var` on macOS,
+    // a short `RUNNER~1` name on Windows), so its tail is what is compared.
+    let tail = std::path::Path::new(".git")
+        .join("amont")
+        .join("cluster-pending");
+    let tail = tail.to_string_lossy();
     assert!(
-        out.stderr.lines().any(|line| line == rm),
-        "no line is exactly {rm:?}:\n{}",
+        out.stderr.lines().any(|line| line.starts_with("  rm ")
+            && line.ends_with(&*tail)
+            && !line["  rm ".len()..].contains(' ')),
+        "no line is the `rm` command alone:\n{}",
         out.stderr
     );
 }
