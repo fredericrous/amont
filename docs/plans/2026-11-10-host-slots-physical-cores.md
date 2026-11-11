@@ -336,6 +336,14 @@ links the slots crate, so the crate hardcodes the four names
   tools) if p90 `waited_ms` more than doubles while the median load drops
   by less than 6.
 
+## Implementation review
+
+- implementation-review: approve on delta (round 1 approve-with-changes: 4 blocking, 1 high, all fixed in e182c45e); 114k + 54k tokens.
+- backend, architect, lang:rust, unix, tui: round 1 approve-with-changes, fixed in e182c45e; delta backend approve, the others approve-with-changes, low only, plus tui's one medium.
+- deliberate, carried to a follow-up PR before 4.0.0: `cores_source` as a stable token; doctor line split under 80 columns; shorter waiter suffix; `handed` line gets cap/cores; one parse in `read_key`; drop `is_override`; `probe` pub(crate).
+- deliberate: the load's tenths via `format!`/`parse` (a cast needs a lint suppression); the no-key no-warning path seen in the sandboxed doctor run, not a new test.
+- next phase: Phase 3 rides greengate 4.0.0 (the rename session's release); Phase 4 (relais) after it is published.
+
 ## Outcome
 
 ## Full reviews (reference)
