@@ -1012,7 +1012,10 @@ fn wait_for_file(path: &Path) {
 /// holds it until an outside waiter's ticket is in `slots/queue`, so the
 /// second gate can only get the slot by the handoff. Without it the second
 /// gate would queue behind the outside waiter, which keeps the slot 10 s: the
-/// run would take over 13 s.
+/// run would take over 13 s. With the handoff it takes about 3 s; the bound is
+/// 9 s, not 6, because the suite runs this beside hundreds of other tests on a
+/// host other sessions share (it failed at 6 s twice in a full rehearsal on a
+/// busy host, and passed alone), and 9 s still sits 4 s under the failure.
 #[test]
 fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
     let slots = slot_dir("handoff");
@@ -1054,7 +1057,7 @@ fn a_rehearsal_hands_its_slot_to_the_next_heavy_gate() {
     assert_eq!(code, 0, "{out}");
     assert!(first.exists() && second.exists(), "both gates run: {out}");
     assert!(
-        took < std::time::Duration::from_secs(6),
+        took < std::time::Duration::from_secs(9),
         "without the handoff this takes over 13 s: took {took:?}\n{out}"
     );
     wait_for_file(&grant);
