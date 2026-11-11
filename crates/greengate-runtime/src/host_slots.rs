@@ -76,12 +76,14 @@ pub fn host_sizing(settings: &crate::config::Settings) -> greenharness_slots::ho
     let mut sizing = greenharness_slots::host::resolve(
         |name| std::env::var(name).ok(),
         rows.unwrap_or(&[]),
-        greenharness_slots::cores(),
+        greenharness_slots::detect_cores(),
     );
     if rows.is_none() {
-        sizing
-            .warnings
-            .push("git cannot report config scopes; the host sizing defaults are used".to_string());
+        sizing.warnings.push(
+            "git cannot list config with scopes, so the host keys are not read; using the \
+             detected sizing\n  Fix: check that git runs (git config --global --list)"
+                .to_string(),
+        );
     }
     for warning in &sizing.warnings {
         say_once(warning);
@@ -89,7 +91,8 @@ pub fn host_sizing(settings: &crate::config::Settings) -> greenharness_slots::ho
     sizing
 }
 
-/// A sizing warning on stderr, once per process.
+/// A sizing warning on stderr, once per process. Plain text: the warning
+/// sign's colour follows stdout, and this line is on stderr.
 fn say_once(warning: &str) {
     use std::collections::BTreeSet;
     use std::sync::{Mutex, OnceLock};
@@ -100,28 +103,32 @@ fn say_once(warning: &str) {
         Err(_) => true,
     };
     if fresh {
-        eprintln!("{} {warning}", crate::ui::warning_sign().trim());
+        eprintln!("{}: warning: {warning}", crate::names::BIN);
     }
 }
 
-/// `greengate.hostSlots`, a host key: unset sizes the slots from the machine
+/// The slot sizing and the machine it is computed for, from one resolution:
+/// `greengate.hostSlots` (`None` when `0` turns slots off) and
+/// `greengate.hostCores`, else the detected physical core count.
+pub fn sizing_and_machine(
+    settings: &crate::config::Settings,
+) -> (
+    Option<greenharness_slots::Sizing>,
+    greenharness_slots::Machine,
+) {
+    let host = host_sizing(settings);
+    (
+        host.slots.value,
+        greenharness_slots::Machine {
+            cores: host.cores.value.max(1),
+        },
+    )
+}
+
+/// `greengate.hostSlots`: unset sizes the slots from the machine
 /// (`Sizing::Auto`), N fixes them, `0` turns them off (`None`).
 pub fn sizing(settings: &crate::config::Settings) -> Option<greenharness_slots::Sizing> {
-    match host_sizing(settings).slots.value {
-        0 => None,
-        n if n < 0 => Some(greenharness_slots::Sizing::Auto),
-        n => Some(greenharness_slots::Sizing::Fixed(
-            u32::try_from(n).unwrap_or(u32::MAX),
-        )),
-    }
-}
-
-/// The machine the slots are sized for: `greengate.hostCores`, else the
-/// detected physical core count.
-pub fn machine(settings: &crate::config::Settings) -> greenharness_slots::Machine {
-    greenharness_slots::Machine {
-        cores: host_sizing(settings).cores.value.max(1),
-    }
+    sizing_and_machine(settings).0
 }
 
 /// The environment override of `greengate.onBusy`, for one run:
@@ -433,7 +440,11 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
         // Nested first: a nested amont must not pay the host-key scan for a
         // slot count it is about to ignore. Neither answer queues, so neither
         // can defer.
-        let sizing = if nested() { None } else { sizing(settings) };
+        let (sizing, machine) = if nested() {
+            (None, greenharness_slots::Machine::detect())
+        } else {
+            sizing_and_machine(settings)
+        };
         let Some(sizing) = sizing else {
             CURRENT.with(|c| c.borrow_mut().settled = true);
             return Ok(false);
@@ -465,7 +476,6 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             BusyPolicy::Defer { .. } if BUSY_SEEN.load(Ordering::SeqCst) => Duration::ZERO,
             BusyPolicy::Defer { slot_wait } => slot_wait,
         };
-        let machine = machine(settings);
         let slot_cap = sizing.cap_for(machine.cores);
         let cap = u64::from(slot_cap);
         // Hook checks take one slot; the width is set whether a slot is
@@ -513,7 +523,13 @@ pub fn before_spawn(settings: &crate::config::Settings) -> std::io::Result<bool>
             (Err(_), true) => "deferred",
             (Err(_), false) => "unqueued",
         };
-        record_acquisition(&name, Some(jobs), Some(slot_cap), waited, outcome);
+        record_acquisition(
+            &name,
+            Some(jobs),
+            Some((slot_cap, machine.cores)),
+            waited,
+            outcome,
+        );
         let held = match got {
             Ok(lease) => Some(lease),
             // The deferral line is the dispatcher's, not this note.
@@ -565,10 +581,11 @@ fn take_handed(handed: Parked, name: &str) -> bool {
 }
 
 /// One line of `waits.jsonl` for the check `name`, with where it ran.
+/// `sized` is the (cap, cores) the waiter was sized for, when known.
 fn record_acquisition(
     name: &str,
     jobs: Option<u32>,
-    cap: Option<u32>,
+    sized: Option<(u32, u32)>,
     waited: Duration,
     outcome: &str,
 ) {
@@ -585,7 +602,8 @@ fn record_acquisition(
             } else {
                 greenharness_slots::WaitPlace::Push
             },
-            cap,
+            cap: sized.map(|(cap, _)| cap),
+            cores: sized.map(|(_, cores)| cores),
         },
         1,
         jobs,
@@ -661,7 +679,7 @@ pub fn behind(queue: &greenharness_slots::Queue) -> String {
         .reason
         .map_or(String::new(), |r| format!(" ({})", r.describe()));
     format!(
-        "queued behind {}{reason} · {} waiting",
+        "queued behind {}{reason} · {} waiting · see {BIN} slots",
         who.join(", "),
         queue.waiting.max(1)
     )

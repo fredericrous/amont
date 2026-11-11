@@ -25,10 +25,17 @@ missing here.
 
 - A waiter says why it waits, after whom it waits behind: another waiter
   ahead, slots full, the load at or above the core count, or the
-  one-per-minute ramp.
+  one-per-minute ramp, and ends with `see greengate slots`.
 - `greengate slots` names the threads where they differ from the cores, and
-  the override when one set the count. `greengate doctor` prints the host
-  sizing and each key's source on stderr.
+  tags a count that plain detection did not set; `--json` gains `cores` and
+  `cores_source`. `greengate doctor` prints the host sizing and each key's
+  source on stderr.
+
+### Fixed
+
+- A host with no `greengate.*` key in its git config no longer gets a
+  "git cannot report config scopes" warning: git's exit 1 for no match is
+  read as no keys.
 - `waits.jsonl` lines carry `"cores"`, and `"cap"` where the sizing is
   known, so lines from before and after a sizing change can be told apart.
 

@@ -44,7 +44,7 @@ the one-minute load shows only about 15% of it.
 
 A waiter that is not admitted says why, after whom it waits behind:
 `(2 ahead)`, `(slots full 3/3)`, `(load 31.0 >= 6 cores)` or
-`(one new holder per minute)`.
+`(one new holder per minute)`, and ends with `see greengate slots`.
 
 ## Cores
 
@@ -61,10 +61,19 @@ core's execution units, so on a 6-core, 12-thread host the count is 6:
 `GREENGATE_HOST_CORES` overrides it for one process. The slots crate
 resolves both host keys for every client
 (`greenharness_slots::host::resolve`), so greengate and relais always size
-the queue from the same numbers. `greengate slots` names the threads only
-where they differ from the cores, and the override when one set them
-(`6 cores, 12 threads`, `4 cores, 12 threads from greengate.hostCores`);
-`greengate doctor` prints the same on stderr, with each key's source.
+the queue from the same numbers. Detection reports how it found the count:
+`detected`, `detected (logical fallback)` where the OS gave no physical
+count, or `limited by affinity` where an affinity or cgroup limit allows
+fewer cores.
+
+`greengate slots` names the threads only where they differ from the cores,
+and tags a count that plain detection did not set, inside 80 columns
+(`6 cores, 12 threads`, `4 cores, 12 threads (env)`, `(git)`, `(logical)`,
+`(affinity)`). `--json` carries `cores` and `cores_source`.
+`greengate doctor` prints the full sources on stderr, for example
+`host slots: 4 cores (GREENGATE_HOST_CORES), 12 threads; slots auto
+(detected)`. An invalid value is a warning that names the fix for its
+source (`unset GREENGATE_HOST_CORES`, or the `git config` command).
 
 ## Who holds a slot
 

@@ -208,7 +208,7 @@ links the slots crate, so the crate hardcodes the four names
   `crates/greengate/tests/it/slot_run.rs` and `tests/it/busy_defers.rs`
   (pin `GREENGATE_HOST_CORES` instead of `available_parallelism`),
   `docs/host-slots.md`,
-  `docs/configuration.md`, `adr/0021-slots-count-physical-cores.md`
+  `docs/configuration.md`, `adr/0021-host-slots-count-physical-cores.md`
   (amends ADR-0014's sizing: the core count is physical), `adr/HEADS.md`,
   `CHANGELOG.md`.
 - [ ] Phase 3 — release greengate (minor) through the `tag-release` skill,
@@ -247,6 +247,18 @@ links the slots crate, so the crate hardcodes the four names
   (4-wide commands, and two sizings on one queue). It fits ADR-0064:
   greengate owns the host slots, and relais reaches them only through
   greengate's crate.
+- 2026-11-11 — implementation review round 1 (6 seats, all
+  approve-with-changes) fixed in the branch: `"cores"` on wait lines is the
+  sized-for count (`WaitContext.cores`); git's exit 1 is no rows, through one
+  shared `host::rows_from`, which also ends a false "git cannot report"
+  warning for `idleLoadScale` on a host with no `greengate.*` key; `Source`
+  gains `LogicalFallback` and `LimitedByAffinity` and is `#[non_exhaustive]`;
+  `slots` is `Option<Sizing>`; `read_key` returns its warnings; sizing is
+  resolved once per decision; the header tags stay inside 80 columns;
+  `slots --json` gains `cores` / `cores_source`; warnings print plain on
+  stderr with a `Fix:` line; the waiting line ends `see greengate slots`.
+  Deliberate: the load's tenths go through `format!`/`parse` rather than a
+  cast, because a cast needs a lint suppression this repository refuses.
 - 2026-11-11 — Phase 2 choices: amont passes its cached rows to `resolve`
   (`config::host_rows`, one git spawn); `greengate doctor` prints the sizing
   on stderr, because its stdout and exit code are the leftover-names
@@ -266,22 +278,40 @@ links the slots crate, so the crate hardcodes the four names
 
 ## Verification
 
-- Phase 1: unit tests. A canned 6-core/12-thread cpuinfo gives 6, a
-  missing file or zero pairs gives the logical count, and an override of 2
-  gives 2. A `poll_with` test with `Machine { cores: 4 }` gives cap 2 and
-  refuses admission at load 4.0. On this Mac, `cores()` equals
-  `sysctl -n hw.physicalcpu` (6).
-- Phase 2, on this laptop with the branch binary installed through
-  `--hooks-dir` only (memory: never replace the machine binary from a
-  branch):
-  - `amont slots` should show `6 cores, 12 threads` and cap 3, in under 80 columns, with no colour under `NO_COLOR=1` or a pipe;
-  - `env -u MAKEFLAGS -u CARGO_BUILD_JOBS -u RUST_TEST_THREADS -u NEXTEST_TEST_THREADS amont slot run -- sh -c 'echo $CARGO_BUILD_JOBS $RUST_TEST_THREADS'`
-    should print `2 2`;
-  - `GREENGATE_HOST_CORES=4 amont slots` should give cap 2, width 2 (one
-    process only; the global config is never written).
-  - `GREENGATE_HOST_CORES=0 amont slots` and `=abc` print the actionable
-    error; a waiter under load above 6 prints its reason line;
-  - `cargo nextest run -p greengate --test it` passes with no override.
+- Phase 1, unit tests (`cargo test -p greenharness-slots`, 48 pass):
+  canned 6-core/12-thread cpuinfo → expect 6 → 6
+  (`cpuinfo_on_a_6_core_12_thread_host_gives_6`); no core fields → expect
+  the logical count → `LogicalFallback` (`detection_reports_how_it_found_the_cores`,
+  `cpuinfo_without_core_fields_is_none`); `GREENGATE_HOST_CORES=2` → expect 2
+  → 2 (`an_override_of_two_gives_two`); a waiter on `Machine { cores: 4 }` at
+  load 4.0 → expect refused for load → `Load { 40, 4 }`
+  (`a_waiter_probes_with_the_machine_it_was_sized_for`).
+- Phase 2, on this laptop, the branch binary run only in a scratch cwd
+  outside any repository, with HOME, `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`
+  and the slot dir scratch (never `--hooks-dir`: a 4.0 first run migrates the
+  shared common dir, which happened once by hand on 2026-11-11 and was
+  repaired); the live `.git` and `~/.config` listings were identical before
+  and after:
+  - `greengate slots` → expect cap 3, `6 cores, 12 threads`, ≤ 80 columns, no
+    colour → `host slots: 0 of 3 held (auto: load 3.8, 6 cores, 12 threads)`;
+  - `GREENGATE_HOST_CORES=4 greengate slots` → expect cap 2 → `0 of 2 held
+    (auto: load 3.8, 4 cores, 12 threads (env))`;
+  - `slot run -- sh -c 'echo $CARGO_BUILD_JOBS $RUST_TEST_THREADS'`, width
+    keys cleared → expect `2 2` → `2 2`, and its wait line carries
+    `"jobs":2,"cap":3,"cores":6`;
+  - `slots --json` → expect `cores` and `cores_source` →
+    `{"cap":3,"cores":6,"cores_source":"detected",…}`;
+  - `doctor` stderr → expect the sources → `host slots: 6 cores (detected),
+    12 threads; slots auto (detected)`;
+  - `GREENGATE_HOST_CORES=abc` → expect one warning with its fix →
+    `GREENGATE_HOST_CORES is "abc", not a whole number; reading git config
+    instead` / `Fix: unset GREENGATE_HOST_CORES`;
+  - the waiter reason line → unit tests (`a_full_host_says_its_slots_are_full`,
+    the Load and Ramp asserts); a live queue under load above 6 was not
+    staged;
+  - integration groups names, doctor, slot_run, busy_defers → 58 pass, with
+    `GREENGATE_HOST_CORES` pinned; the full suite ran in each commit's
+    pre-commit gate (29/29).
 - Phase 3: read the release run's `conclusion`, and confirm the crate is
   published at the new version.
 - Phase 4: a unit test asserts `environment(1)` equals

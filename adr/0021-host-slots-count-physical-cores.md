@@ -36,8 +36,10 @@ keep equal to `greengate.hostSlots` by hand.
 - **One sizing for every client.** `greenharness_slots::host::resolve` reads
   `greengate.hostCores` and `greengate.hostSlots` with the precedence greengate's
   `host_integer_or` already had. It is pure: greengate passes its cached
-  `--show-scope` rows, so it starts no extra git process, and `from_host()`
-  makes one cached call for a client with no rows of its own. It returns
+  `--show-scope` rows, so it starts no extra git process, and
+  `from_host(detect_cores())` makes one cached call for a client with no
+  rows of its own. git's exit 1 (no `greengate.*` key at all) is no rows,
+  never "git cannot report". It returns
   warnings, and each caller prints them its own way.
 - **The count travels.** `Machine { cores }` reaches the cap, the width, the
   admission load test and `greengate slots`, so an override moves all four.
@@ -54,7 +56,8 @@ keep equal to `greengate.hostSlots` by hand.
   key was a second one.
 - `decisions:ADR-0047` (`harness.standalone-tools`): relais still links only
   the crate. With no greengate installed, no keys and no working `git`,
-  `from_host()` returns the detected sizing, which is relais's behaviour today.
+  `from_host(detect_cores())` returns the detected sizing, which is relais's
+  behaviour today.
 
 ## Consequences
 

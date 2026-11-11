@@ -221,10 +221,13 @@ fn doctor_names_the_host_sizing_and_its_source() {
         .expect("run doctor");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("host slots: 4 cores") && stderr.contains("from GREENGATE_HOST_CORES"),
+        stderr.contains("host slots: 4 cores (GREENGATE_HOST_CORES)"),
         "{stderr}"
     );
-    assert!(stderr.contains("slots 2 (env)"), "{stderr}");
+    assert!(
+        stderr.contains("slots 2 (GREENGATE_HOST_SLOTS)"),
+        "{stderr}"
+    );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("host slots"));
 }
 

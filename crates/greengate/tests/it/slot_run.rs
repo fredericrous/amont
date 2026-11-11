@@ -258,9 +258,9 @@ fn cores() -> u32 {
 #[test]
 fn a_held_command_is_bounded_to_its_share_of_the_cores() {
     let slots = slot_dir("width");
-    for weight in [1u32, 3] {
+    // 8 cores pinned, 4 slots: weight 1 runs 2 wide, weight 3 runs 6 wide.
+    for (weight, jobs) in [(1u32, 2u32), (3, 6)] {
         let env = env_under(&slots, "4", &["--weight", &weight.to_string()], &[]);
-        let jobs = (weight * cores() / 4).max(1);
         assert_eq!(
             var(&env, "CARGO_BUILD_JOBS"),
             Some(jobs.to_string().as_str()),
@@ -313,7 +313,7 @@ fn a_preset_width_wins_and_an_empty_one_does_not() {
             ("MAKEFLAGS", "--no-print-directory"),
         ],
     );
-    let jobs = (cores() / 4).max(1);
+    let jobs = 2; // 8 cores pinned, 4 slots, weight 1
     assert_eq!(var(&env, "CARGO_BUILD_JOBS"), Some("9"), "{env}");
     assert_eq!(
         var(&env, "RUST_TEST_THREADS"),

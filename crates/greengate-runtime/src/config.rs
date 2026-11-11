@@ -397,22 +397,14 @@ pub fn integer_or(
 /// key, value): one scan per `Settings`, shared by every host key read and by
 /// the slots crate's `HostSizing::resolve`. `None` when git cannot report
 /// config scopes.
-pub fn host_rows(settings: &crate::config::Settings) -> Option<&[(String, String, String)]> {
+pub fn host_rows(settings: &crate::config::Settings) -> Option<&[greenharness_slots::host::Row]> {
     settings
         .host
         .get_or_init(|| {
-            git::stdout(&["config", "--show-scope", "--get-regexp", r"^greengate\."]).map(|out| {
-                out.lines()
-                    .filter_map(|line| {
-                        let (scope, rest) = line.split_once('\t')?;
-                        let (k, v) = match rest.split_once(' ') {
-                            Some((k, v)) => (k, v),
-                            None => (rest, ""),
-                        };
-                        Some((scope.to_string(), k.to_ascii_lowercase(), v.to_string()))
-                    })
-                    .collect()
-            })
+            // The crate's reader: exit 1 (no `greengate.*` key at all) is no
+            // rows, not "git cannot report scopes".
+            let out = git::output(&greenharness_slots::host::GIT_ARGS)?;
+            greenharness_slots::host::rows_from(Some(out.code), out.stdout.as_bytes())
         })
         .as_deref()
 }
