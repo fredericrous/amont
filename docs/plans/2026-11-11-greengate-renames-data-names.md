@@ -177,7 +177,7 @@ fleet's shims are re-baked.
   `homelab/kubernetes/homelab/apps/forgejo/authorization-policy.yaml`,
   `homelab/scripts/amont-snapshots-repo.sh`,
   `homelab/scripts/amont-gates-kubeconfig.sh` renamed to `homelab/scripts/greengate-gates-kubeconfig.sh` (`git mv`; `GREENGATE_KUBE_DIR`, `~/.config/greengate/kube`, Keychain service `greengate-gates-homelab`, namespace and runner `greengate-gates`).
-- [ ] Phase 5 — release 4.0.0, the slots install window (relais and greenpiste
+- [x] Phase 5 — release 4.0.0, the slots install window (relais and greenpiste
   switch to `greenharness-slots` and `GREENHARNESS_HOST_SLOT`:
   `relais/crates/relais/Cargo.toml`,
   `relais/crates/relais/src/verify/heavy.rs`,
@@ -187,9 +187,21 @@ fleet's shims are re-baked.
   `decisions/docs/programmes/gate-guardrails/t08-alias-policy.md`.
 
 - [ ] Phase 6 — census: remove the fallback read and the consumers' old
-  reads: `amont/crates/greengate-runtime/src/names.rs`,
+  reads. Precondition: `Apicil/archi-mcp` is swept or the person says it
+  keeps its old names (without the fallback its hooks stop finding
+  `amont.conf`), and the Outcome check passed:
+  `amont/crates/greengate-runtime/src/names.rs`,
   `relais/crates/relais/src/repo/detect.rs`,
-  `amont-agent/crates/amont-agent-guard/src/guidance.rs`.
+  `amont-agent/crates/amont-agent-guard/src/guidance.rs`; also what the
+  sweep left: `homelab/greengate.conf` (two globs naming `amont.conf`),
+  `relais/relais.toml` (`inputs`, with the policy-hash pin in
+  `relais/crates/relais/src/policy/mod.rs`), the comments in the
+  manifests of trade-agents, application-landscape and relais (each needs
+  the person's `greengate trust`), `duro-app/package.json` and
+  `homelab/services/forgejo-runner/Dockerfile` (old `amont` version pins),
+  `decisions/docs/principles/ci-attested.md` (then `aval pack --write`),
+  and the `audit-go` gate's toolchain (it must run govulncheck under
+  go.mod's version, not the machine's).
 
 ## Decision log
 
@@ -310,6 +322,29 @@ fleet's shims are re-baked.
   `~/.config/greengate/kube/homelab.yaml` (written today by homelab's
   `greengate-gates-kubeconfig.sh`) in the install window; `greengate
   doctor` names a value still under `~/.config/amont/`.
+- 2026-11-12 (Phase 5) — released (greengate 4.0.0, greenpiste 3.31.0,
+  relais v0.56.0), installed and migrated on this machine, and the fleet
+  swept: every own repository merged through its own pull request (the
+  two pilot packs and the rest, except happier below), one commit
+  per repository, a text commit where a CI step, script or doc named an old
+  name, and `greengate agents-md` where AGENTS.md was behind. Not swept:
+  `Apicil/archi-mcp` (the employer's, awaits the person's word). happier's
+  rename commit landed on `dev` directly: its worktree branch tracked
+  `origin/dev` and `amont land` pushed there; the sweep brief now unsets
+  the upstream first. Four Go repositories waited on a red govulncheck
+  (GO-2026-6859, fixed in go1.26.11) and took a toolchain bump PR first.
+  Their rename PRs were brought up to date with `gh pr update-branch` (a
+  merge commit, no force-push). The local `audit-go` rehearsal still runs
+  govulncheck under the machine's Go, not go.mod's, so it reports the
+  advisory after the bump: CI's result is the proof.
+- 2026-11-12 (Phase 5) — left for the census (Phase 6), not renamed
+  because a manifest edit needs the person's re-trust or the code still
+  reads the name: manifest comments naming `amont.*`, two `amont.conf`
+  globs in homelab's `greengate.conf`, `inputs = ["amont.conf"]` in
+  relais.toml (policy hash pinned by a test), and the Rust constants.
+  The `package.json` and Dockerfile pins of an old `amont` version are a
+  dependency choice, not a data name: the agents did not guess at them.
+  All of it is listed in Phase 6.
 
 ## Verification
 
@@ -424,7 +459,14 @@ fleet's shims are re-baked.
   - `mdbook build docs` succeeds; every in-page anchor link resolves except one broken on main before this change (`checks.md#the-stamp-contract`).
   - A scratch repository, this branch's binary: `trust` prints nothing on stdout and its listing and verdict on stderr; the second `trust` says "already trusted" on stderr; `trust --show` prints the manifest name, listing and state on stdout → `trust_talks_on_stderr_and_trust_show_answers_on_stdout` passes (`trust_display`, `names`: 34).
   - The CHANGELOG and `docs/install.md` give the ordered upgrade (empty slot directory, install the three, first command, `migrate --global`, `migrate --tracked` or the fleet sweep, `doctor` last) and the rollback the code supports (`migrate --reverse` per repository and `--global`, revert the sweep commits, repoint the kubeconfig).
-  - Still to observe in the install window: 4.0.0 released and installed; this machine migrated (a commit and a push pass); the detached lane on a real repository; the sweep merged in every repository; `migrate --reverse` on a scratch repository.
+
+  Phase 5, observed 2026-11-11 and 2026-11-12:
+  - 4.0.0 released and installed: input `greengate --version` after the install, expected 4.0.0, actual `greengate 4.0.0`; the release run concluded success on every job (tag, audit, every platform, crates.io, tap, npm; the public registry's `latest` read 4.0.0 a few minutes after a first 404 that was registry lag).
+  - This machine migrated: input the first 4.0 command in the live checkout and `greengate migrate --global`, expected the local and global `amont.*` keys moved and the kubeconfig repointed to `~/.config/greengate/kube/homelab.yaml`, actual both done; since then every commit and push of the sweep passed its hooks through `amont land` on 4.0 names.
+  - `migrate --reverse` on a scratch repository: tested once, expected the 3.x names back and a `greengate-reversed` marker, actual as expected.
+  - The detached lane on a real repository: proven in the install window on a real repository's snapshot, as the Phase 4 log entry asked.
+  - The sweep: expected every own repository merged by pull request; actual merged in all but happier (landed on `dev` directly, see the Decision log) and `Apicil/archi-mcp` (excluded, the employer's).
+  - Not observed yet, so Phase 5 keeps these as its remainder: the Outcome check (a day after the sweep) and the second homelab change.
 
 ## Outcome
 
@@ -457,5 +499,7 @@ has one slot queue, and no held store was lost.
   fixed: state paths 4.0 really writes, the shim placeholder, the Windows install text, an ordered upgrade and the rollback the code supports, the temporary old-name fallback, the names that stay, doctor last, trust's stdout contract.
   Deliberate (tui, low): the CHANGELOG's upgrade list and install.md's number the rename step 4 and 5 (install.md splits install and first command in two); both name it in words too, and both end on the same completion condition.
   Kept: the `amont_cmd()` test-harness name; `amont-snapshots` named as kept (a later step); the CHANGELOG's `## Unreleased` becomes `## 4.0.0` in the release commit.
+
+- Phase 5 (plan text only), round 1: implementation-review approve-with-changes (46 s) · blocking and high fixed (observed rows for the install-window checks; Phase 6 waits on `Apicil/archi-mcp` and the Outcome check) · medium and low fixed (Phase 6 file list, the reason for the version pins, the `audit-go` toolchain follow-up). Kept as a hand check: happier's `dev` is its default branch and the rename commit landed there without a pull request (recorded in the Decision log; its AGENTS.md and CLAUDE.md carry no generated greengate block, so nothing there was behind).
 
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
