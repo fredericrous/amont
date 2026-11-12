@@ -392,7 +392,7 @@ fn settle_with(
             Ok(()) => {
                 written += 1;
                 if signer.is_none() {
-                    say_collected(&pass.gate, &pass.tree, None);
+                    say_collected(&pass.gate, &pass.tree);
                 }
             }
             Err(why) => {
@@ -491,23 +491,20 @@ fn passed(record: &Pending) -> impl Iterator<Item = &str> {
         .map(|g| g.id.as_str())
 }
 
-/// The line a collected pass is announced with, ONE per gate: with the
-/// principal when the signer's block was filed, with `rest` (why the laptop
-/// signs it, and what to do) when it was not. stderr: `greengate stamps
-/// --json` collects first, and its stdout is the JSON object alone.
-fn say_collected(gate: &str, tree: &str, principal: Option<&str>) {
+/// The line a collected pass is announced with when the laptop signs it as
+/// today (no in-cluster signer). stderr: `greengate stamps --json` collects
+/// first, and its stdout is the JSON object alone.
+fn say_collected(gate: &str, tree: &str) {
     eprintln!(
-        "collected the cluster pass of {} for tree {}{}",
+        "collected the cluster pass of {} for tree {}",
         crate::ui::sanitize(gate),
-        short(tree),
-        principal
-            .map(|p| format!(", signed by {}", crate::ui::sanitize(p)))
-            .unwrap_or_default()
+        short(tree)
     );
 }
 
-/// A collected gate the laptop signs: `collected <gate> for tree <short>;
-/// <rest>`, one line.
+/// A collected gate in the in-cluster signer mode: `collected <gate> for
+/// tree <short>; <rest>`, one line, whether the signer's block was filed
+/// (`signed by <principal>`) or the laptop signs it (why, and what to do).
 fn say_collected_unsigned(gate: &str, tree: &str, rest: &str) {
     eprintln!(
         "collected {} for tree {}; {}",
@@ -524,7 +521,11 @@ fn next_step(record: &Pending, refusal: &BlockRefusal, namespace: &str) -> Strin
             format!("check {} lists cluster-signer@{PLATFORM}", signers_shown())
         }
         BlockRefusal::Content(_) => {
-            format!("see kubectl -n {namespace} get configmap {}", record.name)
+            format!(
+                "see kubectl --kubeconfig {} -n {namespace} get configmap {}",
+                record.kubeconfig.display(),
+                record.name
+            )
         }
     }
 }
@@ -533,7 +534,9 @@ fn next_step(record: &Pending, refusal: &BlockRefusal, namespace: &str) -> Strin
 fn say_signed(record: &Pending, signed: &Signed) {
     for gate in passed(record) {
         match signed {
-            Signed::Filed(principal) => say_collected(gate, &record.tree, Some(principal)),
+            Signed::Filed(principal) => {
+                say_collected_unsigned(gate, &record.tree, &format!("signed by {principal}"))
+            }
             Signed::NotReady => {
                 eprintln!(
                     "signer block for {} not ready; next collect retries",
@@ -593,8 +596,20 @@ fn signers_shown() -> String {
         })
         .map_or_else(
             || ".github/allowed_signers".to_string(),
-            |p| p.display().to_string(),
+            |p| shown_from_top(&p),
         )
+}
+
+/// `path` relative to the repository's top level when it is inside it (a
+/// refusal line stays short), else as it is.
+fn shown_from_top(path: &std::path::Path) -> String {
+    crate::git::stdout(&["rev-parse", "--show-toplevel"])
+        .and_then(|top| {
+            path.strip_prefix(&top)
+                .ok()
+                .map(|rel| rel.display().to_string())
+        })
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// The signer's ConfigMap for `record` in `configmaps`: named after its

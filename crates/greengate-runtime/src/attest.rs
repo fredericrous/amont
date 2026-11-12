@@ -643,11 +643,11 @@ pub(crate) fn signer_block(
     if blocks.len() != 1 {
         return Err(Content(format!("{} signed blocks, not one", blocks.len())));
     }
-    let b = blocks.remove(0);
-    if b.payload.split('\n').next() != Some(FORMAT) {
+    let signed_block = blocks.remove(0);
+    if signed_block.payload.split('\n').next() != Some(FORMAT) {
         return Err(Content(format!("not an {FORMAT} payload")));
     }
-    let on = field(&b.payload, "platform");
+    let on = field(&signed_block.payload, "platform");
     if on != Some(crate::cluster::PLATFORM) {
         return Err(Content(format!(
             "its platform is {}, not {}",
@@ -655,7 +655,7 @@ pub(crate) fn signer_block(
             crate::cluster::PLATFORM
         )));
     }
-    let claimed = field(&b.payload, "tree");
+    let claimed = field(&signed_block.payload, "tree");
     if claimed != Some(tree) {
         // The signer signed another run: the block's content, not the key.
         return Err(Content(format!(
@@ -663,8 +663,14 @@ pub(crate) fn signer_block(
             claimed.unwrap_or("missing")
         )));
     }
-    let principal = git_attest::sign::verify(NAMESPACE, &b.payload, &b.signature, signers, None)
-        .map_err(|e| Signer(e.to_string()))?;
+    let principal = git_attest::sign::verify(
+        NAMESPACE,
+        &signed_block.payload,
+        &signed_block.signature,
+        signers,
+        None,
+    )
+    .map_err(|e| Signer(e.to_string()))?;
     if bound_platform(&principal) != Some(crate::cluster::PLATFORM) {
         return Err(Signer(format!(
             "{principal} is not a principal bound to {}",
@@ -673,12 +679,12 @@ pub(crate) fn signer_block(
     }
     Ok(SignerBlock {
         principal,
-        gates: field(&b.payload, "gates")
+        gates: field(&signed_block.payload, "gates")
             .unwrap_or("")
             .split_whitespace()
             .map(str::to_string)
             .collect(),
-        body: block(&b.payload, &b.signature),
+        body: block(&signed_block.payload, &signed_block.signature),
     })
 }
 
@@ -698,9 +704,9 @@ fn signer_notes_ref() -> String {
 pub(crate) fn file_signer_block(body: &str, keys: &[&str]) -> Result<(), String> {
     let notes_ref = signer_notes_ref();
     for key in keys {
-        let item = [((*key).to_string(), body.to_string())];
+        let entry = [((*key).to_string(), body.to_string())];
         if matches!(
-            git_attest::notes::publish_local(here(), None, &notes_ref, &item),
+            git_attest::notes::publish_local(here(), None, &notes_ref, &entry),
             Published::Error
         ) {
             return Err(format!(

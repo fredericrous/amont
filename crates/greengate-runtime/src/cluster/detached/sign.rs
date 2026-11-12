@@ -239,15 +239,20 @@ enum Unsigned {
     Later,
 }
 
+/// How long ago a finished Workflow finished, as far as judging it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Age {
+    /// [`BACKLOG_SECS`] ago or less: the apiserver may still be catching up.
+    Young,
+    /// Longer ago, or when: a verdict now is final.
+    Settled,
+}
+
 /// Judge one finished Workflow from the runner namespace's list: the gates
-/// that passed, in DAG order, or why none can be signed. `young`: it
-/// finished [`BACKLOG_SECS`] ago or less, so a pod missing or unreadable is
-/// [`Unsigned::Later`], not a skip. Pure.
-fn judge_workflow(
-    list: &Value,
-    wf: &Value,
-    young: bool,
-) -> Result<(String, Vec<String>), Unsigned> {
+/// that passed, in DAG order, or why none can be signed. A [`Age::Young`]
+/// Workflow with a pod missing or unreadable is [`Unsigned::Later`], not a
+/// skip. Pure.
+fn judge_workflow(list: &Value, wf: &Value, age: Age) -> Result<(String, Vec<String>), Unsigned> {
     let metadata = wf.get("metadata");
     let name = text(metadata, "name").unwrap_or_default();
     let skip = |tree: Option<&str>, reason: String| Unsigned::Skip {
@@ -285,7 +290,7 @@ fn judge_workflow(
     // is judged again later rather than skipped for good, so a gate is never
     // left out of a block for that reason alone. A judge refusal is a final
     // verdict whatever the age.
-    if unseen && young {
+    if unseen && age == Age::Young {
         return Err(Unsigned::Later);
     }
     if passed.is_empty() {
@@ -341,14 +346,18 @@ pub(super) fn plan_pass(runners: &[(&str, Value)], signer: &Value, now: u64) -> 
             // Without a `finishedAt` the age is unknown: old, so that a
             // Workflow is never held back for good.
             let finished = text(status, "finishedAt").and_then(epoch_of);
-            let young = finished.is_some_and(|at| now.saturating_sub(at) <= BACKLOG_SECS);
-            if !young && finished.is_some() {
+            let age = if finished.is_some_and(|at| now.saturating_sub(at) <= BACKLOG_SECS) {
+                Age::Young
+            } else {
+                Age::Settled
+            };
+            if age == Age::Settled && finished.is_some() {
                 planned.backlog.push(name.to_string());
             }
             let label = text(metadata.and_then(|m| m.get("labels")), RUN_LABEL_KEY)
                 .unwrap_or_default()
                 .to_string();
-            planned.actions.push(match judge_workflow(list, wf, young) {
+            planned.actions.push(match judge_workflow(list, wf, age) {
                 Ok((tree, gates)) => Action::Sign {
                     workflow: name.to_string(),
                     namespace: namespace.to_string(),
@@ -525,13 +534,12 @@ fn short(oid: &str) -> &str {
 /// `$HOME/heartbeat`: the liveness probe's evidence that the loop turns, and
 /// whether the last pass failed. Best-effort; a failure is said, never a
 /// failed pass.
-fn heartbeat(now: u64, clean: bool) {
+fn heartbeat(now: u64, verdict: &str) {
     let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
         say("error heartbeat: HOME is not set");
         return;
     };
     let path = Path::new(&home).join("heartbeat");
-    let verdict = if clean { "clean" } else { "failed" };
     if let Err(e) = std::fs::write(&path, format!("{now} {verdict}\n")) {
         say(&format!("error heartbeat: {}: {e}", path.display()));
     }
@@ -542,7 +550,7 @@ fn heartbeat(now: u64, clean: bool) {
 fn run_pass(access: &Access, key: &Path) -> bool {
     let now = crate::gate_evidence::now();
     let clean = pass(access, key, now);
-    heartbeat(now, clean);
+    heartbeat(now, if clean { "clean" } else { "failed" });
     clean
 }
 
@@ -675,9 +683,7 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
                 }
             }
             Action::Delete { configmap } => {
-                if configmap.is_empty() {
-                    continue;
-                }
+                // `configmaps()` lists only named ConfigMaps.
                 if let Err(why) = access.delete(configmap) {
                     say(&format!(
                         "error {configmap}: the expired ConfigMap was not deleted: {why}"
@@ -700,6 +706,11 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
     ));
     clean
 }
+
+/// SIGINT's number, which POSIX fixes at 2. Named here rather than read from
+/// `posix_signal`, which is unix-only: this module builds on every target, and
+/// off unix no handler is installed, so [`STOP`] stays 0 there.
+const SIGINT_NUMBER: i32 = 2;
 
 /// The first SIGTERM or SIGINT records itself in [`STOP`] and nothing else:
 /// an atomic store is async-signal-safe, and the loop polls the flag (every
@@ -740,7 +751,7 @@ fn install_stop_handler() {}
 
 /// The name of a stop signal.
 fn signal_name(sig: i32) -> &'static str {
-    if sig == crate::posix_signal::SIGINT {
+    if sig == SIGINT_NUMBER {
         "SIGINT"
     } else {
         "SIGTERM"
@@ -830,7 +841,7 @@ pub(super) fn sign_command(args: &[std::ffi::OsString]) -> i32 {
         "stopped: {} after the current run",
         signal_name(sig)
     ));
-    if sig == crate::posix_signal::SIGINT {
+    if sig == SIGINT_NUMBER {
         130
     } else {
         0

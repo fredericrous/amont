@@ -1962,13 +1962,13 @@ fn an_in_cluster_block_is_filed_by_collect_and_published_by_the_push() {
     assert_eq!(code, 0, "{text}");
     assert!(
         text.contains(&format!(
-            "collected the cluster pass of pre-push-lint for tree {}, signed by {SIGNER_PRINCIPAL}",
+            "collected pre-push-lint for tree {}; signed by {SIGNER_PRINCIPAL}",
             &l.tree[..8]
         )),
         "{text}"
     );
     assert_eq!(
-        text.matches("collected the cluster pass of").count(),
+        text.matches("collected pre-push-lint for tree").count(),
         1,
         "{text}"
     );
@@ -2056,12 +2056,20 @@ fn a_signer_block_for_another_tree_is_refused() {
     l.signer_answers(&wf, &l.signer_block(&other, "pre-push-lint"), None);
     let (code, text) = l.collect();
     assert_eq!(code, 0, "{text}");
+    // The hint names the kubeconfig the laptop reaches the cluster with: a
+    // machine key, not the default context.
     assert!(
         text.contains(&format!(
             "collected pre-push-lint for tree {}; signer block refused: it is for tree {other}, not {}; \
-             the laptop signs it; see kubectl -n attest-signer get configmap {}\n",
+             the laptop signs it; see kubectl --kubeconfig ",
             &l.tree[..8],
             l.tree,
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "kubeconfig.yaml -n attest-signer get configmap {}\n",
             wf.name
         )),
         "{text}"
@@ -2103,14 +2111,14 @@ fn a_signer_block_not_there_yet_is_awaited_and_filed_by_the_next_collect() {
     assert_eq!(code, 0, "{second}");
     assert!(
         second.contains(&format!(
-            "collected the cluster pass of pre-push-lint for tree {}, signed by {SIGNER_PRINCIPAL}",
+            "collected pre-push-lint for tree {}; signed by {SIGNER_PRINCIPAL}",
             &l.tree[..8]
         )),
         "{second}"
     );
     assert_eq!(
         format!("{first}{second}")
-            .matches("collected the cluster pass of")
+            .matches("collected pre-push-lint for tree")
             .count(),
         1,
         "said once: {first} {second}"
