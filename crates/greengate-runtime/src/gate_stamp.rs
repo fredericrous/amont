@@ -93,7 +93,7 @@ use std::path::PathBuf;
 /// under one set: the ref it sits in names the set, and its header must be
 /// that set's, so the two never mix inside one note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GateNames {
+pub(crate) struct GateNames {
     /// First line of every note body (and of the marker file).
     pub format: &'static str,
     /// The tree- and commit-keyed stamps.
@@ -114,7 +114,7 @@ pub struct GateNames {
 /// The names stamps have been written under since amont 1.x, and still are
 /// until [`WRITE`] becomes [`GREEN`] (the plan's Phase 4). Removed at the
 /// census.
-pub const LEGACY: GateNames = GateNames {
+pub(crate) const LEGACY: GateNames = GateNames {
     format: "amont-gate-v1",
     notes_ref: "amont-gate",
     inputs_ref: "amont-gate-inputs",
@@ -125,7 +125,7 @@ pub const LEGACY: GateNames = GateNames {
 };
 
 /// The names stamps are written under from Phase 4. Read first today.
-pub const GREEN: GateNames = GateNames {
+pub(crate) const GREEN: GateNames = GateNames {
     format: "greengate-gate-v1",
     notes_ref: "greengate-gate",
     inputs_ref: "greengate-gate-inputs",
@@ -135,13 +135,14 @@ pub const GREEN: GateNames = GateNames {
     attest: git_attest::format::GREEN,
 };
 
-/// The ONE owner of what is written: [`FORMAT`] and every `*_REF` below
-/// derive from it. LEGACY until Phase 4.
-pub const WRITE: GateNames = LEGACY;
+/// The ONE owner of what is written: [`FORMAT`] and the short `*_REF`
+/// constants below derive from it. The `*_FULL_REF` constants are literals,
+/// held equal to `refs/notes/{short}` by a test. LEGACY until Phase 4.
+pub(crate) const WRITE: GateNames = LEGACY;
 
 /// The order a stamp is read in: the green set first, the legacy one only
 /// for a key the green ref holds no note for.
-pub const READ: [GateNames; 2] = [GREEN, LEGACY];
+pub(crate) const READ: [GateNames; 2] = [GREEN, LEGACY];
 
 /// First token of the marker file and of every note body. Versioned like
 /// `staged_only::FORMAT`: a future amont that changes the shape bumps this,
@@ -151,7 +152,8 @@ pub const FORMAT: &str = WRITE.format;
 /// The notes ref, spelled the way `git notes --ref` wants it.
 pub const NOTES_REF: &str = WRITE.notes_ref;
 
-/// The same ref, fully qualified — what `git update-ref -d` needs.
+/// The same ref, fully qualified — what `git update-ref -d` needs. A literal,
+/// not derived from [`WRITE`]; a test holds it equal to `refs/notes/{NOTES_REF}`.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 
 /// The second ref: stamps keyed by a gate's declared-input fingerprint
@@ -489,6 +491,10 @@ fn stamp_in(which: fn(&GateNames) -> &'static str, key: &str) -> Note {
 /// The note at `key` in `notes_ref`, one of `set`'s refs, parsed under
 /// `set`'s header; `None` when the ref holds no note there (or git would not
 /// answer, which reads the same: no stamp).
+///
+/// A git failure on the green ref returns `None`, so a legacy note may answer
+/// in its place. That is the safe direction: the gate then re-runs, or reads
+/// the older stamp.
 fn read_in(set: &GateNames, notes_ref: &str, key: &str) -> Option<Note> {
     crate::git::stdout(&["notes", "--ref", notes_ref, "show", key])
         .map(|body| Note::parse_as(&body, set.format))
@@ -1202,10 +1208,20 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 /// which are the user's statements and are never touched.
 pub fn forget() -> bool {
     let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());
-    let notes = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
-    let inputs = crate::git::succeeds(&["update-ref", "-d", INPUTS_FULL_REF]);
-    let cluster = crate::git::succeeds(&["update-ref", "-d", CLUSTER_FULL_REF]);
-    marker || notes || inputs || cluster
+    // Every ref of every name set: a green note is ours too.
+    let mut deleted = false;
+    for set in READ {
+        for r in full_refs(&set) {
+            deleted |= crate::git::succeeds(&["update-ref", "-d", &r]);
+        }
+    }
+    marker || deleted
+}
+
+/// The four fully qualified refs of one name set.
+fn full_refs(set: &GateNames) -> [String; 4] {
+    [set.notes_ref, set.inputs_ref, set.cluster_ref, set.done_ref]
+        .map(|short| format!("refs/notes/{short}"))
 }
 
 /// The cluster tokens on `tree` (ADR-0016). Read only for a trusted
@@ -1247,10 +1263,13 @@ pub(crate) fn cluster_stamps_for(commits: &[String]) -> HashMap<String, (String,
 pub fn forget_in(repo: &std::path::Path) -> bool {
     let marker = crate::git::stdout_in(repo, &["rev-parse", "--absolute-git-dir"])
         .is_some_and(|dir| std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok());
-    let notes = crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF]);
-    let inputs = crate::git::succeeds_in(repo, &["update-ref", "-d", INPUTS_FULL_REF]);
-    let cluster = crate::git::succeeds_in(repo, &["update-ref", "-d", CLUSTER_FULL_REF]);
-    marker || notes || inputs || cluster
+    let mut deleted = false;
+    for set in READ {
+        for r in full_refs(&set) {
+            deleted |= crate::git::succeeds_in(repo, &["update-ref", "-d", &r]);
+        }
+    }
+    marker || deleted
 }
 
 #[cfg(test)]
@@ -2460,7 +2479,7 @@ mod tests {
                     set.done_ref
                 );
             });
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
         }
     }
 
@@ -2498,7 +2517,7 @@ mod tests {
             assert_eq!(tree_tokens(&tree), ["test@new"]);
             assert_eq!(cluster_tokens(&tree), ["suite@new"]);
         });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
     #[test]
@@ -2524,7 +2543,7 @@ mod tests {
                 assert!(tree_tokens(&tree).is_empty(), "{}", sits_in.notes_ref);
                 assert!(cluster_tokens(&tree).is_empty(), "{}", sits_in.cluster_ref);
             });
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
         }
     }
 
@@ -2558,7 +2577,7 @@ mod tests {
             );
             assert_eq!(stamps_of(&head), ["test@green"]);
         });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
     #[test]
@@ -2578,7 +2597,41 @@ mod tests {
             let head = plan_only_commit(&dir);
             assert_eq!(stamps_of(&head), ["test@green"]);
         });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn forget_removes_the_refs_of_both_name_sets() {
+        let (dir, _head, tree) = unstamped("forget-both");
+        plant(
+            &dir,
+            GREEN.notes_ref,
+            &tree,
+            &format!("{} test@g", GREEN.format),
+        );
+        plant(
+            &dir,
+            LEGACY.notes_ref,
+            &tree,
+            &format!("{} test@l", LEGACY.format),
+        );
+        in_repo(&dir, || {
+            assert_eq!(tree_tokens(&tree).len(), 1);
+            assert!(forget());
+            assert!(tree_tokens(&tree).is_empty(), "{:?}", tree_tokens(&tree));
+        });
+        for set in READ {
+            for r in full_refs(&set) {
+                let out = std::process::Command::new("git")
+                    .args(["-C"])
+                    .arg(&dir)
+                    .args(["rev-parse", "--verify", "-q", &r])
+                    .output()
+                    .unwrap();
+                assert!(!out.status.success(), "{r} survived forget");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
     #[test]
@@ -2606,6 +2659,6 @@ mod tests {
             let written = git(&dir, &["notes", "--ref", LEGACY.notes_ref, "show", &tree]);
             assert_eq!(written, format!("{} suite@p", LEGACY.format));
         });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 }

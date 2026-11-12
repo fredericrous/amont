@@ -23,3 +23,7 @@ repository; git-attest's Phase 1 shipped as git-attest 1.9.0.
 
 ## Code review
 - amont: backend, lang:rust, unix, architect (lang:typescript left out: no TypeScript here; tui left out: one doctor line)
+
+## Decision log
+
+- gate_evidence.rs history_in and hooks/audit.rs read only the written ref; they follow WRITE and move with Phase 4 (implementation review, 11-12).

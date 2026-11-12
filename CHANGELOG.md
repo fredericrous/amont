@@ -25,7 +25,9 @@ missing here.
     writers switch, a block under the new names is refused, and the laptop
     signs those gates.
   - Each verification `greengate attest covered` and `greengate stamps` make
-    says `verified under <namespace>` on stderr, in git-attest's wording.
+    says `verified under <namespace>` on stderr, in git-attest's wording
+    (the line is stable: a count of those lines covers greengate's
+    verifications too).
   - git-attest 1.9 is required (it reads both names in `covered`).
 
 ## v4.1.0
