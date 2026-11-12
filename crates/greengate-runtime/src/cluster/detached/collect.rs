@@ -18,6 +18,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::attest::{BlockRefusal, SignerBlock};
 use crate::json_read::Value;
 
 use super::super::{
@@ -133,7 +134,11 @@ enum Signed {
     /// No ConfigMap yet, or none could be read or filed: the record waits.
     NotReady,
     /// A block that does not check: the laptop signs at the push.
-    Refused(String),
+    /// `namespace` is the signer's, where the ConfigMap can be read.
+    Refused {
+        refusal: BlockRefusal,
+        namespace: String,
+    },
     /// The signer judged no gate a pass: the laptop signs at the push.
     Skipped(String),
 }
@@ -206,7 +211,7 @@ fn collect_from(store: &Store) -> Collected {
                         read
                     });
                     match answer {
-                        Ok(list) => match_block(record, list),
+                        Ok(list) => match_block(record, list, namespace),
                         Err(_) => Signed::NotReady,
                     }
                 };
@@ -486,7 +491,9 @@ fn passed(record: &Pending) -> impl Iterator<Item = &str> {
         .map(|g| g.id.as_str())
 }
 
-/// The line a collected pass is announced with. stderr: `amont stamps
+/// The line a collected pass is announced with, ONE per gate: with the
+/// principal when the signer's block was filed, with `rest` (why the laptop
+/// signs it, and what to do) when it was not. stderr: `greengate stamps
 /// --json` collects first, and its stdout is the JSON object alone.
 fn say_collected(gate: &str, tree: &str, principal: Option<&str>) {
     eprintln!(
@@ -499,34 +506,64 @@ fn say_collected(gate: &str, tree: &str, principal: Option<&str>) {
     );
 }
 
+/// A collected gate the laptop signs: `collected <gate> for tree <short>;
+/// <rest>`, one line.
+fn say_collected_unsigned(gate: &str, tree: &str, rest: &str) {
+    eprintln!(
+        "collected {} for tree {}; {}",
+        crate::ui::sanitize(gate),
+        short(tree),
+        crate::ui::sanitize(rest)
+    );
+}
+
+/// What a person checks after a refusal, by its cause.
+fn next_step(record: &Pending, refusal: &BlockRefusal, namespace: &str) -> String {
+    match refusal {
+        BlockRefusal::Signer(_) => {
+            format!("check {} lists cluster-signer@{PLATFORM}", signers_shown())
+        }
+        BlockRefusal::Content(_) => {
+            format!("see kubectl -n {namespace} get configmap {}", record.name)
+        }
+    }
+}
+
 /// What the signer's answer means for each passed gate of `record`, said.
 fn say_signed(record: &Pending, signed: &Signed) {
     for gate in passed(record) {
-        let shown = crate::ui::sanitize(gate);
         match signed {
             Signed::Filed(principal) => say_collected(gate, &record.tree, Some(principal)),
             Signed::NotReady => {
-                eprintln!("signer block for {shown} not ready; next collect retries");
+                eprintln!(
+                    "signer block for {} not ready; next collect retries",
+                    crate::ui::sanitize(gate)
+                );
             }
-            Signed::Refused(why) => {
-                say_collected(gate, &record.tree, None);
+            Signed::Refused { refusal, namespace } => {
                 log_line(
                     gate,
-                    &format!("detached {}: signer block refused: {why}", record.name),
+                    &format!(
+                        "detached {}: signer block refused: {}",
+                        record.name,
+                        refusal.reason()
+                    ),
                 );
-                eprintln!(
-                    "signer block for {shown} refused: {}; check {} lists cluster-signer@{PLATFORM}",
-                    crate::ui::sanitize(why),
-                    signers_shown()
+                say_collected_unsigned(
+                    gate,
+                    &record.tree,
+                    &format!(
+                        "signer block refused: {}; the laptop signs it; {}",
+                        refusal.reason(),
+                        next_step(record, refusal, namespace)
+                    ),
                 );
             }
-            Signed::Skipped(why) => {
-                say_collected(gate, &record.tree, None);
-                eprintln!(
-                    "signer skipped {shown}: {}; the laptop signs it",
-                    crate::ui::sanitize(why)
-                );
-            }
+            Signed::Skipped(why) => say_collected_unsigned(
+                gate,
+                &record.tree,
+                &format!("signer skipped: {why}; the laptop signs it"),
+            ),
         }
     }
 }
@@ -538,10 +575,10 @@ fn unsigned_at_ttl(record: &Pending) {
             gate,
             &format!("detached {}: unsigned: no signer block", record.name),
         );
-        say_collected(gate, &record.tree, None);
-        eprintln!(
-            "signer block for {} did not arrive before the Workflow TTL; the laptop signs it",
-            crate::ui::sanitize(gate)
+        say_collected_unsigned(
+            gate,
+            &record.tree,
+            "signer block did not arrive before the Workflow TTL; the laptop signs it",
         );
     }
 }
@@ -560,13 +597,10 @@ fn signers_shown() -> String {
         )
 }
 
-/// The signer's ConfigMap for `record` in `configmaps`, judged: its block
-/// checked by attest's reader and verifier against the repository's
-/// `allowed_signers` (the file a push-time verification reads), for the
-/// record's tree, naming every gate that passed in it; then filed under the
-/// tree, and under the snapshot commit when this repository has it.
-fn match_block(record: &Pending, configmaps: &Value) -> Signed {
-    let found = configmaps
+/// The signer's ConfigMap for `record` in `configmaps`: named after its
+/// Workflow, labelled with its run and as a signer block.
+fn signer_configmap<'a>(record: &Pending, configmaps: &'a Value) -> Option<&'a Value> {
+    configmaps
         .get("items")
         .map(Value::items)
         .unwrap_or(&[])
@@ -577,33 +611,36 @@ fn match_block(record: &Pending, configmaps: &Value) -> Signed {
             text(metadata, "name") == Some(record.name.as_str())
                 && text(labels, RUN_LABEL_KEY) == Some(record.label.as_str())
                 && text(labels, SIGNER_LABEL) == Some(SIGNER_LABEL_VALUE)
-        });
-    let Some(cm) = found else {
+        })
+}
+
+/// What the signer wrote for `record` in `configmaps` (in `namespace`):
+/// nothing yet, a skip, or a block [`judge_block`] judges, then files under
+/// the tree, and under the snapshot commit when this repository has it.
+fn match_block(record: &Pending, configmaps: &Value, namespace: &str) -> Signed {
+    let Some(cm) = signer_configmap(record, configmaps) else {
         return Signed::NotReady;
     };
-    let data = cm.get("data");
-    let block = text(data, "block").unwrap_or("");
+    let fields = cm.get("data");
+    let block = text(fields, "block").unwrap_or("");
     if block.is_empty() {
         return Signed::Skipped(
-            text(data, "skipped")
+            text(fields, "skipped")
                 .filter(|why| !why.is_empty())
                 .unwrap_or("no reason given")
                 .to_string(),
         );
     }
-    let Some(signers) = crate::attest::default_signers() else {
-        return Signed::Refused("the repository has no allowed_signers".into());
-    };
-    let checked = match crate::attest::signer_block(block, &record.tree, &signers) {
+    let signers = crate::attest::default_signers();
+    let checked = match judge_block(record, block, signers.as_deref()) {
         Ok(checked) => checked,
-        Err(why) => return Signed::Refused(why),
+        Err(refusal) => {
+            return Signed::Refused {
+                refusal,
+                namespace: namespace.to_string(),
+            }
+        }
     };
-    let missing: Vec<&str> = passed(record)
-        .filter(|g| !checked.gates.iter().any(|named| named == g))
-        .collect();
-    if !missing.is_empty() {
-        return Signed::Refused(format!("it does not name {}", missing.join(" ")));
-    }
     let commit = &record.source.oid;
     let mut keys = vec![record.tree.as_str()];
     if !commit.is_empty()
@@ -611,18 +648,46 @@ fn match_block(record: &Pending, configmaps: &Value) -> Signed {
     {
         keys.push(commit);
     }
-    if crate::attest::file_signer_block(&checked.body, &keys) {
-        Signed::Filed(checked.principal)
-    } else {
-        log_line(
-            passed(record).next().unwrap_or("collect"),
-            &format!(
-                "detached {}: the signer block could not be filed; the next collect retries",
-                record.name
-            ),
-        );
-        Signed::NotReady
+    match crate::attest::file_signer_block(&checked.body, &keys) {
+        Ok(()) => Signed::Filed(checked.principal),
+        Err(why) => {
+            log_line(
+                passed(record).next().unwrap_or("collect"),
+                &format!(
+                    "detached {}: the signer block could not be filed ({why}); the next collect retries",
+                    record.name
+                ),
+            );
+            Signed::NotReady
+        }
     }
+}
+
+/// `block` judged for `record`: checked by attest's reader and verifier
+/// against `signers`, the repository's `allowed_signers` (the file a
+/// push-time verification reads), for the record's tree, naming every gate
+/// that passed in it. Writes nothing; the verification runs `ssh-keygen`.
+fn judge_block(
+    record: &Pending,
+    block: &str,
+    signers: Option<&std::path::Path>,
+) -> Result<SignerBlock, BlockRefusal> {
+    let Some(signers) = signers else {
+        return Err(BlockRefusal::Signer(
+            "the repository has no allowed_signers".into(),
+        ));
+    };
+    let checked = crate::attest::signer_block(block, &record.tree, signers)?;
+    let missing: Vec<&str> = passed(record)
+        .filter(|g| !checked.gates.iter().any(|named| named == g))
+        .collect();
+    if !missing.is_empty() {
+        return Err(BlockRefusal::Content(format!(
+            "it does not name {}",
+            missing.join(" ")
+        )));
+    }
+    Ok(checked)
 }
 
 fn short(oid: &str) -> &str {

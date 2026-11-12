@@ -742,6 +742,15 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
     } else {
         args
     };
+    // `cluster sign` runs in a pod: no repository and no 3.x state to move,
+    // and its arguments are its own, so that `-h` prints its usage line and
+    // an unknown option is named beside it, not beside this whole text.
+    if sub == Sub::Cluster
+        && own.first().is_some_and(|a| a == "sign")
+        && !own.iter().any(|a| a == "--version" || a == "-V")
+    {
+        return greengate_runtime::cluster::cluster_command(args);
+    }
     if own.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return 0;
@@ -768,9 +777,7 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
     let exempt = matches!(
         sub,
         Sub::Restore | Sub::Uninstall | Sub::Migrate | Sub::Doctor
-    ) || own.iter().any(|a| a == "--dry-run")
-        // The signer runs in a pod: no repository and no 3.x state to move.
-        || (sub == Sub::Cluster && own.first().is_some_and(|a| a == "sign"));
+    ) || own.iter().any(|a| a == "--dry-run");
     if !exempt {
         migrate_first();
     }

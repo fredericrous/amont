@@ -605,43 +605,71 @@ pub(crate) struct SignerBlock {
     pub body: String,
 }
 
+/// Why a signer block is refused, by cause: what a person checks next
+/// differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BlockRefusal {
+    /// The signature does not verify against the repository's
+    /// `allowed_signers`, it has none, or the principal is not bound to the
+    /// cluster's platform: the signers file is what to check.
+    Signer(String),
+    /// A block about something else: not one block of this format, another
+    /// platform or tree, or a gate missing. The ConfigMap is what to read.
+    Content(String),
+}
+
+impl BlockRefusal {
+    /// The reason, as said.
+    pub(crate) fn reason(&self) -> &str {
+        match self {
+            BlockRefusal::Signer(why) | BlockRefusal::Content(why) => why,
+        }
+    }
+}
+
 /// `body` as a signer block for `tree`: exactly one git-attest block, of
 /// this format, on the cluster's platform, for `tree`, whose signature
 /// verifies against `signers` (attest's verifier, platform-bound principals
 /// enforced) as a principal bound to the cluster's platform. `Err` is the
-/// reason it is refused. Every read of the format is attest's.
-pub(crate) fn signer_block(body: &str, tree: &str, signers: &Path) -> Result<SignerBlock, String> {
+/// reason it is refused, by cause. Every read of the format is attest's.
+pub(crate) fn signer_block(
+    body: &str,
+    tree: &str,
+    signers: &Path,
+) -> Result<SignerBlock, BlockRefusal> {
     use git_attest::format::{bound_platform, field, split_blocks};
+    use BlockRefusal::{Content, Signer};
     let (mut blocks, _) = split_blocks(body);
     if blocks.len() != 1 {
-        return Err(format!("{} signed blocks, not one", blocks.len()));
+        return Err(Content(format!("{} signed blocks, not one", blocks.len())));
     }
     let b = blocks.remove(0);
     if b.payload.split('\n').next() != Some(FORMAT) {
-        return Err(format!("not an {FORMAT} payload"));
+        return Err(Content(format!("not an {FORMAT} payload")));
     }
     let on = field(&b.payload, "platform");
     if on != Some(crate::cluster::PLATFORM) {
-        return Err(format!(
+        return Err(Content(format!(
             "its platform is {}, not {}",
             on.unwrap_or("missing"),
             crate::cluster::PLATFORM
-        ));
+        )));
     }
     let claimed = field(&b.payload, "tree");
     if claimed != Some(tree) {
-        return Err(format!(
+        // The signer signed another run: the block's content, not the key.
+        return Err(Content(format!(
             "it is for tree {}, not {tree}",
             claimed.unwrap_or("missing")
-        ));
+        )));
     }
     let principal = git_attest::sign::verify(NAMESPACE, &b.payload, &b.signature, signers, None)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Signer(e.to_string()))?;
     if bound_platform(&principal) != Some(crate::cluster::PLATFORM) {
-        return Err(format!(
+        return Err(Signer(format!(
             "{principal} is not a principal bound to {}",
             crate::cluster::PLATFORM
-        ));
+        )));
     }
     Ok(SignerBlock {
         principal,
@@ -665,16 +693,22 @@ fn signer_notes_ref() -> String {
 /// File a checked signer block in the local-only notes ([`signer_notes_ref`])
 /// under each of `keys` (the tree, and the commit when known), where the next
 /// push finds it. Never pushed from here: the push publishes it to the
-/// remote's [`NOTES_REF`] with its own blocks.
-pub(crate) fn file_signer_block(body: &str, keys: &[&str]) -> bool {
-    let items: Vec<(String, String)> = keys
-        .iter()
-        .map(|k| ((*k).to_string(), body.to_string()))
-        .collect();
-    !matches!(
-        git_attest::notes::publish_local(here(), None, &signer_notes_ref(), &items),
-        Published::Error
-    )
+/// remote's [`NOTES_REF`] with its own blocks. `Err` names the key and the
+/// ref git could not write: attest's `publish_local` says no more than that.
+pub(crate) fn file_signer_block(body: &str, keys: &[&str]) -> Result<(), String> {
+    let notes_ref = signer_notes_ref();
+    for key in keys {
+        let item = [((*key).to_string(), body.to_string())];
+        if matches!(
+            git_attest::notes::publish_local(here(), None, &notes_ref, &item),
+            Published::Error
+        ) {
+            return Err(format!(
+                "git could not write the note on {key} in {notes_ref}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The signer blocks filed on `tree` (by a collect) that still

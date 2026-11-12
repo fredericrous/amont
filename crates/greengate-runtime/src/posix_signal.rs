@@ -1,6 +1,6 @@
 //! The raw POSIX calls a signal handler is built from, shared by the
 //! handlers this crate installs: `staged_only`'s restore-then-die handler and
-//! `cluster sign --watch`'s stop flag.
+//! `cluster sign --watch`'s stop flag (a second signal re-raised to die).
 //!
 //! Externs rather than a dependency: `scripts/check-no-deps.sh` keeps this
 //! binary crate-free, and these are five libc calls with stable signatures —

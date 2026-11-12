@@ -1499,14 +1499,44 @@ fn signer(cluster: &Cluster, args: &[&str]) -> Command {
     cmd
 }
 
-/// One pass over a finished Workflow and one already signed: exactly one
-/// ConfigMap, for the first, holding a signed v2 block of its passing gate;
-/// no create for the second; stdout empty; the heartbeat touched.
+/// A signer ConfigMap named `name`, expiring at `expires`.
+fn signer_configmap(name: &str, expires: u64) -> String {
+    format!(
+        "{{\"kind\":\"ConfigMap\",\"metadata\":{{\"name\":\"{name}\",\
+         \"annotations\":{{\"greengate.signer/expires\":\"{expires}\"}}}}}}"
+    )
+}
+
+/// One pass over a finished Workflow, one already signed, a bare Job's pod
+/// wearing the run label, and an expired ConfigMap: exactly one ConfigMap,
+/// for the first, holding a signed v2 block of its passing gate; no create
+/// for the second nor for the Job; the expired one deleted; stdout empty;
+/// the heartbeat written.
 #[test]
 fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
     let Some(l) = Lane::new(ONE) else { return };
     let wf = l.submitted();
     let other = "greengate-rh-already-signed";
+    let expired = "greengate-rh-long-gone";
+    let job_pod = wf.pod("g0", |p| {
+        p.replace(
+            &format!(
+                "\"kind\":\"Workflow\",\"name\":\"{}\",\"uid\":\"{}\"",
+                wf.name,
+                wf.uid()
+            ),
+            "\"kind\":\"Job\",\"name\":\"a-job\",\"uid\":\"uid-a-job\"",
+        )
+        .replacen(
+            &format!("\"name\":\"{}-g0\"", wf.name),
+            "\"name\":\"a-job-pod\"",
+            1,
+        )
+    });
+    assert!(
+        job_pod.contains("\"kind\":\"Job\"") && job_pod.contains("a-job-pod"),
+        "the pod is the Job's: {job_pod}"
+    );
     l.cluster.answer(
         "wf_list-greengate-gates.json",
         &list(&[
@@ -1515,14 +1545,15 @@ fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
             wf.object("Succeeded", &[("g0", "Succeeded")])
                 .replace(&wf.name, other),
             wf.pod("g0", |p| p).replace(&wf.name, other),
+            job_pod,
         ]),
     );
     l.cluster.answer(
         "cm_list.json",
-        &list(&[format!(
-            "{{\"kind\":\"ConfigMap\",\"metadata\":{{\"name\":\"{other}\",\
-             \"annotations\":{{\"greengate.signer/expires\":\"99999999999\"}}}}}}"
-        )]),
+        &list(&[
+            signer_configmap(other, 99_999_999_999),
+            signer_configmap(expired, 1),
+        ]),
     );
     l.forget_calls();
     let output = signer(&l.cluster, &[]).output().expect("greengate");
@@ -1553,9 +1584,11 @@ fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
         "-n amont-gates get workflows,pods -l greengate.run -o json",
         "-n attest-signer get configmaps -l greengate.signer=block -o json",
         "-n attest-signer create -f -",
+        &format!("-n attest-signer delete configmap {expired} --ignore-not-found"),
     ] {
         assert!(calls.contains(asked), "{asked} not in {calls}");
     }
+    assert_eq!(l.calls("delete"), 1, "{calls}");
     let cm = l.cluster.read(&format!("created-cm/{}.json", wf.name));
     for needle in [
         format!("\"greengate.run\":\"{}\"", wf.label),
@@ -1571,10 +1604,53 @@ fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
         assert!(cm.contains(&needle), "{needle} not in {cm}");
     }
     assert!(!cm.contains("\"skipped\""), "{cm}");
-    assert!(l.cluster.kube.join("home/heartbeat").exists());
+    let heartbeat = l.cluster.read("home/heartbeat");
+    let (at, verdict) = heartbeat.split_once(' ').unwrap_or_default();
+    assert!(
+        !at.is_empty() && at.bytes().all(|b| b.is_ascii_digit()) && verdict == "clean\n",
+        "{heartbeat:?}"
+    );
 }
 
-/// A missing key is a usage-class failure: one line, exit 2, no kubectl.
+/// Another signer created the ConfigMap between this pass's read and its
+/// create: said, counted as done, exit 0.
+#[test]
+fn cluster_sign_counts_a_configmap_another_signer_wrote_as_done() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.cluster.answer(
+        "wf_list-greengate-gates.json",
+        &list(&[
+            wf.object("Succeeded", &[("g0", "Succeeded")]),
+            wf.pod("g0", |p| p),
+        ]),
+    );
+    // the fake answers AlreadyExists for a ConfigMap it already holds
+    let held = l.cluster.kube.join("created-cm");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::write(held.join(format!("{}.json", wf.name)), "{}").unwrap();
+    l.forget_calls();
+    let output = signer(&l.cluster, &[]).output().expect("greengate");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "skipped {}: another signer wrote its ConfigMap first",
+            wf.name
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("signed "), "{stderr}");
+    assert_eq!(l.calls("create"), 1, "{}", l.cluster.kubectl_calls());
+    assert_eq!(
+        l.cluster.read(&format!("created-cm/{}.json", wf.name)),
+        "{}"
+    );
+}
+
+/// A missing key is a configuration error: one line saying what to set,
+/// exit 2, no kubectl. An unusable key names its path. An unknown option is
+/// a usage error; `-h` and `--help` print the usage on stdout, exit 0.
 #[test]
 fn cluster_sign_without_a_usable_key_exits_2() {
     let Some(l) = Lane::new(ONE) else { return };
@@ -1583,13 +1659,42 @@ fn cluster_sign_without_a_usable_key_exits_2() {
     cmd.env_remove("GREENGATE_SIGNER_KEY");
     let output = cmd.output().expect("greengate");
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("GREENGATE_SIGNER_KEY is not set"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "GREENGATE_SIGNER_KEY is not set: point it at the signer's private key (the mounted Secret)"
+    ));
     let mut cmd = signer(&l.cluster, &[]);
-    cmd.env("GREENGATE_SIGNER_KEY", l.cluster.kube.join("no-such-key"));
-    assert_eq!(cmd.output().expect("greengate").status.code(), Some(2));
+    let missing = l.cluster.kube.join("no-such-key");
+    cmd.env("GREENGATE_SIGNER_KEY", &missing);
+    let output = cmd.output().expect("greengate");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "GREENGATE_SIGNER_KEY names {}, which is not a usable private key: ",
+            missing.display()
+        )),
+        "{stderr}"
+    );
     let mut cmd = signer(&l.cluster, &["--bogus-word"]);
     cmd.env_remove("GREENGATE_SIGNER_KEY");
-    assert_eq!(cmd.output().expect("greengate").status.code(), Some(2));
+    let output = cmd.output().expect("greengate");
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "unknown option '--bogus-word'\nusage: greengate cluster sign [--watch]\n"
+    );
+    for help in ["-h", "--help"] {
+        let mut cmd = signer(&l.cluster, &[help]);
+        cmd.env_remove("GREENGATE_SIGNER_KEY");
+        let output = cmd.output().expect("greengate");
+        assert_eq!(output.status.code(), Some(0), "{help}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "usage: greengate cluster sign [--watch]\n",
+            "{help}"
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "", "{help}");
+    }
     assert_eq!(l.cluster.kubectl_calls(), "", "nothing was asked");
 }
 
@@ -1634,6 +1739,64 @@ fn cluster_sign_watch_stops_on_sigterm_within_two_seconds() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     assert_eq!(status.code(), Some(0), "{status}");
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(
+        stderr.contains("stopping after the current run (SIGTERM)")
+            && stderr.contains("stopped: SIGTERM after the current run"),
+        "{stderr}"
+    );
+}
+
+/// A second signal while a pass is busy (here: a kubectl call that sleeps)
+/// ends the process at once, killed by that signal.
+#[cfg(unix)]
+#[test]
+fn cluster_sign_watch_dies_on_a_second_signal() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let Some(l) = Lane::new(ONE) else { return };
+    l.cluster.answer("get_sleep", "10");
+    let started_file = l.cluster.kube.join("get-started");
+    let _ = std::fs::remove_file(&started_file); // absent is the point: a pass of rehearse may have touched it
+    let mut child = signer(&l.cluster, &["--watch"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("greengate");
+    let started = std::time::Instant::now();
+    while !started_file.exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "no kubectl call"
+        );
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("the watch ended on its own: {status}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let term = || {
+        let killed = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .expect("kill");
+        assert!(killed.success());
+    };
+    term();
+    // apart, so that the two are not one pending signal
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    term();
+    let sent = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if sent.elapsed() > std::time::Duration::from_secs(2) {
+            let _ = child.kill(); // best-effort: the assertion below says why
+            panic!("still running 2 s after the second SIGTERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status.signal(), Some(15), "{status}");
 }
 
 // `greengate.cluster.signer in-cluster`: collect files the signer's block and
@@ -1852,11 +2015,19 @@ fn a_tampered_signer_block_is_refused_and_the_laptop_signs() {
     l.signer_answers(&wf, &block, None);
     let (code, text) = l.collect();
     assert_eq!(code, 0, "{text}");
+    let line = text
+        .lines()
+        .find(|l| l.contains("signer block refused: "))
+        .unwrap_or_else(|| panic!("no refused line: {text}"));
     assert!(
-        text.contains("signer block for pre-push-lint refused: ")
-            && text.contains(&format!("lists {SIGNER_PRINCIPAL}")),
+        line.starts_with(&format!(
+            "collected pre-push-lint for tree {}; signer block refused: ",
+            &l.tree[..8]
+        )) && line.contains("; the laptop signs it; check ")
+            && line.ends_with(&format!(".github/allowed_signers lists {SIGNER_PRINCIPAL}")),
         "{text}"
     );
+    assert_eq!(text.matches("pre-push-lint").count(), 1, "one line: {text}");
     assert!(!text.contains("signed by"), "{text}");
     assert_eq!(l.pending(), "", "a refused block ends the run");
     assert_eq!(l.local_attest_note(&l.tree), "", "nothing filed");
@@ -1887,7 +2058,11 @@ fn a_signer_block_for_another_tree_is_refused() {
     assert_eq!(code, 0, "{text}");
     assert!(
         text.contains(&format!(
-            "signer block for pre-push-lint refused: it is for tree {other}"
+            "collected pre-push-lint for tree {}; signer block refused: it is for tree {other}, not {}; \
+             the laptop signs it; see kubectl -n attest-signer get configmap {}\n",
+            &l.tree[..8],
+            l.tree,
+            wf.name
         )),
         "{text}"
     );
@@ -1979,11 +2154,14 @@ fn an_awaited_block_that_never_comes_leaves_at_the_ttl() {
     let (code, text) = l.collect();
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains(
-            "signer block for pre-push-lint did not arrive before the Workflow TTL; the laptop signs it"
-        ),
+        text.contains(&format!(
+            "collected pre-push-lint for tree {}; signer block did not arrive before the Workflow TTL; \
+             the laptop signs it\n",
+            &l.tree[..8]
+        )),
         "{text}"
     );
+    assert_eq!(text.matches("pre-push-lint").count(), 1, "one line: {text}");
     assert_eq!(l.pending(), "");
     assert!(
         l.cluster
@@ -2005,9 +2183,13 @@ fn a_skipped_signer_block_leaves_the_signing_to_the_laptop() {
     let (code, text) = l.collect();
     assert_eq!(code, 0, "{text}");
     assert!(
-        text.contains("signer skipped pre-push-lint: no gate passed; the laptop signs it"),
+        text.contains(&format!(
+            "collected pre-push-lint for tree {}; signer skipped: no gate passed; the laptop signs it\n",
+            &l.tree[..8]
+        )),
         "{text}"
     );
+    assert_eq!(text.matches("pre-push-lint").count(), 1, "one line: {text}");
     assert_eq!(l.pending(), "");
     assert_eq!(l.local_attest_note(&l.tree), "");
     l.push_attests_once();

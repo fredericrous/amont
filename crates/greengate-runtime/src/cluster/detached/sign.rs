@@ -15,12 +15,13 @@
 //! block and the reason no gate passed. Either way the Workflow is done and
 //! is never judged again, on a restart, a one-shot pass or another replica.
 //!
-//! Plain stderr, one line per Workflow it acted on; stdout stays empty.
+//! Plain stderr, one line per Workflow it acted on; stdout stays empty but
+//! for `--help`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use crate::json_read::Value;
@@ -64,11 +65,17 @@ const WATCH_SECS: u64 = 30;
 const REQUEST_TIMEOUT: &str = "--request-timeout=10s";
 const CALL_SECS: u64 = 20;
 
-const USAGE: &str = "usage: greengate cluster sign [--watch]";
+/// The usage line: `greengate cluster sign [--watch]`, as main.rs's help
+/// lists it.
+fn usage() -> String {
+    format!("usage: {} cluster sign [--watch]", crate::names::BIN)
+}
 
-/// Set by SIGTERM or SIGINT under `--watch`: the run in progress finishes,
-/// then the loop ends.
-static STOP: AtomicBool = AtomicBool::new(false);
+/// The signal that asked `--watch` to stop, SIGTERM or SIGINT, or 0: the run
+/// in progress finishes, then the loop ends.
+static STOP: AtomicI32 = AtomicI32::new(0);
+/// Whether the loop has said it is stopping: once.
+static STOP_SAID: AtomicBool = AtomicBool::new(false);
 
 /// What one pass decided for one Workflow, or for one expired ConfigMap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +94,8 @@ pub(super) enum Action {
         workflow: String,
         namespace: String,
         label: String,
-        /// The tree the Workflow names, empty when it names none usable.
-        tree: String,
+        /// The tree the Workflow names, if it names a usable one.
+        tree: Option<String>,
         reason: String,
     },
     /// A signer ConfigMap whose expiry passed.
@@ -217,24 +224,52 @@ fn submitted(wf: &Value) -> Result<(String, Vec<Submitted>), String> {
     Ok((tree.to_string(), gates))
 }
 
+/// Why a finished Workflow is not signed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unsigned {
+    /// For good: recorded with an empty block. `tree` is the one the
+    /// Workflow names, if it names a usable one.
+    Skip {
+        tree: Option<String>,
+        reason: String,
+    },
+    /// Not yet: a pod not listed, or its status not readable, on a Workflow
+    /// finished [`BACKLOG_SECS`] ago or less. The apiserver may not show it
+    /// yet; a later pass judges the Workflow again.
+    Later,
+}
+
 /// Judge one finished Workflow from the runner namespace's list: the gates
-/// that passed, in DAG order, or why none can be signed. Pure.
-fn judge_workflow(list: &Value, wf: &Value) -> Result<(String, Vec<String>), (String, String)> {
+/// that passed, in DAG order, or why none can be signed. `young`: it
+/// finished [`BACKLOG_SECS`] ago or less, so a pod missing or unreadable is
+/// [`Unsigned::Later`], not a skip. Pure.
+fn judge_workflow(
+    list: &Value,
+    wf: &Value,
+    young: bool,
+) -> Result<(String, Vec<String>), Unsigned> {
     let metadata = wf.get("metadata");
     let name = text(metadata, "name").unwrap_or_default();
-    let uid = text(metadata, "uid").ok_or((String::new(), "the Workflow has no UID".into()))?;
-    let (tree, gates) = submitted(wf).map_err(|why| (String::new(), why))?;
+    let skip = |tree: Option<&str>, reason: String| Unsigned::Skip {
+        tree: tree.map(str::to_string),
+        reason,
+    };
+    let uid = text(metadata, "uid").ok_or_else(|| skip(None, "the Workflow has no UID".into()))?;
+    let (tree, gates) = submitted(wf).map_err(|why| skip(None, why))?;
     let mut passed: Vec<String> = Vec::new();
     let mut why_not: Vec<String> = Vec::new();
+    let mut unseen = false;
     for Submitted { task, id, prepare } in &gates {
         // Owned by THIS Workflow (kind, name, uid, controller) and the pod of
         // its node record: a Job's pod, or one wearing a forged run label,
         // is never found here.
         let Some(pod) = pod_of(list, wf, name, uid, task) else {
+            unseen = true;
             why_not.push(format!("{id}: no pod of {task} owned by the Workflow"));
             continue;
         };
         let Some(facts) = parse_pod_object(pod, "main") else {
+            unseen = true;
             why_not.push(format!("{id}: the pod's status cannot be read"));
             continue;
         };
@@ -245,8 +280,19 @@ fn judge_workflow(list: &Value, wf: &Value) -> Result<(String, Vec<String>), (St
             Err(fallback) => why_not.push(format!("{id}: {fallback}")),
         }
     }
+    // A pod missing or unreadable may only be the apiserver catching up
+    // (Workflows and pods are two list calls): while the Workflow is young it
+    // is judged again later rather than skipped for good, so a gate is never
+    // left out of a block for that reason alone. A judge refusal is a final
+    // verdict whatever the age.
+    if unseen && young {
+        return Err(Unsigned::Later);
+    }
     if passed.is_empty() {
-        return Err((tree, format!("no gate passed ({})", why_not.join("; "))));
+        return Err(skip(
+            Some(&tree),
+            format!("no gate passed ({})", why_not.join("; ")),
+        ));
     }
     Ok((tree, passed))
 }
@@ -292,14 +338,17 @@ pub(super) fn plan_pass(runners: &[(&str, Value)], signer: &Value, now: u64) -> 
             if !phase.finished() || signed.contains(name) || !seen.insert(name.to_string()) {
                 continue;
             }
+            // Without a `finishedAt` the age is unknown: old, so that a
+            // Workflow is never held back for good.
             let finished = text(status, "finishedAt").and_then(epoch_of);
-            if finished.is_some_and(|at| now.saturating_sub(at) > BACKLOG_SECS) {
+            let young = finished.is_some_and(|at| now.saturating_sub(at) <= BACKLOG_SECS);
+            if !young && finished.is_some() {
                 planned.backlog.push(name.to_string());
             }
             let label = text(metadata.and_then(|m| m.get("labels")), RUN_LABEL_KEY)
                 .unwrap_or_default()
                 .to_string();
-            planned.actions.push(match judge_workflow(list, wf) {
+            planned.actions.push(match judge_workflow(list, wf, young) {
                 Ok((tree, gates)) => Action::Sign {
                     workflow: name.to_string(),
                     namespace: namespace.to_string(),
@@ -307,13 +356,14 @@ pub(super) fn plan_pass(runners: &[(&str, Value)], signer: &Value, now: u64) -> 
                     tree,
                     gates,
                 },
-                Err((tree, reason)) => Action::Skip {
+                Err(Unsigned::Skip { tree, reason }) => Action::Skip {
                     workflow: name.to_string(),
                     namespace: namespace.to_string(),
                     label,
                     tree,
                     reason,
                 },
+                Err(Unsigned::Later) => continue,
             });
         }
     }
@@ -341,43 +391,61 @@ fn signed_block(payload: &str, key: &Path) -> Result<String, String> {
     Ok(git_attest::format::block(payload, &sig))
 }
 
+/// What a ConfigMap holds for its Workflow.
+pub(super) enum Outcome<'a> {
+    /// The signed block of the gates that passed.
+    Signed { block: &'a str },
+    /// No block, and why.
+    Skipped { reason: &'a str },
+}
+
 /// What a ConfigMap is made of.
 pub(super) struct Record<'a> {
     pub workflow: &'a str,
     pub namespace: &'a str,
     pub label: &'a str,
-    pub tree: &'a str,
-    pub block: &'a str,
-    pub skipped: Option<&'a str>,
+    /// The tree the Workflow names, if it names a usable one.
+    pub tree: Option<&'a str>,
+    pub outcome: Outcome<'a>,
     pub expires: u64,
 }
 
-/// The ConfigMap, as JSON `kubectl create -f -` reads.
-pub(super) fn configmap_json(signer_namespace: &str, r: &Record) -> String {
-    let skipped = r
-        .skipped
-        .map(|why| format!(",\"skipped\":{}", json_string(why)))
-        .unwrap_or_default();
+/// The ConfigMap, as JSON `kubectl create -f -` reads. On the wire a skip is
+/// `data.block` empty and `data.skipped` the reason, and no tree is `""`.
+pub(super) fn configmap_json(signer_namespace: &str, record: &Record) -> String {
+    let (block, skipped) = match record.outcome {
+        Outcome::Signed { block } => (block, String::new()),
+        Outcome::Skipped { reason } => ("", format!(",\"skipped\":{}", json_string(reason))),
+    };
     format!(
         "{{\"apiVersion\":\"v1\",\"kind\":\"ConfigMap\",\
          \"metadata\":{{\"name\":{name},\"namespace\":{ns},\
          \"labels\":{{{run_key}:{label},{signer_key}:{signer_value}}},\
          \"annotations\":{{{wf_ns_key}:{wf_ns},{tree_key}:{tree},{expires_key}:{expires}}}}},\
          \"data\":{{\"block\":{block}{skipped}}}}}",
-        name = json_string(r.workflow),
+        name = json_string(record.workflow),
         ns = json_string(signer_namespace),
         run_key = json_string(RUN_LABEL_KEY),
-        label = json_string(r.label),
+        label = json_string(record.label),
         signer_key = json_string(SIGNER_LABEL),
         signer_value = json_string(SIGNER_LABEL_VALUE),
         wf_ns_key = json_string(WORKFLOW_NAMESPACE_ANNOTATION),
-        wf_ns = json_string(r.namespace),
+        wf_ns = json_string(record.namespace),
         tree_key = json_string(TREE_SIGNED_ANNOTATION),
-        tree = json_string(r.tree),
+        tree = json_string(record.tree.unwrap_or("")),
         expires_key = json_string(EXPIRES_ANNOTATION),
-        expires = json_string(&r.expires.to_string()),
-        block = json_string(r.block),
+        expires = json_string(&record.expires.to_string()),
+        block = json_string(block),
     )
+}
+
+/// What a `create` of a ConfigMap came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Created {
+    /// This call created it.
+    New,
+    /// It already existed: another pass or replica won.
+    AlreadyExisted,
 }
 
 /// How the signer reaches the cluster: its ServiceAccount (kubectl's
@@ -423,13 +491,12 @@ impl Access {
         }
     }
 
-    /// Create the ConfigMap: `Ok(true)` when this call created it,
-    /// `Ok(false)` when it already existed (another pass or replica won).
-    fn create(&self, json: String) -> Result<bool, String> {
+    /// Create the ConfigMap.
+    fn create(&self, json: String) -> Result<Created, String> {
         let mut cmd = self.command(&self.namespace, &["create", "-f", "-"]);
         match capture_with(&mut cmd, Some(json.into_bytes()), CALL_SECS) {
-            Call::Ok(_) => Ok(true),
-            Call::Refused(e) if refusal(&e) == Refusal::Taken => Ok(false),
+            Call::Ok(_) => Ok(Created::New),
+            Call::Refused(e) if refusal(&e) == Refusal::Taken => Ok(Created::AlreadyExisted),
             Call::Refused(e) | Call::NotStarted(e) | Call::TimedOut(e) => Err(last_line(&e)),
         }
     }
@@ -454,15 +521,18 @@ fn short(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 
-/// Touch `$HOME/heartbeat`: the liveness probe's evidence that the loop
-/// turns. Best-effort; a failure is said, never a failed pass.
-fn heartbeat(now: u64) {
+/// Write `<unix-seconds> clean` or `<unix-seconds> failed` to
+/// `$HOME/heartbeat`: the liveness probe's evidence that the loop turns, and
+/// whether the last pass failed. Best-effort; a failure is said, never a
+/// failed pass.
+fn heartbeat(now: u64, clean: bool) {
     let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
         say("error heartbeat: HOME is not set");
         return;
     };
     let path = Path::new(&home).join("heartbeat");
-    if let Err(e) = std::fs::write(&path, format!("{now}\n")) {
+    let verdict = if clean { "clean" } else { "failed" };
+    if let Err(e) = std::fs::write(&path, format!("{now} {verdict}\n")) {
         say(&format!("error heartbeat: {}: {e}", path.display()));
     }
 }
@@ -472,10 +542,15 @@ fn heartbeat(now: u64) {
 fn run_pass(access: &Access, key: &Path) -> bool {
     let now = crate::gate_evidence::now();
     let clean = pass(access, key, now);
-    heartbeat(now);
+    heartbeat(now, clean);
     clean
 }
 
+/// One pass. A stop ([`stopping`]) is looked at before every kubectl call
+/// after the first: it is noticed within one call, [`CALL_SECS`], plus the
+/// signing of one block. The runs it leaves unrecorded are still finished
+/// Workflows without a ConfigMap, judged, and counted as backlog, on the
+/// next pass.
 fn pass(access: &Access, key: &Path, now: u64) -> bool {
     let signer_selector = format!("{SIGNER_LABEL}={SIGNER_LABEL_VALUE}");
     // Without the ConfigMaps nothing is known to be signed: decide nothing.
@@ -492,6 +567,9 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
     let mut clean = true;
     let mut runners: Vec<(&str, Value)> = Vec::new();
     for namespace in RUNNER_NAMESPACES {
+        if stopping() {
+            return clean;
+        }
         match access.list(namespace, "workflows,pods", RUN_LABEL_KEY) {
             Ok(list) => runners.push((namespace, list)),
             Err(why) => {
@@ -504,6 +582,9 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
     let mut recorded: BTreeSet<String> = BTreeSet::new();
     let expires = now + EXPIRY_SECS;
     for action in &planned.actions {
+        if stopping() {
+            break;
+        }
         match action {
             Action::Sign {
                 workflow,
@@ -526,14 +607,13 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
                         workflow,
                         namespace,
                         label,
-                        tree,
-                        block: &block,
-                        skipped: None,
+                        tree: Some(tree),
+                        outcome: Outcome::Signed { block: &block },
                         expires,
                     },
                 );
                 match access.create(json) {
-                    Ok(true) => {
+                    Ok(Created::New) => {
                         recorded.insert(workflow.clone());
                         say(&format!(
                             "signed {workflow} {} tree {}",
@@ -541,7 +621,9 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
                             short(tree)
                         ));
                     }
-                    Ok(false) => {
+                    Ok(Created::AlreadyExisted) => {
+                        // Another pass or replica won the race: its record
+                        // stands, so this run counts as done.
                         recorded.insert(workflow.clone());
                         say(&format!(
                             "skipped {workflow}: another signer wrote its ConfigMap first"
@@ -568,16 +650,21 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
                         workflow,
                         namespace,
                         label,
-                        tree,
-                        block: "",
-                        skipped: Some(reason),
+                        tree: tree.as_deref(),
+                        outcome: Outcome::Skipped { reason },
                         expires,
                     },
                 );
                 match access.create(json) {
-                    Ok(_) => {
+                    Ok(Created::New) => {
                         recorded.insert(workflow.clone());
                         say(&format!("skipped {workflow}: {reason}"));
+                    }
+                    Ok(Created::AlreadyExisted) => {
+                        recorded.insert(workflow.clone());
+                        say(&format!(
+                            "skipped {workflow}: another signer wrote its ConfigMap first"
+                        ));
                     }
                     Err(why) => {
                         say(&format!(
@@ -588,6 +675,9 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
                 }
             }
             Action::Delete { configmap } => {
+                if configmap.is_empty() {
+                    continue;
+                }
                 if let Err(why) = access.delete(configmap) {
                     say(&format!(
                         "error {configmap}: the expired ConfigMap was not deleted: {why}"
@@ -611,16 +701,33 @@ fn pass(access: &Access, key: &Path, now: u64) -> bool {
     clean
 }
 
-/// SIGTERM and SIGINT set [`STOP`] and nothing else: a store to an atomic is
-/// async-signal-safe, and the idle wait polls the flag every second, so no
-/// self-pipe or watcher thread is needed. Never re-raised: the loop ends and
-/// the process exits 0.
+/// The first SIGTERM or SIGINT records itself in [`STOP`] and nothing else:
+/// an atomic store is async-signal-safe, and the loop polls the flag (every
+/// second while idle, before every kubectl call in a pass), so no self-pipe
+/// or watcher thread is needed. A second signal, of either kind, means "now":
+/// its default disposition is restored and it is raised again, and the
+/// process dies of it.
 #[cfg(unix)]
 fn install_stop_handler() {
-    use crate::posix_signal::{libc_signal, SIGINT, SIGTERM};
-    extern "C" fn on_signal(_sig: i32) {
-        STOP.store(true, Ordering::SeqCst);
+    use crate::posix_signal::{libc_raise, libc_signal, SIGINT, SIGTERM, SIG_DFL};
+    extern "C" fn on_signal(sig: i32) {
+        if STOP
+            .compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // SAFETY: signal(2) and raise(3) are async-signal-safe (POSIX
+            // lists both). `sig` is the signal being handled, so it is
+            // blocked until this handler returns: it is then delivered with
+            // its default action, which ends the process.
+            unsafe {
+                libc_signal(sig, SIG_DFL);
+                libc_raise(sig);
+            }
+        }
     }
+    // SAFETY: `on_signal` is an `extern "C" fn(i32)` that only touches an
+    // atomic and calls async-signal-safe functions; installing it for two
+    // signals whose numbers POSIX fixes is what signal(2) is for.
     unsafe {
         for sig in [SIGINT, SIGTERM] {
             libc_signal(sig, on_signal as *const () as usize);
@@ -631,33 +738,70 @@ fn install_stop_handler() {
 #[cfg(not(unix))]
 fn install_stop_handler() {}
 
+/// The name of a stop signal.
+fn signal_name(sig: i32) -> &'static str {
+    if sig == crate::posix_signal::SIGINT {
+        "SIGINT"
+    } else {
+        "SIGTERM"
+    }
+}
+
+/// Whether a stop was asked for. The handler cannot print, so the first
+/// look that sees it says it, once, on stderr.
 fn stopping() -> bool {
-    STOP.load(Ordering::SeqCst)
+    let sig = STOP.load(Ordering::SeqCst);
+    if sig == 0 {
+        return false;
+    }
+    if !STOP_SAID.swap(true, Ordering::SeqCst) {
+        say(&format!(
+            "stopping after the current run ({})",
+            signal_name(sig)
+        ));
+    }
+    true
 }
 
 /// The key, checked once: `Err` is the line to print.
 fn key_from_env() -> Result<PathBuf, String> {
     let Some(key) = std::env::var_os(KEY_ENV).filter(|k| !k.is_empty()) else {
-        return Err(format!("{KEY_ENV} is not set: the signer has no key"));
+        return Err(format!(
+            "{KEY_ENV} is not set: point it at the signer's private key (the mounted Secret)"
+        ));
     };
     let key = PathBuf::from(key);
-    git_attest::sign::public_key(&key).map_err(|e| format!("{KEY_ENV}: {}: {e}", key.display()))?;
+    git_attest::sign::public_key(&key).map_err(|e| {
+        format!(
+            "{KEY_ENV} names {}, which is not a usable private key: {e}",
+            key.display()
+        )
+    })?;
     Ok(key)
 }
 
 /// `greengate cluster sign [--watch]`, `args` after `sign`. One pass: exit 0
-/// when clean, 1 when the cluster or signing failed, 2 on usage or a key
-/// problem. `--watch`: passes every [`WATCH_SECS`] until SIGTERM or SIGINT,
-/// then 0; a failed pass is logged and the loop goes on.
+/// when clean, 1 when the cluster or signing failed, 2 on a usage or
+/// configuration error (the key). `-h`/`--help`: the usage on stdout, 0.
+/// `--watch`: passes every [`WATCH_SECS`] until SIGTERM (then 0, the pod's
+/// graceful stop) or SIGINT (then 130); a failed pass is logged and the loop
+/// goes on. A second signal ends the process at once, by that signal.
 pub(super) fn sign_command(args: &[std::ffi::OsString]) -> i32 {
-    let watch = match args {
-        [] => false,
-        [flag] if flag == "--watch" => true,
-        _ => {
-            eprintln!("{USAGE}");
-            return 2;
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        // Asked for: stdout, like every --help (cli.help.help-and-version).
+        println!("{}", usage());
+        return 0;
+    }
+    let mut watch = false;
+    for arg in args {
+        if arg == "--watch" {
+            watch = true;
+            continue;
         }
-    };
+        say(&format!("unknown option '{}'", arg.to_string_lossy()));
+        say(&usage());
+        return 2;
+    }
     let key = match key_from_env() {
         Ok(key) => key,
         Err(line) => {
@@ -681,7 +825,16 @@ pub(super) fn sign_command(args: &[std::ffi::OsString]) -> i32 {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
-    0
+    let sig = STOP.load(Ordering::SeqCst);
+    say(&format!(
+        "stopped: {} after the current run",
+        signal_name(sig)
+    ));
+    if sig == crate::posix_signal::SIGINT {
+        130
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -929,7 +1082,7 @@ mod tests {
         });
         assert!(!bare.contains("ownerReferences"));
         for (what, pod) in [("job-owned", job_owned), ("bare", bare)] {
-            let runner = list(&[workflow(&r, "Succeeded", LONG_AGO), pod]);
+            let runner = list(&[workflow(&r, "Succeeded", OLDER), pod]);
             let planned = plan_pass(&[("greengate-gates", runner)], &no_configmaps(), NOW);
             match planned.actions.as_slice() {
                 [Action::Skip { reason, .. }] => {
@@ -967,7 +1120,7 @@ mod tests {
             [Action::Skip { reason, tree, .. }] => {
                 assert!(reason.starts_with("no gate passed"), "{reason}");
                 assert!(reason.contains("pre-push-test: "), "{reason}");
-                assert_eq!(tree, LIVE_TREE);
+                assert_eq!(tree.as_deref(), Some(LIVE_TREE));
             }
             other => panic!("{other:?}"),
         }
@@ -985,7 +1138,10 @@ mod tests {
             NOW,
         );
         match planned.actions.as_slice() {
-            [Action::Skip { reason, .. }] => assert!(reason.contains("no tree"), "{reason}"),
+            [Action::Skip { reason, tree, .. }] => {
+                assert!(reason.contains("no tree"), "{reason}");
+                assert_eq!(tree, &None);
+            }
             other => panic!("{other:?}"),
         }
         // a gate id with a space would be two gates in the payload
@@ -1039,9 +1195,8 @@ mod tests {
                 workflow: "greengate-rh-1",
                 namespace: "greengate-gates",
                 label: "1",
-                tree: LIVE_TREE,
-                block: "p\n\nsig",
-                skipped: Some("no gate passed"),
+                tree: Some(LIVE_TREE),
+                outcome: Outcome::Signed { block: "p\n\nsig" },
                 expires: 42,
             },
         );
@@ -1060,7 +1215,90 @@ mod tests {
         assert_eq!(text(annotations, "greengate.signer/tree"), Some(LIVE_TREE));
         assert_eq!(text(annotations, "greengate.signer/expires"), Some("42"));
         assert_eq!(text(doc.get("data"), "block"), Some("p\n\nsig"));
+        assert_eq!(text(doc.get("data"), "skipped"), None);
+        // a skip: an empty block, the reason, and no tree is ""
+        let json = configmap_json(
+            "attest-signer",
+            &Record {
+                workflow: "greengate-rh-1",
+                namespace: "greengate-gates",
+                label: "1",
+                tree: None,
+                outcome: Outcome::Skipped {
+                    reason: "no gate passed",
+                },
+                expires: 42,
+            },
+        );
+        let doc = crate::json_read::parse(&json).expect("valid JSON");
+        let annotations = doc.get("metadata").and_then(|m| m.get("annotations"));
+        assert_eq!(text(annotations, "greengate.signer/tree"), Some(""));
+        assert_eq!(text(doc.get("data"), "block"), Some(""));
         assert_eq!(text(doc.get("data"), "skipped"), Some("no gate passed"));
+    }
+
+    const AT_THE_LINE: &str = "2027-01-15T07:55:00Z"; // NOW - 300
+    const PAST_THE_LINE: &str = "2027-01-15T07:54:59Z"; // NOW - 301
+
+    /// A pod not listed, or not readable, on a Workflow finished
+    /// `BACKLOG_SECS` ago or less is judged again later, not skipped for
+    /// good; one second older, it is skipped.
+    #[test]
+    fn a_missing_or_unreadable_pod_waits_until_the_backlog_line_then_skips() {
+        assert_eq!(epoch_of(AT_THE_LINE), Some(NOW - BACKLOG_SECS));
+        assert_eq!(epoch_of(PAST_THE_LINE), Some(NOW - BACKLOG_SECS - 1));
+        let r = record("7-00000000000000aa-0");
+        let unreadable = pod(&r, "g0", |p| {
+            p.replace(
+                &format!("\"name\":\"{}\",\"namespace\"", r.name),
+                &format!("\"namex\":\"{}\",\"namespace\"", r.name),
+            )
+        });
+        assert!(unreadable.contains("\"namex\""), "the pod name was removed");
+        for (what, pods, why) in [
+            ("no pod", vec![], "no pod of g0 owned"),
+            ("unreadable", vec![unreadable], "status cannot be read"),
+        ] {
+            let runner = |finished: &str| {
+                let mut items = vec![workflow(&r, "Succeeded", finished)];
+                items.extend(pods.iter().cloned());
+                list(&items)
+            };
+            let planned = plan_pass(
+                &[("greengate-gates", runner(AT_THE_LINE))],
+                &no_configmaps(),
+                NOW,
+            );
+            assert_eq!(planned, Planned::default(), "{what}: judged later");
+            let planned = plan_pass(
+                &[("greengate-gates", runner(PAST_THE_LINE))],
+                &no_configmaps(),
+                NOW,
+            );
+            match planned.actions.as_slice() {
+                [Action::Skip { reason, .. }] => assert!(reason.contains(why), "{what}: {reason}"),
+                other => panic!("{what}: {other:?}"),
+            }
+            assert_eq!(planned.backlog, vec![r.name.clone()], "{what}");
+        }
+    }
+
+    /// A gate whose pod says it failed is skipped at once, however young the
+    /// Workflow: only a pod not seen waits.
+    #[test]
+    fn a_young_workflow_whose_gate_failed_is_skipped_at_once() {
+        let r = record("7-00000000000000aa-0");
+        let runner = list(&[
+            workflow(&r, "Failed", AT_THE_LINE),
+            pod(&r, "g0", main_failed),
+        ]);
+        let planned = plan_pass(&[("greengate-gates", runner)], &no_configmaps(), NOW);
+        match planned.actions.as_slice() {
+            [Action::Skip { reason, .. }] => {
+                assert!(reason.starts_with("no gate passed"), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// A block signed with a throwaway key splits back out of the note text

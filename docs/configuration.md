@@ -1122,9 +1122,15 @@ namespace. The ConfigMap is labelled `greengate.run` and
 `greengate.signer=block`, and annotated with the Workflow's namespace, the tree
 and an expiry 7 days out. When no gate passed, the ConfigMap holds an empty
 block and the reason, under `data.skipped`, so the Workflow is not judged
-again. A ConfigMap that already exists counts as done. Each pass also deletes
-the expired ConfigMaps. It logs how many finished Workflows older than 5
-minutes still have none, and touches `$HOME/heartbeat`.
+again. A ConfigMap that already exists counts as done. A pod not listed yet,
+or whose status cannot be read, holds the Workflow for a later pass while it
+finished 5 minutes ago or less; after that it is skipped like the rest. Each
+pass also deletes the expired ConfigMaps. It logs how many finished Workflows
+older than 5 minutes still have none.
+
+After each pass it writes `<unix-seconds> clean` or `<unix-seconds> failed`
+to `$HOME/heartbeat`. A liveness probe can read the time to tell that the
+loop turns, and the word to tell a live signer whose passes fail.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -1134,17 +1140,26 @@ minutes still have none, and touches `$HOME/heartbeat`.
 
 It writes one plain line on stderr per Workflow it acts on:
 `signed <workflow> <gate,…> tree <short>`, `skipped <workflow>: <reason>`,
-or `error <workflow>: <reason>`. Stdout stays empty.
+or `error <workflow>: <reason>`. Stdout stays empty, except for the usage
+that `-h` or `--help` prints, with exit 0.
 
 Without `--watch` it does one pass and exits:
 
 - 0: the pass was clean.
-- 1: the cluster could not be read, or signing or writing a ConfigMap failed.
-- 2: a usage error, or the key is missing or unusable.
+- 1: the pass failed: the cluster could not be read, or signing or writing a
+  ConfigMap failed.
+- 2: a usage or configuration error: an unknown option, or
+  `GREENGATE_SIGNER_KEY` unset or not a usable private key (the line names
+  the path and why).
 
 With `--watch` it runs a pass every 30 s. A failed pass is logged and the loop
-goes on. SIGTERM or SIGINT lets the current pass finish, then the process
-exits 0.
+goes on. The first SIGTERM or SIGINT is said on stderr (`stopping after the
+current run (SIGTERM)`). It lets the run in progress finish: the stop is
+noticed before the next kubectl call, so within one call (20 s). The runs left
+unrecorded are judged again on the next start. The process then says
+`stopped: SIGTERM after the current run` and exits 0 after SIGTERM (the pod's
+graceful stop), or 130 after SIGINT. A second signal of either kind ends the
+process at once, killed by that signal.
 
 ## `greengate.minVersion` — the greengate this repository means
 
