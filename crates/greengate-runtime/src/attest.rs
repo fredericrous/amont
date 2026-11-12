@@ -114,7 +114,10 @@ fn key_path() -> Option<PathBuf> {
 /// (ADR-0016). Each pushed tip gets, besides the laptop's block, a second
 /// block on `x86_64-linux` naming only those the cluster proved on THAT tip's
 /// tree: a multi-tip push never signs a linux pass for a tree the cluster did
-/// not judge. Both blocks go out in one publish per notes ref.
+/// not judge. Both blocks go out in one publish per notes ref. With
+/// `greengate.cluster.signer in-cluster`, a gate that a signer block filed on
+/// the tree by `cluster collect` covers is published as that block instead
+/// of being signed here; the rest are signed here, without waiting.
 ///
 /// What each block says, and every key it is filed under (the tree and the
 /// commit in the main ref; each declared gate's fingerprint and the canonical
@@ -166,6 +169,8 @@ pub fn attest_push_per_tip(
     let mut input_blocks: Vec<(String, String)> = Vec::new();
     let mut linux_signed: Vec<String> = Vec::new();
     let (mut n_inputs, mut n_canon) = (0, 0);
+    // Read once, and only for a tip the cluster proved something on.
+    let in_cluster = std::cell::OnceCell::new();
     for r in refs {
         if is_zero(&r.local_oid) {
             continue; // deleting a ref pushes no code
@@ -179,11 +184,34 @@ pub fn attest_push_per_tip(
         let Some(tree) = crate::git::stdout(&["rev-parse", &spec]) else {
             continue;
         };
-        let proved_here: Vec<String> = cluster_gates
+        let mut proved_here: Vec<String> = cluster_gates
             .iter()
             .filter(|g| crate::cluster::proved(g, &tree))
             .cloned()
             .collect();
+        // `greengate.cluster.signer in-cluster`: a gate a filed signer block
+        // already covers on this tree is published as that block, not signed
+        // again here; every other gate is signed here as before, at once.
+        if !proved_here.is_empty()
+            && *in_cluster.get_or_init(|| crate::cluster::in_cluster_signer().is_some())
+        {
+            for signed in filed_signer_blocks(&tree) {
+                let (covered, rest): (Vec<String>, Vec<String>) = proved_here
+                    .into_iter()
+                    .partition(|g| signed.gates.contains(g));
+                proved_here = rest;
+                if covered.is_empty() {
+                    continue;
+                }
+                for name in covered {
+                    if !linux_signed.contains(&name) {
+                        linux_signed.push(name);
+                    }
+                }
+                blocks.push((tree.clone(), signed.body.clone()));
+                blocks.push((r.local_oid.clone(), signed.body));
+            }
+        }
         let platforms = [
             (platform(), gates_line.clone(), Vec::new()),
             (
@@ -563,6 +591,152 @@ fn signature_rejections(trail: &[String]) -> Vec<String> {
         .iter()
         .filter(|line| line.starts_with("note on ") && line.contains(": "))
         .cloned()
+        .collect()
+}
+
+/// A block the in-cluster signer wrote (`greengate cluster sign`), checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignerBlock {
+    /// Who the signature verified as.
+    pub principal: String,
+    /// The gates its payload names.
+    pub gates: Vec<String>,
+    /// The block as a note holds it.
+    pub body: String,
+}
+
+/// Why a signer block is refused, by cause: what a person checks next
+/// differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BlockRefusal {
+    /// The signature does not verify against the repository's
+    /// `allowed_signers`, it has none, or the principal is not bound to the
+    /// cluster's platform: the signers file is what to check.
+    Signer(String),
+    /// A block about something else: not one block of this format, another
+    /// platform or tree, or a gate missing. The ConfigMap is what to read.
+    Content(String),
+}
+
+impl BlockRefusal {
+    /// The reason, as said.
+    pub(crate) fn reason(&self) -> &str {
+        match self {
+            BlockRefusal::Signer(why) | BlockRefusal::Content(why) => why,
+        }
+    }
+}
+
+/// `body` as a signer block for `tree`: exactly one git-attest block, of
+/// this format, on the cluster's platform, for `tree`, whose signature
+/// verifies against `signers` (attest's verifier, platform-bound principals
+/// enforced) as a principal bound to the cluster's platform. `Err` is the
+/// reason it is refused, by cause. Every read of the format is attest's.
+pub(crate) fn signer_block(
+    body: &str,
+    tree: &str,
+    signers: &Path,
+) -> Result<SignerBlock, BlockRefusal> {
+    use git_attest::format::{bound_platform, field, split_blocks};
+    use BlockRefusal::{Content, Signer};
+    let (mut blocks, _) = split_blocks(body);
+    if blocks.len() != 1 {
+        return Err(Content(format!("{} signed blocks, not one", blocks.len())));
+    }
+    let signed_block = blocks.remove(0);
+    if signed_block.payload.split('\n').next() != Some(FORMAT) {
+        return Err(Content(format!("not an {FORMAT} payload")));
+    }
+    let on = field(&signed_block.payload, "platform");
+    if on != Some(crate::cluster::PLATFORM) {
+        return Err(Content(format!(
+            "its platform is {}, not {}",
+            on.unwrap_or("missing"),
+            crate::cluster::PLATFORM
+        )));
+    }
+    let claimed = field(&signed_block.payload, "tree");
+    if claimed != Some(tree) {
+        // The signer signed another run: the block's content, not the key.
+        return Err(Content(format!(
+            "it is for tree {}, not {tree}",
+            claimed.unwrap_or("missing")
+        )));
+    }
+    let principal = git_attest::sign::verify(
+        NAMESPACE,
+        &signed_block.payload,
+        &signed_block.signature,
+        signers,
+        None,
+    )
+    .map_err(|e| Signer(e.to_string()))?;
+    if bound_platform(&principal) != Some(crate::cluster::PLATFORM) {
+        return Err(Signer(format!(
+            "{principal} is not a principal bound to {}",
+            crate::cluster::PLATFORM
+        )));
+    }
+    Ok(SignerBlock {
+        principal,
+        gates: field(&signed_block.payload, "gates")
+            .unwrap_or("")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+        body: block(&signed_block.payload, &signed_block.signature),
+    })
+}
+
+/// Where `cluster collect` files a checked signer block until a push
+/// publishes it: attest's local-only notes (`refs/notes/attest-local/
+/// amont-attest`, SPEC "origin never saw them"). Not the local [`NOTES_REF`],
+/// which mirrors origin's and is replaced whenever it is synced.
+fn signer_notes_ref() -> String {
+    format!("{}{NOTES_REF}", git_attest::format::LOCAL_PREFIX)
+}
+
+/// File a checked signer block in the local-only notes ([`signer_notes_ref`])
+/// under each of `keys` (the tree, and the commit when known), where the next
+/// push finds it. Never pushed from here: the push publishes it to the
+/// remote's [`NOTES_REF`] with its own blocks. `Err` names the key and the
+/// ref git could not write: attest's `publish_local` says no more than that.
+pub(crate) fn file_signer_block(body: &str, keys: &[&str]) -> Result<(), String> {
+    let notes_ref = signer_notes_ref();
+    for key in keys {
+        let entry = [((*key).to_string(), body.to_string())];
+        if matches!(
+            git_attest::notes::publish_local(here(), None, &notes_ref, &entry),
+            Published::Error
+        ) {
+            return Err(format!(
+                "git could not write the note on {key} in {notes_ref}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The signer blocks filed on `tree` (by a collect) that still
+/// check, those on another platform or tree skipped before any signature is
+/// verified.
+fn filed_signer_blocks(tree: &str) -> Vec<SignerBlock> {
+    use git_attest::format::{field, split_blocks};
+    let Some(signers) = default_signers() else {
+        return Vec::new();
+    };
+    let notes_ref = signer_notes_ref();
+    let Some(note) = crate::git::stdout(&["notes", "--ref", &notes_ref, "show", tree]) else {
+        return Vec::new();
+    };
+    split_blocks(&note)
+        .0
+        .iter()
+        .filter(|b| {
+            field(&b.payload, "platform") == Some(crate::cluster::PLATFORM)
+                && field(&b.payload, "tree") == Some(tree)
+        })
+        .filter_map(|b| signer_block(&block(&b.payload, &b.signature), tree, &signers).ok())
         .collect()
 }
 

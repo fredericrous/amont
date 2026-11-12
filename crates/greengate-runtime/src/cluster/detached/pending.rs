@@ -206,6 +206,11 @@ pub(super) struct Pending {
     /// The Workflow phase last seen, for `--status`.
     pub(super) phase: RecordPhase,
     pub(super) gates: Vec<Gate>,
+    /// Its passes are written, and it waits for the in-cluster signer's
+    /// block (`greengate.cluster.signer in-cluster`). Written as
+    /// `"signer":"awaiting"`, absent otherwise: a file of an earlier release
+    /// reads as not awaiting, and an earlier release reads this one.
+    pub(super) awaiting_signer: bool,
 }
 
 impl Pending {
@@ -234,7 +239,7 @@ impl Pending {
             string_field("oid", &self.source.oid),
             bool_field("pushed", self.source.snapshot_ref.is_some()),
         ]);
-        object(&[
+        let mut fields = vec![
             string_field("name", &self.name),
             opt_string_field("uid", self.uid.as_deref()),
             string_field("label", &self.label),
@@ -248,7 +253,11 @@ impl Pending {
             ),
             string_field("phase", self.phase.as_str()),
             format!("\"gates\":{}", array(&gates)),
-        ])
+        ];
+        if self.awaiting_signer {
+            fields.push(string_field("signer", "awaiting"));
+        }
+        object(&fields)
     }
 
     fn parse(v: &Value) -> Option<Pending> {
@@ -281,6 +290,7 @@ impl Pending {
             submitted,
             phase: RecordPhase::parse(&text("phase")?),
             gates,
+            awaiting_signer: text("signer").as_deref() == Some("awaiting"),
         })
     }
 
@@ -524,6 +534,7 @@ pub(in crate::cluster::detached) mod tests {
                 token: "pre-push-lint@abc".into(),
                 state: GateState::Waiting,
             }],
+            awaiting_signer: false,
         }
     }
 
@@ -536,6 +547,39 @@ pub(in crate::cluster::detached) mod tests {
         second.gates[0].state = GateState::Passed;
         let records = vec![sample("wf-1"), second];
         assert_eq!(parse_file(&render_file(&records)), Ok(records));
+    }
+
+    /// A file the previous release wrote has no `signer` field: it reads, and
+    /// its record does not await a signer block.
+    #[test]
+    fn a_file_without_the_signer_field_still_reads() {
+        let old = "{\"format\":1,\"records\":[{\"name\":\"wf-1\",\"uid\":\"uid-1\",\
+            \"label\":\"7-00000000000000aa-0\",\"namespace\":\"greengate-gates\",\
+            \"kubeconfig\":\"/k.yaml\",\"tree\":\"tttt\",\"source\":{\"snapshotRef\":null,\
+            \"oid\":\"cccc\",\"pushed\":false},\"submitted\":1700000000,\"phase\":\"Running\",\
+            \"gates\":[{\"id\":\"pre-push-lint\",\"task\":\"g0\",\"argv\":[\"scripts/gate.sh\"],\
+            \"scope\":\"s\",\"prepare\":null,\"digest\":\"sha256:aa\",\"contract\":\"c\",\
+            \"token\":\"pre-push-lint@abc\",\"state\":\"passed\"}]}]}\n";
+        let records = parse_file(old).expect("an old file reads");
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].awaiting_signer);
+        assert!(
+            !render_file(&records).contains("\"signer\""),
+            "nothing awaits, nothing is written"
+        );
+    }
+
+    #[test]
+    fn an_awaiting_record_round_trips() {
+        let mut awaiting = sample("wf-1");
+        awaiting.gates[0].state = GateState::Passed;
+        awaiting.awaiting_signer = true;
+        let text = render_file(&[awaiting.clone(), sample("wf-2")]);
+        assert_eq!(text.matches("\"signer\":\"awaiting\"").count(), 1, "{text}");
+        assert_eq!(parse_file(&text), Ok(vec![awaiting, sample("wf-2")]));
+        // A value this release does not know is no wait, not an error.
+        let other = text.replace("\"signer\":\"awaiting\"", "\"signer\":\"later\"");
+        assert!(!parse_file(&other).expect("reads")[0].awaiting_signer);
     }
 
     #[test]

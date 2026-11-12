@@ -18,13 +18,15 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::attest::{BlockRefusal, SignerBlock};
 use crate::json_read::Value;
 
 use super::super::{
-    capture, judge, last_line, log_line, parse_pod_object, record_token, Call, Fallback, JobEnd,
-    Kube, PodFacts, State, PLATFORM, RUN_LABEL_KEY,
+    capture, in_cluster_signer, judge, last_line, log_line, parse_pod_object, record_token, Call,
+    Fallback, JobEnd, Kube, PodFacts, State, PLATFORM, RUN_LABEL_KEY,
 };
 use super::pending::{GateState, Pending, PendingError, RecordPhase, Store};
+use super::sign::{SIGNER_LABEL, SIGNER_LABEL_VALUE};
 use super::workflow::{check_pod, check_workflow, node_name, template_name, TTL_SECS};
 
 /// The wall deadline for the one batched call. `kubectl`'s own request timeout
@@ -122,6 +124,28 @@ struct Resolution {
     notes: Vec<(String, String)>,
 }
 
+/// What the in-cluster signer's ConfigMap came to for one record
+/// (`greengate.cluster.signer in-cluster`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Signed {
+    /// Checked and filed in the local attestation notes: the principal it
+    /// verified as. The next push publishes it.
+    Filed(String),
+    /// No ConfigMap yet, or none could be read or filed: the record waits.
+    NotReady,
+    /// A block that does not check: the laptop signs at the push.
+    /// `namespace` is the signer's, where the ConfigMap can be read.
+    Refused {
+        refusal: BlockRefusal,
+        namespace: String,
+    },
+    /// The signer judged no gate a pass: the laptop signs at the push.
+    Skipped(String),
+}
+
+/// Asks what the signer wrote for a record; `None` in the laptop mode.
+type SignerLookup<'a> = Option<&'a mut dyn FnMut(&Pending) -> Signed>;
+
 /// Collect, once per hook process. Called at the start of pre-commit and
 /// pre-push, by `amont stamps`, `amont cluster collect` and `rehearse
 /// --status`.
@@ -155,6 +179,8 @@ fn collect_from(store: &Store) -> Collected {
     let mut settled: Vec<Settled> = Vec::new();
     let mut passes = 0;
     let mut unreached: Vec<String> = Vec::new();
+    // Read only with something pending: one git call.
+    let signer_namespace = in_cluster_signer();
     for group in by_cluster(records) {
         let kube = Kube {
             kubeconfig: group[0].kubeconfig.clone(),
@@ -162,8 +188,43 @@ fn collect_from(store: &Store) -> Collected {
         };
         match fetch(&kube, &group) {
             Ok(list) => {
-                for record in group {
-                    let done = settle(resolve(record, &list, now));
+                // The signer's ConfigMaps: asked at most once per group, and
+                // only once a record needs them.
+                let labels: Vec<String> = group.iter().map(|r| r.label.clone()).collect();
+                let mut configmaps: Option<Result<Value, String>> = None;
+                let mut lookup = |record: &Pending| -> Signed {
+                    let Some(namespace) = &signer_namespace else {
+                        return Signed::NotReady;
+                    };
+                    let answer = configmaps.get_or_insert_with(|| {
+                        let signer = Kube {
+                            kubeconfig: kube.kubeconfig.clone(),
+                            namespace: namespace.clone(),
+                        };
+                        let read = fetch_blocks(&signer, &labels);
+                        if let Err(why) = &read {
+                            log_line(
+                                "collect",
+                                &format!("the signer's blocks could not be read: {why}"),
+                            );
+                        }
+                        read
+                    });
+                    match answer {
+                        Ok(list) => match_block(record, list, namespace),
+                        Err(_) => Signed::NotReady,
+                    }
+                };
+                for mut record in group {
+                    let done = if signer_namespace.is_none() {
+                        // Nothing awaits a signer the machine no longer uses.
+                        record.awaiting_signer = false;
+                        settle(resolve(record, &list, now), None)
+                    } else if record.awaiting_signer {
+                        settle_awaiting(record, now, &mut lookup)
+                    } else {
+                        settle(resolve(record, &list, now), Some(&mut lookup))
+                    };
                     passes += done.written;
                     settled.extend(done.settled);
                     kept.extend(done.record);
@@ -176,6 +237,10 @@ fn collect_from(store: &Store) -> Collected {
                 let (old, young): (Vec<Pending>, Vec<Pending>) =
                     group.into_iter().partition(|r| is_expired(r, now));
                 for record in &old {
+                    if record.awaiting_signer && signer_namespace.is_some() {
+                        unsigned_at_ttl(record);
+                        continue;
+                    }
                     log_line(
                         record.gates.first().map_or("collect", |g| g.id.as_str()),
                         &format!(
@@ -251,9 +316,24 @@ fn by_cluster(records: Vec<Pending>) -> Vec<Vec<Pending>> {
 fn fetch(kube: &Kube, records: &[Pending]) -> Result<Value, String> {
     let labels: Vec<&str> = records.iter().map(|r| r.label.as_str()).collect();
     let selector = format!("{RUN_LABEL_KEY} in ({})", labels.join(","));
+    get_json(kube, "workflows,pods", &selector)
+}
+
+/// The one batched call of `in-cluster` signing, in the signer namespace:
+/// every signer ConfigMap carrying one of the records' run labels, under the
+/// same request timeout and deadline as [`fetch`].
+fn fetch_blocks(signer: &Kube, labels: &[String]) -> Result<Value, String> {
+    let selector = format!(
+        "{SIGNER_LABEL}={SIGNER_LABEL_VALUE},{RUN_LABEL_KEY} in ({})",
+        labels.join(",")
+    );
+    get_json(signer, "configmaps", &selector)
+}
+
+fn get_json(kube: &Kube, what: &str, selector: &str) -> Result<Value, String> {
     let mut cmd = kube.command(
         "--request-timeout=1s",
-        &["get", "workflows,pods", "-l", &selector, "-o", "json"],
+        &["get", what, "-l", selector, "-o", "json"],
     );
     match capture(&mut cmd, COLLECT_SECS) {
         Call::Ok(json) => crate::json_read::parse(&json)
@@ -273,19 +353,28 @@ struct Settlement {
 }
 
 /// [`settle_with`], writing tokens to the cluster note.
-fn settle(resolution: Resolution) -> Settlement {
-    settle_with(resolution, |pass| {
-        record_token(&pass.tree, &pass.token, &pass.provenance)
-    })
+fn settle(resolution: Resolution, signer: SignerLookup) -> Settlement {
+    settle_with(
+        resolution,
+        |pass| record_token(&pass.tree, &pass.token, &pass.provenance),
+        signer,
+    )
 }
 
 /// Write the passes of a resolution through `write` and log its notes. A pass
 /// whose token was not written returns its gate to waiting and keeps the
 /// record in the file, finished Workflow or not, so that the next collect
 /// tries again.
+///
+/// With a `signer` (`in-cluster`), a record that leaves with a pass asks it
+/// for the block first, and each gate's `collected` line waits for the
+/// answer, so that it is said once: with the principal when the block was
+/// filed, plainly beside the reason when the laptop signs. A block not there
+/// yet keeps the record, awaiting it, its tokens written.
 fn settle_with(
     resolution: Resolution,
     mut write: impl FnMut(&Pass) -> Result<(), Fallback>,
+    signer: SignerLookup,
 ) -> Settlement {
     let Resolution {
         mut record,
@@ -302,13 +391,9 @@ fn settle_with(
         match write(pass) {
             Ok(()) => {
                 written += 1;
-                // stderr: `amont stamps --json` collects first, and its stdout
-                // is the JSON object alone.
-                eprintln!(
-                    "collected the cluster pass of {} for tree {}",
-                    crate::ui::sanitize(&pass.gate),
-                    short(&pass.tree)
-                );
+                if signer.is_none() {
+                    say_collected(&pass.gate, &pass.tree);
+                }
             }
             Err(why) => {
                 log_line(
@@ -329,6 +414,53 @@ fn settle_with(
             settled: None,
         };
     }
+    if let Some(lookup) = signer {
+        if record.gates.iter().any(|g| g.state == GateState::Passed) {
+            let signed = lookup(&record);
+            if signed == Signed::NotReady {
+                say_signed(&record, &signed);
+                record.awaiting_signer = true;
+                return Settlement {
+                    record: Some(record),
+                    written,
+                    settled: None,
+                };
+            }
+            say_signed(&record, &signed);
+        }
+    }
+    Settlement {
+        written,
+        ..ended(record)
+    }
+}
+
+/// A record whose passes are written and which awaits the signer's block:
+/// filed, refused or skipped, it leaves; past the Workflow's TTL and its
+/// slack it leaves unsigned; otherwise it stays. No token is written again.
+fn settle_awaiting(
+    record: Pending,
+    now: u64,
+    lookup: &mut dyn FnMut(&Pending) -> Signed,
+) -> Settlement {
+    if is_expired(&record, now) {
+        unsigned_at_ttl(&record);
+        return ended(record);
+    }
+    let signed = lookup(&record);
+    say_signed(&record, &signed);
+    if signed == Signed::NotReady {
+        return Settlement {
+            record: Some(record),
+            written: 0,
+            settled: None,
+        };
+    }
+    ended(record)
+}
+
+/// The record leaves the file: its end, for `--status`.
+fn ended(record: Pending) -> Settlement {
     let ids = |state: GateState| -> Vec<String> {
         record
             .gates
@@ -345,9 +477,232 @@ fn settle_with(
     };
     Settlement {
         record: None,
-        written,
+        written: 0,
         settled: Some(settled),
     }
+}
+
+/// The gates of `record` that passed.
+fn passed(record: &Pending) -> impl Iterator<Item = &str> {
+    record
+        .gates
+        .iter()
+        .filter(|g| g.state == GateState::Passed)
+        .map(|g| g.id.as_str())
+}
+
+/// The line a collected pass is announced with when the laptop signs it as
+/// today (no in-cluster signer). stderr: `greengate stamps --json` collects
+/// first, and its stdout is the JSON object alone.
+fn say_collected(gate: &str, tree: &str) {
+    eprintln!(
+        "collected the cluster pass of {} for tree {}",
+        crate::ui::sanitize(gate),
+        short(tree)
+    );
+}
+
+/// A collected gate in the in-cluster signer mode: `collected <gate> for
+/// tree <short>; <rest>`, one line, whether the signer's block was filed
+/// (`signed by <principal>`) or the laptop signs it (why, and what to do).
+fn say_collected_unsigned(gate: &str, tree: &str, rest: &str) {
+    eprintln!(
+        "collected {} for tree {}; {}",
+        crate::ui::sanitize(gate),
+        short(tree),
+        crate::ui::sanitize(rest)
+    );
+}
+
+/// What a person checks after a refusal, by its cause.
+fn next_step(record: &Pending, refusal: &BlockRefusal, namespace: &str) -> String {
+    match refusal {
+        BlockRefusal::Signer(_) => {
+            format!("check {} lists cluster-signer@{PLATFORM}", signers_shown())
+        }
+        BlockRefusal::Content(_) => {
+            format!(
+                "see kubectl --kubeconfig {} -n {namespace} get configmap {}",
+                record.kubeconfig.display(),
+                record.name
+            )
+        }
+    }
+}
+
+/// What the signer's answer means for each passed gate of `record`, said.
+fn say_signed(record: &Pending, signed: &Signed) {
+    for gate in passed(record) {
+        match signed {
+            Signed::Filed(principal) => {
+                say_collected_unsigned(gate, &record.tree, &format!("signed by {principal}"))
+            }
+            Signed::NotReady => {
+                eprintln!(
+                    "signer block for {} not ready; next collect retries",
+                    crate::ui::sanitize(gate)
+                );
+            }
+            Signed::Refused { refusal, namespace } => {
+                log_line(
+                    gate,
+                    &format!(
+                        "detached {}: signer block refused: {}",
+                        record.name,
+                        refusal.reason()
+                    ),
+                );
+                say_collected_unsigned(
+                    gate,
+                    &record.tree,
+                    &format!(
+                        "signer block refused: {}; the laptop signs it; {}",
+                        refusal.reason(),
+                        next_step(record, refusal, namespace)
+                    ),
+                );
+            }
+            Signed::Skipped(why) => say_collected_unsigned(
+                gate,
+                &record.tree,
+                &format!("signer skipped: {why}; the laptop signs it"),
+            ),
+        }
+    }
+}
+
+/// An awaiting record past the Workflow's TTL: logged and said, per gate.
+fn unsigned_at_ttl(record: &Pending) {
+    for gate in passed(record) {
+        log_line(
+            gate,
+            &format!("detached {}: unsigned: no signer block", record.name),
+        );
+        say_collected_unsigned(
+            gate,
+            &record.tree,
+            "signer block did not arrive before the Workflow TTL; the laptop signs it",
+        );
+    }
+}
+
+/// The signers file a refusal points at: the repository's, or where it
+/// belongs when there is none.
+fn signers_shown() -> String {
+    crate::attest::default_signers()
+        .or_else(|| {
+            crate::git::stdout(&["rev-parse", "--show-toplevel"])
+                .map(|top| std::path::Path::new(&top).join(".github/allowed_signers"))
+        })
+        .map_or_else(
+            || ".github/allowed_signers".to_string(),
+            |p| shown_from_top(&p),
+        )
+}
+
+/// `path` relative to the repository's top level when it is inside it (a
+/// refusal line stays short), else as it is.
+fn shown_from_top(path: &std::path::Path) -> String {
+    crate::git::stdout(&["rev-parse", "--show-toplevel"])
+        .and_then(|top| {
+            path.strip_prefix(&top)
+                .ok()
+                .map(|rel| rel.display().to_string())
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// The signer's ConfigMap for `record` in `configmaps`: named after its
+/// Workflow, labelled with its run and as a signer block.
+fn signer_configmap<'a>(record: &Pending, configmaps: &'a Value) -> Option<&'a Value> {
+    configmaps
+        .get("items")
+        .map(Value::items)
+        .unwrap_or(&[])
+        .iter()
+        .find(|cm| {
+            let metadata = cm.get("metadata");
+            let labels = metadata.and_then(|m| m.get("labels"));
+            text(metadata, "name") == Some(record.name.as_str())
+                && text(labels, RUN_LABEL_KEY) == Some(record.label.as_str())
+                && text(labels, SIGNER_LABEL) == Some(SIGNER_LABEL_VALUE)
+        })
+}
+
+/// What the signer wrote for `record` in `configmaps` (in `namespace`):
+/// nothing yet, a skip, or a block [`judge_block`] judges, then files under
+/// the tree, and under the snapshot commit when this repository has it.
+fn match_block(record: &Pending, configmaps: &Value, namespace: &str) -> Signed {
+    let Some(cm) = signer_configmap(record, configmaps) else {
+        return Signed::NotReady;
+    };
+    let fields = cm.get("data");
+    let block = text(fields, "block").unwrap_or("");
+    if block.is_empty() {
+        return Signed::Skipped(
+            text(fields, "skipped")
+                .filter(|why| !why.is_empty())
+                .unwrap_or("no reason given")
+                .to_string(),
+        );
+    }
+    let signers = crate::attest::default_signers();
+    let checked = match judge_block(record, block, signers.as_deref()) {
+        Ok(checked) => checked,
+        Err(refusal) => {
+            return Signed::Refused {
+                refusal,
+                namespace: namespace.to_string(),
+            }
+        }
+    };
+    let commit = &record.source.oid;
+    let mut keys = vec![record.tree.as_str()];
+    if !commit.is_empty()
+        && crate::git::succeeds(&["cat-file", "-e", &format!("{commit}^{{commit}}")])
+    {
+        keys.push(commit);
+    }
+    match crate::attest::file_signer_block(&checked.body, &keys) {
+        Ok(()) => Signed::Filed(checked.principal),
+        Err(why) => {
+            log_line(
+                passed(record).next().unwrap_or("collect"),
+                &format!(
+                    "detached {}: the signer block could not be filed ({why}); the next collect retries",
+                    record.name
+                ),
+            );
+            Signed::NotReady
+        }
+    }
+}
+
+/// `block` judged for `record`: checked by attest's reader and verifier
+/// against `signers`, the repository's `allowed_signers` (the file a
+/// push-time verification reads), for the record's tree, naming every gate
+/// that passed in it. Writes nothing; the verification runs `ssh-keygen`.
+fn judge_block(
+    record: &Pending,
+    block: &str,
+    signers: Option<&std::path::Path>,
+) -> Result<SignerBlock, BlockRefusal> {
+    let Some(signers) = signers else {
+        return Err(BlockRefusal::Signer(
+            "the repository has no allowed_signers".into(),
+        ));
+    };
+    let checked = crate::attest::signer_block(block, &record.tree, signers)?;
+    let missing: Vec<&str> = passed(record)
+        .filter(|g| !checked.gates.iter().any(|named| named == g))
+        .collect();
+    if !missing.is_empty() {
+        return Err(BlockRefusal::Content(format!(
+            "it does not name {}",
+            missing.join(" ")
+        )));
+    }
+    Ok(checked)
 }
 
 fn short(oid: &str) -> &str {
@@ -358,7 +713,7 @@ fn text<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a str> {
     v?.get(key).and_then(Value::as_str)
 }
 
-fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
+pub(super) fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
     list.get("items")
         .map(Value::items)
         .unwrap_or(&[])
@@ -369,7 +724,13 @@ fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value
 /// The pod of the Workflow `uid` that ran `node`: named so by Argo's
 /// annotation, owned by that Workflow, and a Pod node of the Workflow's own
 /// status of the template the gate was submitted under.
-fn pod_of<'a>(list: &'a Value, wf: &Value, name: &str, uid: &str, task: &str) -> Option<&'a Value> {
+pub(super) fn pod_of<'a>(
+    list: &'a Value,
+    wf: &Value,
+    name: &str,
+    uid: &str,
+    task: &str,
+) -> Option<&'a Value> {
     let node = node_name(name, task);
     let recorded = wf
         .get("status")
@@ -411,7 +772,7 @@ fn pod_of<'a>(list: &'a Value, wf: &Value, name: &str, uid: &str, task: &str) ->
 /// alone: exit 0 is `Complete`, any other exit is `Failed`, and a container
 /// that has not terminated is `Running`. Workflow and node phases are never
 /// read here: gate code can write what Argo's executor reports from.
-fn end_from_main(main: &State) -> JobEnd {
+pub(super) fn end_from_main(main: &State) -> JobEnd {
     match main {
         State::Terminated { exit: Some(0), .. } => JobEnd::Complete,
         State::Terminated { reason, .. } => JobEnd::Failed(if reason.is_empty() {
@@ -790,7 +1151,7 @@ pub(crate) fn stop_pending() -> Stopped {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::cluster::detached) mod tests {
     use super::super::pending::tests::sample;
     use super::*;
 
@@ -818,7 +1179,7 @@ mod tests {
         assert!(lists_live(&file, now).is_err());
     }
 
-    fn fixture(name: &str) -> String {
+    pub(in crate::cluster::detached) fn fixture(name: &str) -> String {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../greengate/tests/it/fixtures/argo");
         std::fs::read_to_string(dir.join(name)).expect("fixture")
@@ -826,7 +1187,7 @@ mod tests {
 
     /// `text` without the whitespace outside strings, so a replacement does
     /// not depend on how the fixture was indented.
-    fn compact(text: &str) -> String {
+    pub(in crate::cluster::detached) fn compact(text: &str) -> String {
         let (mut out, mut in_string, mut escaped) = (String::new(), false, false);
         for c in text.chars() {
             if in_string {
@@ -1057,7 +1418,7 @@ mod tests {
         let record = record_of_the_fixture();
         let list = list_for(&record, "Succeeded", "Succeeded", |p| p);
         let refuse = |_: &Pass| Err(Fallback::NotProved("git refused".into()));
-        let first = settle_with(resolve(record.clone(), &list, 1_700_000_100), refuse);
+        let first = settle_with(resolve(record.clone(), &list, 1_700_000_100), refuse, None);
         assert_eq!(first.written, 0);
         assert!(
             first.settled.is_none(),
@@ -1067,10 +1428,14 @@ mod tests {
         assert_eq!(kept.gates[0].state, GateState::Waiting);
 
         let mut tokens = Vec::new();
-        let second = settle_with(resolve(kept, &list, 1_700_000_200), |pass| {
-            tokens.push(pass.token.clone());
-            Ok(())
-        });
+        let second = settle_with(
+            resolve(kept, &list, 1_700_000_200),
+            |pass| {
+                tokens.push(pass.token.clone());
+                Ok(())
+            },
+            None,
+        );
         assert_eq!(second.written, 1);
         assert_eq!(tokens, ["pre-push-lint@abc"]);
         assert!(second.record.is_none());

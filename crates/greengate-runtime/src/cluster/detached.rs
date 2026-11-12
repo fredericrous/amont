@@ -8,7 +8,9 @@
 //! read from a pull mirror that already advertises it. Submission returns
 //! once the Workflow exists; [`collect`] turns its passes into cluster tokens
 //! at the start of the next hook, from facts Kubernetes recorded, under the
-//! identity frozen at submission. The laptop is the only signer.
+//! identity frozen at submission. The laptop signs the `x86_64-linux`
+//! attestation, unless `greengate.cluster.signer in-cluster` hands that to the
+//! block `greengate cluster sign` wrote, which collect checks and files.
 //!
 //! Every path that goes wrong ends in the gate running here, as before: a
 //! detached run can only remove work from a push, never let it skip work
@@ -27,9 +29,19 @@ use crate::json_read::Value;
 
 mod collect;
 mod pending;
+mod sign;
 mod workflow;
 
 pub use collect::collect_command;
+
+/// `greengate cluster <verb>`: `sign [--watch]` is the in-cluster signer;
+/// everything else is `collect`'s, exactly as before `sign` existed.
+pub fn cluster_command(args: &[std::ffi::OsString]) -> i32 {
+    match args.first().and_then(|a| a.to_str()) {
+        Some("sign") => sign::sign_command(&args[1..]),
+        _ => collect_command(args),
+    }
+}
 pub(crate) use collect::{collect, lists_live, settled_lines, status_lines, stop_pending};
 #[cfg(test)]
 pub(crate) use pending::sample_file as sample_pending_file;
@@ -341,6 +353,7 @@ fn submit(
         submitted: crate::gate_evidence::now(),
         phase: RecordPhase::Submitting,
         gates: frozen,
+        awaiting_signer: false,
     };
     let store = Store::here()
         .ok_or_else(|| Fallback::NotProved("git would not name the common directory".into()))?;

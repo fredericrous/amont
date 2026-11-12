@@ -24,6 +24,7 @@ D="$FAKE_KUBE_DIR"
 n=$(cat "$D/n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$D/n"
 printf '%s\n' "$*" >> "$D/calls"
 [ "$1" = "--kubeconfig" ] || { echo "no --kubeconfig" >&2; exit 99; }
+ns=$5
 shift 2; shift; shift 2
 val() { cat "$D/$1" 2>/dev/null || printf '%s' "$2"; }
 case "$1" in
@@ -35,6 +36,12 @@ esac
 cat > "$D/stdin-$n"
 case "$1" in
   create)
+    if [ "$3" = "-" ] && grep -q '"kind":"ConfigMap"' "$D/stdin-$n"; then
+      cm=$(grep -o '"name":"[^"]*"' "$D/stdin-$n" | head -1 | sed 's/.*:"//; s/"$//')
+      mkdir -p "$D/created-cm"
+      [ -f "$D/created-cm/$cm.json" ] && { echo "Error from server (AlreadyExists): configmaps \"$cm\" already exists" >&2; exit 1; }
+      cp "$D/stdin-$n" "$D/created-cm/$cm.json"; exit 0
+    fi
     if grep -q '"kind":"Workflow"' "$3"; then
       wf=$(grep -o '"name":"greengate-rh-[^"]*"' "$3" | head -1 | sed 's/.*:"//; s/"$//')
       a=$(cat "$D/create_wf_n" 2>/dev/null || echo 0); a=$((a+1)); echo "$a" > "$D/create_wf_n"
@@ -72,7 +79,12 @@ case "$1" in
     if [ -f "$D/get_sleep" ]; then sleep "$(cat "$D/get_sleep")"; [ -d "$D" ] || exit 1; fi
     if [ "$2" = "workflows,pods" ]; then
       if [ -f "$D/wf_down" ]; then echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1; fi
-      if [ -f "$D/wf_list.json" ]; then cat "$D/wf_list.json"; else printf '{"kind":"List","items":[]}'; fi
+      if [ -f "$D/wf_list-$ns.json" ]; then cat "$D/wf_list-$ns.json"
+      elif [ -f "$D/wf_list.json" ]; then cat "$D/wf_list.json"; else printf '{"kind":"List","items":[]}'; fi
+      exit 0
+    fi
+    if [ "$2" = "configmaps" ]; then
+      if [ -f "$D/cm_list.json" ]; then cat "$D/cm_list.json"; else printf '{"kind":"List","items":[]}'; fi
       exit 0
     fi
     if [ "$2" = "workflow" ]; then
@@ -158,6 +170,9 @@ const ANSWERS: &[&str] = &[
     "get_sleep",
     "create_wf",
     "wf_list.json",
+    "wf_list-greengate-gates.json",
+    "wf_list-amont-gates.json",
+    "cm_list.json",
     "wf_down",
     "patch_fail",
 ];

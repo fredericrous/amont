@@ -85,6 +85,9 @@ const USAGE: &str = concat!(
     "                 the next commit or push collects them]\n",
     "  cluster collect  turn the finished detached Workflows of this repository\n",
     "                 into cluster tokens now (every commit and push does it)\n",
+    "  cluster sign   in the cluster: sign the finished detached Workflows'\n",
+    "                 passing gates into ConfigMaps (key: GREENGATE_SIGNER_KEY)\n",
+    "                 [--watch: a pass every 30 s until SIGTERM or SIGINT]\n",
     "  restore        bring back unstaged changes a killed pre-commit left parked\n",
     "  migrate        move greengate 3.x's state and amont.* keys in this\n",
     "                 repository, and the machine's global keys, to greengate's\n",
@@ -672,7 +675,7 @@ fn known_flags(sub: Sub) -> (&'static [&'static str], &'static [&'static str]) {
         Sub::Slot => (&[], &["--weight", "--max-wait", "--on-timeout"]),
         Sub::Slots => (&["--json"], &[]),
         Sub::Stamps => (&["--json"], &["--tree"]),
-        Sub::Cluster => (&[], &[]),
+        Sub::Cluster => (&["--watch"], &[]),
         Sub::Migrate => (&["--reverse", "--global", "--tracked"], &[]),
         Sub::Doctor => (&[], &[]),
     }
@@ -739,6 +742,15 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
     } else {
         args
     };
+    // `cluster sign` runs in a pod: no repository and no 3.x state to move,
+    // and its arguments are its own, so that `-h` prints its usage line and
+    // an unknown option is named beside it, not beside this whole text.
+    if sub == Sub::Cluster
+        && own.first().is_some_and(|a| a == "sign")
+        && !own.iter().any(|a| a == "--version" || a == "-V")
+    {
+        return greengate_runtime::cluster::cluster_command(args);
+    }
     if own.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return 0;
@@ -870,8 +882,9 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
         Sub::Slots => greengate_runtime::slot_cmd::slots_command(args),
         Sub::Stamps => stamps_mode(args),
         // `amont cluster collect` — turn finished detached Workflows into
-        // cluster tokens now (ADR-0017).
-        Sub::Cluster => greengate_runtime::cluster::collect_command(args),
+        // cluster tokens now (ADR-0017); `cluster sign` — the in-cluster
+        // signer.
+        Sub::Cluster => greengate_runtime::cluster::cluster_command(args),
         Sub::Migrate => migrate_command(args),
         Sub::Doctor => {
             let cwd = std::env::current_dir().unwrap_or_default();

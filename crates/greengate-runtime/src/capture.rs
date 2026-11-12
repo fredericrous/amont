@@ -21,7 +21,10 @@
 //! the commit path would compete with it. So an interrupted run leaves its
 //! `<check>.<pid>.log.tmp` — complete up to the interrupt, and named by the
 //! running line — and pruning never removes a `.tmp`. Revisit when amont
-//! has one signal path that both can register with.
+//! has one signal path that both can register with. (`cluster sign --watch`
+//! installs a handler of its own, a flag on the first signal and the
+//! default death on the second, in a process that never runs a check; the raw calls both handlers use live in `posix_signal`, but there
+//! is still no shared registration.)
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

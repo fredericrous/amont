@@ -1058,6 +1058,8 @@ segment of `origin`'s URL, without `.git`.
 | `greengate.cluster.mirrorRemote` | none | The pull mirror's URL as this machine lists it. |
 | `greengate.cluster.mirror` | none | The pull mirror's URL as the cluster fetches it. |
 | `greengate.rehearse.cluster` | `false` | The post-commit rehearsal goes detached on its own. |
+| `greengate.cluster.signer` | `laptop` | Who signs the `x86_64-linux` attestation of a detached pass: `laptop`, or `in-cluster` for the block `greengate cluster sign` writes. Any other value warns once and counts as `laptop`. |
+| `greengate.cluster.signer-namespace` | `attest-signer` | The namespace of the in-cluster signer's ConfigMaps. |
 
 With none of them set there is no detached lane: a rehearsal is what it was.
 The kubeconfig, image, namespace and `greengate.timeout` are the Job lane's, above;
@@ -1074,6 +1076,22 @@ is the one worked out at submission: change the command, `clusterPrepare` or the
 image after submitting and the push does not accept the pass, it runs the gate.
 Anything else writes one line in `greengate/cluster.log` and nothing more.
 
+**The in-cluster signer.** With `greengate.cluster.signer in-cluster`, collect
+also asks the signer namespace, once per cluster, for the ConfigMaps of the
+pending runs (`greengate.signer=block`). A Workflow's block is checked with
+git-attest against the repository's `allowed_signers` (the one a push
+verifies with, which must list `cluster-signer@x86_64-linux`): one block,
+`platform x86_64-linux`, the record's tree, every gate that passed, signed by
+a principal bound to `x86_64-linux`. It is then filed in the local
+`refs/notes/amont-attest` under the tree, and the next push publishes that
+block instead of signing the linux block itself. A block not written yet keeps
+the run pending (`"signer":"awaiting"`) until the Workflow's TTL; a refused or
+skipped block, a signer that never answers, or a tree with no filed block is
+signed by the laptop at the push, as with `laptop`. A push never waits for the
+signer. A filed block lives in the local notes ref until a push publishes it:
+a later sync of that ref from origin (`greengate stamps`, a push of another
+tree) drops it, and the laptop signs instead.
+
 `greengate cluster collect` exits 0 when it asked the cluster (or another collect is
 already running, which it says), and 1 when the cluster was not reached or the
 pending file could not be written; `rehearse --stop` exits 1 when a Workflow
@@ -1084,6 +1102,64 @@ gates that did not pass.
 The record of what is pending is `$GIT_COMMON_DIR/greengate/cluster-pending`;
 deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are
 pruned by the cluster. Unix only.
+
+#### `greengate cluster sign` — the in-cluster signer
+
+`greengate cluster sign [--watch]` runs in a pod in the cluster, not on a
+laptop. It signs finished detached runs from what Kubernetes recorded. Each
+pass makes one batched read of the Workflows and pods carrying `greengate.run`
+in `greengate-gates` and `amont-gates`. It considers a Workflow that is
+finished, has no ConfigMap yet, and was submitted by greengate: it carries its
+tree and gate ids as greengate writes them. Each gate is judged on its pod with
+the same rules as collect's, above. Only a pod that the Workflow owns, by
+`ownerReferences` and by its own node record, counts. A Job's pod, or a pod
+wearing a borrowed run label, counts for nothing.
+
+The gates that passed go into one signed git-attest block for
+`platform x86_64-linux`, with no input lines. The block is written to a
+ConfigMap named after the Workflow, under `data.block`, in the signer
+namespace. The ConfigMap is labelled `greengate.run` and
+`greengate.signer=block`, and annotated with the Workflow's namespace, the tree
+and an expiry 7 days out. When no gate passed, the ConfigMap holds an empty
+block and the reason, under `data.skipped`, so the Workflow is not judged
+again. A ConfigMap that already exists counts as done. A pod not listed yet,
+or whose status cannot be read, holds the Workflow for a later pass while it
+finished 5 minutes ago or less; after that it is skipped like the rest. Each
+pass also deletes the expired ConfigMaps. It logs how many finished Workflows
+older than 5 minutes still have none.
+
+After each pass it writes `<unix-seconds> clean` or `<unix-seconds> failed`
+to `$HOME/heartbeat`. A liveness probe can read the time to tell that the
+loop turns, and the word to tell a live signer whose passes fail.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GREENGATE_SIGNER_KEY` | none: required | The ed25519 private key it signs with, checked once at start. The principal is the verifier's `allowed_signers` business. |
+| `GREENGATE_SIGNER_KUBECONFIG` | none | A kubeconfig. Without it, kubectl uses the pod's ServiceAccount. |
+| `GREENGATE_SIGNER_NAMESPACE` | `attest-signer` | Where the ConfigMaps are written. |
+
+It writes one plain line on stderr per Workflow it acts on:
+`signed <workflow> <gate,…> tree <short>`, `skipped <workflow>: <reason>`,
+or `error <workflow>: <reason>`. Stdout stays empty, except for the usage
+that `-h` or `--help` prints, with exit 0.
+
+Without `--watch` it does one pass and exits:
+
+- 0: the pass was clean.
+- 1: the pass failed: the cluster could not be read, or signing or writing a
+  ConfigMap failed.
+- 2: a usage or configuration error: an unknown option, or
+  `GREENGATE_SIGNER_KEY` unset or not a usable private key (the line names
+  the path and why).
+
+With `--watch` it runs a pass every 30 s. A failed pass is logged and the loop
+goes on. The first SIGTERM or SIGINT is said on stderr (`stopping after the
+current run (SIGTERM)`). It lets the run in progress finish: the stop is
+noticed before the next kubectl call, so within one call (20 s). The runs left
+unrecorded are judged again on the next start. The process then says
+`stopped: SIGTERM after the current run` and exits 0 after SIGTERM (the pod's
+graceful stop), or 130 after SIGINT. A second signal of either kind ends the
+process at once, killed by that signal.
 
 ## `greengate.minVersion` — the greengate this repository means
 

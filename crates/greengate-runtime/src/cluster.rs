@@ -38,10 +38,10 @@ use crate::manifest::{External, Kind};
 mod detached;
 #[cfg(test)]
 pub(crate) use detached::sample_pending_file;
+pub use detached::{cluster_command, collect_command, detach, wanted, Ask, Detached};
 pub(crate) use detached::{
     collect, lists_live, settled_lines, status_lines, stop_pending, PENDING_FILE,
 };
-pub use detached::{collect_command, detach, wanted, Ask, Detached};
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:
 /// only where the manifest declares a `platform=any` gate, the only kind a
@@ -337,6 +337,46 @@ fn key<'a>(keys: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.as_str())
         .filter(|v| !v.is_empty())
+}
+
+/// Who signs the `x86_64-linux` block of a detached pass, a machine key:
+/// `laptop` (the default) or `in-cluster`.
+const SIGNER_KEY: &str = "greengate.cluster.signer";
+const SIGNER_NAMESPACE_KEY: &str = "greengate.cluster.signer-namespace";
+const SIGNER_NAMESPACE_DEFAULT: &str = "attest-signer";
+
+/// The signer namespace when `greengate.cluster.signer` is `in-cluster`;
+/// `None` for `laptop`, unset, or any other value (said once). Read like the
+/// other cluster machine keys: one git call, spawned only by a caller that
+/// has a detached pass to sign.
+pub(crate) fn in_cluster_signer() -> Option<String> {
+    signer_from(&machine_keys())
+}
+
+fn signer_from(keys: &[(String, String)]) -> Option<String> {
+    match key(keys, SIGNER_KEY) {
+        None | Some("laptop") => return None,
+        Some("in-cluster") => {}
+        Some(other) => {
+            crate::config::complain(
+                SIGNER_KEY,
+                &format!("{other:?} is neither laptop nor in-cluster"),
+                "laptop",
+            );
+            return None;
+        }
+    }
+    let namespace = key(keys, SIGNER_NAMESPACE_KEY).unwrap_or(SIGNER_NAMESPACE_DEFAULT);
+    if is_label(namespace) {
+        Some(namespace.to_string())
+    } else {
+        crate::config::complain(
+            SIGNER_NAMESPACE_KEY,
+            &format!("{namespace:?} is not a namespace name"),
+            SIGNER_NAMESPACE_DEFAULT,
+        );
+        Some(SIGNER_NAMESPACE_DEFAULT.to_string())
+    }
 }
 
 fn number(keys: &[(String, String)], name: &str, default: u64, max: u64) -> u64 {
@@ -1100,11 +1140,28 @@ impl Kube {
 /// Run `cmd` with stdout and stderr captured apart, under a ceiling of
 /// `secs`, through the hooks' bounded wait. Takes no host slot.
 fn capture(cmd: &mut Command, secs: u64) -> Call {
+    capture_with(cmd, None, secs)
+}
+
+/// [`capture`], with `input` written to the child's stdin on a thread and the
+/// pipe then closed, so the child sees its end (`kubectl create -f -`).
+fn capture_with(cmd: &mut Command, input: Option<Vec<u8>>, secs: u64) -> Call {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Call::NotStarted(format!("kubectl: {e}")),
     };
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            // A child that exits before reading all of it says why on its
+            // own; the bounded wait below decides the call.
+            let written = std::io::Write::write_all(&mut stdin, &bytes);
+            drop(written);
+        });
+    }
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
     let ran = crate::hooks::common::wait_within(
@@ -1947,6 +2004,42 @@ fn wait_for_job(kube: &Kube, job: &Job, deadline: Instant) -> Result<JobEnd, Fal
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `laptop`, unset or anything else is the laptop; `in-cluster` names the
+    /// signer namespace, its default `attest-signer`.
+    #[test]
+    fn the_signer_is_the_laptop_unless_the_machine_says_in_cluster() {
+        let keys = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect()
+        };
+        assert_eq!(signer_from(&keys(&[])), None);
+        assert_eq!(signer_from(&keys(&[(SIGNER_KEY, "laptop")])), None);
+        assert_eq!(signer_from(&keys(&[(SIGNER_KEY, "cluster")])), None);
+        assert_eq!(
+            signer_from(&keys(&[(SIGNER_KEY, "in-cluster")])).as_deref(),
+            Some("attest-signer")
+        );
+        assert_eq!(
+            signer_from(&keys(&[
+                (SIGNER_KEY, "in-cluster"),
+                (SIGNER_NAMESPACE_KEY, "signers")
+            ]))
+            .as_deref(),
+            Some("signers")
+        );
+        assert_eq!(
+            signer_from(&keys(&[
+                (SIGNER_KEY, "in-cluster"),
+                (SIGNER_NAMESPACE_KEY, "Not A Namespace")
+            ]))
+            .as_deref(),
+            Some("attest-signer")
+        );
+    }
+
     /// A run label is the pid, a 16-hex-digit nonce and the run: valid as a
     /// label value, distinct per run, and the same nonce within one process.
     #[test]
