@@ -500,4 +500,6 @@ has one slot queue, and no held store was lost.
   Deliberate (tui, low): the CHANGELOG's upgrade list and install.md's number the rename step 4 and 5 (install.md splits install and first command in two); both name it in words too, and both end on the same completion condition.
   Kept: the `amont_cmd()` test-harness name; `amont-snapshots` named as kept (a later step); the CHANGELOG's `## Unreleased` becomes `## 4.0.0` in the release commit.
 
+- Phase 5 (plan text only), round 1: implementation-review approve-with-changes (46 s) · blocking and high fixed (observed rows for the install-window checks; Phase 6 waits on `Apicil/archi-mcp` and the Outcome check) · medium and low fixed (Phase 6 file list, the reason for the version pins, the `audit-go` toolchain follow-up). Kept as a hand check: happier's `dev` is its default branch and the rename commit landed there without a pull request (recorded in the Decision log; its AGENTS.md and CLAUDE.md carry no generated greengate block, so nothing there was behind).
+
 <!-- panel: repos=amont,amont-agent,relais,homelab,decisions adds=contract reviewers=backend,lang:rust,platform,architect body-sha=e2e1e65c8300 -->
