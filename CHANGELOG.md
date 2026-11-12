@@ -8,6 +8,8 @@ missing here.
 
 ## Unreleased
 
+## v4.2.0
+
 ### Changed
 
 - **Signed and local notes are read under both names** (decisions ADR-0068,
