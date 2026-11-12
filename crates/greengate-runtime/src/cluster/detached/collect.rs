@@ -693,6 +693,15 @@ fn judge_block(
         ));
     };
     let checked = crate::attest::signer_block(block, &record.tree, signers)?;
+    // It is filed in, and published to, the written ref: a block of the other
+    // name set would sit under a ref whose header is not its own.
+    if !checked.is_publishable() {
+        return Err(BlockRefusal::Content(format!(
+            "a {} block, and this greengate publishes {} notes",
+            checked.names.format,
+            git_attest::format::WRITE.format
+        )));
+    }
     let missing: Vec<&str> = passed(record)
         .filter(|g| !checked.gates.iter().any(|named| named == g))
         .collect();
@@ -1154,6 +1163,29 @@ pub(crate) fn stop_pending() -> Stopped {
 pub(in crate::cluster::detached) mod tests {
     use super::super::pending::tests::sample;
     use super::*;
+
+    #[test]
+    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
+    fn judge_block_refuses_a_green_block_while_the_written_names_are_legacy() {
+        use crate::attest::tests::{block_with, both_names_signer, dir};
+        use git_attest::format::GREEN;
+        let scratch = dir("judge-green");
+        let (key, signers) = both_names_signer(&scratch);
+        let tree = "0123456789012345678901234567890123456789";
+        let mut record = sample("wf-green");
+        record.tree = tree.to_string();
+        let body = block_with(GREEN.format, GREEN.namespace, tree, &key);
+        // It verifies (both names are bound to the signer), so the refusal
+        // is the written-names check and nothing else.
+        assert!(crate::attest::signer_block(&body, tree, &signers).is_ok());
+        match judge_block(&record, &body, Some(&signers)) {
+            Err(BlockRefusal::Content(why)) => {
+                assert!(why.contains(GREEN.format), "{why}");
+            }
+            other => panic!("expected a content refusal, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&scratch); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
 
     #[test]
     fn lists_live_skips_a_run_past_its_ttl_and_reads_the_owner_format() {

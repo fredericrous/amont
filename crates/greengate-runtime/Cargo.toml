@@ -40,7 +40,7 @@ test-hooks = []
 # there is the code it replaces, moved to where every producer and verifier
 # shares it. The script allows it by name, and only while its own resolved
 # tree stays empty. A caret requirement: Cargo.lock pins the exact version.
-git-attest = "1.8"
+git-attest = "1.9"
 # The second, argued the same way (decisions ADR-0039, ADR-0020): greenharness-quiet
 # is the one implementation of the quiet-run active entry (docs/quiet-runs.md),
 # which amont-agent copied and drifted from in five ways. It is std-only and

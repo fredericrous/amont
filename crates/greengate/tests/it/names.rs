@@ -76,11 +76,6 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "notes namespaces and greenpiste's key (plan 3a-3)",
     ),
     (
-        "greengate-runtime/src/attest_inputs.rs",
-        1,
-        "a canon hashed into signed notes (3a-3)",
-    ),
-    (
         "greengate-runtime/src/cluster/detached.rs",
         2,
         "the amont-snapshots repository (a later step)",
@@ -112,8 +107,8 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     ),
     (
         "greengate-runtime/src/gate_stamp.rs",
-        15,
-        "notes namespaces and their format (3a-3)",
+        16,
+        "the legacy notes name set, read beside the green one until the census (ADR-0068, 3a-3)",
     ),
     (
         "greengate-runtime/src/hooks/audit.rs",

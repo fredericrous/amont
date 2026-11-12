@@ -46,6 +46,13 @@ use crate::pushrefs::PushRef;
 pub use git_attest::format::{platform, FORMAT, INPUTS_REF, NAMESPACE, NOTES_REF};
 pub use git_attest::notes::{classify_push as classify_push_stderr, PushFailure};
 
+/// The order attest's name sets are read in (decisions ADR-0068): a block's
+/// header picks one, and its namespace follows. It mirrors git-attest's
+/// verify.rs read order, `[(GREEN, ..), (LEGACY, ..)]`; that order is owned
+/// by git-attest, and this copy is removed at the Phase 5 census.
+const READ_NAMES: [git_attest::format::Names; 2] =
+    [git_attest::format::GREEN, git_attest::format::LEGACY];
+
 /// The notes ref, fully qualified — `update-ref -d` needs it.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-attest";
 pub const INPUTS_FULL_REF: &str = "refs/notes/amont-attest-inputs";
@@ -567,19 +574,33 @@ pub fn covered_report(
     require_platform: Option<&str>,
     anywhere: &[String],
 ) -> Covered {
-    let v =
+    let verdict =
         git_attest::verify::evaluate(dir, signers, principal, require_platform, anywhere, false);
-    for line in v.loud.iter().chain(&v.warnings) {
+    for line in verdict.loud.iter().chain(&verdict.warnings) {
         eprintln!("{BIN}: {line}");
     }
-    let rejected = signature_rejections(&v.trail);
+    for line in verified_lines(&verdict) {
+        eprintln!("{BIN}: {line}");
+    }
+    let rejected = signature_rejections(&verdict.trail);
     for why in &rejected {
         eprintln!("{BIN}: an attestation was found but did not verify: {why}");
     }
     Covered {
-        gates: (!v.gates.is_empty()).then(|| v.gates.join(" ")),
+        gates: (!verdict.gates.is_empty()).then(|| verdict.gates.join(" ")),
         rejected,
     }
+}
+
+/// One `verified under <namespace>` line per name set a covering block
+/// verified under, in git-attest's own wording, so a count of those lines
+/// covers greengate's verifications too.
+fn verified_lines(verdict: &git_attest::verify::Verdict) -> Vec<String> {
+    verdict
+        .verified_under
+        .iter()
+        .map(|ns| format!("verified under {ns}"))
+        .collect()
 }
 
 /// The verifier's trail lines that say a note's signature did not verify:
@@ -603,6 +624,17 @@ pub(crate) struct SignerBlock {
     pub gates: Vec<String>,
     /// The block as a note holds it.
     pub body: String,
+    /// The name set its header named, which its signature verified under.
+    pub names: git_attest::format::Names,
+}
+
+impl SignerBlock {
+    /// Whether the block is of the name set this greengate publishes
+    /// (`WRITE`): one of the other set would sit under a ref whose header is
+    /// not its own.
+    pub(crate) fn is_publishable(&self) -> bool {
+        self.names == git_attest::format::WRITE
+    }
 }
 
 /// Why a signer block is refused, by cause: what a person checks next
@@ -644,9 +676,16 @@ pub(crate) fn signer_block(
         return Err(Content(format!("{} signed blocks, not one", blocks.len())));
     }
     let signed_block = blocks.remove(0);
-    if signed_block.payload.split('\n').next() != Some(FORMAT) {
-        return Err(Content(format!("not an {FORMAT} payload")));
-    }
+    // The header names the set; the namespace follows it, never the other
+    // set's (ADR-0068): an old signature cannot pass as a new one.
+    let header = signed_block.payload.split('\n').next();
+    let Some(names) = READ_NAMES.into_iter().find(|n| Some(n.format) == header) else {
+        return Err(Content(format!(
+            "not an {} or {} payload",
+            git_attest::format::GREEN.format,
+            git_attest::format::LEGACY.format
+        )));
+    };
     let on = field(&signed_block.payload, "platform");
     if on != Some(crate::cluster::PLATFORM) {
         return Err(Content(format!(
@@ -664,7 +703,7 @@ pub(crate) fn signer_block(
         )));
     }
     let principal = git_attest::sign::verify(
-        NAMESPACE,
+        names.namespace,
         &signed_block.payload,
         &signed_block.signature,
         signers,
@@ -685,6 +724,7 @@ pub(crate) fn signer_block(
             .map(str::to_string)
             .collect(),
         body: block(&signed_block.payload, &signed_block.signature),
+        names,
     })
 }
 
@@ -737,6 +777,8 @@ fn filed_signer_blocks(tree: &str) -> Vec<SignerBlock> {
                 && field(&b.payload, "tree") == Some(tree)
         })
         .filter_map(|b| signer_block(&block(&b.payload, &b.signature), tree, &signers).ok())
+        // Published under the written ref, so only a block of the written set.
+        .filter(SignerBlock::is_publishable)
         .collect()
 }
 
@@ -752,20 +794,30 @@ fn is_zero(oid: &str) -> bool {
     !oid.is_empty() && oid.bytes().all(|b| b == b'0')
 }
 
-/// uninstall: forget the local ref. The copies already pushed to remotes are
+/// uninstall: forget the local notes refs of both name sets. The copies already pushed to remotes are
 /// statements we made and stand by; only OUR bookkeeping is removed — the
 /// same line `gate_stamp::forget` draws.
 pub fn forget() -> bool {
-    crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF])
+    let mut deleted = false;
+    for names in READ_NAMES {
+        let full = format!("refs/notes/{}", names.notes_ref);
+        deleted |= crate::git::succeeds(&["update-ref", "-d", &full]);
+    }
+    deleted
 }
 
 /// The same, for a repository this process is not standing in.
 pub fn forget_in(repo: &std::path::Path) -> bool {
-    crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF])
+    let mut deleted = false;
+    for names in READ_NAMES {
+        let full = format!("refs/notes/{}", names.notes_ref);
+        deleted |= crate::git::succeeds_in(repo, &["update-ref", "-d", &full]);
+    }
+    deleted
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::process::Stdio;
@@ -804,7 +856,7 @@ mod tests {
     /// Real repositories and real keys: every function here is a conversation
     /// with git or ssh-keygen, and a mocked conversation tests the one we
     /// imagined. Same doctrine as `gate_stamp`'s tests.
-    fn dir(name: &str) -> PathBuf {
+    pub(crate) fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("attest-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -1709,4 +1761,143 @@ mod tests {
     // --- attest 1.4.0 parity: optional paths --------------------------------
 
     // --- attest 1.4.0 parity: the notes ref is origin's mirror --------------
+
+    // Both name sets (decisions ADR-0068): a signer block's header picks the
+    // set and the namespace its signature is checked under follows, never
+    // the other set's.
+
+    /// A key the signers file lists, bound to the cluster's platform, under
+    /// BOTH namespaces: a refusal below comes from the header-to-namespace
+    /// binding, not from the signers file.
+    pub(crate) fn both_names_signer(dir: &Path) -> (PathBuf, PathBuf) {
+        let key = dir.join("signer_key");
+        let ok = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+            .arg(&key)
+            .status()
+            .expect("ssh-keygen must exist for these tests")
+            .success();
+        assert!(ok, "keygen failed");
+        let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = dir.join("allowed_signers");
+        std::fs::write(
+            &signers,
+            format!(
+                "cluster-signer@{} namespaces=\"{},{}\" {pubkey}",
+                crate::cluster::PLATFORM,
+                git_attest::format::LEGACY.namespace,
+                git_attest::format::GREEN.namespace
+            ),
+        )
+        .unwrap();
+        (key, signers)
+    }
+
+    /// One block whose payload starts with `header`, signed under `namespace`.
+    pub(crate) fn block_with(header: &str, namespace: &str, tree: &str, key: &Path) -> String {
+        let payload = format!(
+            "{header}\ntree {tree}\ngates suite\nplatform {}\ngreengate 0.0.0\n",
+            crate::cluster::PLATFORM
+        );
+        let sig = git_attest::sign::sign(namespace, &payload, key).expect("sign");
+        block(&payload, &sig)
+    }
+
+    #[test]
+    fn a_signer_block_is_checked_under_the_namespace_its_header_names() {
+        use git_attest::format::{GREEN, LEGACY};
+        let scratch = dir("signer-names");
+        let (key, signers) = both_names_signer(&scratch);
+        let tree = "0123456789012345678901234567890123456789";
+        for set in [GREEN, LEGACY] {
+            let body = block_with(set.format, set.namespace, tree, &key);
+            let checked = signer_block(&body, tree, &signers)
+                .unwrap_or_else(|e| panic!("{}: {}", set.format, e.reason()));
+            assert_eq!(checked.names, set);
+            assert_eq!(checked.gates, ["suite"]);
+        }
+        for (header, signed_under) in [(LEGACY, GREEN), (GREEN, LEGACY)] {
+            let body = block_with(header.format, signed_under.namespace, tree, &key);
+            assert!(
+                matches!(
+                    signer_block(&body, tree, &signers),
+                    Err(BlockRefusal::Signer(_))
+                ),
+                "a {} block signed under {} must be refused",
+                header.format,
+                signed_under.namespace
+            );
+        }
+        let _ = std::fs::remove_dir_all(&scratch); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn forget_in_removes_the_notes_ref_of_both_name_sets() {
+        let repo_dir = repo("forget-both");
+        git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        for names in READ_NAMES {
+            git(
+                &repo_dir,
+                &["notes", "--ref", names.notes_ref, "add", "-m", "x", "HEAD"],
+            );
+        }
+        assert!(forget_in(&repo_dir));
+        for names in READ_NAMES {
+            let full = format!("refs/notes/{}", names.notes_ref);
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_dir)
+                .args(["rev-parse", "--verify", "-q", &full])
+                .output()
+                .unwrap();
+            assert!(!out.status.success(), "{full} survived forget_in");
+        }
+        let _ = std::fs::remove_dir_all(&repo_dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
+    #[test]
+    fn filed_signer_blocks_drops_a_block_of_the_other_name_set() {
+        use git_attest::format::{GREEN, LEGACY};
+        let work = repo("filed-names");
+        std::fs::write(work.join("a.txt"), "x").unwrap();
+        git(&work, &["add", "a.txt"]);
+        git(&work, &["commit", "-qm", "chore: a"]);
+        let (key, signers) = both_names_signer(&work);
+        std::fs::create_dir_all(work.join(".forgejo")).unwrap();
+        std::fs::copy(&signers, work.join(".forgejo/allowed_signers")).unwrap();
+        let tree = git(&work, &["rev-parse", "HEAD^{tree}"]);
+        let green = block_with(GREEN.format, GREEN.namespace, &tree, &key);
+        let legacy = block_with(LEGACY.format, LEGACY.namespace, &tree, &key);
+        in_repo(&work, || {
+            file_signer_block(&green, &[&tree]).expect("file the green block");
+            assert!(
+                filed_signer_blocks(&tree).is_empty(),
+                "a green block is not publishable while WRITE is legacy"
+            );
+            file_signer_block(&format!("{green}\n{legacy}"), &[&tree]).expect("file both");
+            let kept = filed_signer_blocks(&tree);
+            assert_eq!(kept.len(), 1, "{kept:?}");
+            assert_eq!(kept[0].names, git_attest::format::WRITE);
+            assert!(kept[0].is_publishable());
+        });
+        let _ = std::fs::remove_dir_all(&work); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn a_verification_says_which_name_it_went_through() {
+        let mut verdict = git_attest::verify::Verdict::nothing("test");
+        assert!(verified_lines(&verdict).is_empty());
+        verdict.verified_under = vec![
+            git_attest::format::GREEN.namespace.to_string(),
+            git_attest::format::LEGACY.namespace.to_string(),
+        ];
+        assert_eq!(
+            verified_lines(&verdict),
+            [
+                format!("verified under {}", git_attest::format::GREEN.namespace),
+                format!("verified under {}", git_attest::format::LEGACY.namespace),
+            ]
+        );
+    }
 }

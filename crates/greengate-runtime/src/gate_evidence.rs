@@ -100,6 +100,8 @@ impl History {
 /// the same empty answer — a report that cannot be built is reported as
 /// missing, never as zero.
 pub fn history_in(repo: &Path) -> History {
+    // holds-until: Phase 4 of the notes-names plan flips `WRITE`; this
+    // reader moves to both name sets in that same change.
     let Some(list) = crate::git::stdout_in(repo, &["notes", "--ref", NOTES_REF, "list"]) else {
         return History::default();
     };

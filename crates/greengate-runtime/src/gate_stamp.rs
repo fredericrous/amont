@@ -86,15 +86,74 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// One complete set of the names a gate stamp lives under: its header, its
+/// four notes refs, the domain of its canonical key, and the attest name set
+/// whose input domain keys its inputs ref (decisions ADR-0068, plan
+/// "greengate signs its notes under green names"). A note is read WHOLE
+/// under one set: the ref it sits in names the set, and its header must be
+/// that set's, so the two never mix inside one note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GateNames {
+    /// First line of every note body (and of the marker file).
+    pub format: &'static str,
+    /// The tree- and commit-keyed stamps.
+    pub notes_ref: &'static str,
+    /// The fingerprint-keyed stamps.
+    pub inputs_ref: &'static str,
+    /// The cluster passes (ADR-0016).
+    pub cluster_ref: &'static str,
+    /// The completions that did not pass (ADR-0018).
+    pub done_ref: &'static str,
+    /// Domain of the canonical key in the inputs ref.
+    pub canon_domain: &'static str,
+    /// The attest names whose input domain keys a declared gate's
+    /// fingerprint in the inputs ref.
+    pub attest: git_attest::format::Names,
+}
+
+/// The names stamps have been written under since amont 1.x, and still are
+/// until [`WRITE`] becomes [`GREEN`] (the plan's Phase 4). Removed at the
+/// census.
+pub(crate) const LEGACY: GateNames = GateNames {
+    format: "amont-gate-v1",
+    notes_ref: "amont-gate",
+    inputs_ref: "amont-gate-inputs",
+    cluster_ref: "amont-gate-cluster",
+    done_ref: "amont-gate-done",
+    canon_domain: "amont-gate-canon",
+    attest: git_attest::format::LEGACY,
+};
+
+/// The names stamps are written under from Phase 4. Read first today.
+pub(crate) const GREEN: GateNames = GateNames {
+    format: "greengate-gate-v1",
+    notes_ref: "greengate-gate",
+    inputs_ref: "greengate-gate-inputs",
+    cluster_ref: "greengate-gate-cluster",
+    done_ref: "greengate-gate-done",
+    canon_domain: "greengate-gate-canon",
+    attest: git_attest::format::GREEN,
+};
+
+/// The ONE owner of what is written: [`FORMAT`] and the short `*_REF`
+/// constants below derive from it. The `*_FULL_REF` constants are literals,
+/// held equal to `refs/notes/{short}` by a test. LEGACY until Phase 4.
+pub(crate) const WRITE: GateNames = LEGACY;
+
+/// The order a stamp is read in: the green set first, the legacy one only
+/// for a key the green ref holds no note for.
+pub(crate) const READ: [GateNames; 2] = [GREEN, LEGACY];
+
 /// First token of the marker file and of every note body. Versioned like
 /// `staged_only::FORMAT`: a future amont that changes the shape bumps this,
 /// and an old record is ignored rather than misread.
-pub const FORMAT: &str = "amont-gate-v1";
+pub const FORMAT: &str = WRITE.format;
 
 /// The notes ref, spelled the way `git notes --ref` wants it.
-pub const NOTES_REF: &str = "amont-gate";
+pub const NOTES_REF: &str = WRITE.notes_ref;
 
-/// The same ref, fully qualified — what `git update-ref -d` needs.
+/// The same ref, fully qualified — what `git update-ref -d` needs. A literal,
+/// not derived from [`WRITE`]; a test holds it equal to `refs/notes/{NOTES_REF}`.
 pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 
 /// The second ref: stamps keyed by a gate's declared-input fingerprint
@@ -104,13 +163,13 @@ pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
 /// tree and none of them. Every key there is an oid that is not an object, as
 /// in attest's own inputs ref, so `git notes prune` on it would drop
 /// everything: never run it, and never merge the ref with `cat_sort_uniq`.
-pub const INPUTS_REF: &str = "amont-gate-inputs";
+pub const INPUTS_REF: &str = WRITE.inputs_ref;
 
 /// Where CLUSTER passes are recorded (ADR-0016): the same note format, keyed
 /// by the judged tree, holding tokens of `gate_identity::cluster_token`.
 /// Never `amont-gate` (ADR-0015): a local token here would let the laptop
 /// sign a pass it never ran.
-pub const CLUSTER_REF: &str = "amont-gate-cluster";
+pub const CLUSTER_REF: &str = WRITE.cluster_ref;
 pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
 
 /// Where a gate that COMPLETED without passing is recorded (ADR-0018): a
@@ -120,7 +179,7 @@ pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
 /// gate in an inline push. Only the refusing push (`greengate.pushGates refuse`)
 /// and land's own push read it, so that what a rehearsal or land's pre-stage
 /// already ran is not refused as "not run".
-pub const DONE_REF: &str = "amont-gate-done";
+pub const DONE_REF: &str = WRITE.done_ref;
 pub const DONE_FULL_REF: &str = "refs/notes/amont-gate-done";
 
 /// The reserved first word of a provenance line: where a token came from
@@ -320,12 +379,19 @@ impl Note {
     /// a note somebody else wrote into our ref vouches for nothing, and its
     /// remaining lines are not evidence either.
     pub fn parse(body: &str) -> Note {
+        Note::parse_as(body, FORMAT)
+    }
+
+    /// [`Note::parse`] for a note read from a ref of the set whose header is
+    /// `format`: any other first word, the other set's included, is not
+    /// ours there and yields an empty note.
+    fn parse_as(body: &str, format: &str) -> Note {
         let mut lines = body.lines();
         let Some(first) = lines.next() else {
             return Note::default();
         };
         let mut tokens = first.split_whitespace();
-        if tokens.next() != Some(FORMAT) {
+        if tokens.next() != Some(format) {
             return Note::default();
         }
         let mut deferred = Vec::new();
@@ -396,9 +462,11 @@ pub fn is_provenance(line: &str) -> bool {
     line.split_whitespace().next() == Some(PROVENANCE)
 }
 
-/// The note at `key`, parsed. An absent note, an absent ref and a git that
-/// would not answer are all an empty note — the same direction everything
-/// here fails in.
+/// The note at `key` in the WRITTEN ref, parsed: the base a writer merges
+/// into. Only the written ref, never a note read under another name set, so
+/// a rewrite can never carry the other set's tokens under this header. An
+/// absent note, an absent ref and a git that would not answer are all an
+/// empty note — the same direction everything here fails in.
 fn note_at(key: &str) -> Note {
     note_in(NOTES_REF, key)
 }
@@ -407,6 +475,34 @@ fn note_in(notes_ref: &str, key: &str) -> Note {
     crate::git::stdout(&["notes", "--ref", notes_ref, "show", key])
         .map(|body| Note::parse(&body))
         .unwrap_or_default()
+}
+
+/// The stamp at `key` as a READER sees it: the note in `which` ref of the
+/// first set of [`READ`] that holds one, parsed under that set's header. A
+/// green ref's note is the answer even when its header is wrong (it then
+/// vouches for nothing): the legacy ref is read only for a key the green
+/// ref has no note for.
+fn stamp_in(which: fn(&GateNames) -> &'static str, key: &str) -> Note {
+    READ.iter()
+        .find_map(|set| read_in(set, which(set), key))
+        .unwrap_or_default()
+}
+
+/// The note at `key` in `notes_ref`, one of `set`'s refs, parsed under
+/// `set`'s header; `None` when the ref holds no note there (or git would not
+/// answer, which reads the same: no stamp).
+///
+/// A git failure on the green ref returns `None`, so a legacy note may answer
+/// in its place. That is the safe direction: the gate then re-runs, or reads
+/// the older stamp.
+fn read_in(set: &GateNames, notes_ref: &str, key: &str) -> Option<Note> {
+    crate::git::stdout(&["notes", "--ref", notes_ref, "show", key])
+        .map(|body| Note::parse_as(&body, set.format))
+}
+
+/// [`stamp_in`] on the tree- and commit-keyed ref.
+fn stamp_at(key: &str) -> Note {
+    stamp_in(|s| s.notes_ref, key)
 }
 
 /// The tokens of the gates `tree`'s declared inputs vouch for: for each gate
@@ -429,10 +525,13 @@ fn input_tokens(tree: &str) -> Vec<String> {
         let Some(fp) = crate::attest_inputs::fingerprint(tree, &spec, gate) else {
             continue;
         };
-        let Some(key) = crate::attest_inputs::input_key(gate, &fp) else {
-            continue;
-        };
-        for t in note_in(INPUTS_REF, &key).tokens {
+        // Each set computes its own key and reads its own ref; the legacy
+        // one only when the green ref has no note at the green key.
+        let note = READ.iter().find_map(|set| {
+            let key = crate::attest_inputs::input_key(&set.attest, gate, &fp)?;
+            read_in(set, set.inputs_ref, &key)
+        });
+        for t in note.unwrap_or_default().tokens {
             if crate::gate_identity::base(&t) == gate.as_str() && !out.contains(&t) {
                 out.push(t);
             }
@@ -448,15 +547,23 @@ fn input_tokens(tree: &str) -> Vec<String> {
 /// tree. A declared (even invalid) spec, an opt-out, or a git that would not
 /// answer: no canonical route, nothing contributed, the gate runs.
 fn canon_tokens(tree: &str) -> Vec<String> {
-    canon_key_of(tree)
-        .map(|key| note_in(INPUTS_REF, &key).tokens)
+    let Some(canon) = crate::attest_inputs::canonical_route(tree) else {
+        return Vec::new();
+    };
+    READ.iter()
+        .find_map(|set| {
+            let key = crate::attest_inputs::canon_gate_key(set.canon_domain, &canon)?;
+            read_in(set, set.inputs_ref, &key)
+        })
+        .map(|note| note.tokens)
         .unwrap_or_default()
 }
 
-/// The key of the canonical note of `tree`, if the canonical route is open.
+/// The key of the canonical note of `tree` in the WRITTEN set, if the
+/// canonical route is open.
 fn canon_key_of(tree: &str) -> Option<String> {
     let canon = crate::attest_inputs::canonical_route(tree)?;
-    crate::attest_inputs::canon_gate_key(&canon)
+    crate::attest_inputs::canon_gate_key(WRITE.canon_domain, &canon)
 }
 
 /// File `tokens` under the canonical key of `tree`. Best-effort and merged,
@@ -495,7 +602,7 @@ fn file_inputs(tree: &str, tokens: &[String]) {
         let Some(fp) = crate::attest_inputs::fingerprint(tree, &spec, gate) else {
             continue;
         };
-        let Some(key) = crate::attest_inputs::input_key(gate, &fp) else {
+        let Some(key) = crate::attest_inputs::input_key(&WRITE.attest, gate, &fp) else {
             continue;
         };
         let mut note = note_in(INPUTS_REF, &key);
@@ -519,18 +626,26 @@ fn manifest_is_an_input(tree: &str, spec: &crate::attest_inputs::Spec, gate: &st
     })
 }
 
-/// Does the inputs ref exist here? One spawn that lets a repository nothing
-/// was ever filed for (an opted-out one, or one whose stamps never passed)
-/// skip the fingerprint and canonical routes entirely on the push path.
+/// Does either set's inputs ref exist here? One spawn per set that lets a
+/// repository nothing was ever filed for (an opted-out one, or one whose
+/// stamps never passed) skip the fingerprint and canonical routes entirely on
+/// the push path.
 fn inputs_ref_exists() -> bool {
-    crate::git::succeeds(&["rev-parse", "-q", "--verify", INPUTS_FULL_REF])
+    READ.iter().any(|set| {
+        crate::git::succeeds(&[
+            "rev-parse",
+            "-q",
+            "--verify",
+            &format!("refs/notes/{}", set.inputs_ref),
+        ])
+    })
 }
 
 /// The stamp tokens on `tree` (a tree object id). Tree gates are read here
 /// and only here (ADR-0024): `tree:<name>` on the pushed tree proves the gate
 /// on exactly that content, whichever commit carried it.
 pub fn tree_tokens(tree: &str) -> Vec<String> {
-    let mut tokens = note_at(tree).tokens;
+    let mut tokens = stamp_at(tree).tokens;
     if inputs_ref_exists() {
         for t in input_tokens(tree) {
             if !tokens.contains(&t) {
@@ -613,7 +728,7 @@ pub fn record_deferred(tree: &str, gates: &[String]) {
 /// The commit-time gates the busy policy deferred on `tree`, by script name.
 /// What `amont stamps` reports as `deferred`; never a token.
 pub fn deferred_on(tree: &str) -> Vec<String> {
-    note_at(tree).deferred
+    stamp_at(tree).deferred
 }
 
 /// Which of `commits` carry a deferral of `gate` on their tree's note (or
@@ -636,7 +751,7 @@ pub fn deferred_for(commits: &[String], gate: &str) -> HashSet<String> {
         };
         if [commit, tree]
             .iter()
-            .any(|key| note_at(key).deferred.iter().any(|d| d == gate))
+            .any(|key| stamp_at(key).deferred.iter().any(|d| d == gate))
         {
             out.insert(commit.to_string());
         }
@@ -741,7 +856,7 @@ pub fn vouched_for_staged_tree() -> HashSet<String> {
     // reader skips only on the complete token. The note's `run` lines are evidence and are not
     // tokens: `Note` keeps the two apart so nothing here can be skipped by a
     // line that only records how long something took.
-    out.extend(note_at(&tree).tokens);
+    out.extend(stamp_at(&tree).tokens);
     // A gate the repository declares inputs for is also vouched for by any
     // earlier tree whose declared inputs are byte-identical to this staged
     // tree's: a plan-only commit changes the tree and none of them. The tree
@@ -965,7 +1080,7 @@ pub fn done_on_every(commits: &[String], token: &str, severity: crate::check::Se
     !commits.is_empty()
         && commits.iter().all(|c| {
             crate::git::stdout(&["rev-parse", &format!("{c}^{{tree}}")]).is_some_and(|tree| {
-                note_in(DONE_REF, &tree)
+                stamp_in(|s| s.done_ref, &tree)
                     .tokens
                     .iter()
                     .any(|word| completion_answers(word, token, severity, now))
@@ -983,7 +1098,13 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
     if commits.is_empty() {
         return out;
     }
-    let Some(list) = crate::git::stdout(&["notes", "--ref", NOTES_REF, "list"]) else {
+    // Both sets' lists, unioned: a commit noted only under the green ref is
+    // a stamped commit too ([`stamp_at`] then picks which note answers).
+    let lists: Option<Vec<String>> = READ
+        .iter()
+        .map(|set| crate::git::stdout(&["notes", "--ref", set.notes_ref, "list"]))
+        .collect();
+    let Some(lists) = lists else {
         // NOT the absent-ref case, whatever an older comment here claimed:
         // `notes list` exits 0 with empty output when the ref does not exist,
         // so that arrives as `Some("")` and falls through as "nothing is
@@ -998,8 +1119,9 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
         );
         return out;
     };
-    let noted: HashSet<&str> = list
-        .lines()
+    let noted: HashSet<&str> = lists
+        .iter()
+        .flat_map(|list| list.lines())
         .filter_map(|l| l.split_whitespace().nth(1))
         .collect();
     // Commit -> tree, in ONE spawn rather than one per commit: this is the
@@ -1057,7 +1179,7 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
             keys.push(tree);
         }
         for key in keys {
-            for t in note_at(key).tokens {
+            for t in stamp_at(key).tokens {
                 if !tokens.contains(&t) {
                     tokens.push(t);
                 }
@@ -1086,16 +1208,26 @@ pub fn stamps_for(commits: &[String]) -> HashMap<String, Vec<String>> {
 /// which are the user's statements and are never touched.
 pub fn forget() -> bool {
     let marker = marker_path().is_some_and(|path| std::fs::remove_file(&path).is_ok());
-    let notes = crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF]);
-    let inputs = crate::git::succeeds(&["update-ref", "-d", INPUTS_FULL_REF]);
-    let cluster = crate::git::succeeds(&["update-ref", "-d", CLUSTER_FULL_REF]);
-    marker || notes || inputs || cluster
+    // Every ref of every name set: a green note is ours too.
+    let mut deleted = false;
+    for set in READ {
+        for r in full_refs(&set) {
+            deleted |= crate::git::succeeds(&["update-ref", "-d", &r]);
+        }
+    }
+    marker || deleted
+}
+
+/// The four fully qualified refs of one name set.
+fn full_refs(set: &GateNames) -> [String; 4] {
+    [set.notes_ref, set.inputs_ref, set.cluster_ref, set.done_ref]
+        .map(|short| format!("refs/notes/{short}"))
 }
 
 /// The cluster tokens on `tree` (ADR-0016). Read only for a trusted
 /// `platform=any` gate, so a repository with none never pays the spawn.
 pub(crate) fn cluster_tokens(tree: &str) -> Vec<String> {
-    note_in(CLUSTER_REF, tree).tokens
+    stamp_in(|s| s.cluster_ref, tree).tokens
 }
 
 /// Record a cluster pass: `token` on the note at `tree`, with its provenance
@@ -1131,10 +1263,13 @@ pub(crate) fn cluster_stamps_for(commits: &[String]) -> HashMap<String, (String,
 pub fn forget_in(repo: &std::path::Path) -> bool {
     let marker = crate::git::stdout_in(repo, &["rev-parse", "--absolute-git-dir"])
         .is_some_and(|dir| std::fs::remove_file(std::path::Path::new(&dir).join(MARKER)).is_ok());
-    let notes = crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF]);
-    let inputs = crate::git::succeeds_in(repo, &["update-ref", "-d", INPUTS_FULL_REF]);
-    let cluster = crate::git::succeeds_in(repo, &["update-ref", "-d", CLUSTER_FULL_REF]);
-    marker || notes || inputs || cluster
+    let mut deleted = false;
+    for set in READ {
+        for r in full_refs(&set) {
+            deleted |= crate::git::succeeds_in(repo, &["update-ref", "-d", &r]);
+        }
+    }
+    marker || deleted
 }
 
 #[cfg(test)]
@@ -2063,7 +2198,7 @@ mod tests {
             let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
             let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
             let fp = crate::attest_inputs::fingerprint(&tree, &spec, &spec.gates[0].0).expect("fp");
-            let key = crate::attest_inputs::input_key("test", &fp).expect("key");
+            let key = crate::attest_inputs::input_key(&WRITE.attest, "test", &fp).expect("key");
             let listed = git(&dir, &["notes", "--ref", INPUTS_REF, "list"]);
             assert!(
                 listed
@@ -2082,7 +2217,7 @@ mod tests {
             let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
             let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
             let fp = crate::attest_inputs::fingerprint(&tree, &spec, &spec.gates[0].0).expect("fp");
-            let key = crate::attest_inputs::input_key("test", &fp).expect("key");
+            let key = crate::attest_inputs::input_key(&WRITE.attest, "test", &fp).expect("key");
             // Somebody files a token for ANOTHER gate under `test`'s key.
             let mut note = note_in(INPUTS_REF, &key);
             note.add_tokens(&["publish@evil".to_string()]);
@@ -2269,5 +2404,264 @@ mod tests {
             assert!(!tokens.iter().any(|t| t.starts_with("lint@")));
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Both name sets (decisions ADR-0068, plan "greengate signs its notes
+    // under green names", Phase 2): read green first, legacy only for a key
+    // the green ref has no note for, a note's header matching its ref.
+
+    /// A repository with one unjudged commit: no stamp under either set.
+    fn unstamped(name: &str) -> (PathBuf, String, String) {
+        let dir = repo(name);
+        std::fs::write(dir.join("a.ts"), "x").unwrap();
+        git(&dir, &["add", "a.ts"]);
+        git(&dir, &["commit", "-qm", "feat: a"]);
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+        (dir, head, tree)
+    }
+
+    /// Plant `body` at `key` in `notes_ref`, as another greengate would.
+    fn plant(dir: &Path, notes_ref: &str, key: &str, body: &str) {
+        git(
+            dir,
+            &["notes", "--ref", notes_ref, "add", "-f", "-m", body, key],
+        );
+    }
+
+    fn stamps_of(commit: &str) -> Vec<String> {
+        stamps_for(&[commit.to_string()])
+            .remove(commit)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_pass_is_found_under_either_gate_ref() {
+        for (i, set) in READ.iter().enumerate() {
+            let (dir, head, tree) = unstamped(&format!("either-{i}"));
+            plant(
+                &dir,
+                set.notes_ref,
+                &head,
+                &format!("{} test@c", set.format),
+            );
+            plant(
+                &dir,
+                set.notes_ref,
+                &tree,
+                &format!("{} test@t", set.format),
+            );
+            plant(
+                &dir,
+                set.cluster_ref,
+                &tree,
+                &format!("{} suite@k", set.format),
+            );
+            plant(
+                &dir,
+                set.done_ref,
+                &tree,
+                &format!("{} warned:lint@w", set.format),
+            );
+            in_repo(&dir, || {
+                let mut got = stamps_of(&head);
+                got.sort();
+                assert_eq!(got, ["test@c", "test@t"], "{}", set.notes_ref);
+                assert_eq!(tree_tokens(&tree), ["test@t"], "{}", set.notes_ref);
+                assert_eq!(cluster_tokens(&tree), ["suite@k"], "{}", set.cluster_ref);
+                assert!(
+                    done_on_every(
+                        std::slice::from_ref(&head),
+                        "lint@w",
+                        crate::check::Severity::Block
+                    ),
+                    "{}",
+                    set.done_ref
+                );
+            });
+            let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+        }
+    }
+
+    #[test]
+    fn with_notes_under_both_refs_the_green_note_is_read() {
+        let (dir, head, tree) = unstamped("both-refs");
+        for key in [&head, &tree] {
+            plant(
+                &dir,
+                LEGACY.notes_ref,
+                key,
+                &format!("{} test@old", LEGACY.format),
+            );
+            plant(
+                &dir,
+                GREEN.notes_ref,
+                key,
+                &format!("{} test@new", GREEN.format),
+            );
+        }
+        plant(
+            &dir,
+            LEGACY.cluster_ref,
+            &tree,
+            &format!("{} suite@old", LEGACY.format),
+        );
+        plant(
+            &dir,
+            GREEN.cluster_ref,
+            &tree,
+            &format!("{} suite@new", GREEN.format),
+        );
+        in_repo(&dir, || {
+            assert_eq!(stamps_of(&head), ["test@new"]);
+            assert_eq!(tree_tokens(&tree), ["test@new"]);
+            assert_eq!(cluster_tokens(&tree), ["suite@new"]);
+        });
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn a_note_whose_header_is_the_other_sets_reads_as_unstamped() {
+        for (i, (sits_in, header_of)) in [(LEGACY, GREEN), (GREEN, LEGACY)].iter().enumerate() {
+            let (dir, head, tree) = unstamped(&format!("mixed-{i}"));
+            for key in [&head, &tree] {
+                plant(
+                    &dir,
+                    sits_in.notes_ref,
+                    key,
+                    &format!("{} test@x", header_of.format),
+                );
+            }
+            plant(
+                &dir,
+                sits_in.cluster_ref,
+                &tree,
+                &format!("{} suite@x", header_of.format),
+            );
+            in_repo(&dir, || {
+                assert!(stamps_of(&head).is_empty(), "{}", sits_in.notes_ref);
+                assert!(tree_tokens(&tree).is_empty(), "{}", sits_in.notes_ref);
+                assert!(cluster_tokens(&tree).is_empty(), "{}", sits_in.cluster_ref);
+            });
+            let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+        }
+    }
+
+    /// A green inputs note is filed under the GREEN key (its own input
+    /// domain) and answers before the legacy one; the legacy key in the
+    /// green ref is not read.
+    #[test]
+    fn the_green_inputs_ref_is_read_first_under_its_own_key() {
+        let dir = declared("green-inputs", "test a.ts\n");
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let spec = crate::attest_inputs::spec_at(&tree).expect("spec");
+            let fp = crate::attest_inputs::fingerprint(&tree, &spec, "test").expect("fp");
+            let green = crate::attest_inputs::input_key(&GREEN.attest, "test", &fp).expect("key");
+            let legacy = crate::attest_inputs::input_key(&LEGACY.attest, "test", &fp).expect("key");
+            assert_ne!(green, legacy, "each set keys with its own domain");
+            let head = plan_only_commit(&dir);
+            // The legacy key in the green ref is no green stamp.
+            plant(
+                &dir,
+                GREEN.inputs_ref,
+                &legacy,
+                &format!("{} test@wrongkey", GREEN.format),
+            );
+            assert_eq!(stamps_of(&head), ["test@abc"]);
+            plant(
+                &dir,
+                GREEN.inputs_ref,
+                &green,
+                &format!("{} test@green", GREEN.format),
+            );
+            assert_eq!(stamps_of(&head), ["test@green"]);
+        });
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn a_green_canonical_note_is_read_under_the_green_domain() {
+        let dir = canonical("green-canon", None);
+        in_repo(&dir, || {
+            let tree = git(&dir, &["rev-parse", "HEAD^{tree}"]);
+            let canon = crate::attest_inputs::canonical_route(&tree).expect("canon");
+            let key =
+                crate::attest_inputs::canon_gate_key(GREEN.canon_domain, &canon).expect("key");
+            plant(
+                &dir,
+                GREEN.inputs_ref,
+                &key,
+                &format!("{} test@green", GREEN.format),
+            );
+            let head = plan_only_commit(&dir);
+            assert_eq!(stamps_of(&head), ["test@green"]);
+        });
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn forget_removes_the_refs_of_both_name_sets() {
+        let (dir, _head, tree) = unstamped("forget-both");
+        plant(
+            &dir,
+            GREEN.notes_ref,
+            &tree,
+            &format!("{} test@g", GREEN.format),
+        );
+        plant(
+            &dir,
+            LEGACY.notes_ref,
+            &tree,
+            &format!("{} test@l", LEGACY.format),
+        );
+        for set in READ {
+            plant(&dir, set.done_ref, &tree, "done");
+        }
+        in_repo(&dir, || {
+            assert_eq!(tree_tokens(&tree).len(), 1);
+            assert!(forget());
+            assert!(tree_tokens(&tree).is_empty(), "{:?}", tree_tokens(&tree));
+        });
+        for set in READ {
+            for r in full_refs(&set) {
+                let out = std::process::Command::new("git")
+                    .args(["-C"])
+                    .arg(&dir)
+                    .args(["rev-parse", "--verify", "-q", &r])
+                    .output()
+                    .unwrap();
+                assert!(!out.status.success(), "{r} survived forget");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn writes_stay_under_the_legacy_names_and_each_full_ref_names_its_ref() {
+        assert_eq!(WRITE, LEGACY);
+        for (full, short) in [
+            (NOTES_FULL_REF, NOTES_REF),
+            (INPUTS_FULL_REF, INPUTS_REF),
+            (CLUSTER_FULL_REF, CLUSTER_REF),
+            (DONE_FULL_REF, DONE_REF),
+        ] {
+            assert_eq!(full, format!("refs/notes/{short}"));
+        }
+        // A writer's merge base is the written ref alone: a green note on
+        // the key is never copied under the legacy header.
+        let (dir, head, tree) = unstamped("write-legacy");
+        plant(
+            &dir,
+            GREEN.notes_ref,
+            &tree,
+            &format!("{} test@new", GREEN.format),
+        );
+        in_repo(&dir, || {
+            assert!(stamp_push(&head, &tree, &["suite@p".to_string()]));
+            let written = git(&dir, &["notes", "--ref", LEGACY.notes_ref, "show", &tree]);
+            assert_eq!(written, format!("{} suite@p", LEGACY.format));
+        });
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 }
