@@ -42,7 +42,10 @@ const KUBECONFIG_ENV: &str = "GREENGATE_SIGNER_KUBECONFIG";
 const NAMESPACE_ENV: &str = "GREENGATE_SIGNER_NAMESPACE";
 const DEFAULT_NAMESPACE: &str = "attest-signer";
 /// Where detached Workflows run: greengate 4's namespace and 3.x's.
-const RUNNER_NAMESPACES: [&str; 2] = ["greengate-gates", "amont-gates"];
+const RUNNER_NAMESPACES: [&str; 2] = [
+    crate::names::CLUSTER_NAMESPACE,
+    crate::names::old::CLUSTER_NAMESPACE,
+];
 
 /// The label every signer ConfigMap carries, and its value.
 pub(super) const SIGNER_LABEL: &str = "greengate.signer";
@@ -976,7 +979,11 @@ mod tests {
     fn a_workflow_greengate_did_not_submit_is_skipped() {
         let wf = compact(&fixture("workflow-succeeded.json"));
         let runner = list(&[wf, compact(&fixture("pod-succeeded.json"))]);
-        let planned = plan_pass(&[("amont-gates", runner)], &no_configmaps(), NOW);
+        let planned = plan_pass(
+            &[(crate::names::old::CLUSTER_NAMESPACE, runner)],
+            &no_configmaps(),
+            NOW,
+        );
         match planned.actions.as_slice() {
             [Action::Skip { reason, .. }] => assert!(reason.contains("no tree"), "{reason}"),
             other => panic!("{other:?}"),

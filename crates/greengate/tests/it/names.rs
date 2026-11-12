@@ -91,6 +91,11 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "the cluster notes contract (plan 3a-3)",
     ),
     (
+        "greengate-runtime/src/cluster/detached/sign.rs",
+        1,
+        "a test's expected payload: the frozen amont-attest-v2 wire format (ADR-0037), written by hand as the independent expected value",
+    ),
+    (
         "greengate-runtime/src/cluster/detached/workflow.rs",
         1,
         "the amont-snapshots repository (a later step)",
