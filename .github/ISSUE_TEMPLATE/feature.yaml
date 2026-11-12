@@ -8,8 +8,8 @@ body:
         Two things worth knowing before you write this up, because they change the answer:
 
         - **A check that is right for your repository does not need to be in everybody's binary.**
-          Declare it in a committed `amont.conf` and your whole team gets it, with the same
-          `hook.skip` and `amont.severity` controls as any built-in. See
+          Declare it in a committed `greengate.conf` and your whole team gets it, with the same
+          `hook.skip` and `greengate.severity` controls as any built-in. See
           [custom checks](https://github.com/greenharness/greengate/blob/main/docs/custom-checks.md).
         - **The commit path links no external crates**, enforced in CI. A built-in that needs a
           dependency belongs in `amont-fleet`, which is installed separately. See
@@ -54,7 +54,7 @@ body:
     id: alternatives
     attributes:
       label: What you considered instead
-      description: Including whether `amont.conf` would do it, and why it would not be enough.
+      description: Including whether `greengate.conf` would do it, and why it would not be enough.
     validations:
       required: false
 
