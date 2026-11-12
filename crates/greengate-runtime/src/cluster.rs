@@ -38,10 +38,10 @@ use crate::manifest::{External, Kind};
 mod detached;
 #[cfg(test)]
 pub(crate) use detached::sample_pending_file;
+pub use detached::{cluster_command, collect_command, detach, wanted, Ask, Detached};
 pub(crate) use detached::{
     collect, lists_live, settled_lines, status_lines, stop_pending, PENDING_FILE,
 };
-pub use detached::{collect_command, detach, wanted, Ask, Detached};
 
 /// [`collect`] for the hooks and `amont stamps`, which run in every repository:
 /// only where the manifest declares a `platform=any` gate, the only kind a
@@ -1100,11 +1100,28 @@ impl Kube {
 /// Run `cmd` with stdout and stderr captured apart, under a ceiling of
 /// `secs`, through the hooks' bounded wait. Takes no host slot.
 fn capture(cmd: &mut Command, secs: u64) -> Call {
+    capture_with(cmd, None, secs)
+}
+
+/// [`capture`], with `input` written to the child's stdin on a thread and the
+/// pipe then closed, so the child sees its end (`kubectl create -f -`).
+fn capture_with(cmd: &mut Command, input: Option<Vec<u8>>, secs: u64) -> Call {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Call::NotStarted(format!("kubectl: {e}")),
     };
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            // A child that exits before reading all of it says why on its
+            // own; the bounded wait below decides the call.
+            let written = std::io::Write::write_all(&mut stdin, &bytes);
+            drop(written);
+        });
+    }
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
     let ran = crate::hooks::common::wait_within(

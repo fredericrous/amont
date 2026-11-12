@@ -1085,6 +1085,49 @@ The record of what is pending is `$GIT_COMMON_DIR/greengate/cluster-pending`;
 deleting it forgets the Workflows, and `refs/snapshots/*` on the remote are
 pruned by the cluster. Unix only.
 
+#### `greengate cluster sign` — the in-cluster signer
+
+`greengate cluster sign [--watch]` runs in a pod in the cluster, not on a
+laptop. It signs finished detached runs from what Kubernetes recorded. Each
+pass makes one batched read of the Workflows and pods carrying `greengate.run`
+in `greengate-gates` and `amont-gates`. It considers a Workflow that is
+finished, has no ConfigMap yet, and was submitted by greengate: it carries its
+tree and gate ids as greengate writes them. Each gate is judged on its pod with
+the same rules as collect's, above. Only a pod that the Workflow owns, by
+`ownerReferences` and by its own node record, counts. A Job's pod, or a pod
+wearing a borrowed run label, counts for nothing.
+
+The gates that passed go into one signed git-attest block for
+`platform x86_64-linux`, with no input lines. The block is written to a
+ConfigMap named after the Workflow, under `data.block`, in the signer
+namespace. The ConfigMap is labelled `greengate.run` and
+`greengate.signer=block`, and annotated with the Workflow's namespace, the tree
+and an expiry 7 days out. When no gate passed, the ConfigMap holds an empty
+block and the reason, under `data.skipped`, so the Workflow is not judged
+again. A ConfigMap that already exists counts as done. Each pass also deletes
+the expired ConfigMaps. It logs how many finished Workflows older than 5
+minutes still have none, and touches `$HOME/heartbeat`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GREENGATE_SIGNER_KEY` | none: required | The ed25519 private key it signs with, checked once at start. The principal is the verifier's `allowed_signers` business. |
+| `GREENGATE_SIGNER_KUBECONFIG` | none | A kubeconfig. Without it, kubectl uses the pod's ServiceAccount. |
+| `GREENGATE_SIGNER_NAMESPACE` | `attest-signer` | Where the ConfigMaps are written. |
+
+It writes one plain line on stderr per Workflow it acts on:
+`signed <workflow> <gate,…> tree <short>`, `skipped <workflow>: <reason>`,
+or `error <workflow>: <reason>`. Stdout stays empty.
+
+Without `--watch` it does one pass and exits:
+
+- 0: the pass was clean.
+- 1: the cluster could not be read, or signing or writing a ConfigMap failed.
+- 2: a usage error, or the key is missing or unusable.
+
+With `--watch` it runs a pass every 30 s. A failed pass is logged and the loop
+goes on. SIGTERM or SIGINT lets the current pass finish, then the process
+exits 0.
+
 ## `greengate.minVersion` — the greengate this repository means
 
 ```sh

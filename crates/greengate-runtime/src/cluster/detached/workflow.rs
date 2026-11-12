@@ -17,6 +17,11 @@ use super::super::{
 use super::pending::{Gate, Pending};
 
 pub(super) const PRIORITY_CLASS: &str = "gate-detached";
+/// The Workflow annotation naming the tree its gates judge: what `fetch`
+/// must report, and what `cluster sign` signs for.
+pub(super) const TREE_ANNOTATION: &str = "greengate.dev/tree";
+/// The annotation of a gate's template naming the gate it runs.
+pub(super) const GATE_ANNOTATION: &str = crate::names::GATE_ANNOTATION;
 /// The read-only cache of detached pods: one writer at a time, because the
 /// `gate-detached` quota allows one pod.
 const CACHE_CLAIM: &str = "gate-cache-detached";
@@ -144,11 +149,12 @@ fn template(plan: &Plan, gate: &Gate) -> String {
     }
     format!(
         "{{\"name\":{name},\"activeDeadlineSeconds\":{deadline},\
-         \"metadata\":{{\"annotations\":{{\"greengate.dev/gate\":{gate_id}}}}},\
+         \"metadata\":{{\"annotations\":{{{gate_key}:{gate_id}}}}},\
          \"initContainers\":[{inits}],\
          \"container\":{{\"image\":{image},\"command\":{command},\"securityContext\":{SECURITY},{work_mounts}}}}}",
         name = json_string(&template_name(&gate.task)),
         deadline = config.timeout_secs + GATE_SLACK_SECS,
+        gate_key = json_string(GATE_ANNOTATION),
         gate_id = json_string(&gate.id),
         inits = inits.join(","),
         image = json_string(&config.image),
@@ -188,7 +194,7 @@ pub(super) fn workflow_json(plan: &Plan) -> String {
         "{{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\
          \"metadata\":{{\"name\":{name},\
          \"labels\":{{\"app.kubernetes.io/managed-by\":\"{managed_by}\",{run_key}:{label}}},\
-         \"annotations\":{{\"greengate.dev/tree\":{tree}}}}},\
+         \"annotations\":{{{tree_key}:{tree}}}}},\
          \"spec\":{{\"entrypoint\":\"gates\",\"serviceAccountName\":\"default\",\
          \"automountServiceAccountToken\":false,\
          \"executor\":{{\"serviceAccountName\":{executor}}},\
@@ -208,6 +214,7 @@ pub(super) fn workflow_json(plan: &Plan) -> String {
         name = json_string(&record.name),
         run_key = json_string(RUN_LABEL_KEY),
         label = json_string(&record.label),
+        tree_key = json_string(TREE_ANNOTATION),
         tree = json_string(&record.tree),
         executor = json_string(EXECUTOR_ACCOUNT),
         prio = json_string(PRIORITY_CLASS),

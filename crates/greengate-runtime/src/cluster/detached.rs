@@ -27,9 +27,19 @@ use crate::json_read::Value;
 
 mod collect;
 mod pending;
+mod sign;
 mod workflow;
 
 pub use collect::collect_command;
+
+/// `greengate cluster <verb>`: `sign [--watch]` is the in-cluster signer;
+/// everything else is `collect`'s, exactly as before `sign` existed.
+pub fn cluster_command(args: &[std::ffi::OsString]) -> i32 {
+    match args.first().and_then(|a| a.to_str()) {
+        Some("sign") => sign::sign_command(&args[1..]),
+        _ => collect_command(args),
+    }
+}
 pub(crate) use collect::{collect, lists_live, settled_lines, status_lines, stop_pending};
 #[cfg(test)]
 pub(crate) use pending::sample_file as sample_pending_file;

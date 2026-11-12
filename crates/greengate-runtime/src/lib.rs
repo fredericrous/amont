@@ -72,6 +72,8 @@ pub mod migrate;
 pub mod names;
 pub mod pack;
 pub mod policy;
+#[cfg(unix)]
+pub(crate) mod posix_signal;
 pub mod proctree;
 pub mod pushed_tree;
 pub mod pushrefs;

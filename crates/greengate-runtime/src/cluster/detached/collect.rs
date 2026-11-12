@@ -358,7 +358,7 @@ fn text<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a str> {
     v?.get(key).and_then(Value::as_str)
 }
 
-fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
+pub(super) fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
     list.get("items")
         .map(Value::items)
         .unwrap_or(&[])
@@ -369,7 +369,13 @@ fn kind_of<'a>(list: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value
 /// The pod of the Workflow `uid` that ran `node`: named so by Argo's
 /// annotation, owned by that Workflow, and a Pod node of the Workflow's own
 /// status of the template the gate was submitted under.
-fn pod_of<'a>(list: &'a Value, wf: &Value, name: &str, uid: &str, task: &str) -> Option<&'a Value> {
+pub(super) fn pod_of<'a>(
+    list: &'a Value,
+    wf: &Value,
+    name: &str,
+    uid: &str,
+    task: &str,
+) -> Option<&'a Value> {
     let node = node_name(name, task);
     let recorded = wf
         .get("status")
@@ -411,7 +417,7 @@ fn pod_of<'a>(list: &'a Value, wf: &Value, name: &str, uid: &str, task: &str) ->
 /// alone: exit 0 is `Complete`, any other exit is `Failed`, and a container
 /// that has not terminated is `Running`. Workflow and node phases are never
 /// read here: gate code can write what Argo's executor reports from.
-fn end_from_main(main: &State) -> JobEnd {
+pub(super) fn end_from_main(main: &State) -> JobEnd {
     match main {
         State::Terminated { exit: Some(0), .. } => JobEnd::Complete,
         State::Terminated { reason, .. } => JobEnd::Failed(if reason.is_empty() {
@@ -790,7 +796,7 @@ pub(crate) fn stop_pending() -> Stopped {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::cluster::detached) mod tests {
     use super::super::pending::tests::sample;
     use super::*;
 
@@ -818,7 +824,7 @@ mod tests {
         assert!(lists_live(&file, now).is_err());
     }
 
-    fn fixture(name: &str) -> String {
+    pub(in crate::cluster::detached) fn fixture(name: &str) -> String {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../greengate/tests/it/fixtures/argo");
         std::fs::read_to_string(dir.join(name)).expect("fixture")
@@ -826,7 +832,7 @@ mod tests {
 
     /// `text` without the whitespace outside strings, so a replacement does
     /// not depend on how the fixture was indented.
-    fn compact(text: &str) -> String {
+    pub(in crate::cluster::detached) fn compact(text: &str) -> String {
         let (mut out, mut in_string, mut escaped) = (String::new(), false, false);
         for c in text.chars() {
             if in_string {

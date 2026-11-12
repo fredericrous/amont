@@ -948,7 +948,7 @@ fn install_signal_handler_once() {
         let sig = PENDING_SIGNAL.load(Ordering::SeqCst);
         if sig != 0 {
             unsafe {
-                libc_signal(sig, 0); // SIG_DFL
+                libc_signal(sig, SIG_DFL);
                 libc_raise(sig);
             }
         }
@@ -963,7 +963,7 @@ fn install_signal_handler_once() {
         // them, and die now. `signal` and `raise` are async-signal-safe.
         if LEAVE_ON_SIGNAL.load(Ordering::SeqCst) {
             unsafe {
-                libc_signal(sig, 0); // SIG_DFL
+                libc_signal(sig, SIG_DFL);
                 libc_raise(sig);
             }
             return;
@@ -977,19 +977,13 @@ fn install_signal_handler_once() {
             }
         }
     }
-    // Numeric literals rather than a `libc` import: this module deliberately
-    // ships dependency-free (see the `extern` block below and
-    // `scripts/check-no-deps.sh`), and unlike `sigset_t`-based APIs these four
-    // numbers are fixed by POSIX on every platform this runs on.
+    // The numbers come from `posix_signal`, dependency-free like the rest of
+    // this module (`scripts/check-no-deps.sh`).
     //
     // SIGHUP was missing and is at least as likely as Ctrl-C: it is the
     // terminal-closed and SSH-connection-dropped case, and a pre-commit
     // interrupted that way orphaned the held store with nothing said. SIGQUIT
     // is the Ctrl-\ sibling of SIGINT.
-    const SIGHUP: i32 = 1;
-    const SIGINT: i32 = 2;
-    const SIGQUIT: i32 = 3;
-    const SIGTERM: i32 = 15;
     unsafe {
         for sig in [SIGHUP, SIGINT, SIGQUIT, SIGTERM] {
             libc_signal(sig, on_signal as *const () as usize);
@@ -1040,53 +1034,11 @@ static SIGNAL_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 #[cfg(unix)]
 static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
-// Externs rather than a dependency: `scripts/check-no-deps.sh` keeps this
-// binary crate-free, and these are five libc calls with stable signatures —
-// `pipe`/`read`/`write` need nothing beyond plain integers and byte pointers,
-// so unlike `sigset_t`-based APIs there is no opaque, platform-varying struct
-// layout to get wrong by hand.
 #[cfg(unix)]
-extern "C" {
-    #[link_name = "signal"]
-    fn libc_signal_raw(sig: i32, handler: usize) -> usize;
-    #[link_name = "raise"]
-    fn libc_raise_raw(sig: i32) -> i32;
-    #[link_name = "pipe"]
-    fn libc_pipe_raw(fds: *mut i32) -> i32;
-    #[link_name = "read"]
-    fn libc_read_raw(fd: i32, buf: *mut u8, count: usize) -> isize;
-    #[link_name = "write"]
-    fn libc_write_raw(fd: i32, buf: *const u8, count: usize) -> isize;
-}
-
-#[cfg(unix)]
-unsafe fn libc_signal(sig: i32, handler: usize) {
-    unsafe {
-        libc_signal_raw(sig, handler);
-    }
-}
-
-#[cfg(unix)]
-unsafe fn libc_raise(sig: i32) {
-    unsafe {
-        libc_raise_raw(sig);
-    }
-}
-
-#[cfg(unix)]
-unsafe fn libc_pipe(fds: *mut i32) -> i32 {
-    unsafe { libc_pipe_raw(fds) }
-}
-
-#[cfg(unix)]
-unsafe fn libc_read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    unsafe { libc_read_raw(fd, buf, count) }
-}
-
-#[cfg(unix)]
-unsafe fn libc_write(fd: i32, buf: *const u8, count: usize) -> isize {
-    unsafe { libc_write_raw(fd, buf, count) }
-}
+use crate::posix_signal::{
+    libc_pipe, libc_raise, libc_read, libc_signal, libc_write, SIGHUP, SIGINT, SIGQUIT, SIGTERM,
+    SIG_DFL,
+};
 
 #[cfg(test)]
 mod tests {

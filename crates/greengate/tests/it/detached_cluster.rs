@@ -1455,3 +1455,183 @@ fn exit_codes_follow_the_cli_contract() {
     let (code, text) = l.rehearse(&["--cluster"]);
     assert_eq!(code, 1, "{text}");
 }
+
+// `cluster sign`: the in-cluster signer, against the same fake.
+
+/// A throwaway ed25519 key for the signer, in the fake's directory.
+fn signer_key(cluster: &Cluster) -> PathBuf {
+    let key = cluster.kube.join("signer-key");
+    if key.exists() {
+        return key;
+    }
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "signer", "-f"])
+        .arg(&key)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .expect("ssh-keygen");
+    assert!(made.success());
+    key
+}
+
+/// `greengate cluster sign <args>` as the signer pod runs it: outside any
+/// repository, `HOME` its own, the key and the kubeconfig from the
+/// environment (the fake refuses a call without `--kubeconfig`).
+fn signer(cluster: &Cluster, args: &[&str]) -> Command {
+    let key = signer_key(cluster);
+    let home = cluster.kube.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let kubeconfig = cluster.kube.join("kubeconfig.yaml");
+    let mut all = vec!["cluster", "sign"];
+    all.extend_from_slice(args);
+    let mut cmd = cluster.command(
+        &all,
+        &[
+            ("GREENGATE_SIGNER_KEY", &key.display().to_string()),
+            (
+                "GREENGATE_SIGNER_KUBECONFIG",
+                &kubeconfig.display().to_string(),
+            ),
+            ("HOME", &home.display().to_string()),
+        ],
+    );
+    cmd.current_dir(common::sandbox().join("cwd"));
+    cmd
+}
+
+/// One pass over a finished Workflow and one already signed: exactly one
+/// ConfigMap, for the first, holding a signed v2 block of its passing gate;
+/// no create for the second; stdout empty; the heartbeat touched.
+#[test]
+fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    let other = "greengate-rh-already-signed";
+    l.cluster.answer(
+        "wf_list-greengate-gates.json",
+        &list(&[
+            wf.object("Succeeded", &[("g0", "Succeeded")]),
+            wf.pod("g0", |p| p),
+            wf.object("Succeeded", &[("g0", "Succeeded")])
+                .replace(&wf.name, other),
+            wf.pod("g0", |p| p).replace(&wf.name, other),
+        ]),
+    );
+    l.cluster.answer(
+        "cm_list.json",
+        &list(&[format!(
+            "{{\"kind\":\"ConfigMap\",\"metadata\":{{\"name\":\"{other}\",\
+             \"annotations\":{{\"greengate.signer/expires\":\"99999999999\"}}}}}}"
+        )]),
+    );
+    l.forget_calls();
+    let output = signer(&l.cluster, &[]).output().expect("greengate");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "stdout is empty"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "signed {} pre-push-lint tree {}",
+            wf.name,
+            &l.tree[..8]
+        )),
+        "{stderr}"
+    );
+    let created: Vec<String> = std::fs::read_dir(l.cluster.kube.join("created-cm"))
+        .expect("a ConfigMap was created")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(created, [format!("{}.json", wf.name)]);
+    assert_eq!(l.calls("create"), 1, "{}", l.cluster.kubectl_calls());
+    let calls = l.cluster.kubectl_calls();
+    for asked in [
+        "-n greengate-gates get workflows,pods -l greengate.run -o json",
+        "-n amont-gates get workflows,pods -l greengate.run -o json",
+        "-n attest-signer get configmaps -l greengate.signer=block -o json",
+        "-n attest-signer create -f -",
+    ] {
+        assert!(calls.contains(asked), "{asked} not in {calls}");
+    }
+    let cm = l.cluster.read(&format!("created-cm/{}.json", wf.name));
+    for needle in [
+        format!("\"greengate.run\":\"{}\"", wf.label),
+        "\"greengate.signer\":\"block\"".to_string(),
+        "\"greengate.signer/workflow-namespace\":\"greengate-gates\"".to_string(),
+        format!("\"greengate.signer/tree\":\"{}\"", l.tree),
+        format!(
+            "amont-attest-v2\\ntree {}\\ngates pre-push-lint\\nplatform x86_64-linux\\namont ",
+            l.tree
+        ),
+        "\\n\\n-----BEGIN SSH SIGNATURE-----".to_string(),
+    ] {
+        assert!(cm.contains(&needle), "{needle} not in {cm}");
+    }
+    assert!(!cm.contains("\"skipped\""), "{cm}");
+    assert!(l.cluster.kube.join("home/heartbeat").exists());
+}
+
+/// A missing key is a usage-class failure: one line, exit 2, no kubectl.
+#[test]
+fn cluster_sign_without_a_usable_key_exits_2() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.forget_calls();
+    let mut cmd = signer(&l.cluster, &[]);
+    cmd.env_remove("GREENGATE_SIGNER_KEY");
+    let output = cmd.output().expect("greengate");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("GREENGATE_SIGNER_KEY is not set"));
+    let mut cmd = signer(&l.cluster, &[]);
+    cmd.env("GREENGATE_SIGNER_KEY", l.cluster.kube.join("no-such-key"));
+    assert_eq!(cmd.output().expect("greengate").status.code(), Some(2));
+    let mut cmd = signer(&l.cluster, &["--bogus-word"]);
+    cmd.env_remove("GREENGATE_SIGNER_KEY");
+    assert_eq!(cmd.output().expect("greengate").status.code(), Some(2));
+    assert_eq!(l.cluster.kubectl_calls(), "", "nothing was asked");
+}
+
+/// `--watch` stops on SIGTERM during its idle wait, within 2 s, exit 0.
+#[cfg(unix)]
+#[test]
+fn cluster_sign_watch_stops_on_sigterm_within_two_seconds() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let mut child = signer(&l.cluster, &["--watch"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("greengate");
+    // the first pass is over once the heartbeat is there: the idle wait
+    let heartbeat = l.cluster.kube.join("home/heartbeat");
+    let started = std::time::Instant::now();
+    while !heartbeat.exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "no heartbeat"
+        );
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("the watch ended on its own: {status}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let killed = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(killed.success());
+    let sent = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if sent.elapsed() > std::time::Duration::from_secs(2) {
+            let _ = child.kill(); // best-effort: the assertion below says why
+            panic!("still running 2 s after SIGTERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(0), "{status}");
+}
