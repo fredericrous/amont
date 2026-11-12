@@ -1635,3 +1635,468 @@ fn cluster_sign_watch_stops_on_sigterm_within_two_seconds() {
     };
     assert_eq!(status.code(), Some(0), "{status}");
 }
+
+// `greengate.cluster.signer in-cluster`: collect files the signer's block and
+// the push publishes it instead of signing the linux block itself.
+
+const SIGNER_PRINCIPAL: &str = "cluster-signer@x86_64-linux";
+
+fn json_text(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+impl Lane {
+    /// The machine says `in-cluster`, and the repository's allowed signers
+    /// list the signer's throwaway key as `cluster-signer@x86_64-linux`.
+    fn in_cluster(&self) {
+        self.cluster
+            .config("greengate.cluster.signer", "in-cluster");
+        let key = signer_key(&self.cluster);
+        let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = self.cluster.r.path(".github/allowed_signers");
+        let mut text = std::fs::read_to_string(&signers).unwrap();
+        text.push_str(&format!(
+            "{SIGNER_PRINCIPAL} namespaces=\"amont-attest\" {}\n",
+            public.trim()
+        ));
+        std::fs::write(&signers, text).unwrap();
+    }
+
+    /// `greengate cluster sign` over the finished Workflow `wf`: the
+    /// ConfigMap it created, as the API lists it.
+    fn sign_in_cluster(&self, wf: &Wf) -> String {
+        self.cluster.answer(
+            "wf_list-greengate-gates.json",
+            &list(&[
+                wf.object("Succeeded", &[("g0", "Succeeded")]),
+                wf.pod("g0", |p| p),
+            ]),
+        );
+        let output = signer(&self.cluster, &[]).output().expect("greengate");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        let cm = self.cluster.read(&format!("created-cm/{}.json", wf.name));
+        assert!(cm.contains("BEGIN SSH SIGNATURE"), "{stderr} {cm}");
+        cm
+    }
+
+    /// A block over `tree` and `gates` signed by the signer's key with
+    /// `ssh-keygen` directly, as a note holds it.
+    fn signer_block(&self, tree: &str, gates: &str) -> String {
+        use std::io::Write as _;
+        let payload = format!(
+            "amont-attest-v2\ntree {tree}\ngates {gates}\nplatform x86_64-linux\namont 0.0.0\n"
+        );
+        let mut child = Command::new("ssh-keygen")
+            .args(["-Y", "sign", "-n", "amont-attest", "-f"])
+            .arg(signer_key(&self.cluster))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("ssh-keygen");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        format!(
+            "{}\n\n{}",
+            payload.trim_end(),
+            String::from_utf8_lossy(&out.stdout).trim_end()
+        )
+    }
+
+    /// What the signer namespace answers: the ConfigMap of `wf` holding
+    /// `block`, or skipped for `skipped`.
+    fn signer_answers(&self, wf: &Wf, block: &str, skipped: Option<&str>) {
+        let skipped = skipped
+            .map(|why| format!(",\"skipped\":{}", json_text(why)))
+            .unwrap_or_default();
+        let cm = format!(
+            "{{\"kind\":\"ConfigMap\",\"metadata\":{{\"name\":\"{}\",\"namespace\":\"attest-signer\",\
+             \"labels\":{{\"greengate.run\":\"{}\",\"greengate.signer\":\"block\"}}}},\
+             \"data\":{{\"block\":{}{skipped}}}}}",
+            wf.name,
+            wf.label,
+            json_text(block)
+        );
+        self.cluster.answer("cm_list.json", &list(&[cm]));
+    }
+
+    /// The finished Workflow's pass, as the batched call answers it.
+    fn answer_passed(&self, wf: &Wf) {
+        self.answer(&[
+            wf.object("Succeeded", &[("g0", "Succeeded")]),
+            wf.pod("g0", |p| p),
+        ]);
+    }
+
+    /// The local-only attestation note on `key`, where collect files a
+    /// signer block.
+    fn local_attest_note(&self, key: &str) -> String {
+        let shown =
+            self.cluster
+                .r
+                .git(&["notes", "--ref", "attest-local/amont-attest", "show", key]);
+        String::from_utf8_lossy(&shown.stdout).into_owned()
+    }
+
+    /// The `x86_64-linux` blocks of the remote's note on `key` that name the
+    /// gate, and that note.
+    fn linux_on_remote(&self, key: &str) -> (Vec<String>, String) {
+        (
+            names(&self.cluster.remote_blocks(key), "pre-push-lint"),
+            self.cluster.remote_note(key),
+        )
+    }
+
+    /// The push skips the gate on its cluster token and the remote's notes
+    /// carry exactly one linux block naming it, on the tree and the tip.
+    fn push_attests_once(&self) -> String {
+        self.cluster.reset_records();
+        let (code, text) = self.push();
+        assert_eq!(code, 0, "{text}");
+        assert!(text.contains("not repeating it here"), "{text}");
+        assert_eq!(self.cluster.local_runs(), 0, "{text}");
+        for key in [&self.tree, &self.tip] {
+            assert_eq!(
+                self.linux_on_remote(key).0,
+                ["x86_64-linux"],
+                "{key}: {text}"
+            );
+        }
+        text
+    }
+}
+
+/// The signer's block, made by `greengate cluster sign` itself: collect
+/// checks and files it, the push publishes those very bytes, and the laptop
+/// signs no linux block of its own.
+#[test]
+fn an_in_cluster_block_is_filed_by_collect_and_published_by_the_push() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    let cm = l.sign_in_cluster(&wf);
+    l.answer_passed(&wf);
+    l.cluster.answer("cm_list.json", &list(&[cm]));
+    l.forget_calls();
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains(&format!(
+            "collected the cluster pass of pre-push-lint for tree {}, signed by {SIGNER_PRINCIPAL}",
+            &l.tree[..8]
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("collected the cluster pass of").count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(l.pending(), "", "a filed block ends the run");
+    assert!(
+        l.tokens().contains("pre-push-lint@"),
+        "the token is written"
+    );
+    let calls = l.cluster.kubectl_calls();
+    assert!(
+        calls.contains(&format!(
+            "--request-timeout=1s -n attest-signer get configmaps -l greengate.signer=block,greengate.run in ({}) -o json",
+            wf.label
+        )),
+        "{calls}"
+    );
+    let filed = l.local_attest_note(&l.tree);
+    assert!(
+        filed.contains("platform x86_64-linux") && filed.contains("BEGIN SSH SIGNATURE"),
+        "{filed}"
+    );
+
+    l.push_attests_once();
+    for key in [&l.tree, &l.tip] {
+        let (_, note) = l.linux_on_remote(key);
+        assert!(
+            note.contains(filed.trim()),
+            "the signer's block, byte for byte, on {key}: {note}"
+        );
+    }
+}
+
+/// A block whose payload was changed after signing does not verify: refused,
+/// nothing filed, and the push signs the linux block on the laptop.
+#[test]
+fn a_tampered_signer_block_is_refused_and_the_laptop_signs() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    let block = l
+        .signer_block(&l.tree, "pre-push-lint")
+        .replace("amont 0.0.0", "amont 0.0.1");
+    l.answer_passed(&wf);
+    l.signer_answers(&wf, &block, None);
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("signer block for pre-push-lint refused: ")
+            && text.contains(&format!("lists {SIGNER_PRINCIPAL}")),
+        "{text}"
+    );
+    assert!(!text.contains("signed by"), "{text}");
+    assert_eq!(l.pending(), "", "a refused block ends the run");
+    assert_eq!(l.local_attest_note(&l.tree), "", "nothing filed");
+    assert!(
+        l.cluster.cluster_log().contains("signer block refused"),
+        "{}",
+        l.cluster.cluster_log()
+    );
+    l.push_attests_once();
+    let (_, note) = l.linux_on_remote(&l.tree);
+    assert!(!note.contains("amont 0.0.1"), "{note}");
+}
+
+/// A block signed for another tree is refused, though its signature is good.
+#[test]
+fn a_signer_block_for_another_tree_is_refused() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    let other = out(
+        &l.cluster.r,
+        &["rev-parse", &format!("{}^{{tree}}", l.base)],
+    );
+    assert_ne!(other, l.tree);
+    l.answer_passed(&wf);
+    l.signer_answers(&wf, &l.signer_block(&other, "pre-push-lint"), None);
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains(&format!(
+            "signer block for pre-push-lint refused: it is for tree {other}"
+        )),
+        "{text}"
+    );
+    assert_eq!(l.pending(), "");
+    assert_eq!(l.local_attest_note(&l.tree), "", "nothing filed");
+    assert_eq!(l.local_attest_note(&other), "", "nothing filed");
+    l.push_attests_once();
+    let (_, note) = l.linux_on_remote(&l.tree);
+    assert!(!note.contains("amont 0.0.0"), "the laptop signed: {note}");
+}
+
+/// No ConfigMap yet: the token is written, the run awaits its block, and
+/// the pass is announced once, when the block is filed by the next collect.
+#[test]
+fn a_signer_block_not_there_yet_is_awaited_and_filed_by_the_next_collect() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    l.answer_passed(&wf);
+    let (code, first) = l.collect();
+    assert_eq!(code, 0, "{first}");
+    assert!(
+        first.contains("signer block for pre-push-lint not ready; next collect retries"),
+        "{first}"
+    );
+    assert!(!first.contains("collected the cluster pass of"), "{first}");
+    assert!(
+        l.pending().contains("\"signer\":\"awaiting\""),
+        "{}",
+        l.pending()
+    );
+    let tokens = l.tokens();
+    assert!(tokens.contains("pre-push-lint@"), "the token is written");
+    let note = l.cluster.cluster_note(&l.tree);
+
+    l.signer_answers(&wf, &l.signer_block(&l.tree, "pre-push-lint"), None);
+    let (code, second) = l.collect();
+    assert_eq!(code, 0, "{second}");
+    assert!(
+        second.contains(&format!(
+            "collected the cluster pass of pre-push-lint for tree {}, signed by {SIGNER_PRINCIPAL}",
+            &l.tree[..8]
+        )),
+        "{second}"
+    );
+    assert_eq!(
+        format!("{first}{second}")
+            .matches("collected the cluster pass of")
+            .count(),
+        1,
+        "said once: {first} {second}"
+    );
+    assert_eq!(l.pending(), "", "filed: the run ends");
+    assert_eq!(
+        l.cluster.cluster_note(&l.tree),
+        note,
+        "no token written again"
+    );
+    assert!(l.local_attest_note(&l.tree).contains("amont 0.0.0"));
+    l.push_attests_once();
+    let (_, remote) = l.linux_on_remote(&l.tree);
+    assert!(
+        remote.contains("amont 0.0.0"),
+        "the signer's block: {remote}"
+    );
+}
+
+/// A run awaiting its block outlives its Workflow (Argo's TTL deleted it)
+/// until the expiry, then leaves unsigned with one log line per gate.
+#[test]
+fn an_awaited_block_that_never_comes_leaves_at_the_ttl() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    l.answer_passed(&wf);
+    l.collect();
+    assert!(l.pending().contains("\"signer\":\"awaiting\""));
+    // the Workflow is gone; the run still awaits its block
+    l.answer(&[]);
+    let (_, text) = l.collect();
+    assert!(text.contains("not ready"), "{text}");
+    assert!(l.pending().contains("\"signer\":\"awaiting\""));
+    // past the expiry: dropped, said, logged
+    let pending_file = l.cluster.r.dir.join(".git/greengate/cluster-pending");
+    let aged = l
+        .pending()
+        .replacen("\"submitted\":", "\"submitted\":1,\"was\":", 1);
+    std::fs::write(&pending_file, aged).unwrap();
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains(
+            "signer block for pre-push-lint did not arrive before the Workflow TTL; the laptop signs it"
+        ),
+        "{text}"
+    );
+    assert_eq!(l.pending(), "");
+    assert!(
+        l.cluster
+            .cluster_log()
+            .contains("unsigned: no signer block"),
+        "{}",
+        l.cluster.cluster_log()
+    );
+}
+
+/// The signer judged nothing a pass: the run ends and the laptop signs.
+#[test]
+fn a_skipped_signer_block_leaves_the_signing_to_the_laptop() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    l.answer_passed(&wf);
+    l.signer_answers(&wf, "", Some("no gate passed"));
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("signer skipped pre-push-lint: no gate passed; the laptop signs it"),
+        "{text}"
+    );
+    assert_eq!(l.pending(), "");
+    assert_eq!(l.local_attest_note(&l.tree), "");
+    l.push_attests_once();
+}
+
+/// Without the machine key, a ConfigMap there or not, collect asks nothing
+/// of the signer namespace and says what it said before.
+#[test]
+fn without_the_signer_key_collect_never_asks_for_signer_blocks() {
+    let Some(l) = Lane::new(ONE) else { return };
+    let wf = l.submitted();
+    l.answer_passed(&wf);
+    l.signer_answers(&wf, "", Some("no gate passed"));
+    l.forget_calls();
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains(&format!(
+            "collected the cluster pass of pre-push-lint for tree {}\n",
+            &l.tree[..8]
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("signer"), "{text}");
+    assert!(
+        !l.cluster.kubectl_calls().contains("configmaps"),
+        "{}",
+        l.cluster.kubectl_calls()
+    );
+    assert_eq!(l.pending(), "");
+}
+
+/// A filed block survives a sync of the attestation mirror from origin
+/// (`attest covered` runs attest's verifier, whose `sync_mirrors` replaces
+/// the local `refs/notes/amont-attest` with origin's, as `stamps` does when a
+/// gate is not stamped): the push still publishes the signer's block.
+#[test]
+fn a_filed_signer_block_survives_a_sync_of_the_attest_mirror() {
+    let Some(l) = Lane::new(ONE) else { return };
+    l.in_cluster();
+    let wf = l.submitted();
+    l.answer_passed(&wf);
+    l.signer_answers(&wf, &l.signer_block(&l.tree, "pre-push-lint"), None);
+    let (code, text) = l.collect();
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("signed by"), "{text}");
+    let filed = l.local_attest_note(&l.tree);
+    assert!(filed.contains("amont 0.0.0"), "{filed}");
+    // origin holds a note of its own, made apart from the local mirror, so
+    // a sync replaces the local `refs/notes/amont-attest` with it
+    let base_tree = out(
+        &l.cluster.r,
+        &["rev-parse", &format!("{}^{{tree}}", l.base)],
+    );
+    let noted = l.cluster.r.git(&[
+        "notes",
+        "--ref",
+        "origin-only",
+        "add",
+        "-m",
+        "origin's",
+        &base_tree,
+    ]);
+    assert!(noted.status.success());
+    let pushed = l.cluster.r.git(&[
+        "push",
+        "-q",
+        "--no-verify",
+        "origin",
+        "refs/notes/origin-only:refs/notes/amont-attest",
+    ]);
+    assert!(pushed.status.success());
+    let (_, stamps) = l.cluster.amont(&["attest", "covered"], &[], None);
+    let mirrored = out(&l.cluster.r, &["rev-parse", "refs/notes/amont-attest"]);
+    let origin = out(
+        &l.cluster.r,
+        &[
+            "--git-dir",
+            &l.cluster.remote().display().to_string(),
+            "rev-parse",
+            "refs/notes/amont-attest",
+        ],
+    );
+    assert_eq!(mirrored, origin, "stamps synced the mirror: {stamps}");
+    assert_eq!(l.local_attest_note(&l.tree), filed, "the filed block stays");
+    l.push_attests_once();
+    let (_, remote) = l.linux_on_remote(&l.tree);
+    assert!(
+        remote.contains(filed.trim()),
+        "the signer's block: {remote}"
+    );
+}

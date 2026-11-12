@@ -8,7 +8,9 @@
 //! read from a pull mirror that already advertises it. Submission returns
 //! once the Workflow exists; [`collect`] turns its passes into cluster tokens
 //! at the start of the next hook, from facts Kubernetes recorded, under the
-//! identity frozen at submission. The laptop is the only signer.
+//! identity frozen at submission. The laptop signs the `x86_64-linux`
+//! attestation, unless `greengate.cluster.signer in-cluster` hands that to the
+//! block `greengate cluster sign` wrote, which collect checks and files.
 //!
 //! Every path that goes wrong ends in the gate running here, as before: a
 //! detached run can only remove work from a push, never let it skip work
@@ -351,6 +353,7 @@ fn submit(
         submitted: crate::gate_evidence::now(),
         phase: RecordPhase::Submitting,
         gates: frozen,
+        awaiting_signer: false,
     };
     let store = Store::here()
         .ok_or_else(|| Fallback::NotProved("git would not name the common directory".into()))?;

@@ -1058,6 +1058,8 @@ segment of `origin`'s URL, without `.git`.
 | `greengate.cluster.mirrorRemote` | none | The pull mirror's URL as this machine lists it. |
 | `greengate.cluster.mirror` | none | The pull mirror's URL as the cluster fetches it. |
 | `greengate.rehearse.cluster` | `false` | The post-commit rehearsal goes detached on its own. |
+| `greengate.cluster.signer` | `laptop` | Who signs the `x86_64-linux` attestation of a detached pass: `laptop`, or `in-cluster` for the block `greengate cluster sign` writes. Any other value warns once and counts as `laptop`. |
+| `greengate.cluster.signer-namespace` | `attest-signer` | The namespace of the in-cluster signer's ConfigMaps. |
 
 With none of them set there is no detached lane: a rehearsal is what it was.
 The kubeconfig, image, namespace and `greengate.timeout` are the Job lane's, above;
@@ -1073,6 +1075,22 @@ node that says `Succeeded` while `main` exited 1 is no pass. The token written
 is the one worked out at submission: change the command, `clusterPrepare` or the
 image after submitting and the push does not accept the pass, it runs the gate.
 Anything else writes one line in `greengate/cluster.log` and nothing more.
+
+**The in-cluster signer.** With `greengate.cluster.signer in-cluster`, collect
+also asks the signer namespace, once per cluster, for the ConfigMaps of the
+pending runs (`greengate.signer=block`). A Workflow's block is checked with
+git-attest against the repository's `allowed_signers` (the one a push
+verifies with, which must list `cluster-signer@x86_64-linux`): one block,
+`platform x86_64-linux`, the record's tree, every gate that passed, signed by
+a principal bound to `x86_64-linux`. It is then filed in the local
+`refs/notes/amont-attest` under the tree, and the next push publishes that
+block instead of signing the linux block itself. A block not written yet keeps
+the run pending (`"signer":"awaiting"`) until the Workflow's TTL; a refused or
+skipped block, a signer that never answers, or a tree with no filed block is
+signed by the laptop at the push, as with `laptop`. A push never waits for the
+signer. A filed block lives in the local notes ref until a push publishes it:
+a later sync of that ref from origin (`greengate stamps`, a push of another
+tree) drops it, and the laptop signs instead.
 
 `greengate cluster collect` exits 0 when it asked the cluster (or another collect is
 already running, which it says), and 1 when the cluster was not reached or the
