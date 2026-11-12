@@ -2615,6 +2615,9 @@ mod tests {
             &tree,
             &format!("{} test@l", LEGACY.format),
         );
+        for set in READ {
+            plant(&dir, set.done_ref, &tree, "done");
+        }
         in_repo(&dir, || {
             assert_eq!(tree_tokens(&tree).len(), 1);
             assert!(forget());

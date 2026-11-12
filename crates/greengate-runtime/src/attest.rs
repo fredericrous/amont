@@ -794,16 +794,26 @@ fn is_zero(oid: &str) -> bool {
     !oid.is_empty() && oid.bytes().all(|b| b == b'0')
 }
 
-/// uninstall: forget the local ref. The copies already pushed to remotes are
+/// uninstall: forget the local notes refs of both name sets. The copies already pushed to remotes are
 /// statements we made and stand by; only OUR bookkeeping is removed — the
 /// same line `gate_stamp::forget` draws.
 pub fn forget() -> bool {
-    crate::git::succeeds(&["update-ref", "-d", NOTES_FULL_REF])
+    let mut deleted = false;
+    for names in READ_NAMES {
+        let full = format!("refs/notes/{}", names.notes_ref);
+        deleted |= crate::git::succeeds(&["update-ref", "-d", &full]);
+    }
+    deleted
 }
 
 /// The same, for a repository this process is not standing in.
 pub fn forget_in(repo: &std::path::Path) -> bool {
-    crate::git::succeeds_in(repo, &["update-ref", "-d", NOTES_FULL_REF])
+    let mut deleted = false;
+    for names in READ_NAMES {
+        let full = format!("refs/notes/{}", names.notes_ref);
+        deleted |= crate::git::succeeds_in(repo, &["update-ref", "-d", &full]);
+    }
+    deleted
 }
 
 #[cfg(test)]
@@ -1821,6 +1831,31 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&scratch); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
+    #[test]
+    fn forget_in_removes_the_notes_ref_of_both_name_sets() {
+        let repo_dir = repo("forget-both");
+        git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        for names in READ_NAMES {
+            git(
+                &repo_dir,
+                &["notes", "--ref", names.notes_ref, "add", "-m", "x", "HEAD"],
+            );
+        }
+        assert!(forget_in(&repo_dir));
+        for names in READ_NAMES {
+            let full = format!("refs/notes/{}", names.notes_ref);
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_dir)
+                .args(["rev-parse", "--verify", "-q", &full])
+                .output()
+                .unwrap();
+            assert!(!out.status.success(), "{full} survived forget_in");
+        }
+        let _ = std::fs::remove_dir_all(&repo_dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
     #[test]
     fn filed_signer_blocks_drops_a_block_of_the_other_name_set() {
         use git_attest::format::{GREEN, LEGACY};

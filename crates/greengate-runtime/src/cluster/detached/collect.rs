@@ -1165,6 +1165,7 @@ pub(in crate::cluster::detached) mod tests {
     use super::*;
 
     #[test]
+    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
     fn judge_block_refuses_a_green_block_while_the_written_names_are_legacy() {
         use crate::attest::tests::{block_with, both_names_signer, dir};
         use git_attest::format::GREEN;
