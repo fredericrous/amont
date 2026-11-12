@@ -177,7 +177,7 @@ fleet's shims are re-baked.
   `homelab/kubernetes/homelab/apps/forgejo/authorization-policy.yaml`,
   `homelab/scripts/amont-snapshots-repo.sh`,
   `homelab/scripts/amont-gates-kubeconfig.sh` renamed to `homelab/scripts/greengate-gates-kubeconfig.sh` (`git mv`; `GREENGATE_KUBE_DIR`, `~/.config/greengate/kube`, Keychain service `greengate-gates-homelab`, namespace and runner `greengate-gates`).
-- [ ] Phase 5 — release 4.0.0, the slots install window (relais and greenpiste
+- [x] Phase 5 — release 4.0.0, the slots install window (relais and greenpiste
   switch to `greenharness-slots` and `GREENHARNESS_HOST_SLOT`:
   `relais/crates/relais/Cargo.toml`,
   `relais/crates/relais/src/verify/heavy.rs`,
@@ -310,6 +310,27 @@ fleet's shims are re-baked.
   `~/.config/greengate/kube/homelab.yaml` (written today by homelab's
   `greengate-gates-kubeconfig.sh`) in the install window; `greengate
   doctor` names a value still under `~/.config/amont/`.
+- 2026-11-12 (Phase 5) — released (greengate 4.0.0, greenpiste 3.31.0,
+  relais v0.56.0), installed and migrated on this machine, and the fleet
+  swept: every own repository merged through its own pull request (the
+  two pilot packs and the rest, except happier below), one commit
+  per repository, a text commit where a CI step, script or doc named an old
+  name, and `greengate agents-md` where AGENTS.md was behind. Not swept:
+  `Apicil/archi-mcp` (the employer's, awaits the person's word). happier's
+  rename commit landed on `dev` directly: its worktree branch tracked
+  `origin/dev` and `amont land` pushed there; the sweep brief now unsets
+  the upstream first. Four Go repositories waited on a red govulncheck
+  (GO-2026-6859, fixed in go1.26.11) and took a toolchain bump PR first.
+  Their rename PRs were brought up to date with `gh pr update-branch` (a
+  merge commit, no force-push). The local `audit-go` rehearsal still runs
+  govulncheck under the machine's Go, not go.mod's, so it reports the
+  advisory after the bump: CI's result is the proof.
+- 2026-11-12 (Phase 5) — left for the census (Phase 6), not renamed
+  because a manifest edit needs the person's re-trust or the code still
+  reads the name: manifest comments naming `amont.*`, two `amont.conf`
+  globs in homelab's `greengate.conf`, `inputs = ["amont.conf"]` in
+  relais.toml (policy hash pinned by a test), the Rust constants, and
+  `package.json` and Dockerfile pins of an old `amont` version.
 
 ## Verification
 
