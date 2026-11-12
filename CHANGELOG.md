@@ -6,6 +6,28 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## Unreleased
+
+### Changed
+
+- **Signed and local notes are read under both names** (decisions ADR-0068,
+  plan "greengate signs its notes under green names", Phase 2). Nothing is
+  written under the new names yet; that is Phase 4.
+  - Gate stamps are read from `refs/notes/greengate-gate` (and its
+    `-inputs`, `-cluster` and `-done` siblings) first. The `amont-gate` refs
+    are read only for a key the green ref holds no note for. A note's header
+    must be its ref's (`greengate-gate-v1` under the greengate refs,
+    `amont-gate-v1` under the amont ones), or it vouches for nothing. Each
+    name set keys its inputs ref with its own domain.
+  - A signer block collected from the cluster is checked under the namespace
+    its header names (`greengate-attest-v2` under `greengate-attest`,
+    `amont-attest-v2` under `amont-attest`), never the other. Until the
+    writers switch, a block under the new names is refused, and the laptop
+    signs those gates.
+  - Each verification `greengate attest covered` and `greengate stamps` make
+    says `verified under <namespace>` on stderr, in git-attest's wording.
+  - git-attest 1.9 is required (it reads both names in `covered`).
+
 ## v4.1.0
 
 ### Added

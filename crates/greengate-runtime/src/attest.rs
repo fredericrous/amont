@@ -44,6 +44,11 @@ use git_attest::produce::attestation;
 use crate::pushrefs::PushRef;
 
 pub use git_attest::format::{platform, FORMAT, INPUTS_REF, NAMESPACE, NOTES_REF};
+
+/// The order attest's name sets are read in (decisions ADR-0068): a block's
+/// header picks one, and its namespace follows.
+const READ_NAMES: [git_attest::format::Names; 2] =
+    [git_attest::format::GREEN, git_attest::format::LEGACY];
 pub use git_attest::notes::{classify_push as classify_push_stderr, PushFailure};
 
 /// The notes ref, fully qualified — `update-ref -d` needs it.
@@ -572,6 +577,9 @@ pub fn covered_report(
     for line in v.loud.iter().chain(&v.warnings) {
         eprintln!("{BIN}: {line}");
     }
+    for line in verified_lines(&v) {
+        eprintln!("{BIN}: {line}");
+    }
     let rejected = signature_rejections(&v.trail);
     for why in &rejected {
         eprintln!("{BIN}: an attestation was found but did not verify: {why}");
@@ -580,6 +588,16 @@ pub fn covered_report(
         gates: (!v.gates.is_empty()).then(|| v.gates.join(" ")),
         rejected,
     }
+}
+
+/// One `verified under <namespace>` line per name set a covering block
+/// verified under, in git-attest's own wording, so a count of those lines
+/// covers greengate's verifications too.
+fn verified_lines(v: &git_attest::verify::Verdict) -> Vec<String> {
+    v.verified_under
+        .iter()
+        .map(|ns| format!("verified under {ns}"))
+        .collect()
 }
 
 /// The verifier's trail lines that say a note's signature did not verify:
@@ -603,6 +621,8 @@ pub(crate) struct SignerBlock {
     pub gates: Vec<String>,
     /// The block as a note holds it.
     pub body: String,
+    /// The name set its header named, which its signature verified under.
+    pub names: git_attest::format::Names,
 }
 
 /// Why a signer block is refused, by cause: what a person checks next
@@ -644,9 +664,16 @@ pub(crate) fn signer_block(
         return Err(Content(format!("{} signed blocks, not one", blocks.len())));
     }
     let signed_block = blocks.remove(0);
-    if signed_block.payload.split('\n').next() != Some(FORMAT) {
-        return Err(Content(format!("not an {FORMAT} payload")));
-    }
+    // The header names the set; the namespace follows it, never the other
+    // set's (ADR-0068): an old signature cannot pass as a new one.
+    let header = signed_block.payload.split('\n').next();
+    let Some(names) = READ_NAMES.into_iter().find(|n| Some(n.format) == header) else {
+        return Err(Content(format!(
+            "not an {} or {} payload",
+            git_attest::format::GREEN.format,
+            git_attest::format::LEGACY.format
+        )));
+    };
     let on = field(&signed_block.payload, "platform");
     if on != Some(crate::cluster::PLATFORM) {
         return Err(Content(format!(
@@ -664,7 +691,7 @@ pub(crate) fn signer_block(
         )));
     }
     let principal = git_attest::sign::verify(
-        NAMESPACE,
+        names.namespace,
         &signed_block.payload,
         &signed_block.signature,
         signers,
@@ -685,6 +712,7 @@ pub(crate) fn signer_block(
             .map(str::to_string)
             .collect(),
         body: block(&signed_block.payload, &signed_block.signature),
+        names,
     })
 }
 
@@ -737,6 +765,8 @@ fn filed_signer_blocks(tree: &str) -> Vec<SignerBlock> {
                 && field(&b.payload, "tree") == Some(tree)
         })
         .filter_map(|b| signer_block(&block(&b.payload, &b.signature), tree, &signers).ok())
+        // Published under the written ref, so only a block of the written set.
+        .filter(|b| b.names == git_attest::format::WRITE)
         .collect()
 }
 
@@ -1709,4 +1739,90 @@ mod tests {
     // --- attest 1.4.0 parity: optional paths --------------------------------
 
     // --- attest 1.4.0 parity: the notes ref is origin's mirror --------------
+
+    // Both name sets (decisions ADR-0068): a signer block's header picks the
+    // set and the namespace its signature is checked under follows, never
+    // the other set's.
+
+    /// A key the signers file lists, bound to the cluster's platform, under
+    /// BOTH namespaces: a refusal below comes from the header-to-namespace
+    /// binding, not from the signers file.
+    fn both_names_signer(d: &Path) -> (PathBuf, PathBuf) {
+        let key = d.join("signer_key");
+        let ok = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+            .arg(&key)
+            .status()
+            .expect("ssh-keygen must exist for these tests")
+            .success();
+        assert!(ok, "keygen failed");
+        let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = d.join("allowed_signers");
+        std::fs::write(
+            &signers,
+            format!(
+                "cluster-signer@{} namespaces=\"{},{}\" {pubkey}",
+                crate::cluster::PLATFORM,
+                git_attest::format::LEGACY.namespace,
+                git_attest::format::GREEN.namespace
+            ),
+        )
+        .unwrap();
+        (key, signers)
+    }
+
+    /// One block whose payload starts with `header`, signed under `namespace`.
+    fn block_with(header: &str, namespace: &str, tree: &str, key: &Path) -> String {
+        let payload = format!(
+            "{header}\ntree {tree}\ngates suite\nplatform {}\ngreengate 0.0.0\n",
+            crate::cluster::PLATFORM
+        );
+        let sig = git_attest::sign::sign(namespace, &payload, key).expect("sign");
+        block(&payload, &sig)
+    }
+
+    #[test]
+    fn a_signer_block_is_checked_under_the_namespace_its_header_names() {
+        use git_attest::format::{GREEN, LEGACY};
+        let d = dir("signer-names");
+        let (key, signers) = both_names_signer(&d);
+        let tree = "0123456789012345678901234567890123456789";
+        for set in [GREEN, LEGACY] {
+            let body = block_with(set.format, set.namespace, tree, &key);
+            let checked = signer_block(&body, tree, &signers)
+                .unwrap_or_else(|e| panic!("{}: {}", set.format, e.reason()));
+            assert_eq!(checked.names, set);
+            assert_eq!(checked.gates, ["suite"]);
+        }
+        for (header, signed_under) in [(LEGACY, GREEN), (GREEN, LEGACY)] {
+            let body = block_with(header.format, signed_under.namespace, tree, &key);
+            assert!(
+                matches!(
+                    signer_block(&body, tree, &signers),
+                    Err(BlockRefusal::Signer(_))
+                ),
+                "a {} block signed under {} must be refused",
+                header.format,
+                signed_under.namespace
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_verification_says_which_name_it_went_through() {
+        let mut v = git_attest::verify::Verdict::nothing("test");
+        assert!(verified_lines(&v).is_empty());
+        v.verified_under = vec![
+            git_attest::format::GREEN.namespace.to_string(),
+            git_attest::format::LEGACY.namespace.to_string(),
+        ];
+        assert_eq!(
+            verified_lines(&v),
+            [
+                format!("verified under {}", git_attest::format::GREEN.namespace),
+                format!("verified under {}", git_attest::format::LEGACY.namespace),
+            ]
+        );
+    }
 }

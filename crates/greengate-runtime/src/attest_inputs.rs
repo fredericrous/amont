@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use git_attest::format::Names;
 use git_attest::spec::{at, coverage, plan_exempt, PlanExempt, DEPRECATED_OPT_OUT};
 
 pub use git_attest::spec::{conf_says_plan_exempt_off, CoverageError, Findings, Spec, EXEMPT};
@@ -33,9 +34,11 @@ pub(crate) fn fingerprint(tree: &str, spec: &Spec, gate: &str) -> Option<String>
     git_attest::fingerprint::fingerprint(here(), tree, spec, gate).ok()
 }
 
-/// The synthetic key of (gate, fingerprint) in the inputs ref.
-pub(crate) fn input_key(gate: &str, fp: &str) -> Option<String> {
-    git_attest::fingerprint::key(here(), gate, fp).ok()
+/// The synthetic key of (gate, fingerprint) in the inputs ref of the name
+/// set `names` (its input domain builds the key): each set reads its own key
+/// in its own ref, never the other's.
+pub(crate) fn input_key(names: &Names, gate: &str, fp: &str) -> Option<String> {
+    git_attest::fingerprint::key_in(here(), names, gate, fp).ok()
 }
 
 /// Does `gate` declare `file`, itself or a directory above it? Asked of
@@ -69,12 +72,13 @@ pub(crate) fn canonical_route(tree: &str) -> Option<String> {
 /// The key under which the local gate stamps of a canonical fingerprint are
 /// filed in amont's own inputs ref: one note per fingerprint, holding the
 /// tokens of every gate that passed on it. amont's own preimage, never
-/// attest's, so a stamp can never be read as an attestation.
-pub(crate) fn canon_gate_key(canon: &str) -> Option<String> {
+/// attest's, so a stamp can never be read as an attestation. `domain` is the
+/// gate name set's (`gate_stamp::GateNames::canon_domain`).
+pub(crate) fn canon_gate_key(domain: &str, canon: &str) -> Option<String> {
     crate::git::stdout_piped_in(
         here(),
         &["hash-object", "--stdin"],
-        format!("amont-gate-canon {canon}\n").as_bytes(),
+        format!("{domain} {canon}\n").as_bytes(),
     )
     .filter(|s| git_attest::format::is_oid(s))
 }

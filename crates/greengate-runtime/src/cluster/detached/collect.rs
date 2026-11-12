@@ -693,6 +693,15 @@ fn judge_block(
         ));
     };
     let checked = crate::attest::signer_block(block, &record.tree, signers)?;
+    // It is filed in, and published to, the written ref: a block of the other
+    // name set would sit under a ref whose header is not its own.
+    if checked.names != git_attest::format::WRITE {
+        return Err(BlockRefusal::Content(format!(
+            "a {} block, and this greengate publishes {} notes",
+            checked.names.format,
+            git_attest::format::WRITE.format
+        )));
+    }
     let missing: Vec<&str> = passed(record)
         .filter(|g| !checked.gates.iter().any(|named| named == g))
         .collect();
