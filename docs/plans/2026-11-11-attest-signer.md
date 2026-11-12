@@ -1,7 +1,7 @@
 ---
 canonical: homelab:docs/plans/2026-11-11-attest-signer.md
 phases: [3]
-status: active
+status: done
 branch: feat/cluster-signer
 ---
 # In-cluster attestation signer: `cluster sign` and collect ingest (pointer)
@@ -46,3 +46,36 @@ homelab repository (homelab#1169; Phase 1 recorded in #1172, Phase 2 in
 ## Code review
 
 - amont: backend, lang:rust, unix, tui (a new subcommand and three collect stderr lines)
+
+## Verification (row 4)
+
+| Check | Observed |
+| --- | --- |
+| Unit tests (`cargo test -p greengate-runtime --lib cluster:: attest::`) | 74 passed |
+| Integration tests (`cargo test -p greengate --test it -- detached_cluster cluster_gates names::`) | 81 passed. The signer cases: one pass writes one ConfigMap and deletes an expired one; a bare Job is ignored; the create race is done; a bad key exits 2; `-h` goes to stdout; SIGTERM stops in under 2 s; a second signal kills. The collect cases: a filed block is published by the push; tampered, wrong-tree and skipped blocks fall back to the laptop; a late block is filed by the next collect; a filed block survives an attest-mirror sync; a pending file from the previous release still parses. |
+| Full workspace suite | All 29 pre-commit checks passed on 492c87a3, including `cargo-test`. On 01a56478 it was deferred because the host was busy, so the push gate runs it. |
+| clippy `-D warnings`, fmt, `check-no-deps`, `cargo check --target x86_64-pc-windows-gnu` | clean |
+
+## Decision log
+
+- 2026-11-12 · Implemented by two implementation agents rather than relais. relais.toml still named the pre-4.0 packages, and a full `make check` takes longer than relais's wall-clock budget.
+- 2026-11-12 · The `--watch` stop is an atomic flag checked before every action and every second while idle, not a self-pipe. A second signal restores SIG_DFL and re-raises.
+- 2026-11-12 · Filed signer blocks live in `refs/notes/attest-local/amont-attest`, git-attest's local-only prefix, because an origin sync overwrites the local copy of `NOTES_REF`.
+- 2026-11-12 · The dispatch change is in `attest_push_per_tip` (attest.rs), not dispatch.rs. The signer is `cluster/detached/sign.rs`.
+- 2026-11-12 · Gate ids are checked as one non-empty token, not against a copy of git-attest's private grammar (ADR-0039).
+- 2026-11-12 · Fixed on the way: `sign.rs` read the old runner namespace as a literal, so the 4.0 old-data-names guard failed. It now uses `names::old::CLUSTER_NAMESPACE`.
+
+## Implementation review
+
+- **implementation-review:** round 1 approve-with-changes, delta approve-with-changes, delta 2 approve-with-changes.
+  - Fixed: the stop within a pass, the names, the flag arguments.
+  - deliberate: `say_collected_unsigned` keeps its name; the rename is in a follow-up (cosmetic).
+- **backend:** round 1 approve-with-changes, then approve.
+  - Fixed: the transient pod wait, expiry/Job/race tests, the heartbeat verdict.
+- **lang:rust:** round 1 approve-with-changes, delta approve-with-changes (one blocking finding: the Windows compile, fixed), delta 2 approve-with-changes.
+  - deliberate: `heartbeat` takes the verdict word, not a `PassVerdict` enum; its one caller closes the set. Follow-up.
+- **unix:** round 1 approve-with-changes, then approve.
+  - Fixed: help, a second signal, SIGINT 130, the key-error exit documented.
+- **tui:** round 1 approve-with-changes, delta approve-with-changes, delta 2 approve-with-changes.
+  - Fixed: one line per gate, the cause-specific hint, the `--kubeconfig` in the hint.
+  - deliberate: the hint is not yet on its own line, and the path is not shell-quoted. The machine-key path (`~/.config/amont/kube/homelab.yaml`) has no space. Follow-up.
