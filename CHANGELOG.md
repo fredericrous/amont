@@ -6,6 +6,41 @@ mechanical pull-request list too, generated; this file is the part a human
 wrote, and the release workflow refuses to tag a version whose section is
 missing here.
 
+## v4.1.0
+
+### Added
+
+- **An in-cluster attestation signer:** `greengate cluster sign [--watch]`.
+  Run in a pod with its own ServiceAccount, it signs a finished detached gate
+  run from what Kubernetes recorded about it, and writes the signed
+  `x86_64-linux` block to one ConfigMap per Workflow in `attest-signer`.
+  - It signs only pods owned by the Workflow (`ownerReferences`), and reads
+    the gate ids and the tree from the Workflow object.
+  - A missing or unreadable pod is judged again while the Workflow is
+    young. A run with no passing gate is recorded as skipped. Expired
+    ConfigMaps are deleted.
+  - Exit codes: 0 clean, 1 a failed pass, 2 a usage or key problem.
+  - Under `--watch`, SIGTERM stops after the current run with 0, SIGINT
+    with 130. A second signal ends it at once.
+  - The heartbeat at `$HOME/heartbeat` says `clean` or `failed`.
+  - See [configuration](docs/configuration.md).
+- **`greengate.cluster.signer = in-cluster`**, with
+  `greengate.cluster.signer-namespace`:
+  - collect reads the signer's blocks, verifies each with git-attest
+    (signature, tree, platform, every passed gate), and files it in
+    `refs/notes/attest-local/amont-attest`, which origin syncs never touch;
+  - the push publishes that block in place of the laptop's
+    `x86_64-linux` signature;
+  - a tree with no verified block is signed by the laptop as before, and a
+    push never waits.
+  - Unset, nothing changes. Pending files written by 4.0 still read.
+
+### Changed
+
+- **git-attest 1.8:** a principal ending in `@<arch>-<os>` signs only
+  blocks of that platform.
+- **rustix 1.1.6** clears RUSTSEC-2026-0486.
+
 ## v4.0.0
 
 ### Breaking
