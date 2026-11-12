@@ -45,7 +45,7 @@ amont_agent = "required"
 # verdict on the candidate's tree, and the person's commit and push of that
 # tree skip it instead of running the suite again. `cargo-test` names both
 # `pre-commit-cargo-test` and `pre-push-cargo-test`, so it stamps both.
-# `AMONT_ON_BUSY=wait`: relais already holds the host slot. The parts of
+# `GREENGATE_ON_BUSY=wait`: relais already holds the host slot. The parts of
 # `make check` that are not gates stay plain commands below.
 #
 # A verification worktree starts with an empty `target/`. A cold `make
@@ -55,17 +55,17 @@ amont_agent = "required"
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "cargo-fmt"]
 timeout_seconds = 300
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "clippy"]
 timeout_seconds = 3600
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "cargo-test"]
 timeout_seconds = 3600
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 # `make lint`'s third part, and `make test`'s other parts: none is a gate.
 [[verification.profiles.default.commands]]

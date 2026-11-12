@@ -45,7 +45,7 @@ convenience.
 
 Cloning a repository, opening it, and committing to it are not acts anybody
 performs *as a decision about trust*. So a repository's own declared checks —
-`amont.conf`, which is committed, because that is how a team shares a check
+`greengate.conf`, which is committed, because that is how a team shares a check
 — are **inert until explicitly trusted**.
 
 The consent is bound to the file's **content**, fingerprinted with
@@ -105,7 +105,7 @@ Not because they do not matter, but so a report is not wasted:
 
 - **Trust is a review gate, not a sandbox.** Once you run `amont trust`, the
   declared commands run with your privileges. That is the intended behaviour.
-- **Checks you configured.** If `amont.conf` in your own repository runs
+- **Checks you configured.** If `greengate.conf` in your own repository runs
   something dangerous, that is your manifest.
 - **The tools the checks invoke.** A vulnerability in `ruff`, `prettier`,
   `eslint` or `kubeconform` belongs upstream. How this project *invokes* them
@@ -154,8 +154,8 @@ gh attestation verify amont-<version>-<target>.tar.gz --repo greenharness/greeng
 gh attestation verify SHA256SUMS --repo greenharness/greengate
 
 # what you trusted in a given repository
-git hash-object --no-filters amont.conf
-git config --local --get amont.trusted
+git hash-object --no-filters greengate.conf
+git config --local --get greengate.trusted
 
 # what is actually installed here
 amont list

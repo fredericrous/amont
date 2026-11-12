@@ -83,7 +83,7 @@ body:
       description: |
         Optional, but often decisive:
         `git config --get-all hook.skip`, `git config --get-regexp '^amont\.'`,
-        `git config --global init.templateDir`, and whether the repository has a `amont.conf`.
+        `git config --global init.templateDir`, and whether the repository has a `greengate.conf`.
       render: shell
     validations:
       required: false
