@@ -291,14 +291,14 @@ fn a_warning_gate_rehearsed_earlier_is_not_asked_for_again_and_is_not_a_pass() {
         .to_string();
     // The note's first line holds the pass tokens; later lines are run
     // evidence, which names every gate that ran, failures included.
-    let stamp = r.git(&["notes", "--ref", "amont-gate", "show", &tree]);
+    let stamp = r.git(&["notes", "--ref", "greengate-gate", "show", &tree]);
     let body = String::from_utf8_lossy(&stamp.stdout).into_owned();
     let tokens = body.lines().next().unwrap_or("");
     assert!(
         !tokens.contains("pre-push-suite"),
         "a warning is recorded as completed, never stamped as passed: {body}"
     );
-    let done = r.git(&["notes", "--ref", "amont-gate-done", "show", &tree]);
+    let done = r.git(&["notes", "--ref", "greengate-gate-done", "show", &tree]);
     assert!(
         String::from_utf8_lossy(&done.stdout).contains("pre-push-suite"),
         "the completion is recorded in its own ref"

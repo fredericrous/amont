@@ -19,10 +19,10 @@ and nothing read it back.
 ## The record
 
 Every push writes one line per gate it ran into the note it already keeps in
-`refs/notes/amont-gate`, keyed by the tree the gate ran against:
+`refs/notes/greengate-gate`, keyed by the tree the gate ran against:
 
 ```text
-amont-gate-v1 pre-push-cargo-test
+greengate-gate-v1 pre-push-cargo-test
 run 1726900000 pre-push-cargo-test pass 412391
 run 1726903600 pre-push-audit-js fail 903
 ```

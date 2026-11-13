@@ -661,7 +661,7 @@ old Go, `uv` with no `.venv`, an `npm` that timed out — all of them green,
 all of them fast.
 
 `greengate-fleet gates` reads the run record the hooks keep in each repository's
-`refs/notes/amont-gate` and reports, per repository and gate: runs in the
+`refs/notes/greengate-gate` and reports, per repository and gate: runs in the
 window, pass/fail, median and last duration, last-run age, and the flags
 `no-op suspect`, `flaky` and `stale`. Same shape as the rest of this tool —
 read-only, `--json` as a first-class output, every threshold on the command

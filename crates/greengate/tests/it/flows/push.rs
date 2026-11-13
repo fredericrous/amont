@@ -122,11 +122,11 @@ fn on_remote(remote: &Path, args: &[&str]) -> String {
 
 /// The gate record on `rev`, empty when there is none.
 fn note(r: &Repo, rev: &str) -> String {
-    git_out(r, &["notes", "--ref", "amont-gate", "show", rev])
+    git_out(r, &["notes", "--ref", "greengate-gate", "show", rev])
 }
 
 fn has_note(r: &Repo, rev: &str) -> bool {
-    r.git(&["notes", "--ref", "amont-gate", "show", rev])
+    r.git(&["notes", "--ref", "greengate-gate", "show", rev])
         .status
         .success()
 }
@@ -536,7 +536,7 @@ fn the_push_journey() {
         record
             .lines()
             .next()
-            .is_some_and(|l| l.starts_with("amont-gate-v1")),
+            .is_some_and(|l| l.starts_with("greengate-gate-v1")),
         "line one is still the stamp: {record}"
     );
     for gate in ["check", "suite"] {
@@ -745,7 +745,7 @@ fn the_push_journey() {
         step!("attest", out.contains("attested"), "{out}");
         let attested = on_remote(
             &remote,
-            &["notes", "--ref", "amont-attest", "show", &head(&r)],
+            &["notes", "--ref", "greengate-attest", "show", &head(&r)],
         );
         let gates = attested
             .lines()
@@ -762,7 +762,7 @@ fn the_push_journey() {
     // as whoever can write the ref, so it never travels.
     step_eq!(
         "remote",
-        on_remote(&remote, &["for-each-ref", "refs/notes/amont-gate"]),
+        on_remote(&remote, &["for-each-ref", "refs/notes/greengate-gate"]),
         "",
         "a gate stamp left the machine"
     );

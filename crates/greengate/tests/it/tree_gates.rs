@@ -40,7 +40,7 @@ fn commit(r: &Repo, msg: &str) -> (bool, String) {
 
 /// The gate-stamp tokens on `rev` (a commit or a tree).
 pub(crate) fn stamped(r: &Repo, rev: &str) -> String {
-    let out = r.git(&["notes", "--ref", "amont-gate", "show", rev]);
+    let out = r.git(&["notes", "--ref", "greengate-gate", "show", rev]);
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
@@ -354,7 +354,7 @@ fn remote_note(remote: &std::path::Path, commit: &str) -> String {
     let out = Command::new("git")
         .arg("--git-dir")
         .arg(remote)
-        .args(["notes", "--ref", "amont-attest", "show", commit])
+        .args(["notes", "--ref", "greengate-attest", "show", commit])
         .output()
         .expect("git notes");
     String::from_utf8_lossy(&out.stdout).to_string()

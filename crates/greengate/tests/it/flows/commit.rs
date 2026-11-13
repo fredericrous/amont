@@ -277,7 +277,7 @@ fn the_commit_journey() {
     step_eq!("no-verify", head_files(&r), "other.txt");
     step!(
         "no-verify",
-        !r.git(&["notes", "--ref", "amont-gate", "show", "HEAD"])
+        !r.git(&["notes", "--ref", "greengate-gate", "show", "HEAD"])
             .status
             .success(),
         "a commit that dodged its gate carries a stamp"
@@ -322,7 +322,7 @@ fn the_commit_journey() {
         "the reuse is said out loud:\n{out}"
     );
     step_eq!("retry", runs(&r), n + 1, "the retry repeated nothing");
-    let note = r.git(&["notes", "--ref", "amont-gate", "show", &head(&r)]);
+    let note = r.git(&["notes", "--ref", "greengate-gate", "show", &head(&r)]);
     step!(
         "retry",
         note.status.success(),

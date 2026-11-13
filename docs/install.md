@@ -473,7 +473,10 @@ slot queues on one machine.
    fallback.
 6. Run `greengate doctor`: it exits 1 and names every `AMONT_*` variable,
    `amont.*` key or state left over, and a `greengate.cluster.kubeconfig` still
-   under `~/.config/amont/`, with the command that moves each. It does not
+   under `~/.config/amont/`, a signing key still named `~/.ssh/amont-attest`
+   (signing keeps working; rename it to `~/.ssh/greengate-attest`) and local
+   `refs/notes/attest-local/amont-*` signer refs, with the command that moves
+   each. It does not
    check the committed names (step 5 does); when it exits 0, this machine is
    clean, and the upgrade is done once step 5 has moved every repository (any
    it skipped is named there).

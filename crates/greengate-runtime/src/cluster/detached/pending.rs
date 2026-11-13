@@ -530,7 +530,7 @@ pub(in crate::cluster::detached) mod tests {
                 scope: "Scope { .. }".into(),
                 prepare: Some("make \"deps\"".into()),
                 digest: format!("sha256:{}", "a".repeat(64)),
-                contract: "amont-cluster-v1".into(),
+                contract: crate::gate_identity::CLUSTER_CONTRACT.into(),
                 token: "pre-push-lint@abc".into(),
                 state: GateState::Waiting,
             }],

@@ -17,12 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # amont.attest: when every pre-push block gate passed locally, amont
-      # left a SIGNED note (refs/notes/amont-attest) on the tree it tested.
+      # left a SIGNED note (refs/notes/greengate-attest) on the tree it tested.
       # This step verifies that note and reports which gates it covers, so the
       # steps below can skip work already done — on THIS exact tree, on THIS
       # platform, by a key you committed as .github/allowed_signers:
       #
-      #   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
+      #   you@example.com namespaces="greengate-attest,amont-attest" ssh-ed25519 AAAA…
       #
       # Fail-open by construction: any failure reports nothing covered and
       # every gated step simply runs. The most an attestation can ever save is

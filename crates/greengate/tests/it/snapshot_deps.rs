@@ -180,8 +180,11 @@ fn head(r: &Repo) -> String {
 }
 
 fn note(r: &Repo, rev: &str) -> String {
-    String::from_utf8_lossy(&r.git(&["notes", "--ref", "amont-gate", "show", rev]).stdout)
-        .to_string()
+    String::from_utf8_lossy(
+        &r.git(&["notes", "--ref", "greengate-gate", "show", rev])
+            .stdout,
+    )
+    .to_string()
 }
 
 fn state(r: &Repo) -> String {

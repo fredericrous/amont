@@ -1165,8 +1165,30 @@ pub(in crate::cluster::detached) mod tests {
     use super::*;
 
     #[test]
-    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
-    fn judge_block_refuses_a_green_block_while_the_written_names_are_legacy() {
+    fn judge_block_refuses_a_legacy_block_while_the_written_names_are_green() {
+        use crate::attest::tests::{block_with, both_names_signer, dir};
+        use git_attest::format::{GREEN, LEGACY};
+        let scratch = dir("judge-legacy");
+        let (key, signers) = both_names_signer(&scratch);
+        let tree = "0123456789012345678901234567890123456789";
+        let mut record = sample("wf-legacy");
+        record.tree = tree.to_string();
+        let body = block_with(LEGACY.format, LEGACY.namespace, tree, &key);
+        // It verifies (both names are bound to the signer), so the refusal
+        // is the written-names check and nothing else.
+        assert!(crate::attest::signer_block(&body, tree, &signers).is_ok());
+        match judge_block(&record, &body, Some(&signers)) {
+            Err(BlockRefusal::Content(why)) => {
+                assert!(why.contains(LEGACY.format), "{why}");
+                assert!(why.contains(GREEN.format), "{why}");
+            }
+            other => panic!("expected a content refusal, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&scratch); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
+    #[test]
+    fn judge_block_accepts_a_green_block() {
         use crate::attest::tests::{block_with, both_names_signer, dir};
         use git_attest::format::GREEN;
         let scratch = dir("judge-green");
@@ -1175,15 +1197,8 @@ pub(in crate::cluster::detached) mod tests {
         let mut record = sample("wf-green");
         record.tree = tree.to_string();
         let body = block_with(GREEN.format, GREEN.namespace, tree, &key);
-        // It verifies (both names are bound to the signer), so the refusal
-        // is the written-names check and nothing else.
-        assert!(crate::attest::signer_block(&body, tree, &signers).is_ok());
-        match judge_block(&record, &body, Some(&signers)) {
-            Err(BlockRefusal::Content(why)) => {
-                assert!(why.contains(GREEN.format), "{why}");
-            }
-            other => panic!("expected a content refusal, got {other:?}"),
-        }
+        let checked = judge_block(&record, &body, Some(&signers)).expect("a green block judges");
+        assert_eq!(checked.names, GREEN);
         let _ = std::fs::remove_dir_all(&scratch); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 

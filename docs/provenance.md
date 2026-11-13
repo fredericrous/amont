@@ -4,7 +4,7 @@ is greengate's, signed by greengate from amont-agent's handoff (ADR-0036), and a
 reads no part of it. The text is unchanged but for links to attest's SPEC and the sentence
 that said where it was specified.
 -->
-# The provenance record: `amont-provenance-v1`
+# The provenance record: `greengate-provenance-v1`
 
 A second, separate note (decisions ADR-0036): a signed record of what a push
 carried besides its tests — the plan it implements and the verdicts given
@@ -15,7 +15,7 @@ what it witnessed (the plan, the review, the preview), and the signer states
 the tree facts it checks or computes itself (`tree`, `canon`).
 
 ```
-amont-provenance-v1
+greengate-provenance-v1
 commit 9f1c2ab0d6e4c1b2a3f405e6d7c8b9a0f1e2d3c4
 tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904
 canon 1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c
@@ -36,7 +36,7 @@ first occurrence wins, and an unknown line is ignored.
 
 | line | meaning |
 |---|---|
-| `amont-provenance-v1` | format token, always first; any other value means absent |
+| `greengate-provenance-v1` | format token, always first; any other value means absent |
 | `commit <oid>` | the pushed commit |
 | `tree <oid>` | its full tree |
 | `canon <oid>` | canon(T) of `tree` (attest [SPEC.md, "Canonical tree"](https://github.com/fredericrous/attest/blob/main/SPEC.md#canonical-tree)), whatever `planExempt` says; written by the signer, never by amont-agent (see "The handoff") |
@@ -50,13 +50,13 @@ first occurrence wins, and an unknown line is ignored.
 `commit`, `tree`, `canon`, `plan` and `review` are required in a signed
 record.
 
-**Where it lives.** `refs/notes/amont-provenance`, one or more blocks per
+**Where it lives.** `refs/notes/greengate-provenance`, one or more blocks per
 object, keyed by the **tree** and by the **commit**, as attestations are, and
 published by the same append-and-push loop (attest [SPEC.md, "Producing"](https://github.com/fredericrous/attest/blob/main/SPEC.md#producing)). The signature's
-ssh-keygen namespace is `amont-provenance`, never `amont-attest`: a
+ssh-keygen namespace is `greengate-provenance`, never `greengate-attest`: a
 provenance block can never be replayed as an attestation, and an
 `allowed_signers` entry accepts it only once it lists that namespace
-(`namespaces="amont-attest,amont-provenance"`).
+(`namespaces="greengate-attest,greengate-provenance,amont-attest,amont-provenance"`).
 
 **The handoff.** amont-agent writes the unsigned payload to
 `<config dir>/amont-agent/provenance/<repo>/<commit>`, where `<config dir>`

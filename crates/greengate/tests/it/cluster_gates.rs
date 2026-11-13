@@ -355,12 +355,12 @@ impl Cluster {
     pub(crate) fn cluster_note(&self, key: &str) -> String {
         out(
             &self.r,
-            &["notes", "--ref", "amont-gate-cluster", "show", key],
+            &["notes", "--ref", "greengate-gate-cluster", "show", key],
         )
     }
 
     pub(crate) fn local_note(&self, key: &str) -> String {
-        out(&self.r, &["notes", "--ref", "amont-gate", "show", key])
+        out(&self.r, &["notes", "--ref", "greengate-gate", "show", key])
     }
 
     /// The skip tokens of the local note at `key`: its first line, past the
@@ -369,7 +369,7 @@ impl Cluster {
         let note = self.local_note(key);
         let first = note.lines().next().unwrap_or("");
         first
-            .strip_prefix("amont-gate-v1")
+            .strip_prefix("greengate-gate-v1")
             .unwrap_or(first)
             .trim()
             .to_string()
@@ -432,7 +432,10 @@ fn a_cluster_pass_writes_a_cluster_token_and_no_local_one() {
     );
     let tree = c.staged_tree();
     let note = c.cluster_note(&tree);
-    assert!(note.starts_with("amont-gate-v1 pre-commit-lint@"), "{note}");
+    assert!(
+        note.starts_with("greengate-gate-v1 pre-commit-lint@"),
+        "{note}"
+    );
     assert!(
         note.contains("provenance pre-commit-lint@")
             && note.contains("platform=x86_64-linux")
@@ -756,7 +759,7 @@ fn a_local_failure_after_a_cluster_failure_blocks() {
 #[test]
 fn a_cluster_pass_with_no_record_falls_back() {
     let c = staged(GATE_AT_COMMIT);
-    let lock = c.r.dir.join(".git/refs/notes/amont-gate-cluster.lock");
+    let lock = c.r.dir.join(".git/refs/notes/greengate-gate-cluster.lock");
     std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
     std::fs::write(&lock, "").unwrap();
     let (code, text) = c.pre_commit(&[]);
@@ -1079,7 +1082,7 @@ impl Cluster {
         c.r.write(
             ".github/allowed_signers",
             &format!(
-                "t@example.org namespaces=\"amont-attest,amont-provenance\" {}\n",
+                "t@example.org namespaces=\"greengate-attest,greengate-provenance\" {}\n",
                 public.trim()
             ),
         );
@@ -1117,7 +1120,7 @@ impl Cluster {
         let shown = std::process::Command::new("git")
             .arg("--git-dir")
             .arg(self.remote())
-            .args(["notes", "--ref", "amont-attest", "show", key])
+            .args(["notes", "--ref", "greengate-attest", "show", key])
             .output()
             .expect("git notes show");
         String::from_utf8_lossy(&shown.stdout).into_owned()
@@ -1126,7 +1129,7 @@ impl Cluster {
     /// `(platform, gates)` of each block of the remote's note on `key`.
     pub(crate) fn remote_blocks(&self, key: &str) -> Vec<(String, Vec<String>)> {
         let note = self.remote_note(key);
-        note.split("amont-attest-v2\n")
+        note.split("greengate-attest-v2\n")
             .skip(1)
             .map(|block| {
                 let field = |name: &str| {
@@ -1293,9 +1296,9 @@ fn stamps_reads_a_linux_only_attestation_and_attest_covered_does_not() {
     let (code, text) = c.pre_push(&base, &tip);
     assert_eq!(code, 0, "{text}");
     for notes in [
-        "refs/notes/amont-gate-cluster",
-        "refs/notes/amont-gate",
-        "refs/notes/amont-gate-inputs",
+        "refs/notes/greengate-gate-cluster",
+        "refs/notes/greengate-gate",
+        "refs/notes/greengate-gate-inputs",
     ] {
         c.r.git(&["update-ref", "-d", notes]);
     }

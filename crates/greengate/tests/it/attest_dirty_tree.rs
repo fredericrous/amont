@@ -53,6 +53,16 @@ fn signing_repo() -> Option<(Repo, String, std::path::PathBuf)> {
 
 /// The pre-push hook pushing HEAD to `origin`: exit code and output.
 fn push_hook(r: &Repo, base: &str, origin: &std::path::Path) -> (i32, String) {
+    push_hook_env(r, base, origin, &[])
+}
+
+/// [`push_hook`] with extra environment variables.
+fn push_hook_env(
+    r: &Repo,
+    base: &str,
+    origin: &std::path::Path,
+    envs: &[(&str, &std::path::Path)],
+) -> (i32, String) {
     let line = format!("refs/heads/feat/x {} refs/heads/feat/x {base}\n", head(r));
     let mut cmd = common::amont_cmd();
     cmd.arg("--hooks-dir")
@@ -64,6 +74,9 @@ fn push_hook(r: &Repo, base: &str, origin: &std::path::Path) -> (i32, String) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     let mut child = cmd.spawn().expect("spawn");
     {
         use std::io::Write;
@@ -88,7 +101,7 @@ fn push_hook(r: &Repo, base: &str, origin: &std::path::Path) -> (i32, String) {
 /// The `gates` line the origin's attestation note on `tip` carries, if any.
 fn attested_gates(origin: &std::path::Path, tip: &str) -> String {
     let note = Command::new("git")
-        .args(["notes", "--ref", "amont-attest", "show", tip])
+        .args(["notes", "--ref", "greengate-attest", "show", tip])
         .current_dir(origin)
         .output()
         .expect("git notes on the origin");
@@ -124,4 +137,93 @@ fn a_gate_that_passed_in_a_clean_tree_is_attested() {
     assert_eq!(code, 0, "{out}");
     let gates = attested_gates(&origin, &head(&r));
     assert!(gates.contains("pre-push-suite"), "{gates}\n{out}");
+}
+
+/// Every ref under `refs/notes` that `git` in `dir` lists, one per line.
+fn note_refs(dir: &std::path::Path) -> String {
+    let out = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname)", "refs/notes"])
+        .current_dir(dir)
+        .output()
+        .expect("git for-each-ref");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// An old-name ref, locally or on the remote.
+fn old_name_refs(dir: &std::path::Path) -> String {
+    let out = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/notes/amont-*",
+            "refs/notes/attest-local/amont-*",
+        ])
+        .current_dir(dir)
+        .output()
+        .expect("git for-each-ref");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Writes a provenance payload for HEAD where greengate looks for it
+/// (`$CLAUDE_CONFIG_DIR/amont-agent/provenance/<repo>/<commit>`) and returns
+/// the config dir and the payload file.
+fn leave_provenance(r: &Repo, header: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let tip = head(r);
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    let config = r.path("claude-config");
+    let name = r.dir.file_name().expect("repo dir name");
+    let dir = config.join("amont-agent").join("provenance").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(&tip);
+    std::fs::write(&file, format!("{header}\ncommit {tip}\ntree {tree}\n")).unwrap();
+    (config, file)
+}
+
+/// An attest-enabled push that carries a provenance payload writes only
+/// green names: the attestation and the provenance land under
+/// `greengate-*`, and no `amont-*` ref exists locally or on the remote.
+#[test]
+fn a_push_with_provenance_writes_no_amont_named_ref() {
+    let Some((r, base, origin)) = signing_repo() else {
+        return;
+    };
+    let (config, file) = leave_provenance(&r, "greengate-provenance-v1");
+    let (code, out) = push_hook_env(&r, &base, &origin, &[("CLAUDE_CONFIG_DIR", &config)]);
+    assert_eq!(code, 0, "{out}");
+    let remote = note_refs(&origin);
+    assert!(
+        remote.contains("refs/notes/greengate-attest"),
+        "{remote}\n{out}"
+    );
+    assert!(
+        remote.contains("refs/notes/greengate-provenance"),
+        "{remote}\n{out}"
+    );
+    assert!(!file.exists(), "a published payload is consumed: {out}");
+    assert_eq!(old_name_refs(&origin), "", "remote: {out}");
+    assert_eq!(old_name_refs(&r.dir), "", "local: {out}");
+}
+
+/// A payload an older greenpiste wrote is kept, named in the output, and
+/// nothing is published for it, under any name.
+#[test]
+fn a_legacy_provenance_payload_is_kept_and_no_amont_ref_is_written() {
+    let Some((r, base, origin)) = signing_repo() else {
+        return;
+    };
+    let (config, file) = leave_provenance(&r, "amont-provenance-v1");
+    let (code, out) = push_hook_env(&r, &base, &origin, &[("CLAUDE_CONFIG_DIR", &config)]);
+    assert_eq!(code, 0, "{out}");
+    assert!(file.exists(), "kept: {out}");
+    assert!(out.contains("written by an older greenpiste"), "{out}");
+    assert!(out.contains(&file.display().to_string()), "{out}");
+    assert!(
+        !note_refs(&origin).contains("provenance"),
+        "nothing published for it: {}",
+        note_refs(&origin)
+    );
+    assert_eq!(old_name_refs(&origin), "", "remote: {out}");
+    assert_eq!(old_name_refs(&r.dir), "", "local: {out}");
 }

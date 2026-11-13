@@ -103,17 +103,17 @@ identical tree buys a second copy of the same answer — real money on a
 resource-constrained runner fleet. So greengate can leave a receipt:
 
 ```sh
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/amont-attest   # once, per machine
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/greengate-attest   # once, per machine
 git config greengate.attest true                          # per repository
 ```
 
 With the toggle on, a push whose pre-push block gates all passed writes a
-note on each pushed tip in `refs/notes/amont-attest` and pushes that ref
+note on each pushed tip in `refs/notes/greengate-attest` and pushes that ref
 alongside the branch. The note is a four-line payload plus an SSH
 signature over exactly those bytes:
 
 ```text
-amont-attest-v2
+greengate-attest-v2
 tree <the tree the gates ran against>
 gates pre-push-cargo-test pre-push-audit-rust
 platform aarch64-macos
@@ -132,10 +132,10 @@ hold:
 
 1. the signature verifies against `.forgejo/allowed_signers` (or your
    platform's path), a file **committed in the repository**, whose entry is
-   pinned to the `amont-attest` namespace:
+   pinned to the `greengate-attest` namespace:
 
    ```text
-   you@example.com namespaces="amont-attest" ssh-ed25519 AAAA…
+   you@example.com namespaces="greengate-attest,amont-attest" ssh-ed25519 AAAA…
    ```
 
 2. the attested **tree** is byte-for-byte the tree CI checked out — not
@@ -215,7 +215,7 @@ the format in
 [`SPEC.md`](https://github.com/fredericrous/attest/blob/main/SPEC.md).
 
 Origin is the source of truth. `greengate attest covered` treats the local
-`refs/notes/amont-attest` as a mirror of origin's: deleting that ref on
+`refs/notes/greengate-attest` as a mirror of origin's: deleting that ref on
 origin revokes every attestation it held — the next `covered` in any clone
 deletes its copy and prints how to undo that — and an origin that cannot be
 reached covers nothing, with the reason on stderr. The spec in
@@ -257,7 +257,7 @@ Both halves use the same fingerprint, from one module
 
 - **CI** verifies the signature as before, but on the fingerprint.
 - **The local hooks** file each gate's stamp under its fingerprint too, in
-  `refs/notes/amont-gate-inputs`, and honour it at pre-commit (judged on the
+  `refs/notes/greengate-gate-inputs`, and honour it at pre-commit (judged on the
   *staged* tree, so partial staging is judged on what is committed) and
   pre-push. Never run `git notes prune` on that ref: its keys are not objects.
   A gate the spec does not declare keeps the whole-tree behaviour, and so does
@@ -288,10 +288,10 @@ path changed, does not. Nothing is declared, so nothing can be under-declared
 and no completeness check is needed.
 
 - **The push** adds `canon <fp>` to the signed block and files the block under
-  the canonical key in `refs/notes/amont-attest-inputs` (a repository with a
+  the canonical key in `refs/notes/greengate-attest-inputs` (a repository with a
   valid spec keeps its `input` lines and gains the `canon` line).
 - **The local hooks** file each gate's stamp under the canonical fingerprint
-  too, in `refs/notes/amont-gate-inputs`, and honour it at pre-commit and
+  too, in `refs/notes/greengate-gate-inputs`, and honour it at pre-commit and
   pre-push. A repository with a spec that is valid keeps its declared route; one
   whose spec is invalid, ambiguous or unlistable gets neither route, and the
   gate runs.
@@ -433,16 +433,16 @@ belongs in a step that is never skipped.
 ## The provenance record (not a skip)
 
 Next to its attestation, a push can publish a second signed note,
-`refs/notes/amont-provenance`: what the push carried besides its tests, the
+`refs/notes/greengate-provenance`: what the push carried besides its tests, the
 plan it implements and the verdicts given on it (decisions ADR-0036). amont-agent
 writes the unsigned payload when its implementation-review hook passes a
 push with a plan; greengate's pre-push signs it with the attestation key under the
-namespace `amont-provenance` and publishes it by tree and by commit, with the
+namespace `greengate-provenance` and publishes it by tree and by commit, with the
 same append-and-push loop as attestations. The format is the attest SPEC's
-`amont-provenance-v1` section.
+`greengate-provenance-v1` section.
 
 CI never reads it, and no step is skipped on it. `amont-agent shipped <plan>`
 does: it lists each pull request a plan shipped in, its merge commit, its
 release, and the record that went out. A repository's `allowed_signers` must
-list the namespace (`namespaces="amont-attest,amont-provenance"`) for a record
+list the namespace (`namespaces="greengate-attest,greengate-provenance,amont-attest,amont-provenance"`) for a record
 to verify.

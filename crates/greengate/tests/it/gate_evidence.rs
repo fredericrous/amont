@@ -123,7 +123,7 @@ fn evidence_ordering_attempts_the_failing_gate_first() {
     // ADR-0018: this test covers the inline path, where the gate runs in the push.
     r.git(&["config", "greengate.pushGates", "inline"]);
     let body = format!(
-        "amont-gate-v1\n\
+        "greengate-gate-v1\n\
          run {} pre-push-alpha pass 100\n\
          run {} pre-push-beta pass 100\n\
          run {} pre-push-beta fail 100\n",
@@ -141,7 +141,7 @@ fn evidence_ordering_attempts_the_failing_gate_first() {
     let out = r.git(&[
         "notes",
         "--ref",
-        "amont-gate",
+        "greengate-gate",
         "add",
         "-f",
         "-m",

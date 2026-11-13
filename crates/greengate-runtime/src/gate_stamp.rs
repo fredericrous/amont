@@ -48,7 +48,7 @@
 //! So the note carries optional extra lines, one per RUN:
 //!
 //! ```text
-//! amont-gate-v1 pre-push-cargo-test
+//! greengate-gate-v1 pre-push-cargo-test
 //! run 1726900000 pre-push-cargo-test pass 412391
 //! run 1726903600 pre-push-audit-js fail 903
 //! ```
@@ -111,9 +111,8 @@ pub(crate) struct GateNames {
     pub attest: git_attest::format::Names,
 }
 
-/// The names stamps have been written under since amont 1.x, and still are
-/// until [`WRITE`] becomes [`GREEN`] (the plan's Phase 4). Removed at the
-/// census.
+/// The names stamps were written under until greengate 4.4 (amont 1.x to
+/// 4.3). Still read during the 30-day window; removed at the census.
 pub(crate) const LEGACY: GateNames = GateNames {
     format: "amont-gate-v1",
     notes_ref: "amont-gate",
@@ -124,7 +123,7 @@ pub(crate) const LEGACY: GateNames = GateNames {
     attest: git_attest::format::LEGACY,
 };
 
-/// The names stamps are written under from Phase 4. Read first today.
+/// The names stamps are written under since greengate 4.4. Read first.
 pub(crate) const GREEN: GateNames = GateNames {
     format: "greengate-gate-v1",
     notes_ref: "greengate-gate",
@@ -137,8 +136,8 @@ pub(crate) const GREEN: GateNames = GateNames {
 
 /// The ONE owner of what is written: [`FORMAT`] and the short `*_REF`
 /// constants below derive from it. The `*_FULL_REF` constants are literals,
-/// held equal to `refs/notes/{short}` by a test. LEGACY until Phase 4.
-pub(crate) const WRITE: GateNames = LEGACY;
+/// held equal to `refs/notes/{short}` by a test. GREEN since greengate 4.4.
+pub(crate) const WRITE: GateNames = GREEN;
 
 /// The order a stamp is read in: the green set first, the legacy one only
 /// for a key the green ref holds no note for.
@@ -154,7 +153,7 @@ pub const NOTES_REF: &str = WRITE.notes_ref;
 
 /// The same ref, fully qualified — what `git update-ref -d` needs. A literal,
 /// not derived from [`WRITE`]; a test holds it equal to `refs/notes/{NOTES_REF}`.
-pub const NOTES_FULL_REF: &str = "refs/notes/amont-gate";
+pub const NOTES_FULL_REF: &str = "refs/notes/greengate-gate";
 
 /// The second ref: stamps keyed by a gate's declared-input fingerprint
 /// (`.github/attest-inputs`, see [`crate::attest_inputs`]) instead of by the
@@ -167,26 +166,26 @@ pub const INPUTS_REF: &str = WRITE.inputs_ref;
 
 /// Where CLUSTER passes are recorded (ADR-0016): the same note format, keyed
 /// by the judged tree, holding tokens of `gate_identity::cluster_token`.
-/// Never `amont-gate` (ADR-0015): a local token here would let the laptop
+/// Never `greengate-gate` (ADR-0015): a local token here would let the laptop
 /// sign a pass it never ran.
 pub const CLUSTER_REF: &str = WRITE.cluster_ref;
-pub const CLUSTER_FULL_REF: &str = "refs/notes/amont-gate-cluster";
+pub const CLUSTER_FULL_REF: &str = "refs/notes/greengate-gate-cluster";
 
 /// Where a gate that COMPLETED without passing is recorded (ADR-0018): a
 /// warn-severity failure, or a gate that could not run. The same note format,
-/// keyed by the tree, holding `gate_identity` tokens. Never `amont-gate`: a
+/// keyed by the tree, holding `gate_identity` tokens. Never `greengate-gate`: a
 /// completion is not a pass, and nothing reads this ref to attest or to skip a
 /// gate in an inline push. Only the refusing push (`greengate.pushGates refuse`)
 /// and land's own push read it, so that what a rehearsal or land's pre-stage
 /// already ran is not refused as "not run".
 pub const DONE_REF: &str = WRITE.done_ref;
-pub const DONE_FULL_REF: &str = "refs/notes/amont-gate-done";
+pub const DONE_FULL_REF: &str = "refs/notes/greengate-gate-done";
 
 /// The reserved first word of a provenance line: where a token came from
 /// (platform, observed imageID, Job UID). Never a token, never a run, and
 /// every reader of tokens drops it.
 pub const PROVENANCE: &str = "provenance";
-pub const INPUTS_FULL_REF: &str = "refs/notes/amont-gate-inputs";
+pub const INPUTS_FULL_REF: &str = "refs/notes/greengate-gate-inputs";
 
 /// The marker's filename inside `$GIT_DIR`.
 const MARKER: &str = crate::names::GATE_MARKER;
@@ -385,7 +384,7 @@ impl Note {
     /// [`Note::parse`] for a note read from a ref of the set whose header is
     /// `format`: any other first word, the other set's included, is not
     /// ours there and yields an empty note.
-    fn parse_as(body: &str, format: &str) -> Note {
+    pub(crate) fn parse_as(body: &str, format: &str) -> Note {
         let mut lines = body.lines();
         let Some(first) = lines.next() else {
             return Note::default();
@@ -1646,18 +1645,18 @@ mod tests {
     /// would stop honouring every stamp on every machine the day it shipped.
     #[test]
     fn a_note_from_before_the_run_lines_parses_unchanged() {
-        let note = Note::parse("amont-gate-v1 typecheck test");
+        let note = Note::parse("greengate-gate-v1 typecheck test");
         assert_eq!(note.tokens, vec!["typecheck", "test"]);
         assert!(note.runs.is_empty());
         // And round-trips to the same bytes, so an old amont reading a note
         // this one rewrote sees what it wrote.
-        assert_eq!(note.render(), "amont-gate-v1 typecheck test");
+        assert_eq!(note.render(), "greengate-gate-v1 typecheck test");
     }
 
     /// The new shape: line one unchanged, evidence after it.
     #[test]
     fn run_lines_are_read_without_disturbing_the_tokens() {
-        let body = "amont-gate-v1 pre-push-cargo-test\n\
+        let body = "greengate-gate-v1 pre-push-cargo-test\n\
                     run 1726900000 pre-push-cargo-test pass 412391\n\
                     run 1726903600 pre-push-audit-js fail 903\n";
         let note = Note::parse(body);
@@ -1682,7 +1681,7 @@ mod tests {
     #[test]
     fn an_unreadable_run_line_is_dropped_and_the_rest_survives() {
         let note = Note::parse(
-            "amont-gate-v1 test\n\
+            "greengate-gate-v1 test\n\
              run 1726900000 pre-push-cargo-test pass 400\n\
              run tomorrow pre-push-cargo-test pass 400\n\
              run 1726900001 pre-push-cargo-test sideways 400\n\
@@ -1699,7 +1698,7 @@ mod tests {
     /// same tree must not make the push twin forget the commit deferred it.
     #[test]
     fn a_deferral_is_never_a_token_and_outlives_the_run_trim() {
-        let mut note = Note::parse("amont-gate-v1 lint\ndeferred cargo-test\n");
+        let mut note = Note::parse("greengate-gate-v1 lint\ndeferred cargo-test\n");
         assert_eq!(note.tokens, vec!["lint"]);
         assert_eq!(note.deferred, vec!["cargo-test"]);
         let runs: Vec<Run> = (0..MAX_RUNS as u64 + 10)
@@ -2600,6 +2599,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
+    /// `gate_evidence::history_in` reads the runs of both name sets: a run
+    /// recorded before the writers switched is still evidence, and a new one
+    /// lands in the green ref.
+    #[test]
+    fn history_reads_runs_under_both_name_sets() {
+        let (dir, _head, tree) = unstamped("history-both");
+        let other = git(&dir, &["rev-parse", "HEAD"]);
+        plant(
+            &dir,
+            LEGACY.notes_ref,
+            &other,
+            &format!("{}\nrun 100 old-gate pass 7", LEGACY.format),
+        );
+        plant(
+            &dir,
+            GREEN.notes_ref,
+            &tree,
+            &format!("{}\nrun 200 new-gate pass 9", GREEN.format),
+        );
+        // A body under the wrong set's header is no evidence.
+        plant(
+            &dir,
+            GREEN.notes_ref,
+            &other,
+            &format!("{}\nrun 300 mixed-gate pass 1", LEGACY.format),
+        );
+        let history = crate::gate_evidence::history_in(&dir);
+        let mut got: Vec<(String, String)> = history
+            .runs
+            .iter()
+            .map(|(k, r)| (k.clone(), r.gate.clone()))
+            .collect();
+        got.sort();
+        let mut want = vec![
+            (other, "old-gate".to_string()),
+            (tree, "new-gate".to_string()),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
+    }
+
     #[test]
     fn forget_removes_the_refs_of_both_name_sets() {
         let (dir, _head, tree) = unstamped("forget-both");
@@ -2638,8 +2679,9 @@ mod tests {
     }
 
     #[test]
-    fn writes_stay_under_the_legacy_names_and_each_full_ref_names_its_ref() {
-        assert_eq!(WRITE, LEGACY);
+    fn writes_go_under_the_green_names_and_each_full_ref_names_its_ref() {
+        assert_eq!(WRITE, GREEN);
+        assert_eq!(FORMAT, "greengate-gate-v1");
         for (full, short) in [
             (NOTES_FULL_REF, NOTES_REF),
             (INPUTS_FULL_REF, INPUTS_REF),
@@ -2647,20 +2689,24 @@ mod tests {
             (DONE_FULL_REF, DONE_REF),
         ] {
             assert_eq!(full, format!("refs/notes/{short}"));
+            assert!(full.starts_with("refs/notes/greengate-gate"), "{full}");
         }
-        // A writer's merge base is the written ref alone: a green note on
-        // the key is never copied under the legacy header.
-        let (dir, head, tree) = unstamped("write-legacy");
+        // A writer's merge base is the written ref alone: a legacy note on
+        // the key is never copied under the green header.
+        let (dir, head, tree) = unstamped("write-green");
         plant(
             &dir,
-            GREEN.notes_ref,
+            LEGACY.notes_ref,
             &tree,
-            &format!("{} test@new", GREEN.format),
+            &format!("{} test@old", LEGACY.format),
         );
         in_repo(&dir, || {
             assert!(stamp_push(&head, &tree, &["suite@p".to_string()]));
-            let written = git(&dir, &["notes", "--ref", LEGACY.notes_ref, "show", &tree]);
-            assert_eq!(written, format!("{} suite@p", LEGACY.format));
+            let written = git(&dir, &["notes", "--ref", GREEN.notes_ref, "show", &tree]);
+            assert_eq!(written, format!("{} suite@p", GREEN.format));
+            // Nothing was written to the legacy ref.
+            let old = git(&dir, &["notes", "--ref", LEGACY.notes_ref, "show", &tree]);
+            assert_eq!(old, format!("{} test@old", LEGACY.format));
         });
         let _ = std::fs::remove_dir_all(&dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
