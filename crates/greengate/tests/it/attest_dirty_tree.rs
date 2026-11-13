@@ -88,7 +88,7 @@ fn push_hook(r: &Repo, base: &str, origin: &std::path::Path) -> (i32, String) {
 /// The `gates` line the origin's attestation note on `tip` carries, if any.
 fn attested_gates(origin: &std::path::Path, tip: &str) -> String {
     let note = Command::new("git")
-        .args(["notes", "--ref", "amont-attest", "show", tip])
+        .args(["notes", "--ref", "greengate-attest", "show", tip])
         .current_dir(origin)
         .output()
         .expect("git notes on the origin");

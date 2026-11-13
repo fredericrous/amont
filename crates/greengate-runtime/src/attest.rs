@@ -31,7 +31,7 @@
 //! One sharp edge is the notes push itself: `git push` from inside pre-push
 //! runs pre-push again. The child carries [`PUSH_GUARD`] in its environment
 //! and the dispatcher yields immediately when it sees it — checking a ref
-//! list that is only ever `refs/notes/amont-attest` would be work spent
+//! list that is only ever `refs/notes/greengate-attest` would be work spent
 //! proving nothing.
 
 use crate::names::BIN;
@@ -53,18 +53,49 @@ pub use git_attest::notes::{classify_push as classify_push_stderr, PushFailure};
 const READ_NAMES: [git_attest::format::Names; 2] =
     [git_attest::format::GREEN, git_attest::format::LEGACY];
 
-/// The notes ref, fully qualified — `update-ref -d` needs it.
-pub const NOTES_FULL_REF: &str = "refs/notes/amont-attest";
-pub const INPUTS_FULL_REF: &str = "refs/notes/amont-attest-inputs";
+/// The notes ref, fully qualified — `update-ref -d` needs it. Written under
+/// the green names since greengate 4.4 (the same as git-attest's `WRITE`).
+pub const NOTES_FULL_REF: &str = "refs/notes/greengate-attest";
+pub const INPUTS_FULL_REF: &str = "refs/notes/greengate-attest-inputs";
+
+/// One set of the names a provenance record lives under: its header, its
+/// notes ref and its SSH namespace. As the attest names, a record is signed
+/// and filed WHOLE under one set, the one its header names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProvenanceNames {
+    pub format: &'static str,
+    pub notes_ref: &'static str,
+    pub namespace: &'static str,
+}
+
+/// The names provenance was written under until greengate 4.4. A payload an
+/// older greenpiste left on disk still carries this header and is still
+/// signed under it, never refused or kept forever. Removed at the census.
+pub(crate) const PROVENANCE_LEGACY: ProvenanceNames = ProvenanceNames {
+    format: "amont-provenance-v1",
+    notes_ref: "amont-provenance",
+    namespace: "amont-provenance",
+};
+
+/// The names provenance is signed under since greengate 4.4.
+pub(crate) const PROVENANCE_GREEN: ProvenanceNames = ProvenanceNames {
+    format: "greengate-provenance-v1",
+    notes_ref: "greengate-provenance",
+    namespace: "greengate-provenance",
+};
+
+/// The order a payload's header is looked up in.
+pub(crate) const PROVENANCE_READ: [ProvenanceNames; 2] = [PROVENANCE_GREEN, PROVENANCE_LEGACY];
 
 /// The provenance record (decisions ADR-0036, amont `docs/provenance.md`):
 /// what a push carried besides its tests, the plan and the verdicts on it.
 /// Its own ref, so CI's attestation verifier never reads it, and its own
 /// namespace, so a provenance signature is never accepted as an attestation.
-pub const PROVENANCE_REF: &str = "amont-provenance";
-pub const PROVENANCE_FULL_REF: &str = "refs/notes/amont-provenance";
-pub const PROVENANCE_NAMESPACE: &str = "amont-provenance";
-pub const PROVENANCE_FORMAT: &str = "amont-provenance-v1";
+/// The constants are the GREEN set, which greenpiste writes now.
+pub const PROVENANCE_REF: &str = PROVENANCE_GREEN.notes_ref;
+pub const PROVENANCE_FULL_REF: &str = "refs/notes/greengate-provenance";
+pub const PROVENANCE_NAMESPACE: &str = PROVENANCE_GREEN.namespace;
+pub const PROVENANCE_FORMAT: &str = PROVENANCE_GREEN.format;
 
 /// Environment marker carried by the notes push so the recursive pre-push
 /// invocation stands down. See the module doc.
@@ -82,7 +113,11 @@ const TOGGLE: &str = "greengate.attest";
 
 /// Where the signing key lives when the repository does not say.
 const KEY_CONFIG: &str = "greengate.attestKey";
-const KEY_DEFAULT: &str = ".ssh/amont-attest";
+/// The default signing key, relative to the home directory (greengate 4.4).
+const KEY_DEFAULT: &str = ".ssh/greengate-attest";
+/// The name the same key had under amont: used while [`KEY_DEFAULT`] is
+/// absent. The key is the same, so `allowed_signers` does not change.
+const KEY_FALLBACK: &str = ".ssh/amont-attest";
 
 /// Is the recursive-push marker set on THIS invocation?
 pub fn push_guard_active() -> bool {
@@ -94,7 +129,8 @@ pub fn enabled(settings: &crate::config::Settings) -> bool {
     crate::config::boolean_or(settings, TOGGLE, false)
 }
 
-/// The signing key path: `greengate.attestKey`, else `~/.ssh/amont-attest`.
+/// The signing key path: `greengate.attestKey`, else `~/.ssh/greengate-attest`,
+/// else (while that is absent) `~/.ssh/amont-attest`.
 ///
 /// Read like `greengate.knownIdentity` is — a raw string through git, unset
 /// collapsing to the default — because a path has no shape git could
@@ -106,7 +142,31 @@ fn key_path() -> Option<PathBuf> {
         }
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(KEY_DEFAULT))
+    Some(default_key_in(Path::new(&home)))
+}
+
+/// The default key under `home`: the green name, or the old one while only
+/// that exists. With neither present the green name is answered, so the
+/// "does not exist" complaint names the path a person should create.
+fn default_key_in(home: &Path) -> PathBuf {
+    let green = home.join(KEY_DEFAULT);
+    let old = home.join(KEY_FALLBACK);
+    if !green.exists() && old.exists() {
+        old
+    } else {
+        green
+    }
+}
+
+/// The one doctor line that names the key's move, or `None` when there is
+/// nothing to say: only the old key exists under `home` (and
+/// `greengate.attestKey` does not point elsewhere).
+pub fn key_move_hint_in(home: &Path) -> Option<String> {
+    (!home.join(KEY_DEFAULT).exists() && home.join(KEY_FALLBACK).exists()).then(|| {
+        format!(
+            "the signing key is still ~/{KEY_FALLBACK}; rename it: mv ~/{KEY_FALLBACK} ~/{KEY_DEFAULT} (and the .pub beside it)"
+        )
+    })
 }
 
 /// pre-push, after every block gate has passed: attest each pushed tip and
@@ -368,7 +428,7 @@ pub fn provenance_push(settings: &crate::config::Settings, remote: &str, refs: &
 
 /// [`provenance_push`] reading payloads from `dir`.
 fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
-    let mut found: Vec<(PathBuf, String, String, String)> = Vec::new();
+    let mut found: Vec<(PathBuf, String, String, String, ProvenanceNames)> = Vec::new();
     for r in refs {
         if is_zero(&r.local_oid) {
             continue;
@@ -383,13 +443,17 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
         };
         let first = payload.lines().next().unwrap_or_default();
         let claimed = payload.lines().find_map(|l| l.strip_prefix("tree "));
-        if first != PROVENANCE_FORMAT || claimed != Some(tree.as_str()) {
+        // The header names the set the record is signed and filed under
+        // (ADR-0068): an `amont-provenance-v1` payload an older greenpiste
+        // left is still signed, under the old names; never mixed.
+        let names = PROVENANCE_READ.into_iter().find(|n| n.format == first);
+        let Some(names) = names.filter(|_| claimed == Some(tree.as_str())) else {
             crate::say!(
-                "  provenance for {} not signed: its payload is not an {PROVENANCE_FORMAT} record of this tree",
+                "  provenance for {} not signed: its payload is not a {PROVENANCE_FORMAT} record of this tree",
                 &r.local_oid[..r.local_oid.len().min(7)]
             );
             continue;
-        }
+        };
         // The canonical tree is a tree fact the signer owns (attest SPEC,
         // "The handoff"): a payload that states one is refused, never fixed
         // up, and the person is told which file to delete.
@@ -413,7 +477,7 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
             continue;
         };
         let payload = with_canon(&payload, &canon);
-        found.push((file, r.local_oid.clone(), tree, payload));
+        found.push((file, r.local_oid.clone(), tree, payload, names));
     }
     if found.is_empty() {
         return;
@@ -422,41 +486,53 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
         crate::say!("  provenance not signed: no signing key");
         return;
     };
-    let mut blocks: Vec<(String, String)> = Vec::new();
-    let mut signed: Vec<PathBuf> = Vec::new();
-    for (file, commit, tree, payload) in found {
-        let Ok(sig) = git_attest::sign::sign(PROVENANCE_NAMESPACE, &payload, &key) else {
-            continue;
-        };
-        let body = block(&payload, &sig);
-        blocks.push((tree, body.clone()));
-        blocks.push((commit, body));
-        signed.push(file);
-    }
-    if blocks.is_empty() {
-        crate::say!("  provenance not signed: the signer refused");
-        return;
-    }
-    if publish(remote, PROVENANCE_REF, &blocks) {
-        for file in &signed {
-            if std::fs::remove_file(file).is_err() {
-                crate::say!(
-                    "  provenance published, but its payload {} could not be removed",
-                    file.display()
-                );
+    // One publish per name set that has a record: each lands under its own
+    // ref, signed in its own namespace.
+    let mut any_blocks = false;
+    for names in PROVENANCE_READ {
+        let mut blocks: Vec<(String, String)> = Vec::new();
+        let mut signed: Vec<PathBuf> = Vec::new();
+        for (file, commit, tree, payload, of) in &found {
+            if *of != names {
+                continue;
             }
+            let Ok(sig) = git_attest::sign::sign(names.namespace, payload, &key) else {
+                continue;
+            };
+            let body = block(payload, &sig);
+            blocks.push((tree.clone(), body.clone()));
+            blocks.push((commit.clone(), body));
+            signed.push(file.clone());
         }
-        crate::say!(
-            "{} provenance published ({PROVENANCE_REF})",
-            crate::ui::valid_sign()
-        );
-    } else {
-        crate::say!("  provenance not published: kept for the next push");
+        if blocks.is_empty() {
+            continue;
+        }
+        any_blocks = true;
+        if publish(remote, names.notes_ref, &blocks) {
+            for file in &signed {
+                if std::fs::remove_file(file).is_err() {
+                    crate::say!(
+                        "  provenance published, but its payload {} could not be removed",
+                        file.display()
+                    );
+                }
+            }
+            crate::say!(
+                "{} provenance published ({})",
+                crate::ui::valid_sign(),
+                names.notes_ref
+            );
+        } else {
+            crate::say!("  provenance not published: kept for the next push");
+        }
+    }
+    if !any_blocks {
+        crate::say!("  provenance not signed: the signer refused");
     }
 }
 
 /// `payload` with `canon <canon>` inserted right after its first `tree` line,
-/// where attest SPEC `amont-provenance-v1` places it.
+/// where attest SPEC `greengate-provenance-v1` places it.
 fn with_canon(payload: &str, canon: &str) -> String {
     let mut out = String::with_capacity(payload.len() + canon.len() + 7);
     let mut done = false;
@@ -1176,6 +1252,186 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    /// Spelled out, not through the constants: a greengate-provenance-v1
+    /// payload is signed under `greengate-provenance` and filed under
+    /// `refs/notes/greengate-provenance`, and nothing is written under the
+    /// old names. Fails if the writer still files `amont-provenance`.
+    #[test]
+    fn a_green_provenance_payload_is_filed_under_the_green_names_alone() {
+        let (d, work, remote, head, tree, signers) = provenance_world("prov-green-names");
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let body = record(&head, &tree).replacen(PROVENANCE_FORMAT, "greengate-provenance-v1", 1);
+        assert!(body.starts_with("greengate-provenance-v1\n"));
+        std::fs::write(payloads.join(&head), &body).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert_eq!(
+            git(
+                &remote,
+                &["for-each-ref", "--format=%(refname)", "refs/notes"]
+            ),
+            "refs/notes/greengate-provenance"
+        );
+        let note = git(
+            &remote,
+            &["notes", "--ref", "greengate-provenance", "show", &head],
+        );
+        let (p, sig) = note.split_once("\n\n").expect("payload and signature");
+        let payload = format!("{p}\n");
+        assert!(payload.starts_with("greengate-provenance-v1\n"));
+        assert!(verify_in(
+            "greengate-provenance",
+            &payload,
+            sig,
+            &signers,
+            "t@t.test"
+        ));
+        assert!(!verify_in(
+            "amont-provenance",
+            &payload,
+            sig,
+            &signers,
+            "t@t.test"
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A payload an older greenpiste left on disk (`amont-provenance-v1`) is
+    /// still signed, under the LEGACY names, and its file is consumed: never
+    /// refused, never kept for ever. Fails if the header check accepts only
+    /// the green format (the file would stay) or signs it under the green
+    /// namespace.
+    #[test]
+    fn a_waiting_legacy_provenance_payload_is_still_signed_under_the_legacy_names() {
+        let (d, work, remote, head, tree, _) = provenance_world("prov-legacy-names");
+        let key = d.join("attest_key");
+        let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let signers = d.join("allowed_signers_legacy");
+        std::fs::write(
+            &signers,
+            format!("t@t.test namespaces=\"amont-attest,amont-provenance\" {pubkey}"),
+        )
+        .unwrap();
+        let payloads = d.join("payloads");
+        std::fs::create_dir_all(&payloads).unwrap();
+        let file = payloads.join(&head);
+        let body = record(&head, &tree).replacen(PROVENANCE_FORMAT, "amont-provenance-v1", 1);
+        assert!(body.starts_with("amont-provenance-v1\n"));
+        std::fs::write(&file, &body).unwrap();
+        in_repo(&work, || {
+            provenance_push_from(&payloads, "origin", &[push_of(&head)])
+        });
+        assert!(!file.exists(), "a legacy payload is signed and consumed");
+        assert_eq!(
+            git(
+                &remote,
+                &["for-each-ref", "--format=%(refname)", "refs/notes"]
+            ),
+            "refs/notes/amont-provenance"
+        );
+        for object in [&head, &tree] {
+            let note = git(
+                &remote,
+                &["notes", "--ref", "amont-provenance", "show", object],
+            );
+            let (p, sig) = note.split_once("\n\n").expect("payload and signature");
+            let payload = format!("{p}\n");
+            assert!(payload.starts_with("amont-provenance-v1\n"));
+            assert!(verify_in(
+                "amont-provenance",
+                &payload,
+                sig,
+                &signers,
+                "t@t.test"
+            ));
+            assert!(!verify_in(
+                "greengate-provenance",
+                &payload,
+                sig,
+                &signers,
+                "t@t.test"
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Spelled out: an attestation push writes the green refs, the green
+    /// header and a green-namespace signature, and no `amont-*` ref. Fails if
+    /// any writer still files the old names.
+    #[test]
+    fn an_attestation_push_writes_only_green_refs() {
+        let (d, work, remote, head, _tree, signers) = provenance_world("attest-green-refs");
+        let gates = ["pre-push-cargo-test".to_string()];
+        in_repo(&work, || {
+            attest_push(&test_settings(), "origin", &[push_of(&head)], &gates, &[])
+        });
+        let refs = git(
+            &remote,
+            &["for-each-ref", "--format=%(refname)", "refs/notes"],
+        );
+        assert!(
+            refs.lines().any(|r| r == "refs/notes/greengate-attest"),
+            "{refs}"
+        );
+        assert!(
+            refs.lines().all(|r| r.starts_with("refs/notes/greengate-")),
+            "an old name was written: {refs}"
+        );
+        let note = git(
+            &remote,
+            &["notes", "--ref", "greengate-attest", "show", &head],
+        );
+        let (p, sig) = note.split_once("\n\n").expect("payload and signature");
+        let payload = format!("{p}\n");
+        assert!(payload.starts_with("greengate-attest-v2\n"), "{payload}");
+        assert!(verify_in(
+            "greengate-attest",
+            &payload,
+            sig,
+            &signers,
+            "t@t.test"
+        ));
+        assert!(!verify_in(
+            "amont-attest",
+            &payload,
+            sig,
+            &signers,
+            "t@t.test"
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// The default key is `~/.ssh/greengate-attest`; the old name answers
+    /// only while the new one is absent, and the doctor line says to rename
+    /// it. A scratch home, never the real one.
+    #[test]
+    fn the_default_key_is_the_green_name_with_the_old_one_as_fallback() {
+        let home = dir("key-default");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        // Neither: the green path, so "does not exist" names what to create.
+        assert_eq!(default_key_in(&home), home.join(".ssh/greengate-attest"));
+        assert_eq!(key_move_hint_in(&home), None);
+        // Only the old key: it is used, and the doctor names the move.
+        std::fs::write(home.join(".ssh/amont-attest"), "k").unwrap();
+        assert_eq!(default_key_in(&home), home.join(".ssh/amont-attest"));
+        let hint = key_move_hint_in(&home).expect("a doctor line");
+        assert!(
+            hint.contains("mv ~/.ssh/amont-attest ~/.ssh/greengate-attest"),
+            "{hint}"
+        );
+        assert_eq!(hint.lines().count(), 1);
+        // Both: the green key wins and nothing is said.
+        std::fs::write(home.join(".ssh/greengate-attest"), "k").unwrap();
+        assert_eq!(default_key_in(&home), home.join(".ssh/greengate-attest"));
+        assert_eq!(key_move_hint_in(&home), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn a_payload_for_another_tree_is_neither_signed_nor_deleted() {
         let (d, work, remote, head, _tree, _) = provenance_world("prov-mismatch");
@@ -1855,7 +2111,6 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&repo_dir); // best-effort temp cleanup; a leftover dir cannot change the verdict
     }
 
-    // holds-until: Phase 4 flips `WRITE` to `GREEN`; this test then swaps the sets.
     #[test]
     fn filed_signer_blocks_drops_a_block_of_the_other_name_set() {
         use git_attest::format::{GREEN, LEGACY};
@@ -1870,15 +2125,16 @@ pub(crate) mod tests {
         let green = block_with(GREEN.format, GREEN.namespace, &tree, &key);
         let legacy = block_with(LEGACY.format, LEGACY.namespace, &tree, &key);
         in_repo(&work, || {
-            file_signer_block(&green, &[&tree]).expect("file the green block");
+            file_signer_block(&legacy, &[&tree]).expect("file the legacy block");
             assert!(
                 filed_signer_blocks(&tree).is_empty(),
-                "a green block is not publishable while WRITE is legacy"
+                "a legacy block is not publishable while WRITE is green"
             );
-            file_signer_block(&format!("{green}\n{legacy}"), &[&tree]).expect("file both");
+            file_signer_block(&format!("{legacy}\n{green}"), &[&tree]).expect("file both");
             let kept = filed_signer_blocks(&tree);
             assert_eq!(kept.len(), 1, "{kept:?}");
             assert_eq!(kept[0].names, git_attest::format::WRITE);
+            assert_eq!(kept[0].names, GREEN);
             assert!(kept[0].is_publishable());
         });
         let _ = std::fs::remove_dir_all(&work); // best-effort temp cleanup; a leftover dir cannot change the verdict

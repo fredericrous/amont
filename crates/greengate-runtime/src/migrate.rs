@@ -853,7 +853,8 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 /// What `greengate doctor` reports: the 3.x names still visible from here,
-/// one line each, with the command that moves them. `Err` when git could
+/// one line each, with the command that moves them (and, since 4.4, the
+/// signing key's rename when only the `amont-attest` key exists). `Err` when git could
 /// not answer: a failure never reads as "nothing left".
 pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateError> {
     let mut out = Vec::new();
@@ -925,6 +926,19 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
             kubeconfig.trim(),
             n::STATE_DIR
         ));
+    }
+    // The signing key moved names with the notes (greengate 4.4): the old
+    // path is still used while the new one is absent, so this is a line to
+    // act on, never a failure. Not said when a key path is configured.
+    let configured = run_git(git, None, &["config", "--get", "greengate.attestKey"])?
+        .is_some_and(|k| !k.trim().is_empty());
+    if !configured {
+        if let Some(line) = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .and_then(|home| crate::attest::key_move_hint_in(Path::new(&home)))
+        {
+            out.push(format!("signing key: {line}"));
+        }
     }
     if let Some(repo) = Repo::locate(cwd) {
         if repo.common.join(n::REVERSED_MARKER).exists() {

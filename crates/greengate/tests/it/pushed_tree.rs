@@ -179,7 +179,7 @@ fn a_snapshot_that_could_not_be_made_stamps_nothing() {
         "the fallback must say what it did:\n{out}"
     );
 
-    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    let note = r.git(&["notes", "--ref", "greengate-gate", "show", &tip]);
     assert!(
         !note.status.success(),
         "a tip whose snapshot failed was stamped anyway: {}",
@@ -211,7 +211,7 @@ fn a_snapshot_that_ran_does_stamp_its_tip() {
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_eq!(code, 0, "{out}");
-    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    let note = r.git(&["notes", "--ref", "greengate-gate", "show", &tip]);
     assert!(
         note.status.success(),
         "a snapshot that ran left no stamp:\n{out}"
@@ -270,7 +270,7 @@ fn a_declared_gate_tests_the_pushed_commits_when_opted_in() {
         code, 0,
         "the pushed commit is broken and the declared gate let it through:\n{out}"
     );
-    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    let note = r.git(&["notes", "--ref", "greengate-gate", "show", &tip]);
     assert!(
         !note.status.success(),
         "a tip the declared gate never passed on was stamped: {}",
@@ -293,7 +293,7 @@ fn a_declared_gate_on_a_dirty_tree_stamps_nothing() {
 
     let (code, out) = pre_push(&r, &tip, &base);
     assert_eq!(code, 0, "the working tree passes:\n{out}");
-    let note = r.git(&["notes", "--ref", "amont-gate", "show", &tip]);
+    let note = r.git(&["notes", "--ref", "greengate-gate", "show", &tip]);
     assert!(
         !note.status.success(),
         "a dirty working tree vouched for the tip: {}",

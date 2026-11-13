@@ -52,23 +52,13 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     ),
     (
         "greengate-runtime/src/attest.rs",
-        8,
-        "notes namespaces and greenpiste's key (plan 3a-3)",
+        18,
+        "the legacy provenance names, the old key path fallback and tests that spell the old names out (ADR-0068, plan 3a-3), until the census",
     ),
     (
         "greengate-runtime/src/cluster/detached.rs",
         2,
         "the amont-snapshots repository (a later step)",
-    ),
-    (
-        "greengate-runtime/src/cluster/detached/pending.rs",
-        1,
-        "the cluster notes contract (plan 3a-3)",
-    ),
-    (
-        "greengate-runtime/src/cluster/detached/sign.rs",
-        1,
-        "a test's expected payload: the frozen amont-attest-v2 wire format (ADR-0037), written by hand as the independent expected value",
     ),
     (
         "greengate-runtime/src/cluster/detached/workflow.rs",
@@ -78,11 +68,11 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     (
         "greengate-runtime/src/gate_identity.rs",
         1,
-        "the cluster contract (plan 3a-3)",
+        "a test: the old cluster contract hashes to a different token (plan 3a-3)",
     ),
     (
         "greengate-runtime/src/gate_stamp.rs",
-        16,
+        7,
         "the legacy notes name set, read beside the green one until the census (ADR-0068, 3a-3)",
     ),
     (

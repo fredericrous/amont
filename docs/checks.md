@@ -554,7 +554,7 @@ Things to know:
 ### Rehearsing the push gate
 
 A push-time gate that passes stamps the tips it vouched for — the same
-`refs/notes/amont-gate` record the commit-time gates use, keyed by tree, so
+`refs/notes/greengate-gate` record the commit-time gates use, keyed by tree, so
 it survives a reword or a rebase that keeps the content. The next push of
 that content skips the gate and says so:
 
@@ -734,7 +734,7 @@ declared `pre-commit typecheck`, never trusted it, and had types checked at
 
 **The stamp is how the push gate trusts the event rather than the paper.**
 When the moved check runs at commit time, the `post-commit` hook records that
-fact against the commit — a local notes ref, `refs/notes/amont-gate`, never
+fact against the commit — a local notes ref, `refs/notes/greengate-gate`, never
 pushed, invisible to `git log`, garbage-collected with the commits it
 annotates, and removed by `greengate uninstall`. At push, the gate skips a script
 only when every pushed commit inside the declaration's scope carries its
@@ -828,7 +828,7 @@ The gate stamps above stay local by design — an unsigned note is only as
 honest as whoever can write the ref. Their signed successor can travel:
 with `git config greengate.attest true`, a push whose block gates all passed
 leaves an `ssh-keygen`-signed note on each pushed tip in
-`refs/notes/amont-attest` and sends that ref along, and CI may then skip
+`refs/notes/greengate-attest` and sends that ref along, and CI may then skip
 the test steps the attestation names — but only for exactly the attested
 tree, and only after the signature verifies. The whole contract, including
 what CI must check and why every failure mode falls back to running the

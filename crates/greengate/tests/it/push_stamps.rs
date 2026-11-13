@@ -4,7 +4,7 @@
 //! idle until the gate finishes. A remote that drops idle sessions kills the
 //! push after a four-minute suite has already passed. The stamp is the way
 //! out: a push-time gate that passed records the tips it vouched for in
-//! `refs/notes/amont-gate`, and the next push of the same content — a retry
+//! `refs/notes/greengate-gate`, and the next push of the same content — a retry
 //! after the wire dropped, or the real push after an `amont run pre-push`
 //! rehearsal — skips the gate, out loud.
 //!
@@ -221,7 +221,7 @@ fn a_gate_whose_tool_cannot_be_identified_earns_no_stamp() {
     for key in ["HEAD", tree.as_str()] {
         // A note may exist (evidence lines record that the gate could not
         // run); what must not exist is a TOKEN vouching for it.
-        let shown = r.git(&["notes", "--ref", "amont-gate", "show", key]);
+        let shown = r.git(&["notes", "--ref", "greengate-gate", "show", key]);
         let text = String::from_utf8_lossy(&shown.stdout).to_string();
         assert!(
             !text.lines().next().unwrap_or("").contains("pre-push-suite"),
@@ -250,11 +250,11 @@ fn a_legacy_bare_token_costs_one_run_and_then_the_namespaced_one_is_honoured() {
         r.git(&[
             "notes",
             "--ref",
-            "amont-gate",
+            "greengate-gate",
             "add",
             "-f",
             "-m",
-            "amont-gate-v1 pre-push-suite",
+            "greengate-gate-v1 pre-push-suite",
             key,
         ]);
     }
@@ -264,12 +264,12 @@ fn a_legacy_bare_token_costs_one_run_and_then_the_namespaced_one_is_honoured() {
     assert!(!out.contains(SKIP), "{out}");
 
     let shown = String::from_utf8_lossy(
-        &r.git(&["notes", "--ref", "amont-gate", "show", &tip])
+        &r.git(&["notes", "--ref", "greengate-gate", "show", &tip])
             .stdout,
     )
     .to_string();
     assert!(shown.contains("pre-push-suite@"), "mixed note: {shown}");
-    assert!(shown.starts_with("amont-gate-v1"), "{shown}");
+    assert!(shown.starts_with("greengate-gate-v1"), "{shown}");
 
     let (code, out) = push_out(&r, &base, &tip);
     assert_eq!(code, 0, "{out}");

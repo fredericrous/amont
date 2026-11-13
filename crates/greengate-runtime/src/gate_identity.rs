@@ -99,10 +99,10 @@ pub fn external_token(ext: &External, name: &str) -> Option<String> {
 /// The versioned contract between amont and the gate-runner image: the Job
 /// shape, the `fetch` protocol, the verdict rules (ADR-0016). A change to any
 /// of them bumps this, which invalidates every cluster token at once.
-pub const CLUSTER_CONTRACT: &str = "amont-cluster-v1";
+pub const CLUSTER_CONTRACT: &str = "greengate-cluster-v1";
 
 /// The token a CLUSTER pass of one declared check is written under, in
-/// `refs/notes/amont-gate-cluster` (ADR-0016). Separate from
+/// `refs/notes/greengate-gate-cluster` (ADR-0016). Separate from
 /// [`external_token`] on purpose: the program runs in the pinned image, not
 /// on this laptop, so the laptop's executable is never inspected — the image
 /// digest stands where the binary identity stands there. `None` for a check
@@ -270,6 +270,33 @@ mod tests {
         // A good answer IS remembered: no third hash.
         assert!(seal_with(&memo, "gate", "m", flaky).is_some());
         assert_eq!(calls.get(), 2);
+    }
+
+    /// The contract is hashed into every cluster identity: the green name
+    /// changes every cluster token once, so a gate re-runs on the cluster
+    /// (CHANGELOG, greengate 4.4). It fails if the old contract is back.
+    #[test]
+    fn the_cluster_contract_is_green_and_is_hashed_into_the_token() {
+        assert_eq!(CLUSTER_CONTRACT, "greengate-cluster-v1");
+        let ext = crate::manifest::parse(
+            "pre-commit lint * block platform=any definitely-not-a-program-xyz --x\n",
+        )
+        .pop()
+        .expect("one check");
+        let now = cluster_token(&ext, "pre-commit-lint", None, "sha256:aa").expect("hash");
+        let under = |contract: &str| {
+            seal(
+                "pre-commit-lint",
+                &format!(
+                    "{contract}\0pre-commit-lint\0definitely-not-a-program-xyz\0--x\0files=false\0docs-skip=false\0\
+                     prepare=\0image=sha256:aa"
+                ),
+            )
+        };
+        // The token is the material under the green contract, and the same
+        // material under the old one is a different token.
+        assert_eq!(Some(now.clone()), under(CLUSTER_CONTRACT));
+        assert_ne!(Some(now), under("amont-cluster-v1"));
     }
 
     /// The cluster identity follows the image digest and the prepare command,

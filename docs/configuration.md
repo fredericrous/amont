@@ -351,7 +351,7 @@ git config greengate.pushStamps false   # default true
 ```
 
 A push-time gate that passes stamps the pushed tips in
-`refs/notes/amont-gate`, keyed by tree, and the next push of the same content
+`refs/notes/greengate-gate`, keyed by tree, and the next push of the same content
 skips it: the retry after a remote dropped the idle connection mid-suite,
 and the `git push` after an `greengate run pre-push` rehearsal. Only scoped
 gates (test suites) are stamped or skipped, and only for content the suite
@@ -366,7 +366,7 @@ git config greengate.order evidence   # default: declared
 
 `declared` is the registry's order, and it is what every repository gets
 unless it says otherwise. `evidence` orders the push gates by this
-repository's own record of them (`refs/notes/amont-gate`, the same notes the
+repository's own record of them (`refs/notes/greengate-gate`, the same notes the
 stamps live in): the gates that have actually failed in the last 90 days go
 first, ordered by failures per unit of time, so a push that is going to be
 refused is refused at minute two instead of minute twenty.
@@ -988,13 +988,13 @@ kubeconfig or the image unset) says nothing, so a repository that sets `set
 executor cluster` does not warn on every hook of such a machine; a key that
 is set but cannot be used warns once per run and names the fix.
 
-A cluster pass is recorded in `refs/notes/amont-gate-cluster`, on the judged
+A cluster pass is recorded in `refs/notes/greengate-gate-cluster`, on the judged
 tree, under its own identity: the gate's command and flags, the
 `clusterPrepare` command, the image digest and the version of the cluster
 contract. The laptop's own executable is not part of it, so a gate whose tool
 exists only in the image is still reused. Changing `greengate.cluster.image`
 makes the gate run again. A cluster pass never becomes a local stamp
-(`refs/notes/amont-gate`) or a laptop attestation.
+(`refs/notes/greengate-gate`) or a laptop attestation.
 
 The machine keys, read from git config (`--global` is the usual place):
 
@@ -1083,7 +1083,7 @@ git-attest against the repository's `allowed_signers` (the one a push
 verifies with, which must list `cluster-signer@x86_64-linux`): one block,
 `platform x86_64-linux`, the record's tree, every gate that passed, signed by
 a principal bound to `x86_64-linux`. It is then filed in the local
-`refs/notes/amont-attest` under the tree, and the next push publishes that
+`refs/notes/greengate-attest` under the tree, and the next push publishes that
 block instead of signing the linux block itself. A block not written yet keeps
 the run pending (`"signer":"awaiting"`) until the Workflow's TTL; a refused or
 skipped block, a signer that never answers, or a tree with no filed block is
@@ -1249,11 +1249,11 @@ git config greengate.attest true
 
 Off by default. With it on, a push whose pre-push block gates all passed
 leaves an `ssh-keygen`-signed note on each pushed tip in
-`refs/notes/amont-attest` — binding the pushed **tree**, the names of the
+`refs/notes/greengate-attest` — binding the pushed **tree**, the names of the
 gates that passed, and the greengate version — and pushes that ref to the same
 remote, so CI can verify the note and skip the test steps it names.
 `greengate.attestKey` points at the signing key; unset, it means
-`~/.ssh/amont-attest`. The verifying side, the trust statement being made,
+`~/.ssh/greengate-attest`. The verifying side, the trust statement being made,
 and why every failure falls back to CI running the tests are in
 [the CI backstop](ci.md#skipping-what-pre-push-already-proved).
 

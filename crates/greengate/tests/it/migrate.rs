@@ -206,6 +206,45 @@ fn doctor_names_a_3x_kubeconfig() {
     );
 }
 
+/// Only the old signing key exists: doctor names the rename in one line.
+/// A scratch HOME, never the real one; with the new key beside it, or with
+/// neither, the line is not said.
+#[test]
+fn doctor_names_the_signing_key_move() {
+    let repo = Repo::new();
+    let home = repo.path("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let doctor = |home: &std::path::Path| {
+        let out = crate::common::amont_cmd()
+            .arg("doctor")
+            .current_dir(&repo.dir)
+            .env("HOME", home)
+            .env("GIT_CONFIG_GLOBAL", repo.path("fake-gitconfig"))
+            .output()
+            .expect("run doctor");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    let (_, none) = doctor(&home);
+    assert!(!none.contains("signing key"), "{none}");
+    std::fs::write(home.join(".ssh/amont-attest"), "k").unwrap();
+    let (code, only_old) = doctor(&home);
+    assert_eq!(code, Some(1), "{only_old}");
+    let line = only_old
+        .lines()
+        .find(|l| l.contains("signing key"))
+        .unwrap_or_else(|| panic!("no key line: {only_old}"));
+    assert!(
+        line.contains("mv ~/.ssh/amont-attest ~/.ssh/greengate-attest"),
+        "{line}"
+    );
+    std::fs::write(home.join(".ssh/greengate-attest"), "k").unwrap();
+    let (_, both) = doctor(&home);
+    assert!(!both.contains("signing key"), "{both}");
+}
+
 /// Doctor names the host sizing and where it came from, on stderr, without
 /// changing its leftover-names stdout or exit code.
 #[test]

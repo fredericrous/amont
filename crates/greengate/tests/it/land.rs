@@ -643,7 +643,8 @@ fn land_with_a_warn_gate_on_a_busy_host(gate_exit: i32) {
     assert_eq!(marker.len(), 1, "the gate ran exactly once: {said}");
 
     let tree = plain_git(&fx.r.dir, &["rev-parse", "HEAD^{tree}"]);
-    let stamp = fx.r.git(&["notes", "--ref", "amont-gate", "show", &tree]);
+    let stamp =
+        fx.r.git(&["notes", "--ref", "greengate-gate", "show", &tree]);
     let stamp = String::from_utf8_lossy(&stamp.stdout).into_owned();
     let tokens = stamp.lines().next().unwrap_or("");
     if gate_exit == 0 {
@@ -657,7 +658,7 @@ fn land_with_a_warn_gate_on_a_busy_host(gate_exit: i32) {
             "a failed warn gate is never stamped as passed: {stamp}"
         );
         let done =
-            fx.r.git(&["notes", "--ref", "amont-gate-done", "show", &tree]);
+            fx.r.git(&["notes", "--ref", "greengate-gate-done", "show", &tree]);
         assert!(
             String::from_utf8_lossy(&done.stdout).contains("pre-push-gate"),
             "no completion evidence: {said}"

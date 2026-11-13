@@ -43,7 +43,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::gate_stamp::{Note, Run, RunOutcome, NOTES_REF};
+use crate::gate_stamp::{GateNames, Note, Run, RunOutcome};
 
 /// Seconds since the epoch, or 0 if the clock is before it. The record is
 /// local and single-machine, so this is the same clock on both sides of every
@@ -100,9 +100,19 @@ impl History {
 /// the same empty answer — a report that cannot be built is reported as
 /// missing, never as zero.
 pub fn history_in(repo: &Path) -> History {
-    // holds-until: Phase 4 of the notes-names plan flips `WRITE`; this
-    // reader moves to both name sets in that same change.
-    let Some(list) = crate::git::stdout_in(repo, &["notes", "--ref", NOTES_REF, "list"]) else {
+    // Both name sets (decisions ADR-0068): runs recorded before the writers
+    // switched sit under the legacy ref until the census, and each set's
+    // notes are parsed under that set's own header.
+    let mut history = History::default();
+    for set in crate::gate_stamp::READ {
+        history.runs.extend(history_under(repo, &set).runs);
+    }
+    history
+}
+
+/// The runs recorded under one name set's notes ref.
+fn history_under(repo: &Path, set: &GateNames) -> History {
+    let Some(list) = crate::git::stdout_in(repo, &["notes", "--ref", set.notes_ref, "list"]) else {
         return History::default();
     };
     // `<note blob> <annotated object>` per line. The annotated object is the
@@ -129,7 +139,7 @@ pub fn history_in(repo: &Path) -> History {
         let Some(fingerprint) = keyed.get(&blob) else {
             continue;
         };
-        for run in Note::parse(&body).runs {
+        for run in Note::parse_as(&body, set.format).runs {
             history.runs.push((fingerprint.clone(), run));
         }
     }
@@ -141,7 +151,7 @@ pub fn history_in(repo: &Path) -> History {
 /// Line-oriented rather than byte-counted, and that is a deliberate trade.
 /// The header git writes is `<oid> <type> <size>`, and a body line could in
 /// principle look like one — but every body this ref holds was written by
-/// [`crate::gate_stamp`], whose lines begin `amont-gate-` or `run `. The
+/// [`crate::gate_stamp`], whose lines begin `greengate-gate-`, `amont-gate-` or `run `. The
 /// alternative, honouring the byte count, cannot be written against a helper
 /// that trims its output, and a note this reader misreads costs a row in a
 /// report rather than a verdict.
@@ -920,8 +930,8 @@ mod tests {
         let oid = "0123456789abcdef0123456789abcdef01234567";
         let other = "89abcdef0123456789abcdef0123456789abcdef";
         let out = format!(
-            "{oid} blob 42\namont-gate-v1 pre-push-cargo-test\nrun 10 pre-push-cargo-test pass 5\n\
-             {other} blob 14\namont-gate-v1\n"
+            "{oid} blob 42\ngreengate-gate-v1 pre-push-cargo-test\nrun 10 pre-push-cargo-test pass 5\n\
+             {other} blob 14\ngreengate-gate-v1\n"
         );
         let got = parse_batch(&out);
         assert_eq!(got.len(), 2);

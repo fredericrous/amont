@@ -139,7 +139,7 @@ fn runs(repo: &Repo, log: &str) -> usize {
 fn gate_note(repo: &Repo, key: &str) -> String {
     String::from_utf8_lossy(
         &repo
-            .git(&["notes", "--ref", "amont-gate", "show", key])
+            .git(&["notes", "--ref", "greengate-gate", "show", key])
             .stdout,
     )
     .into_owned()
@@ -425,7 +425,7 @@ fn attested(repo: &Repo, slots: &Path, line: &str) -> Option<String> {
         .unwrap_or_default()
         .to_string();
     let note = Command::new("git")
-        .args(["notes", "--ref", "amont-attest", "show", &tip])
+        .args(["notes", "--ref", "greengate-attest", "show", &tip])
         .current_dir(&remote)
         .output()
         .expect("git notes on the remote");
@@ -506,11 +506,11 @@ fn a_forged_deferral_only_moves_the_gate_to_ci() {
     repo.git(&[
         "notes",
         "--ref",
-        "amont-gate",
+        "greengate-gate",
         "add",
         "-f",
         "-m",
-        "amont-gate-v1 \ndeferred gate",
+        "greengate-gate-v1 \ndeferred gate",
         &tree,
     ]);
     let line = push_line("feat/x", &base, &head(&repo));

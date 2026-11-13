@@ -393,7 +393,7 @@ pub(super) fn payload(tree: &str, gates: &[String]) -> String {
 
 /// The signed block of `payload`, as a note holds it.
 fn signed_block(payload: &str, key: &Path) -> Result<String, String> {
-    let sig = git_attest::sign::sign(git_attest::format::NAMESPACE, payload, key)
+    let sig = git_attest::sign::sign(git_attest::format::WRITE.namespace, payload, key)
         .map_err(|e| format!("signing failed: {e}"))?;
     Ok(git_attest::format::block(payload, &sig))
 }
@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "amont-attest-v2\ntree {LIVE_TREE}\ngates a b.c\nplatform x86_64-linux\namont {}\n",
+                "greengate-attest-v2\ntree {LIVE_TREE}\ngates a b.c\nplatform x86_64-linux\ngreengate {}\n",
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -1193,7 +1193,8 @@ mod tests {
         assert_eq!(field(&text, "tree"), Some(LIVE_TREE));
         assert_eq!(field(&text, "gates"), Some("a b.c"));
         assert_eq!(field(&text, "platform"), Some("x86_64-linux"));
-        assert_eq!(field(&text, "amont"), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(field(&text, "greengate"), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(field(&text, "amont"), None, "no old producer line");
     }
 
     #[test]
@@ -1337,8 +1338,9 @@ mod tests {
         std::fs::write(
             &signers,
             format!(
-                "cluster-signer@x86_64-linux namespaces=\"{}\" {public}\n",
-                git_attest::format::NAMESPACE
+                "cluster-signer@x86_64-linux namespaces=\"{},{}\" {public}\n",
+                git_attest::format::GREEN.namespace,
+                git_attest::format::LEGACY.namespace
             ),
         )
         .unwrap();
@@ -1359,6 +1361,28 @@ mod tests {
         };
         assert!(verify("cluster-signer@x86_64-linux"));
         assert!(!verify("someone@x86_64-linux"));
+        // The signer signs under the GREEN namespace and header, and the
+        // block does not verify under the legacy namespace.
+        assert!(text.starts_with(git_attest::format::GREEN.format), "{text}");
+        assert!(git_attest::sign::verify(
+            git_attest::format::GREEN.namespace,
+            &blocks[0].payload,
+            &blocks[0].signature,
+            &signers,
+            None,
+        )
+        .is_ok());
+        assert!(
+            git_attest::sign::verify(
+                git_attest::format::LEGACY.namespace,
+                &blocks[0].payload,
+                &blocks[0].signature,
+                &signers,
+                None,
+            )
+            .is_err(),
+            "a green block must not verify as a legacy one"
+        );
         let _ = std::fs::remove_dir_all(&dir); // best-effort
     }
 }

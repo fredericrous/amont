@@ -435,9 +435,9 @@ dependencies = [
 
 [[package]]
 name = "git-attest"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df893a2b9cb1c11286505b5a1804698e604afe2346eeb8b1f0fe3916ad22bd"
+checksum = "80a859b140b2e8ff0ea5c569b923f93e8e2f9bd6988af87b262c11df614e7c60"
 
 [[package]]
 name = "greengate"

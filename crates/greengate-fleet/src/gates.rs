@@ -2,7 +2,7 @@
 //! gates.
 //!
 //! The hooks have been writing a run per gate per push into
-//! `refs/notes/amont-gate` (see `greengate_runtime::gate_stamp`). Nothing read it
+//! `refs/notes/greengate-gate` (and the legacy `amont-gate`, see `greengate_runtime::gate_stamp`). Nothing read it
 //! across repositories, and across repositories is where the question lives:
 //! a suite that quietly stopped testing anything looks perfect from inside
 //! the repository it broke in — green, fast, and getting faster.

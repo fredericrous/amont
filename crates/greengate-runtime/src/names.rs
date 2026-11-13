@@ -12,7 +12,7 @@
 //! `$GIT_DIR` and the common dir, and the ledgers' headers. greengate 3.x's
 //! spellings live only in `migrate.rs`, which moves them once; the names
 //! test fails on an old data name anywhere else. Kept on purpose: the notes
-//! namespaces (`refs/notes/amont-gate*`, plan 3a-3), the shim placeholder, and
+//! namespaces (the legacy `amont-*` set, read beside the green one: plan 3a-3), the shim placeholder, and
 //! the binary aliases above.
 //!
 //! In a format string, name the constant inline: `eprintln!("{BIN}: …")`.
@@ -138,7 +138,7 @@ pub const SKEW_FORMAT: &str = "greengate-skew-v1";
 pub const HELD_FORMAT: &str = "greengate-held-v1";
 
 /// The pre-commit → post-commit gate marker under `$GIT_DIR`. Its content
-/// keeps the notes format (`amont-gate-v1`), which plan 3a-3 renames.
+/// is the notes format (`greengate-gate-v1`, plan 3a-3 Phase 4).
 pub const GATE_MARKER: &str = "greengate-gate";
 
 /// The committed manifest a repository declares its checks in.
