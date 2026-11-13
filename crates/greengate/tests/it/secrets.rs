@@ -85,10 +85,22 @@ fn the_allow_pragma_is_honoured() {
     let r = Repo::new();
     r.stage(
         "fixture.txt",
-        &format!("{} # {}\n", aws_key(), "amont:allow-secret"),
+        &format!("{} # {}\n", aws_key(), "greengate:allow-secret"),
     );
     let (code, out) = run_check(&r, "pre-commit-secrets", None);
     assert_eq!(code, 0, "{out}");
+}
+
+/// The pre-4.3 spelling waives nothing any more: a hard rename, no fallback.
+#[test]
+fn the_old_allow_pragma_no_longer_waives() {
+    let r = Repo::new();
+    r.stage(
+        "fixture.txt",
+        &format!("{} # {}\n", aws_key(), "amont:allow-secret"),
+    );
+    let (code, out) = run_check(&r, "pre-commit-secrets", None);
+    assert_ne!(code, 0, "{out}");
 }
 
 /// The push half is why the check exists twice: a secret committed with

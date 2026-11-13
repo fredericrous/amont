@@ -12,7 +12,7 @@
 //! `$GIT_DIR` and the common dir, and the ledgers' headers. greengate 3.x's
 //! spellings live only in `migrate.rs`, which moves them once; the names
 //! test fails on an old data name anywhere else. Kept on purpose: the notes
-//! namespaces (`refs/notes/amont-*`, plan 3a-3), the shim placeholder, and
+//! namespaces (`refs/notes/amont-gate*`, plan 3a-3), the shim placeholder, and
 //! the binary aliases above.
 //!
 //! In a format string, name the constant inline: `eprintln!("{BIN}: …")`.
@@ -106,6 +106,14 @@ pub const REHEARSAL_FORMAT: &str = "greengate-rehearsal-v1";
 
 /// The cold-cache warm worker's log under `$GIT_DIR`.
 pub const WARM_LOG: &str = "greengate-warm.log";
+
+/// The committed audit waivers file.
+pub const AUDIT_WAIVERS: &str = ".greengate-audit-waivers";
+
+/// The notes ref the release audit caches its verdicts in (local, never
+/// pushed), and the header of each note.
+pub const AUDIT_REF: &str = "greengate-audit";
+pub const AUDIT_FORMAT: &str = "greengate-audit-v1";
 
 /// The version-skew marker, and its header.
 pub const SKEW_MARKER: &str = "greengate-skew";
@@ -205,6 +213,17 @@ pub mod old {
     /// A pack repository's file before 4.0. Read whenever `greengate.pack`
     /// is absent: a vendored pin at an older revision only ever has this one.
     pub const PACK_FILE: &str = "amont.pack";
+    /// The hook shim's placeholder before 4.3. The frozen amont 2.3.1 shim
+    /// the fleet still recognises carries it.
+    pub const SHIM_PLACEHOLDER: &str = "__AMONT_BIN__";
+    /// The audit waivers file before 4.3: read when the new one is absent,
+    /// until the census (`greengate migrate --tracked` renames it).
+    pub const AUDIT_WAIVERS: &str = ".amont-audit-waivers";
+    /// The audit cache ref before 4.3, deleted by `migrate`.
+    pub const AUDIT_REF: &str = "amont-audit";
+    /// The pack block markers before 4.3, read until the census.
+    pub const PACK_START: &str = "# amont:pack:start";
+    pub const PACK_END: &str = "# amont:pack:end";
     /// The AGENTS.md markers before 4.0, read until the sweep.
     pub const AGENTS_START: &str = "<!-- amont:start -->";
     pub const AGENTS_END: &str = "<!-- amont:end -->";

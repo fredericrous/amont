@@ -58,8 +58,8 @@ fn a_pack_lands_inside_markers_with_its_commit_id() {
         "the existing line survives"
     );
     assert!(text.contains("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check"));
-    assert!(text.contains("# amont:pack:start"), "{text}");
-    assert!(text.contains("# amont:pack:end"), "{text}");
+    assert!(text.contains("# greengate:pack:start"), "{text}");
+    assert!(text.contains("# greengate:pack:end"), "{text}");
 
     // The recorded id is the pack's commit, not the revision that named it.
     let id = String::from_utf8_lossy(&pack.git(&["rev-parse", "HEAD"]).stdout)
@@ -121,6 +121,35 @@ fn editing_a_vendored_row_revokes_trust() {
     );
 }
 
+/// A manifest written by greengate 4.2 carries `amont:pack` markers: `add`
+/// of the same label replaces that block in place and it comes back under
+/// `greengate:pack` markers. Fails without the old-marker fallback (the block
+/// would be appended, and its duplicate id would break the manifest).
+#[test]
+fn an_amont_pack_block_is_replaced_in_place_under_new_markers() {
+    let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
+    let label = source(&pack);
+    let r = Repo::new();
+    r.stage(
+        "amont.conf",
+        &format!(
+            "pre-commit  mine  *  block  true\n\n# amont:pack:start {label} 1111111\n\
+             pre-commit  terraform-fmt  *.tf  block  old-command\n# amont:pack:end {label}\n\
+             pre-commit  after  *  block  true\n"
+        ),
+    );
+    r.commit("feat: seed");
+    let run = r.run(&["add", &label]);
+    assert!(run.passed(), "{}", run.output());
+    let text = manifest(&r);
+    assert!(!text.contains("amont:pack"), "{text}");
+    assert_eq!(text.matches("greengate:pack:start").count(), 1, "{text}");
+    assert!(!text.contains("old-command"), "{text}");
+    assert!(text.contains("terraform fmt -check"), "{text}");
+    let at = |n: &str| text.find(n).unwrap();
+    assert!(at("mine") < at("terraform fmt -check") && at("terraform fmt -check") < at("after"));
+}
+
 #[test]
 fn re_adding_replaces_the_block_rather_than_appending() {
     let pack = pack_repo("pre-commit  terraform-fmt  *.tf  block  terraform fmt -check\n");
@@ -137,7 +166,7 @@ fn re_adding_replaces_the_block_rather_than_appending() {
 
     let text = manifest(&repo);
     assert_eq!(
-        text.matches("amont:pack:start").count(),
+        text.matches("greengate:pack:start").count(),
         1,
         "one block, not two — a duplicate id would break the manifest: {text}"
     );

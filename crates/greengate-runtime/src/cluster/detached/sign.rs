@@ -42,11 +42,9 @@ const KUBECONFIG_ENV: &str = "GREENGATE_SIGNER_KUBECONFIG";
 /// The namespace the ConfigMaps are written to.
 const NAMESPACE_ENV: &str = "GREENGATE_SIGNER_NAMESPACE";
 const DEFAULT_NAMESPACE: &str = "attest-signer";
-/// Where detached Workflows run: greengate 4's namespace and 3.x's.
-const RUNNER_NAMESPACES: [&str; 2] = [
-    crate::names::CLUSTER_NAMESPACE,
-    crate::names::old::CLUSTER_NAMESPACE,
-];
+/// Where detached Workflows run: greengate's namespace only. homelab removed
+/// 3.x's `amont-gates`, which every pass would report as unreadable.
+const RUNNER_NAMESPACES: [&str; 1] = [crate::names::CLUSTER_NAMESPACE];
 
 /// The label every signer ConfigMap carries, and its value.
 pub(super) const SIGNER_LABEL: &str = "greengate.signer";
@@ -1144,7 +1142,7 @@ mod tests {
         let wf = compact(&fixture("workflow-succeeded.json"));
         let runner = list(&[wf, compact(&fixture("pod-succeeded.json"))]);
         let planned = plan_pass(
-            &[(crate::names::old::CLUSTER_NAMESPACE, runner)],
+            &[(crate::names::CLUSTER_NAMESPACE, runner)],
             &no_configmaps(),
             NOW,
         );

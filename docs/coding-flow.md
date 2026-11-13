@@ -183,5 +183,5 @@ require("lint").linters_by_ft = { javascript = { "greengate" }, rust = { "greeng
 
 **Anything else** —
 [`efm-langserver`](https://github.com/mattn/efm-langserver) and Emacs
-`flycheck` both take the same pattern. `--format json` (`amont-check-v1`) is
+`flycheck` both take the same pattern. `--format json` (`greengate-check-v1`) is
 there if you would rather not parse a line.

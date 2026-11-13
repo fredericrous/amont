@@ -20,7 +20,7 @@ pub fn template() -> String {
 
 /// The shim body, baked at `binary`, exactly as the installer writes it.
 pub fn shim_for(binary: &str) -> String {
-    template().replace("__AMONT_BIN__", binary)
+    template().replace("__GREENGATE_BIN__", binary)
 }
 
 /// The six dispatchers, in the order the scan reports them.

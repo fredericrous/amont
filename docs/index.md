@@ -88,7 +88,7 @@ deliberately does not:
   verifier lets CI skip work provably already done. Fail-open by
   construction, and separate precisely so that greengate itself never runs in
   CI — [the reasoning](ci.md).
-- [**amont-pack-java**](https://github.com/fredericrous/amont-pack-java) —
+- [**greengate-pack-java**](https://github.com/fredericrous/amont-pack-java) —
   the worked example of [a pack](custom-checks.md#shipping-a-check--packs):
   how checks greengate deliberately does not build in get shipped anyway.
 

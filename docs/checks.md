@@ -325,7 +325,7 @@ The severity is the push's, not the finding's:
     or export that fails, a virtualenv without `uv.lock` — still refuses the
     tag: an unknown is not a pass. An advisory that ships but that nobody can
     fix yet (no patched version, a path the project cannot replace) passes
-    only under a **waiver**: a committed `.amont-audit-waivers` file, one line
+    only under a **waiver**: a committed `.greengate-audit-waivers` file (`.amont-audit-waivers` is still read until `greengate migrate --tracked` renames it), one line
     per advisory,
 
     ```text

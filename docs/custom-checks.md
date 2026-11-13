@@ -686,7 +686,9 @@ building an isolated environment per hook. `greengate add` copies rows into _you
 `greengate.conf`, and stops:
 
 - the rows land between `# greengate:pack:start` / `# greengate:pack:end` markers with
-  the pack's **commit id**, so what you got is recorded next to what you run;
+  the pack's **commit id**, so what you got is recorded next to what you run
+  (blocks written under the `# amont:pack:` markers before 4.3 are still read,
+  and a re-`add` replaces one in place under the new markers);
 - the manifest's content changed, so its fingerprint no longer matches and
   **every** declared check — the pack's and your own — is inert until you
   [trust](trust.md) it;

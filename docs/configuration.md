@@ -507,7 +507,7 @@ The dependency audits (`pre-push-audit-{go,js,python,rust}`) depend on the
 day's advisories, not only on the tree, so they are never stamped. Wherever
 one runs on the content being pushed — land's pre-stage, a rehearsal,
 `greengate run --stamp`, an `inline` push of a clean HEAD — its report is
-recorded in `refs/notes/amont-audit` (local, never pushed), keyed by the
+recorded in `refs/notes/greengate-audit` (local, never pushed), keyed by the
 lockfiles' content for a branch push and by the tree for a `v*` tag. A push
 with a fresh record replays it, judged against today's waivers and that
 push's stakes, without running the tool. A record answers for

@@ -171,7 +171,6 @@ const ANSWERS: &[&str] = &[
     "create_wf",
     "wf_list.json",
     "wf_list-greengate-gates.json",
-    "wf_list-amont-gates.json",
     "cm_list.json",
     "wf_down",
     "patch_fail",

@@ -666,7 +666,7 @@ jobs:
           mkdir -p .git/hooks
           for h in commit-msg prepare-commit-msg pre-commit post-commit; do
             cp "$GITHUB_WORKSPACE/templates/hooks/$h" ".git/hooks/$h"
-            sed -i "s|__AMONT_BIN__|$BIN|g" ".git/hooks/$h"
+            sed -i "s|__GREENGATE_BIN__|$BIN|g" ".git/hooks/$h"
             chmod +x ".git/hooks/$h"
           done
 
@@ -706,7 +706,7 @@ jobs:
 
       # The case the baked run above cannot see. `make install` puts the binary
       # in ~/.local/bin, and a repo created from a template dir that IS the
-      # checkout keeps the __AMONT_BIN__ placeholder — so the shim has to
+      # checkout keeps the __GREENGATE_BIN__ placeholder — so the shim has to
       # resolve the binary itself, with PATH deliberately emptied because that
       # is what a GUI git client hands a hook.
       #
@@ -731,7 +731,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/templates/hooks/pre-commit" .git/hooks/pre-commit
           chmod +x .git/hooks/pre-commit
           # Unbaked on purpose — this is what git init from the checkout gives.
-          grep -q '__AMONT_BIN__' .git/hooks/pre-commit \
+          grep -q '__GREENGATE_BIN__' .git/hooks/pre-commit \
             || { echo "::error::fixture was baked; the test proves nothing"; exit 1; }
 
           # A PATH with git and the shell on it, and NOTHING else — git lives

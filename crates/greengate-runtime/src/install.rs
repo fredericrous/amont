@@ -31,7 +31,7 @@ use crate::names::{BIN, FLEET_BIN, OLD_BIN, OLD_FLEET_BIN};
 use crate::ui::{error_sign, highlight, valid_sign, warning_sign};
 
 /// The token every shim carries until it is baked.
-pub const PLACEHOLDER: &str = "__AMONT_BIN__";
+pub const PLACEHOLDER: &str = "__GREENGATE_BIN__";
 
 /// The one shim. All four git-invoked hooks are the same file — it passes its
 /// own filename through — and `shims_on_disk_match_the_embedded_one` keeps the
@@ -623,7 +623,7 @@ pub fn enroll(conventions: Option<&str>) -> Result<(), String> {
                 highlight(word)
             );
             if word == "declared" {
-                eprintln!("    House rules run only in repositories that commit an amont.conf;");
+                eprintln!("    House rules run only in repositories that commit a greengate.conf;");
                 eprintln!("    the safety net (conflicts, secrets, size, debug leftovers) runs");
                 eprintln!("    everywhere.");
             }
@@ -977,7 +977,7 @@ fn offer_agents_md(settings: &crate::config::Settings) {
 
     eprintln!();
     eprintln!(
-        "{} AGENTS.md can point coding agents at `amont list --json` \
+        "{} AGENTS.md can point coding agents at `greengate list --json` \
          instead of leaving them to discover these checks the hard way:",
         warning_sign()
     );
@@ -1674,7 +1674,7 @@ pub fn forget_bookkeeping_in(repo: &Path) -> Vec<&'static str> {
         gone.push("known-identity memo");
     }
     if !crate::trust::recorded(repo).is_empty() && crate::trust::revoke(repo).is_ok() {
-        gone.push("amont.conf trust");
+        gone.push("greengate.conf trust");
     }
     gone
 }

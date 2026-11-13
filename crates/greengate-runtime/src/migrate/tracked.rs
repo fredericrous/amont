@@ -13,6 +13,7 @@
 //!   it is). The content is unchanged: trust is the
 //!   content's blob id, so a trusted manifest stays trusted, and the
 //!   `amont:pack:*` markers inside it are still read until the census.
+//! - `.amont-audit-waivers` → `.greengate-audit-waivers`, the same way.
 //! - the AGENTS.md / CLAUDE.md marker pair, old spelling to new; what lies
 //!   between the markers is left for `greengate agents-md` to regenerate.
 //! - `.github/attest-inputs`: a path token naming an old file.
@@ -28,7 +29,11 @@ use crate::names as n;
 use crate::names::old;
 
 /// The committed files renamed, old name first.
-const FILES: &[(&str, &str)] = &[(old::MANIFEST, n::MANIFEST), (old::PACK_FILE, n::PACK_FILE)];
+const FILES: &[(&str, &str)] = &[
+    (old::MANIFEST, n::MANIFEST),
+    (old::PACK_FILE, n::PACK_FILE),
+    (old::AUDIT_WAIVERS, n::AUDIT_WAIVERS),
+];
 
 /// The generated files whose marker pair is rewritten.
 const MARKED: &[&str] = &["AGENTS.md", "CLAUDE.md"];

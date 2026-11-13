@@ -8,6 +8,48 @@ missing here.
 
 ## Unreleased
 
+### Changed
+
+- **greengate's last `amont` names are renamed** (plan "greengate's last
+  amont names, and the packs renamed", Phase 1). Names a repository commits
+  are written under the new name and still read under the old one until the
+  fleet census; names only greengate holds move outright.
+  - Pack markers: `greengate add` writes `# greengate:pack:start` and
+    `:end`. A block under the old `# amont:pack:` markers is still read, and
+    a re-`add` of the same source replaces it in place under the new markers.
+    When both spellings of one source exist, the old block is removed and a
+    warning says so. A marker with only one spelling of start or end is an
+    unpaired error naming both.
+  - The release audit's waivers file is `.greengate-audit-waivers`.
+    `.amont-audit-waivers` is read only when the new file is absent; with
+    both, the new one wins and the old one is named in a warning. Waiver
+    messages quote the file they read. `greengate migrate --tracked` renames
+    `.amont-audit-waivers` to `.greengate-audit-waivers` (a `git mv`, content
+    unchanged); it does not respell pack markers, so a trusted
+    `greengate.conf` stays trusted.
+  - The audit's local cache ref is `refs/notes/greengate-audit` (format
+    `greengate-audit-v1`); `greengate migrate` deletes
+    `refs/notes/amont-audit` (one extra audit on the next tag push).
+  - The inline secret waiver is `greengate:allow-secret`; `amont:allow-secret`
+    no longer waives (no fallback: only greengate's own repository used it).
+  - `--format json` reports `greengate-check-v1`.
+  - Stamp commits are authored `greengate <greengate@localhost>` with the
+    message `greengate stamps`, and a rehearsal's host-slot holder is named
+    `greengate`.
+  - The hook shim placeholder is `__GREENGATE_BIN__`. Installed hooks hold
+    the resolved path, never the placeholder, so nothing is re-baked.
+  - Printed and generated text names `greengate`: the untrusted-manifest
+    warning, `install`'s AGENTS.md pointer line, and the generated block
+    (`## Git hooks (greengate)`, `greengate list --json`, `greengate land`).
+    A block written by 4.2 makes `pre-commit-agents-md` warn, as any older
+    block does.
+    The `reason` value `list --json` gives for an untrusted or changed
+    manifest now reads `greengate.conf` and `greengate trust`.
+  - The staged-only stash suffixes `.amont-absent` and `.amont-symlink` are
+    still read when a stash is put back; nothing writes them.
+  - The in-cluster signer reads only `greengate-gates` (homelab removed
+    `amont-gates`).
+
 ## v4.2.0
 
 ### Changed

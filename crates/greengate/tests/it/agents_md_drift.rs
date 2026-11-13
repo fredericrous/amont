@@ -53,7 +53,7 @@ fn with_fixing_on_the_block_is_regenerated_and_restaged() {
         !staged.contains("STALE"),
         "the index still holds the stale block"
     );
-    assert!(staged.contains("amont list --json"), "{staged}");
+    assert!(staged.contains("greengate list --json"), "{staged}");
 }
 
 /// A block this binary just wrote is current: quiet.
@@ -71,4 +71,19 @@ fn a_current_block_passes() {
     let run = r.run(&["run", "pre-commit-agents-md"]);
     assert!(run.passed(), "{}", run.output());
     assert!(run.says("matches"), "{}", run.output());
+}
+
+/// A block greengate 4.2 wrote (heading `## Git hooks (amont)`, `amont list
+/// --json`, old markers) is behind this binary: a warning, never a failure.
+#[test]
+fn a_4_2_written_block_warns_without_blocking() {
+    let r = Repo::new();
+    r.write(
+        "AGENTS.md",
+        &format!("# P\n\n{START}\n## Git hooks (amont)\n\namont list --json\n{END}\n"),
+    );
+    r.git(&["add", "AGENTS.md"]);
+    let run = r.run(&["run", "pre-commit-agents-md"]);
+    assert!(run.passed(), "a warning must not block: {}", run.output());
+    assert!(run.says("behind what greengate"), "{}", run.output());
 }

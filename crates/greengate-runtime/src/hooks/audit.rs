@@ -93,7 +93,8 @@ fn conclude_waivable(
                 if all_waived {
                     common::warn(&format!(
                         "{tool}: known vulnerabilities shipped under a reviewed waiver \
-                         ({WAIVERS_FILE}) — not blocking this release: {}",
+                         ({}) — not blocking this release: {}",
+                        waivers.file,
                         ids.iter()
                             .map(|id| waivers.describe(id))
                             .collect::<Vec<_>>()
@@ -128,8 +129,9 @@ fn conclude_waivable(
             } else if all_waived {
                 common::warn(&format!(
                     "{tool}: known vulnerabilities ({}) — covered by a reviewed waiver \
-                     ({WAIVERS_FILE}), so a v* tag push will pass while it holds: {}",
+                     ({}), so a v* tag push will pass while it holds: {}",
                     what.join(", "),
+                    waivers.file,
                     ids.iter()
                         .map(|id| waivers.describe(id))
                         .collect::<Vec<_>>()
@@ -156,7 +158,11 @@ fn conclude_waivable(
 }
 
 /// Where a repository records the advisories a release may ship anyway.
-const WAIVERS_FILE: &str = ".amont-audit-waivers";
+const WAIVERS_FILE: &str = crate::names::AUDIT_WAIVERS;
+
+/// The same file before greengate 4.3, read when [`WAIVERS_FILE`] is absent
+/// until the census renames every repository's (`greengate migrate --tracked`).
+const OLD_WAIVERS_FILE: &str = crate::names::old::AUDIT_WAIVERS;
 
 /// How far ahead a waiver may run. A waiver is a decision to revisit, not
 /// an exemption: one dated further out is void, so nothing is waived for
@@ -184,18 +190,35 @@ struct Waiver {
 struct Waivers {
     entries: Vec<Waiver>,
     problems: Vec<String>,
+    /// The file these were read from, for messages to quote.
+    file: &'static str,
 }
 
 impl Waivers {
     fn load(root: &str, today: i64) -> Self {
-        match std::fs::read_to_string(std::path::Path::new(root).join(WAIVERS_FILE)) {
-            Ok(text) => Self::parse(&text, today),
+        let root = std::path::Path::new(root);
+        let read = |file: &'static str| (file, std::fs::read_to_string(root.join(file)));
+        let (mut file, mut got) = read(WAIVERS_FILE);
+        if matches!(&got, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            (file, got) = read(OLD_WAIVERS_FILE);
+        } else if root.join(OLD_WAIVERS_FILE).exists() {
+            common::warn(&format!(
+                "{OLD_WAIVERS_FILE} is ignored: {WAIVERS_FILE} exists — \
+                 delete the old file"
+            ));
+        }
+        match got {
+            Ok(text) => Self {
+                file,
+                ..Self::parse(&text, today)
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(e) => Self {
                 entries: Vec::new(),
                 problems: vec![format!(
-                    "{WAIVERS_FILE} could not be read ({e}) — it waives nothing"
+                    "{file} could not be read ({e}) — it waives nothing"
                 )],
+                file,
             },
         }
     }
@@ -1391,8 +1414,8 @@ fn uv_production_names(
 }
 
 /// The notes ref of audit records: local, never pushed, never a stamp.
-pub const AUDIT_REF: &str = "amont-audit";
-const AUDIT_FORMAT: &str = "amont-audit-v1";
+pub const AUDIT_REF: &str = crate::names::AUDIT_REF;
+const AUDIT_FORMAT: &str = crate::names::AUDIT_FORMAT;
 /// How long a record answers for its lockfiles, in hours.
 const AUDIT_MAX_AGE: &str = "greengate.auditMaxAge";
 /// A report that could not check anything answers for an hour only: an

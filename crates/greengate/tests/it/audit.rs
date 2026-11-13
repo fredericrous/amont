@@ -774,10 +774,15 @@ fn date_in(offset: i64) -> String {
 
 /// A pnpm workspace whose PRODUCTION audit names one GHSA advisory.
 fn shipped_braces_repo(waivers: Option<String>) -> Repo {
+    shipped_braces_repo_files(waivers.map(|w| (".greengate-audit-waivers", w)).into_iter())
+}
+
+/// The same, with waiver files under whatever names the test gives.
+fn shipped_braces_repo_files<'a>(files: impl Iterator<Item = (&'a str, String)>) -> Repo {
     let r = bare_repo();
     r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
-    if let Some(w) = waivers {
-        r.stage(".amont-audit-waivers", &w);
+    for (name, w) in files {
+        r.stage(name, &w);
     }
     r.commit("chore: a pnpm workspace");
     shim(
@@ -801,6 +806,44 @@ fn a_waived_advisory_ships_until_its_waiver_expires() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("under a reviewed waiver"), "{out}");
     assert!(out.contains("GHSA-3gc7-fjrx-p6mg until"), "{out}");
+    assert!(
+        out.contains("(.greengate-audit-waivers)"),
+        "the file read is quoted: {out}"
+    );
+}
+
+/// A repository that only has the pre-4.3 file still waives, and the message
+/// quotes the file it read. Fails without the fallback read.
+#[test]
+fn a_waivers_file_under_the_old_name_still_waives() {
+    let old = format!("GHSA-3gc7-fjrx-p6mg {} braces; no patch\n", date_in(30));
+    let r = shipped_braces_repo_files([(".amont-audit-waivers", old)].into_iter());
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v4.3.0");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("(.amont-audit-waivers)"), "{out}");
+}
+
+/// With both files the new one wins and the old one is ignored, with a
+/// warning naming it: an expired new file refuses the release even though
+/// the old one is valid.
+#[test]
+fn with_both_waiver_files_the_new_one_wins() {
+    let valid = format!("GHSA-3gc7-fjrx-p6mg {} braces; no patch\n", date_in(30));
+    let expired = format!("GHSA-3gc7-fjrx-p6mg {} braces; no patch\n", date_in(-1));
+    let r = shipped_braces_repo_files(
+        [
+            (".greengate-audit-waivers", expired),
+            (".amont-audit-waivers", valid),
+        ]
+        .into_iter(),
+    );
+    let (code, out) = push_check(&r, "pre-push-audit-js", "refs/tags/v4.3.0");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("expired on"), "{out}");
+    assert!(
+        out.contains(".amont-audit-waivers is ignored"),
+        "the old file is named: {out}"
+    );
 }
 
 /// Expired, or waiving some other advisory: the tag is refused, and why.
@@ -853,7 +896,7 @@ fn a_waiver_does_not_cover_an_unchecked_project() {
     r.stage("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
     r.stage("spikes/s3/pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
     r.stage(
-        ".amont-audit-waivers",
+        ".greengate-audit-waivers",
         &format!("GHSA-3gc7-fjrx-p6mg {} braces; no patch\n", date_in(30)),
     );
     r.commit("chore: a workspace with a spike");

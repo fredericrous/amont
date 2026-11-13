@@ -1007,7 +1007,12 @@ fn run_sub(sub: Sub, args: &[OsString]) -> i32 {
             let mut after = before.clone();
             for (label, id, rows) in &fetched {
                 match pack::splice(&after, label, id, rows) {
-                    Ok(next) => after = next,
+                    Ok((next, warning)) => {
+                        if let Some(w) = warning {
+                            eprintln!("{BIN}: warning: {w}");
+                        }
+                        after = next;
+                    }
                     Err(msg) => {
                         eprintln!("{BIN}: {msg}");
                         return 1;

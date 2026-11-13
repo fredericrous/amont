@@ -55,7 +55,7 @@ HOOK_NAME=$(basename -- "$0")
 # or a Windows drive path: `greengate install` bakes `C:\Users\…\greengate.exe` on
 # Git for Windows. An unbaked shim fails this and falls through to 3, which is
 # exactly what it should do.
-BAKED="__AMONT_BIN__"
+BAKED="__GREENGATE_BIN__"
 case "$BAKED" in
     /*|?:/*|?:\\*) ;;
     *) BAKED= ;;

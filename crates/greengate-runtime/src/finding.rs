@@ -92,7 +92,7 @@ impl Finding {
     ///
     /// Used inside a hook's own report, which already says which check spoke
     /// and how loudly; repeating either there would be noise. `render` is the
-    /// form for anything outside amont.
+    /// form for anything outside greengate.
     pub fn location(&self) -> String {
         let mut out = self.file.clone();
         if let Some(line) = self.line {
@@ -169,7 +169,7 @@ pub fn to_json(findings: &[Finding]) -> String {
         .collect();
     format!(
         "{{{},\"findings\":[{}]}}",
-        crate::json::string_field("format", "amont-check-v1"),
+        crate::json::string_field("format", "greengate-check-v1"),
         items.join(",")
     )
 }
@@ -220,7 +220,7 @@ mod tests {
     fn json_is_versioned_and_escapes_its_input() {
         assert_eq!(
             to_json(&[]),
-            "{\"format\":\"amont-check-v1\",\"findings\":[]}"
+            "{\"format\":\"greengate-check-v1\",\"findings\":[]}"
         );
         let f = Finding::new("ban-terms", "a\"b.js", Severity::Block, "x").at_line(2);
         let json = to_json(&[f]);

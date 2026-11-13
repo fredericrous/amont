@@ -294,10 +294,17 @@ pub fn rows(text: &str) -> Result<Vec<String>, String> {
 /// pack by deleting a block. `#` keeps them invisible to the parser, which
 /// skips comments.
 fn start_marker(label: &str) -> String {
-    format!("# amont:pack:start {label}")
+    format!("# greengate:pack:start {label}")
 }
 fn end_marker(label: &str) -> String {
-    format!("# amont:pack:end {label}")
+    format!("# greengate:pack:end {label}")
+}
+/// The markers before greengate 4.3, read until the fleet census.
+fn old_start_marker(label: &str) -> String {
+    format!("{} {label}", crate::names::old::PACK_START)
+}
+fn old_end_marker(label: &str) -> String {
+    format!("{} {label}", crate::names::old::PACK_END)
 }
 
 pub fn block(label: &str, id: &str, rows: &[String]) -> String {
@@ -311,23 +318,71 @@ pub fn block(label: &str, id: &str, rows: &[String]) -> String {
     out
 }
 
-/// `manifest` with this source's block replaced, or appended if it has none.
-///
-/// Markers are searched INDEPENDENTLY, like `agents_md::block_range` does, so a
-/// file carrying one without the other is reported rather than silently
-/// half-rewritten.
-pub fn splice(manifest: &str, label: &str, id: &str, rows: &[String]) -> Result<String, String> {
-    let (start, end) = (start_marker(label), end_marker(label));
-    let at_start = manifest.find(&start);
-    let at_end = manifest.find(&end);
-    let fresh = block(label, id, rows);
-    match (at_start, at_end) {
+/// Where one spelling's block for `label` sits: `Ok(Some((start, end)))` with
+/// `end` past its trailing newline, `Ok(None)` when neither marker is there,
+/// and an error when only one is, or they are inverted.
+fn block_range(manifest: &str, start: &str, end: &str) -> Result<Option<(usize, usize)>, ()> {
+    match (manifest.find(start), manifest.find(end)) {
         (Some(s), Some(e)) if e > s => {
             let mut tail = e + end.len();
             if manifest[tail..].starts_with('\n') {
                 tail += 1;
             }
-            Ok(format!("{}{fresh}{}", &manifest[..s], &manifest[tail..]))
+            Ok(Some((s, tail)))
+        }
+        (None, None) => Ok(None),
+        _ => Err(()),
+    }
+}
+
+/// `manifest` with this source's block replaced, or appended if it has none,
+/// and a warning when one was to be said.
+///
+/// Markers are searched INDEPENDENTLY, like `agents_md::block_range` does, so a
+/// file carrying one without the other is reported rather than silently
+/// half-rewritten. The markers before 4.3 (`amont:pack:*`) are read too, until
+/// the census: an old block is replaced in place and comes back under the new
+/// markers. When both spellings of one label exist, the old block is removed,
+/// the new one replaced, and the warning says so.
+pub fn splice(
+    manifest: &str,
+    label: &str,
+    id: &str,
+    rows: &[String],
+) -> Result<(String, Option<String>), String> {
+    let unpaired = || {
+        format!(
+            "{MANIFEST}: has an unpaired `greengate:pack` or `{}:pack` marker for {label} — \
+             fix or remove it by hand",
+            crate::names::OLD_BIN
+        )
+    };
+    let new =
+        block_range(manifest, &start_marker(label), &end_marker(label)).map_err(|()| unpaired())?;
+    let old = block_range(manifest, &old_start_marker(label), &old_end_marker(label))
+        .map_err(|()| unpaired())?;
+    let fresh = block(label, id, rows);
+    match (new, old) {
+        (Some((s, e)), Some((os, oe))) => {
+            // Cut the later range first so the earlier offsets stay true.
+            let mut out = manifest.to_string();
+            let mut cuts = [(s, e, Some(fresh.as_str())), (os, oe, None)];
+            cuts.sort_by_key(|c| std::cmp::Reverse(c.0));
+            for (from, to, with) in cuts {
+                out.replace_range(from..to, with.unwrap_or(""));
+            }
+            Ok((
+                out,
+                Some(format!(
+                    "{MANIFEST}: has both `greengate:pack` and `{}:pack` blocks for \
+                     {label} — the {} one was removed",
+                    crate::names::OLD_BIN,
+                    crate::names::OLD_BIN
+                )),
+            ))
+        }
+        (Some((s, e)), None) | (None, Some((s, e))) => {
+            Ok((format!("{}{fresh}{}", &manifest[..s], &manifest[e..]), None))
         }
         (None, None) => {
             let mut out = manifest.to_string();
@@ -338,12 +393,8 @@ pub fn splice(manifest: &str, label: &str, id: &str, rows: &[String]) -> Result<
                 out.push('\n');
             }
             out.push_str(&fresh);
-            Ok(out)
+            Ok((out, None))
         }
-        _ => Err(format!(
-            "{MANIFEST}: has an unpaired `amont:pack` marker for {label} — \
-             fix or remove it by hand"
-        )),
     }
 }
 
@@ -481,15 +532,18 @@ mod tests {
         let rows0 = vec!["pre-commit  a  *  block  true".to_string()];
         let base = "pre-commit  mine  *  block  true\n";
 
-        let once = splice(base, "github:acme/p", "abc1234", &rows0).unwrap();
+        let once = splice(base, "github:acme/p", "abc1234", &rows0).unwrap().0;
         assert!(once.starts_with(base), "existing lines are kept: {once:?}");
-        assert!(once.contains("# amont:pack:start github:acme/p abc1234"));
+        assert!(once.contains("# greengate:pack:start github:acme/p abc1234"));
 
         // A second add of the same source must REPLACE: two copies of one
         // declaration is a duplicate id, which the parser refuses outright.
         let rows1 = vec!["pre-commit  b  *  block  true".to_string()];
-        let twice = splice(&once, "github:acme/p", "def5678", &rows1).unwrap();
-        assert_eq!(twice.matches("amont:pack:start github:acme/p").count(), 1);
+        let twice = splice(&once, "github:acme/p", "def5678", &rows1).unwrap().0;
+        assert_eq!(
+            twice.matches("greengate:pack:start github:acme/p").count(),
+            1
+        );
         assert!(twice.contains("def5678"));
         assert!(!twice.contains("abc1234"));
         assert!(!twice.contains("pre-commit  a  *"), "old rows are gone");
@@ -502,10 +556,78 @@ mod tests {
     #[test]
     fn an_unpaired_marker_is_reported_not_guessed() {
         let rows0 = vec!["pre-commit  a  *  block  true".to_string()];
-        let half = "# amont:pack:start github:acme/p abc1234\n";
+        let half = "# greengate:pack:start github:acme/p abc1234\n";
         assert!(splice(half, "github:acme/p", "x", &rows0).is_err());
-        let inverted = "# amont:pack:end github:acme/p\n# amont:pack:start github:acme/p x\n";
+        let old_half = "# amont:pack:start github:acme/p abc1234\n";
+        assert!(splice(old_half, "github:acme/p", "x", &rows0).is_err());
+        let inverted =
+            "# greengate:pack:end github:acme/p\n# greengate:pack:start github:acme/p x\n";
         assert!(splice(inverted, "github:acme/p", "y", &rows0).is_err());
+    }
+
+    /// Mixed spellings (new start, old end) are unpaired, and the error names both.
+    #[test]
+    fn mixed_start_and_end_spellings_are_unpaired() {
+        let rows0 = vec!["pre-commit  a  *  block  true".to_string()];
+        let mixed = "# greengate:pack:start github:acme/p x\n# amont:pack:end github:acme/p\n";
+        let err = splice(mixed, "github:acme/p", "y", &rows0).unwrap_err();
+        assert!(
+            err.contains("greengate:pack") && err.contains("amont:pack"),
+            "{err}"
+        );
+    }
+
+    /// A block written by greengate 4.2 is replaced in place and comes back
+    /// under the new markers. Fails if the old-marker fallback is removed
+    /// (the block would be appended a second time).
+    #[test]
+    fn an_old_marker_block_is_replaced_in_place_under_new_markers() {
+        let rows0 = vec!["pre-commit  b  *  block  true".to_string()];
+        let old = "pre-commit  mine  *  block  true\n\n# amont:pack:start github:acme/p abc1234\n\
+                   pre-commit  a  *  block  true\n# amont:pack:end github:acme/p\n\
+                   pre-commit  after  *  block  true\n";
+        let (out, warning) = splice(old, "github:acme/p", "def5678", &rows0).unwrap();
+        assert_eq!(warning, None);
+        assert!(!out.contains("amont:pack"), "{out}");
+        assert_eq!(out.matches("greengate:pack:start").count(), 1, "{out}");
+        assert!(!out.contains("pre-commit  a  *"), "old row replaced: {out}");
+        let at = |n: &str| out.find(n).unwrap();
+        assert!(
+            at("mine") < at("def5678") && at("def5678") < at("after"),
+            "in place: {out}"
+        );
+    }
+
+    /// Both spellings of one label: one block is left, the manifest still
+    /// parses, and a warning says the old one went.
+    #[test]
+    fn both_spellings_of_one_label_leave_one_block_and_a_warning() {
+        let rows0 = vec!["pre-commit  b  *  block  true".to_string()];
+        for order in 0..2 {
+            let oldb = "# amont:pack:start github:acme/p 1111111\n\
+                        pre-commit  a  *  block  true\n# amont:pack:end github:acme/p\n";
+            let newb = "# greengate:pack:start github:acme/p 2222222\n\
+                        pre-commit  c  *  block  true\n# greengate:pack:end github:acme/p\n";
+            let both = if order == 0 {
+                format!("{oldb}\n{newb}")
+            } else {
+                format!("{newb}\n{oldb}")
+            };
+            let (out, warning) = splice(&both, "github:acme/p", "3333333", &rows0).unwrap();
+            assert!(
+                warning.is_some_and(|w| w.contains("amont:pack")),
+                "order {order}"
+            );
+            assert!(!out.contains("amont:pack"), "{out}");
+            assert_eq!(out.matches("greengate:pack:start").count(), 1, "{out}");
+            assert_eq!(out.matches("greengate:pack:end").count(), 1, "{out}");
+            assert!(
+                out.contains("3333333") && !out.contains("1111111") && !out.contains("2222222")
+            );
+            let parsed = crate::manifest::parse_lines(&out);
+            assert_eq!(parsed.len(), 1, "{out}");
+            assert!(matches!(parsed[0], Line::Usable(_)), "{out}");
+        }
     }
 
     /// Two packs coexist without either disturbing the other's block.
@@ -513,9 +635,9 @@ mod tests {
     fn packs_from_different_sources_do_not_collide() {
         let a = vec!["pre-commit  a  *  block  true".to_string()];
         let b = vec!["pre-commit  b  *  block  true".to_string()];
-        let one = splice("", "github:x/a", "1111111", &a).unwrap();
-        let two = splice(&one, "github:x/b", "2222222", &b).unwrap();
-        let three = splice(&two, "github:x/a", "3333333", &a).unwrap();
+        let one = splice("", "github:x/a", "1111111", &a).unwrap().0;
+        let two = splice(&one, "github:x/b", "2222222", &b).unwrap().0;
+        let three = splice(&two, "github:x/a", "3333333", &a).unwrap().0;
         assert!(three.contains("2222222"), "the other pack is untouched");
         assert!(three.contains("3333333"));
         assert!(!three.contains("1111111"));

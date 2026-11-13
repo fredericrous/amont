@@ -823,7 +823,7 @@ mod tests {
                 &dir,
                 greenharness_slots::Sizing::Fixed(1),
                 1,
-                greenharness_slots::Holder::here("amont", "gate"),
+                greenharness_slots::Holder::here(crate::names::SLOT_HOLDER, "gate"),
             )
             .unwrap();
             let greenharness_slots::Poll::Granted(lease) = waiter.poll().unwrap() else {
