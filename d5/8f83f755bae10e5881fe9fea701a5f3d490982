@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit b5b124374908e5c745689c1f88999e2529507b72
+tree d58f83f755bae10e5881fe9fea701a5f3d490982
+canon d143c7ecf31cd13c1315f69601cc9b83e33989bd
+patch 3a7b127496e36e6c3681bf2bb482960c5a98c31e
+plan docs/plans/2026-11-12-greengate-signs-notes-under-green-names.md 7621f925ea00f48f4ce202a521948dbb4145e7009d6413b2b31851e1ba96c38b
+review reviewed 0ba74d12e51d8f8282415a3c67f14a776319ba0226f759538733ae74c338632a
+code-review backend reviewed 0ba74d12e51d8f8282415a3c67f14a776319ba0226f759538733ae74c338632a
+code-review lang:rust reviewed 0ba74d12e51d8f8282415a3c67f14a776319ba0226f759538733ae74c338632a
+code-review unix reviewed 0ba74d12e51d8f8282415a3c67f14a776319ba0226f759538733ae74c338632a
+code-review architect reviewed 0ba74d12e51d8f8282415a3c67f14a776319ba0226f759538733ae74c338632a
+preview not-required
+producer amont-agent 3.33.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBKJs5xrEXV9NqwYcN2bwYTkHN47MiaDgkO8vZi+AEgXAayn/
+4QlUI0exhi6u/p45g1yLOf3rOMuI7jI+p+jaoP
+-----END SSH SIGNATURE-----
