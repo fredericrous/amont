@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/greengate-last-amont-names
 repos: [amont, amont-pack-homelab, amont-pack-java, homelab, decisions]
 adrs: [ADR-0064, ADR-0068]
@@ -157,7 +157,7 @@ and `greengate-pack-java`, and homelab runs its pack under the new names.
   `amont/docs/custom-checks.md`, `amont/docs/index.md`,
   `amont/docs/index-fidelity-and-run-modes.md`, `amont/docs/coding-flow.md`; released; the
   install is the person's.
-- [ ] Phase 2 — the packs renamed and released: the Forgejo and GitHub
+- [x] Phase 2 — the packs renamed and released: the Forgejo and GitHub
   repository renames, `amont-pack-homelab/go.mod`,
   `amont-pack-homelab/cmd/amont-homelab/main.go` (moved to
   `cmd/greengate-homelab/main.go`), `amont-pack-homelab/internal/repo/repo.go`,
@@ -175,7 +175,7 @@ and `greengate-pack-java`, and homelab runs its pack under the new names.
   `amont-pack-homelab/AGENTS.md`; `amont-pack-java/greengate.pack`,
   `amont-pack-java/README.md`; each git remote repointed; the homelab pack's release is a tag (no release workflow exists, so the README drops its release-asset curl line); `greengate-homelab`
   installed by the person with `make install` from a clone, then `command -v greengate-homelab` checked in the PATH the hooks use (the old binary is in `~/.local/bin`, `go install` writes `$GOBIN`).
-- [ ] Phase 3 — homelab runs the renamed pack (precondition: `greengate --version` ≥ 4.3.0, else `greengate add` writes `amont:pack` markers, and `command -v greengate-homelab` answers; verify the block reads `greengate:pack`): `homelab/greengate.conf`,
+- [x] Phase 3 — homelab runs the renamed pack (precondition: `greengate --version` ≥ 4.3.0, else `greengate add` writes `amont:pack` markers, and `command -v greengate-homelab` answers; verify the block reads `greengate:pack`): `homelab/greengate.conf`,
   `homelab/.amont-homelab.yaml` (moved to `.greengate-homelab.yaml`),
   `homelab/kubernetes/cloud/apps/stalwart/dmarc-dnsendpoint.yaml`,
   `homelab/kubernetes/cloud/apps/stalwart/dnsendpoint.yaml`,
@@ -183,7 +183,7 @@ and `greengate-pack-java`, and homelab runs its pack under the new names.
   `homelab/ops/newapp/internal/gen/app.go`, `homelab/ops/newapp/main.go`,
   `homelab/docs/operations/onboard-application.md`; then the person's
   `greengate trust`, in the same sitting as the merge (an edited greengate.conf turns every declared check in homelab off until trusted); no other homelab PR merges in between.
-- [ ] Phase 4 — record: `decisions/docs/programmes/gate-guardrails/map.md`
+- [x] Phase 4 — record: `decisions/docs/programmes/gate-guardrails/map.md`
   (the step, the packs' new names, and `amont-cluster-v1` /
   `CLUSTER_CONTRACT` added to the 3a-3 entry as a Phase 4 item), and the 3a-2 Phase 6 entry
   (`amont/docs/plans/2026-11-11-greengate-renames-data-names.md`) gains this
@@ -262,6 +262,11 @@ finds only the allowed names, and homelab's hooks run the pack as
 
 ## Decision log
 
+- 2026-11-13 (Phases 2–4 closed):
+  - **Phase 2.** With the machine's go at 1.27.4, `greengate-pack-homelab` was tagged `v1.0.0` at b4d97562 (`amont land --tag`); `govulncheck ./...` under go1.26.11 found no vulnerabilities. The person asked for the install: `make install` wrote `~/.local/bin/greengate-homelab`, built with go1.26.11 and found on a minimal PATH.
+  - **Phase 3.** homelab#1213 is merged with a merge commit. Its pointer plan records the checks: five rows active, each `greengate run` exits 0, the commit gate passed 32 checks, and every rule gives 0 findings with both binaries. The person ran `greengate trust` on the branch before the commit, and main's `greengate.conf` blob equals the trusted one (4ca1a4ad).
+  - **Phase 4.** It was recorded earlier (decisions#196, greengate#475).
+  - **Left for the census.** The old `~/.local/bin/amont-homelab` binary (the person's to remove), and two old-name comments in homelab's `greengate.conf` (lines 2 and 20, left so trust is not revoked).
 - 2026-11-13 (release) — greengate v4.3.0 is released:
   - #473 and #474 are merged, and the tag's release run concluded success.
   - crates.io lists 4.3.0, and the GitHub release has 14 assets.
