@@ -8,6 +8,8 @@ missing here.
 
 ## Unreleased
 
+## v4.3.0
+
 ### Changed
 
 - **greengate's last `amont` names are renamed** (plan "greengate's last

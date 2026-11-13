@@ -441,7 +441,7 @@ checksum = "91df893a2b9cb1c11286505b5a1804698e604afe2346eeb8b1f0fe3916ad22bd"
 
 [[package]]
 name = "greengate"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "greengate-runtime",
  "serde_json",
@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "greengate-fleet"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "crossterm",
  "git-attest",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "greengate-runtime"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "git-attest",
  "greenharness-quiet",
@@ -470,11 +470,11 @@ dependencies = [
 
 [[package]]
 name = "greenharness-quiet"
-version = "4.2.0"
+version = "4.3.0"
 
 [[package]]
 name = "greenharness-slots"
-version = "4.2.0"
+version = "4.3.0"
 
 [[package]]
 name = "hashbrown"
