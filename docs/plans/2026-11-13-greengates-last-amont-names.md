@@ -249,7 +249,7 @@ finds only the allowed names, and homelab's hooks run the pack as
     - the legacy stash read (`staged_only.rs`);
     - greenharness-quiet's tool-name strings;
     - greenpiste's `amont-agent` paths (step 3b).
-- Phase 2: done 11-13, recorded in the pack pointer plans (two-build tuple diff empty, fallback tests, repositories renamed with redirects, java `v1.1.0`).
+- Phase 2: code and renames done 11-13; the homelab pack's tag is open (audit-go refuses on the machine's go 1.27.3). Recorded in the pack pointer plans (two-build tuple diff empty, fallback tests, repositories renamed with redirects, java `v1.1.0`).
 
 ## Implementation review
 
@@ -265,8 +265,8 @@ finds only the allowed names, and homelab's hooks run the pack as
 - 2026-11-13 (release) — greengate v4.3.0 is released:
   - #473 and #474 are merged, and the tag's release run concluded success.
   - crates.io lists 4.3.0, and the GitHub release has 14 assets.
-  - The signer image is pinned to 4.3.0 by homelab#1210; the musl
-    archive's sha256 matches SHA256SUMS.
+  - homelab#1210 (open at this record) pins the signer image to 4.3.0;
+    the musl archive's sha256 matches SHA256SUMS.
   - The install is the person's.
   - Phase 2 is done apart from the homelab pack's tag. greengate's
     audit-go runs govulncheck under the machine's go 1.27.3

@@ -240,8 +240,9 @@ fleet's shims are re-baked.
     beside the old one and drops `amont-gates` from Argo. Both fences were
     observed, and 127 of 127 Kustomizations were Ready.
   - **Part B:** removes the app, the signer's Roles there, the Forgejo
-    lists and the image pin. It waits for the signer image on greengate
-    4.3.0 (homelab#1210), which lists only `greengate-gates`. The one
+    lists and the image pin. It waits until homelab#1210 (open
+    at this record) is merged and the signer Deployment runs that image,
+    which lists only `greengate-gates`. The one
     Succeeded 3.x Workflow left in `amont-gates` is a finished run, not one
     in flight, and goes with the namespace.
 
@@ -507,6 +508,7 @@ fleet's shims are re-baked.
   - The detached lane on a real repository: proven in the install window on a real repository's snapshot, as the Phase 4 log entry asked.
   - The sweep: expected every own repository merged by pull request; actual merged in all but happier (landed on `dev` directly, see the Decision log) and `Apicil/archi-mcp` (excluded, the employer's).
   - Not observed yet, so Phase 5 keeps these as its remainder: the Outcome check (a day after the sweep) and the second homelab change.
+  - 2026-11-13: the Outcome check passed (see the Decision log). Second homelab change: part A is merged (homelab#1208). Part B is open and tracked under Phase 4's "removed by the second" item, not Phase 5.
 
 ## Outcome
 
