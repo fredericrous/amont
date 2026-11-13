@@ -140,7 +140,7 @@ and `greengate-pack-java`, and homelab runs its pack under the new names.
 
 ## Phases
 
-- [ ] Phase 1 — greengate 4.3.0: `amont/crates/greengate-runtime/src/pack.rs`,
+- [x] Phase 1 — greengate 4.3.0: `amont/crates/greengate-runtime/src/pack.rs`,
   `amont/crates/greengate-runtime/src/hooks/audit.rs`,
   `amont/crates/greengate-runtime/src/hooks/secrets.rs`,
   `amont/crates/greengate-runtime/src/finding.rs`,
@@ -262,6 +262,17 @@ finds only the allowed names, and homelab's hooks run the pack as
 
 ## Decision log
 
+- 2026-11-13 (release) — greengate v4.3.0 is released:
+  - #473 and #474 are merged, and the tag's release run concluded success.
+  - crates.io lists 4.3.0, and the GitHub release has 14 assets.
+  - The signer image is pinned to 4.3.0 by homelab#1210; the musl
+    archive's sha256 matches SHA256SUMS.
+  - The install is the person's.
+  - Phase 2 is done apart from the homelab pack's tag. greengate's
+    audit-go runs govulncheck under the machine's go 1.27.3
+    (GO-2026-6859, fixed in 1.27.4), so it refuses the tag. The pack itself
+    builds on go 1.26.11 (#12).
+  - Phase 3 waits for the person's installs.
 - 2026-11-13 (Phase 1) — deviations the reviews accepted:
   - `RUNNER_NAMESPACES` drops `amont-gates`, because homelab removes it (its second change, part B, waits for this release in the signer image);
   - `names::old::SHIM_PLACEHOLDER` keeps the 2.3.1 shims recognised (`greengate-fleet/src/shim.rs`);
