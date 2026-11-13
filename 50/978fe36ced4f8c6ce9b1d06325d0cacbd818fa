@@ -1,0 +1,21 @@
+amont-provenance-v1
+commit 50978fe36ced4f8c6ce9b1d06325d0cacbd818fa
+tree 940d7e155dd313f4dac9ec256aafeab1dc569542
+canon be318f862354ce92e9cca14332b311d79067aff2
+patch f88f48309129e7bc3fdcd8328d7385ee10fbf5f8
+plan docs/plans/2026-11-13-greengates-last-amont-names.md 7fc721b8bcc2e7b3bc408cebb4a7549dd1b33515f0688b866398fb03fd465d4d
+review reviewed ebd45a33a0bd19a71e68a34c8026f982cd45c29664018b4ccee253249d0f6afe
+code-review backend carried a91fa063b09a330fa7c820c3e0fd810a0ab53160c78e083f0e2ba4150549e9cb
+code-review lang:rust reviewed ebd45a33a0bd19a71e68a34c8026f982cd45c29664018b4ccee253249d0f6afe
+code-review unix carried a91fa063b09a330fa7c820c3e0fd810a0ab53160c78e083f0e2ba4150549e9cb
+code-review tui carried a91fa063b09a330fa7c820c3e0fd810a0ab53160c78e083f0e2ba4150549e9cb
+code-review architect carried 524de95d5ae9ea7db7d09bcf7ea0cb4948d4bea729274012978b25a9529193c7
+preview not-required
+producer amont-agent 3.31.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBOnwD80R3q0dy3E/gDw6aucKsw/UquAW2lG04IVh/BRuPlTB
+wylnBcSGJGzIG+Vj9AUFs0ud1ZXg89O/6+9wIE
+-----END SSH SIGNATURE-----
