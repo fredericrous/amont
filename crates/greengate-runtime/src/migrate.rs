@@ -1201,7 +1201,19 @@ mod tests {
         // And again, with it packed: still deleted.
         git(
             None,
-            &["notes", "--ref", "amont-audit", "add", "-fm", "n", "HEAD"],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "notes",
+                "--ref",
+                "amont-audit",
+                "add",
+                "-fm",
+                "n",
+                "HEAD",
+            ],
         )
         .unwrap();
         git(None, &["pack-refs", "--all"]).unwrap();
