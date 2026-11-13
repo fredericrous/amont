@@ -17,28 +17,36 @@ missing here.
   old reads.
   - Gate stamps are `refs/notes/greengate-gate`, `-gate-inputs`,
     `-gate-cluster` and `-gate-done`, with the header `greengate-gate-v1`.
-    Stamps already under `refs/notes/amont-gate*` are still read (the green
-    ref first); a key that already holds an old stamp is re-stamped once under
-    the green ref the next time its gate runs. `greengate-fleet gates` and the gate ordering read
-    the runs of both refs.
+    Stamps already under `refs/notes/amont-gate*` are still read, but a note
+    is read whole under one name, the green ref first: once a key gets a
+    green stamp, its legacy stamps are no longer read, so those gates re-run
+    once. `greengate-fleet gates` and the gate ordering read the runs of both
+    refs. The pre-commit marker file carries the green header too, so a commit
+    that straddles the upgrade loses one stamp (a re-run, never a wrong skip).
   - Attestations are signed under the `greengate-attest` namespace, header
     `greengate-attest-v2`, filed under `refs/notes/greengate-attest` and
     `-inputs`, with the producer line `greengate <version>`; this is git-attest
     1.10, which the release pins. Provenance is
     `greengate-provenance-v1`, signed under `greengate-provenance` and filed
-    under `refs/notes/greengate-provenance`. A payload an older greenpiste left
-    on disk (`amont-provenance-v1`) is still signed once, under the old
-    namespace and ref.
+    under `refs/notes/greengate-provenance`. A payload an older greenpiste
+    left on disk (`amont-provenance-v1`) is not signed: its file is kept and
+    named, with "upgrade greenpiste, then delete the file or re-run its
+    review", so nothing writes an `amont-provenance` note.
   - The signing key is `~/.ssh/greengate-attest`. While it is absent,
     `~/.ssh/amont-attest` is used, and `greengate doctor` prints one line
-    saying how to rename it (`mv ~/.ssh/amont-attest ~/.ssh/greengate-attest`).
+    saying how to rename it (`mv ~/.ssh/amont-attest ~/.ssh/greengate-attest`)
+    and exits 1 until it is renamed. Doctor also lists any
+    `refs/notes/attest-local/amont-*` signer ref an older greengate left; they
+    are no longer read.
     It is the same key: `allowed_signers` keys do not change, but each line
     must list the namespaces `greengate-attest` and `greengate-provenance`
     (the fleet's files already do).
   - **Cluster gates re-run once.** The cluster contract `amont-cluster-v1` is
     now `greengate-cluster-v1`. It is hashed into every cluster gate identity,
-    so every cluster pass recorded before this release stops matching, and each
-    `platform=any` gate runs on the cluster once more.
+    so every cluster pass recorded before this release stops matching: every
+    repository's `platform=any` gates run on the cluster once more, each at
+    its first push after the install. Detached cluster runs still pending at
+    install are lost (their tokens no longer match).
   - The in-cluster signer signs under the `greengate-attest` namespace and
     header. It refuses a block under the old header until the census: such a
     block is not published, and the laptop signs that gate itself.

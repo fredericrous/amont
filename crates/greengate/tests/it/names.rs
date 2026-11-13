@@ -52,8 +52,8 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
     ),
     (
         "greengate-runtime/src/attest.rs",
-        18,
-        "the legacy provenance names, the old key path fallback and tests that spell the old names out (ADR-0068, plan 3a-3), until the census",
+        10,
+        "the old provenance header that is detected and kept, the old key path fallback and tests that spell the old names out (ADR-0068, plan 3a-3), until the census",
     ),
     (
         "greengate-runtime/src/cluster/detached.rs",

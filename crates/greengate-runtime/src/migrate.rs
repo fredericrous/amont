@@ -927,11 +927,18 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
             n::STATE_DIR
         ));
     }
-    // The signing key moved names with the notes (greengate 4.4): the old
-    // path is still used while the new one is absent, so this is a line to
-    // act on, never a failure. Not said when a key path is configured.
-    let configured = run_git(git, None, &["config", "--get", "greengate.attestKey"])?
-        .is_some_and(|k| !k.trim().is_empty());
+    // The signing key moved names with the notes (greengate 4.4). Signing
+    // never fails because of the old name: the old path is used while the
+    // new one is absent. But doctor exits 1 on this line like any leftover
+    // until the key is renamed. Not said when a key path is configured; the
+    // config is read in the repository when there is one.
+    let located = Repo::locate(cwd);
+    let configured = run_git(
+        git,
+        located.as_ref().map(|r| r.common.as_path()),
+        &["config", "--get", crate::attest::KEY_CONFIG],
+    )?
+    .is_some_and(|k| !k.trim().is_empty());
     if !configured {
         if let Some(line) = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
@@ -940,7 +947,24 @@ pub fn leftovers(cwd: &Path, git: &GitFn<'_>) -> Result<Vec<String>, MigrateErro
             out.push(format!("signing key: {line}"));
         }
     }
-    if let Some(repo) = Repo::locate(cwd) {
+    if let Some(repo) = located {
+        // Signer blocks an older greengate filed locally under the old notes
+        // name: nothing reads them any more (the census removes them).
+        let old_refs = run_git(
+            git,
+            Some(&repo.common),
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/notes/attest-local/amont-*",
+            ],
+        )?
+        .unwrap_or_default();
+        for name in old_refs.lines().filter(|l| !l.trim().is_empty()) {
+            out.push(format!(
+                "local notes: {name} was left by an older greengate and is no longer read; `git update-ref -d {name}` removes it"
+            ));
+        }
         if repo.common.join(n::REVERSED_MARKER).exists() {
             out.push(format!(
                 "reversed: this repository was moved back to greengate 3.x's names; \

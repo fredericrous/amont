@@ -245,6 +245,45 @@ fn doctor_names_the_signing_key_move() {
     assert!(!both.contains("signing key"), "{both}");
 }
 
+/// A signer block an older greengate filed under the old local notes name is
+/// named by doctor (nothing reads it now); the green local ref is not.
+#[test]
+fn doctor_names_an_old_local_signer_ref() {
+    let repo = Repo::new();
+    repo.stage("a.txt", "x\n");
+    repo.commit("chore: a");
+    let tip = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    let doctor = || {
+        let out = crate::common::amont_cmd()
+            .arg("doctor")
+            .current_dir(&repo.dir)
+            .env("HOME", repo.path("home"))
+            .env("GIT_CONFIG_GLOBAL", repo.path("fake-gitconfig"))
+            .output()
+            .expect("run doctor");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    repo.git(&[
+        "update-ref",
+        "refs/notes/attest-local/greengate-attest",
+        &tip,
+    ]);
+    assert!(!doctor().contains("local notes"), "{}", doctor());
+    repo.git(&["update-ref", "refs/notes/attest-local/amont-attest", &tip]);
+    let said = doctor();
+    let line = said
+        .lines()
+        .find(|l| l.contains("local notes"))
+        .unwrap_or_else(|| panic!("no line: {said}"));
+    assert!(
+        line.contains("refs/notes/attest-local/amont-attest")
+            && line.contains("git update-ref -d refs/notes/attest-local/amont-attest"),
+        "{line}"
+    );
+}
+
 /// Doctor names the host sizing and where it came from, on stderr, without
 /// changing its leftover-names stdout or exit code.
 #[test]
