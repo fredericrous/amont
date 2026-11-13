@@ -1,0 +1,18 @@
+amont-attest-v2
+tree 5813b6dd75b6b002355d090167c09014f2171336
+gates ci-deps ci-hooks-ubuntu ci-load-ubuntu ci-msrv ci-rust
+platform x86_64-linux
+input ci-rust 6b9a94484c49da87e1446cf22958f1b7700240f7
+input ci-msrv 6b9a94484c49da87e1446cf22958f1b7700240f7
+input ci-deps 6b9a94484c49da87e1446cf22958f1b7700240f7
+input ci-hooks-ubuntu 6b9a94484c49da87e1446cf22958f1b7700240f7
+input ci-load-ubuntu 6b9a94484c49da87e1446cf22958f1b7700240f7
+canon d26188390b8818478202beef1a56afaafc76edb7
+amont attest-sign-linux
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgUpKx1QTdCdwZEjcw/MK/JGWqft
+YBCaiDmnUdMyQ1dZAAAAAMYW1vbnQtYXR0ZXN0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3Nz
+aC1lZDI1NTE5AAAAQGHwoBFZIVLep14y3FZivoxuIO/YYgvS34V5/z/8aArKEg/eF0nJx/
+CougDJymGWs+XU51I9sWW4Mt11kZSuZAs=
+-----END SSH SIGNATURE-----
