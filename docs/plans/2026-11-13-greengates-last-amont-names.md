@@ -235,8 +235,40 @@ After the 3a-2 census: `git grep -n amont` over greengate's crates and both pack
 finds only the allowed names, and homelab's hooks run the pack as
 `greengate-homelab` with no "could not run" line.
 
+## Results (observed)
+
+- Phase 1 (code done at 97d729ee; ticks at the 4.3.0 release, whose install is the person's):
+  - `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` and `cargo test --workspace` pass, the last run by the commit gate on 97d729ee.
+  - Each fallback test fails with its fallback removed, checked by reverting it. They are the old-marker block in `splice` (three unit tests plus `pack_add::an_amont_pack_block_is_replaced_in_place_under_new_markers`), the old waivers file (`audit::a_waivers_file_under_the_old_name_still_waives`) and the frozen 2.3.1 shim placeholder (`shim::a_shim_amont_2_3_1_rendered_is_still_ours`).
+  - Tests also cover both spellings of one label, mixed and nested markers, the unpaired message, the stamp author, `greengate-check-v1`, `greengate:allow-secret` (and the old pragma's hint), the audit-ref delete (absent and present), and `greengate.conf`'s blob id, unchanged by `migrate --tracked`.
+  - Grep check, restated: `git grep -n amont -- crates ':!*tests*'` gives 820 lines. 507 are comments or doc comments (prose, which the census does not count, ADR-0068). The 313 code lines fall in the allowed categories:
+    - `migrate.rs` and `names::old`;
+    - the frozen 2.3.1 shim and the `amont`/`amont-fleet` aliases (`shim.rs`, `install.rs`, `fix.rs`);
+    - the signed-notes names (`gate_stamp.rs`, `attest.rs`, `attest_inputs.rs`, 3a-3);
+    - `CLUSTER_CONTRACT` and `refs/amont/`;
+    - the legacy stash read (`staged_only.rs`);
+    - greenharness-quiet's tool-name strings;
+    - greenpiste's `amont-agent` paths (step 3b).
+- Phase 2: done 11-13, recorded in the pack pointer plans (two-build tuple diff empty, fallback tests, repositories renamed with redirects, java `v1.1.0`).
+
+## Implementation review
+
+- implementation-review: approve-with-changes ×3, then the record above. Fixed: the vacuous `.ok()`, discard reasons, the printed `amont.conf` strings, `amont-gates` in the docs, and the `Span` arms named. Deliberate: `list` names `greengate.conf` (every repository is swept).
+- backend: approve-with-changes, then approve. Fixed: overlapping blocks refused, the stale audit ref noted in CHANGELOG, and the in-flight amont branches named in the PR.
+- lang:rust: approve-with-changes ×2, then approve. Fixed: names constants, the typed `Span`, `cuts`, `Waivers.file`, and a pure `findings`. Deliberate: the proven `unreachable!` arm.
+- unix: approve-with-changes, then approve. Fixed: `--json` format named as breaking, and the old-pragma hint.
+- tui: approve-with-changes, then approve. Fixed: the unpaired message, the undo hint, the audit-cache line and the wording. architect: approve (names constants applied).
+
 ## Decision log
 
+- 2026-11-13 (Phase 1) — deviations the reviews accepted:
+  - `RUNNER_NAMESPACES` drops `amont-gates`, because homelab removes it (its second change, part B, waits for this release in the signer image);
+  - `names::old::SHIM_PLACEHOLDER` keeps the 2.3.1 shims recognised (`greengate-fleet/src/shim.rs`);
+  - also touched: the root `templates/hooks/*`, `docs/checks.md`, `docs/configuration.md`, `docs/fleet-dashboard.md` and CI;
+  - `list --json`'s untrusted reason names `greengate.conf` and `greengate trust`;
+  - the audit-ref delete runs only when migrate runs.
+
+  Found and left for the census: this repository's own `greengate.conf` still holds an `amont:pack` block (adr-lint), read through the fallback; the decisions corpus (ADR-0018, HEADS, the pack) names `.amont-audit-waivers` and `refs/notes/amont-audit`.
 - 2026-11-13 — ADR-0068's hard-rename path (greengate has no outside users):
   greengate reads and writes only the new names, migrates this machine once
   (`refs/notes/amont-audit` deleted), and keeps one fallback read for
