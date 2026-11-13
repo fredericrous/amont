@@ -26,14 +26,15 @@ repository; git-attest's Phase 1 shipped as git-attest 1.9.0.
 
 ## Decision log
 
-- gate_evidence.rs history_in reads only the written ref; it follows WRITE and moves with Phase 4 (`holds-until` in the code; implementation review, 11-12).
+- gate_evidence.rs history_in reads only the written ref; it follows WRITE and moved with Phase 4 (11-13).
+- Phase 4 (11-13): writers green, `CLUSTER_CONTRACT` = `greengate-cluster-v1` (cluster gates re-run once), key `~/.ssh/greengate-attest` with the old key as fallback until the census; still `active`: Phase 5 (census) remains.
 - hooks/audit.rs reads `refs/notes/amont-audit`, a name this plan does not list: left for the programme's census of `amont` names, not Phase 2.
 - `forget`/`forget_in` (gate stamps and attest) delete the refs of both name sets, so an uninstall leaves no green note that still vouches.
 
 ## Implementation review
 
-- implementation-review: approve-with-changes ×2, then approve (c9ef4aaa). Fixed: 7 discards given reasons, 4 single-letter names, `holds-until` marks. Deliberate: the `verified under` test rebuilds its wording.
-- backend: approve-with-changes ×2, then approve. Fixed: both-set `forget` with `done` refs, `is_publishable` tests. `history_in` deferred to Phase 4.
-- lang:rust: approve-with-changes, then approve. Fixed: `pub(crate)` name sets, comments, `read_in` doc. Deliberate: `verified_lines` returns a Vec (one caller).
-- unix: approve-with-changes, then approve. The `stamps` path already prints `verified under`; the CHANGELOG names the stable wording.
-- architect: approve-with-changes ×2, then approve. `READ_NAMES` copy commented, removed at the census. Deliberate: test helpers shared, as the crate already does.
+Phase 4 (Phase 2's review is in the history of this file):
+- implementation-review: approve, then approve on both deltas. Fixed: one `scratch_cleanup` helper, doctor exit-1 comment, `key_move_hint_in` doc; both name candidates in the tests were ruled fine (test-helper convention).
+- backend: approve-with-changes ×2, then approve. Fixed: the CHANGELOG notes cluster re-run, lost pending runs and hidden legacy stamps; doctor lists `attest-local/amont-*`; pushes write no `amont-*` ref (tests); each sign failure is named.
+- lang:rust: approve-with-changes, then approve. Fixed: full-ref test with `WRITE == GREEN`, `PendingRecord`, `KEY_CONFIG` read in the repository, `forget` calls `forget_in`.
+- unix, architect: approve-with-changes, then approve. Fixed: doctor exit-1 docs; legacy provenance payloads are kept and named, never signed, so no `amont` note is written after the switch.
