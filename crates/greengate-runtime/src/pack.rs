@@ -382,7 +382,7 @@ pub fn splice(
         .into_iter()
         .filter_map(|s| match s {
             Span::Unpaired { marker, line } => Some(format!("`{marker}` at line {line}")),
-            _ => None,
+            Span::Absent | Span::Found { .. } => None,
         })
         .collect();
     if !lone.is_empty() {
@@ -429,7 +429,10 @@ pub fn splice(
         | (Span::Absent, Span::Found { start: s, end: e }) => {
             Ok((format!("{}{fresh}{}", &manifest[..s], &manifest[e..]), None))
         }
-        _ => {
+        (Span::Unpaired { .. }, _) | (_, Span::Unpaired { .. }) => {
+            unreachable!("a lone marker returned the unpaired error above")
+        }
+        (Span::Absent, Span::Absent) => {
             let mut out = manifest.to_string();
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');

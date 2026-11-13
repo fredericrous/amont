@@ -232,25 +232,26 @@ pub fn findings(file: &str, text: &str) -> Vec<Finding> {
     scan(text)
         .into_iter()
         .map(|(line, kind)| {
-            // Only a line reported as a secret gets the hint, so it costs
-            // nothing otherwise. It names the pragma, never the line.
-            if text
-                .lines()
-                .nth(line - 1)
+            // A line still carrying the old pragma gets its fix in the same
+            // message. It names the pragma, never the line.
+            let hint = if line
+                .checked_sub(1)
+                .and_then(|i| text.lines().nth(i))
                 .is_some_and(|l| l.contains(crate::names::old::ALLOW_SECRET))
             {
-                eprintln!(
-                    "{}:{line}: `{}` no longer waives; use `{ALLOW}`",
-                    crate::ui::sanitize(file),
+                format!(
+                    "; `{}` no longer waives, use `{ALLOW}`",
                     crate::names::old::ALLOW_SECRET
-                );
-            }
+                )
+            } else {
+                String::new()
+            };
             Finding::new(
                 NAME,
                 crate::ui::sanitize(file),
                 Severity::Block,
                 format!(
-                    "{} — unstage it; once pushed it is not history, it is an incident",
+                    "{} — unstage it; once pushed it is not history, it is an incident{hint}",
                     kind.name()
                 ),
             )
