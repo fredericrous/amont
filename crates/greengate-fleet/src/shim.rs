@@ -113,7 +113,13 @@ pub fn render(binary: &str) -> String {
 /// once re-rendering reproduces the file byte for byte, so a wrong guess is
 /// rejected rather than believed.
 pub fn recover_baked(installed: &str) -> Option<String> {
-    recover_from(TEMPLATE, installed).or_else(|| recover_from(FROZEN_2_3_1, installed))
+    recover_from(TEMPLATE, PLACEHOLDER, installed).or_else(|| {
+        recover_from(
+            FROZEN_2_3_1,
+            greengate_runtime::names::old::SHIM_PLACEHOLDER,
+            installed,
+        )
+    })
 }
 
 /// The shim template amont 2.3.1 shipped, byte for byte, kept so a shim it
@@ -123,20 +129,20 @@ pub fn recover_baked(installed: &str) -> Option<String> {
 /// job, not an upgrade's (plan "amont ships as greengate").
 pub const FROZEN_2_3_1: &str = include_str!("shim-2.3.1");
 
-/// [`recover_baked`] against one template.
-fn recover_from(template: &str, installed: &str) -> Option<String> {
-    let head = template.split(PLACEHOLDER).next()?;
+/// [`recover_baked`] against one template and the placeholder it carries.
+fn recover_from(template: &str, placeholder: &str, installed: &str) -> Option<String> {
+    let head = template.split(placeholder).next()?;
     let rest = installed.strip_prefix(head)?;
     // The text that follows the first placeholder is fixed; whatever precedes
     // it is the substitution.
-    let tail = template.split(PLACEHOLDER).nth(1)?;
+    let tail = template.split(placeholder).nth(1)?;
     let end = if tail.is_empty() {
         rest.len()
     } else {
         rest.find(tail)?
     };
     let candidate = rest[..end].to_string();
-    (greengate_runtime::install::bake(template, &candidate) == installed).then_some(candidate)
+    (template.replace(placeholder, &candidate) == installed).then_some(candidate)
 }
 
 /// Whether `baked` names the gate (`greengate` or its alias `amont`, with or
@@ -458,7 +464,11 @@ mod tests {
 
     #[test]
     fn a_shim_amont_2_3_1_rendered_is_still_ours() {
-        let old = greengate_runtime::install::bake(FROZEN_2_3_1, "/Users/me/.local/bin/amont");
+        let old = FROZEN_2_3_1.replace(
+            greengate_runtime::names::old::SHIM_PLACEHOLDER,
+            "/Users/me/.local/bin/amont",
+        );
+        assert!(!old.contains(greengate_runtime::names::old::SHIM_PLACEHOLDER));
         assert_ne!(
             old,
             render("/Users/me/.local/bin/amont"),

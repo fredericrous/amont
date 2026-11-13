@@ -503,7 +503,8 @@ fn audit_fixture() -> (crate::land::Fx, std::path::PathBuf, std::path::PathBuf) 
 }
 
 fn audit_records(r: &Repo) -> String {
-    String::from_utf8_lossy(&r.git(&["notes", "--ref", "amont-audit", "list"]).stdout).into_owned()
+    String::from_utf8_lossy(&r.git(&["notes", "--ref", "greengate-audit", "list"]).stdout)
+        .into_owned()
 }
 
 #[test]
@@ -538,7 +539,7 @@ fn a_stale_record_is_owed_again_and_a_bare_push_refuses() {
         let object = line.split_whitespace().nth(1).expect("object");
         let body = String::from_utf8_lossy(
             &fx.r
-                .git(&["notes", "--ref", "amont-audit", "show", object])
+                .git(&["notes", "--ref", "greengate-audit", "show", object])
                 .stdout,
         )
         .into_owned();
@@ -558,7 +559,7 @@ fn a_stale_record_is_owed_again_and_a_bare_push_refuses() {
         fx.r.git(&[
             "notes",
             "--ref",
-            "amont-audit",
+            "greengate-audit",
             "add",
             "-f",
             "-m",
@@ -797,7 +798,7 @@ fn age_audit_records(r: &Repo, secs: i64) {
     for line in audit_records(r).lines() {
         let object = line.split_whitespace().nth(1).expect("object");
         let body = String::from_utf8_lossy(
-            &r.git(&["notes", "--ref", "amont-audit", "show", object])
+            &r.git(&["notes", "--ref", "greengate-audit", "show", object])
                 .stdout,
         )
         .into_owned();
@@ -817,7 +818,7 @@ fn age_audit_records(r: &Repo, secs: i64) {
         r.git(&[
             "notes",
             "--ref",
-            "amont-audit",
+            "greengate-audit",
             "add",
             "-f",
             "-m",

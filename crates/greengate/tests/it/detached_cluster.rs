@@ -1581,13 +1581,16 @@ fn cluster_sign_writes_one_configmap_for_the_unsigned_finished_workflow() {
     let calls = l.cluster.kubectl_calls();
     for asked in [
         "-n greengate-gates get workflows,pods -l greengate.run -o json",
-        "-n amont-gates get workflows,pods -l greengate.run -o json",
         "-n attest-signer get configmaps -l greengate.signer=block -o json",
         "-n attest-signer create -f -",
         &format!("-n attest-signer delete configmap {expired} --ignore-not-found"),
     ] {
         assert!(calls.contains(asked), "{asked} not in {calls}");
     }
+    assert!(
+        !calls.contains("-n amont-gates"),
+        "the signer no longer reads 3.x's namespace: {calls}"
+    );
     assert_eq!(l.calls("delete"), 1, "{calls}");
     let cm = l.cluster.read(&format!("created-cm/{}.json", wf.name));
     for needle in [

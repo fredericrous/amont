@@ -161,3 +161,49 @@ fn tracked_stands_alone() {
     assert!(!refused.stderr.contains("doctor"), "{}", refused.stderr);
     assert!(repo.path(OLD_MANIFEST).is_file());
 }
+
+/// `.amont-audit-waivers` is renamed like the manifest (a `git mv`, content
+/// unchanged), and a `greengate.conf` holding an `amont:pack` block is left
+/// byte for byte as it is: the block's blob id is what trust is bound to.
+#[test]
+fn the_waivers_file_is_renamed_and_the_manifest_blob_is_unchanged() {
+    let repo = Repo::new();
+    repo.stage(
+        "greengate.conf",
+        "pre-commit  mine  *  warn  true\n# amont:pack:start github:a/p abc\n\
+         pre-commit  a  *  warn  true\n# amont:pack:end github:a/p\n",
+    );
+    repo.stage(
+        ".amont-audit-waivers",
+        "GHSA-aaaa-bbbb-cccc 2099-01-01 later\n",
+    );
+    repo.commit("chore: base");
+    let blob = |r: &Repo| {
+        String::from_utf8_lossy(
+            &r.git(&["hash-object", "--no-filters", "greengate.conf"])
+                .stdout,
+        )
+        .trim()
+        .to_string()
+    };
+    let before = blob(&repo);
+    assert_eq!(before.len(), 40, "{before}");
+
+    let migrated = repo.run(&["migrate", "--tracked"]);
+    assert_eq!(migrated.code, 0, "{}", migrated.stderr);
+    let status = repo.git(&["diff", "--cached", "--name-status", "-M"]);
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.contains("R100\t.amont-audit-waivers\t.greengate-audit-waivers"),
+        "{status}"
+    );
+    assert!(!repo.path(".amont-audit-waivers").exists());
+    assert!(repo.path(".greengate-audit-waivers").is_file());
+    assert_eq!(blob(&repo), before, "the manifest's content is untouched");
+    assert!(
+        std::fs::read_to_string(repo.path("greengate.conf"))
+            .unwrap()
+            .contains("# amont:pack:start"),
+        "pack markers are not respelled"
+    );
+}

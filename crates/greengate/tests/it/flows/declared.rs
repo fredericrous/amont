@@ -782,7 +782,7 @@ fn the_declared_journey() {
     // The display tells the truth about where a value came from.
     declare(&r, "set commit.subjectMax 50\n");
     let text = stdout(&r, &["list"]);
-    step!("set, list", text.contains("(amont.conf)"), "{text}");
+    step!("set, list", text.contains("(greengate.conf)"), "{text}");
     step!("set, list", text.contains("50"), "{text}");
 
     // The version floor: warn-only, silent when cleared, local config wins,

@@ -1,15 +1,15 @@
-//! `amont agents-md` — a self-verifying pointer for coding agents.
+//! `greengate agents-md` — a self-verifying pointer for coding agents.
 //!
 //! Deliberately NOT a prose contract and NOT a list of check names: both
 //! drift from what the registry actually enforces the moment a check is
 //! added, removed, or its severity changes — see `amont-fleet`'s
 //! `severities` module doc for the canonical shape of that failure. This
 //! generates a short block that instead tells an agent to ask
-//! `amont list --json`, which cannot go stale because it IS the registry.
+//! `greengate list --json`, which cannot go stale because it IS the registry.
 //!
 //! Never touches anything outside its own markers. An `AGENTS.md` a
 //! repository already wrote is the repository's, not this tool's, to
-//! rewrite — matching `amont.conf`'s "declared, never assumed" posture.
+//! rewrite — matching `greengate.conf`'s "declared, never assumed" posture.
 
 use std::ops::Range;
 use std::path::Path;
@@ -50,14 +50,14 @@ pub fn generate_block(settings: &crate::config::Settings) -> String {
     format!(
         "{START}\n\
 \n\
-## Git hooks (amont)\n\
+## Git hooks (greengate)\n\
 \n\
 This repository enforces pre-commit / pre-push checks. Ask the registry\n\
 rather than guessing before assuming a change is safe:\n\
 \n\
 ```sh\n\
-amont list --json\n\
-amont list --json --stage pre-push --pushed  # exactly what pushing next gates\n\
+greengate list --json\n\
+greengate list --json --stage pre-push --pushed  # exactly what pushing next gates\n\
 ```\n\
 \n\
 Each check reports its _effective_ severity (`block`/`warn`, including any\n\
@@ -71,14 +71,14 @@ start.\n\
 \n\
 `git commit` and `git push` both run their checks first, and neither is\n\
 instant: pre-commit can invoke formatters, linters or clippy (a workspace\n\
-build), and pre-push gates include the test suite. Push with `amont land`:\n\
+build), and pre-push gates include the test suite. Push with `greengate land`:\n\
 it runs every push gate the push owes on a snapshot of the exact commit,\n\
 with no connection open, then pushes, and the push itself skips them (git\n\
 connects before pre-push runs, and a remote may drop the idle session while a\n\
 suite runs). A bare `git push` whose push gates have not run on its tree is\n\
-refused at once (`greengate.pushGates refuse`, the default): run `amont land`, or\n\
-`amont rehearse --wait` (or `amont run --stamp`) first and push again. Push a\n\
-release tag with `amont land --tag <name>`: it runs the release audits on the\n\
+refused at once (`greengate.pushGates refuse`, the default): run `greengate land`, or\n\
+`greengate rehearse --wait` (or `greengate run --stamp`) first and push again. Push a\n\
+release tag with `greengate land --tag <name>`: it runs the release audits on the\n\
 tagged commit first, which a branch rehearsal never does. Where\n\
 `greengate.rehearseOnCommit` is on, every commit already starts that rehearsal in\n\
 the background and `--wait` only follows it. Give these commands the\n\
@@ -109,7 +109,7 @@ git config greengate.severity.<check-id> warn\n\
 ```\n\
 \n\
 `commit-msg` takes neither `hook.skip` nor a severity override. Write the\n\
-message it asks for, or change what it asks for — `amont setup`, or\n\
+message it asks for, or change what it asks for — `greengate setup`, or\n\
 `greengate.commit.*` directly.\n\
 \n\
 {END}\n"
@@ -128,13 +128,13 @@ pub fn generate_pointer() -> String {
     format!(
         "{START}\n\
 \n\
-## Git hooks (amont)\n\
+## Git hooks (greengate)\n\
 \n\
 This repository enforces pre-commit / pre-push checks that can REJECT a\n\
 commit or a push. What runs, the branch-name rule, and why `git commit`\n\
 and `git push` both need a long timeout — or a background run — are in\n\
 [AGENTS.md](AGENTS.md) — read it before committing. Both files are\n\
-generated: run `amont agents-md` after changing either.\n\
+generated: run `greengate agents-md` after changing either.\n\
 \n\
 {END}\n"
     )
@@ -335,8 +335,8 @@ mod tests {
     }
 
     /// Both generated files must satisfy Prettier's markdown defaults,
-    /// because amont ALSO ships `pre-commit-prettier`: when the two
-    /// disagree, every JS repository is left choosing between two amont
+    /// because greengate ALSO ships `pre-commit-prettier`: when the two
+    /// disagree, every JS repository is left choosing between two greengate
     /// checks, and `prettier --write` on a generated file is what
     /// `agents-md --check` then reports as drift. Encoding the three rules
     /// that bit us — blank line after an HTML comment, `_emphasis_` not
@@ -386,7 +386,7 @@ mod tests {
             "a signpost, not a second copy"
         );
         assert!(
-            !p.contains("amont list --json"),
+            !p.contains("greengate list --json"),
             "the registry command lives in ONE place; duplicating it here is \
              the drift this design avoids"
         );

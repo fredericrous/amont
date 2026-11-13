@@ -655,14 +655,14 @@ A **pack** is any git repository with an `greengate.pack` at its root, written i
 exactly the syntax above:
 
 ```text
-# amont-pack-java — Spotless for a JVM repository, Maven or Gradle
+# greengate-pack-java — Spotless for a JVM repository, Maven or Gradle
 pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
 pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 ```
 
 ```console
-$ greengate add github:fredericrous/amont-pack-java@v1
-github:fredericrous/amont-pack-java @ 2f5dbd9 declares:
+$ greengate add github:fredericrous/greengate-pack-java@v1.1.0
+github:fredericrous/greengate-pack-java @ e72a544 declares:
     pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
     pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 
@@ -675,7 +675,7 @@ including a local path, which is all a test fixture needs. `--dry-run` shows
 without writing.
 
 That pack is real, and it is the worked example for everything below:
-[fredericrous/amont-pack-java](https://github.com/fredericrous/amont-pack-java).
+[fredericrous/greengate-pack-java](https://github.com/fredericrous/greengate-pack-java).
 Its README is the long-form version of this section.
 
 ### What ships is text, not execution
@@ -686,7 +686,9 @@ building an isolated environment per hook. `greengate add` copies rows into _you
 `greengate.conf`, and stops:
 
 - the rows land between `# greengate:pack:start` / `# greengate:pack:end` markers with
-  the pack's **commit id**, so what you got is recorded next to what you run;
+  the pack's **commit id**, so what you got is recorded next to what you run
+  (blocks written under the `# amont:pack:` markers before 4.3 are still read,
+  and a re-`add` replaces one in place under the new markers);
 - the manifest's content changed, so its fingerprint no longer matches and
   **every** declared check — the pack's and your own — is inert until you
   [trust](trust.md) it;
@@ -744,7 +746,7 @@ no registry to join, no build step. The example above is three files, and two
 of them are the README and the licence:
 
 ```text
-amont-pack-java/
+greengate-pack-java/
 ├── greengate.pack
 ├── README.md
 └── LICENSE

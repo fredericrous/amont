@@ -232,13 +232,12 @@ fn prune(repo: &Path) {
 pub fn why(state: State) -> Option<&'static str> {
     match state {
         State::NoManifest | State::Trusted => None,
-        // Kept as written: this text is the `reason` value of `list --json`,
-        // and a --json value does not change with the rename.
+        // This text is the `reason` value of `list --json`.
         State::Untrusted => {
-            Some("declared in an untrusted amont.conf — review it, then `amont trust`")
+            Some("declared in an untrusted greengate.conf — review it, then `greengate trust`")
         }
         State::Changed => {
-            Some("amont.conf changed since it was trusted — review it, then `amont trust`")
+            Some("greengate.conf changed since it was trusted — review it, then `greengate trust`")
         }
     }
 }

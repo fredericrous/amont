@@ -86,7 +86,7 @@ fn a_symlinked_checkout_is_refused_and_left_untouched() {
     init_repo(&checkout);
     let hooks = checkout.join("templates/hooks");
     std::fs::create_dir_all(&hooks).expect("mkdir");
-    std::fs::write(hooks.join("pre-commit"), "precious __AMONT_BIN__\n").expect("write");
+    std::fs::write(hooks.join("pre-commit"), "precious __GREENGATE_BIN__\n").expect("write");
     git(&checkout, &["add", "-A"]);
     git(&checkout, &["commit", "-qm", "seed"]);
 
@@ -116,7 +116,7 @@ fn a_symlinked_checkout_is_refused_and_left_untouched() {
     let after = std::fs::read_to_string(hooks.join("pre-commit")).expect("read");
     assert_eq!(before, after, "TRACKED FILE WAS REWRITTEN");
     assert!(
-        after.contains("__AMONT_BIN__"),
+        after.contains("__GREENGATE_BIN__"),
         "the tracked placeholder was baked away"
     );
 }
@@ -633,7 +633,7 @@ fn uninstall_refuses_a_template_dir_that_is_a_checkout() {
     ] {
         std::fs::write(
             hooks.join(name),
-            "#!/bin/sh\n# git-templates hook shim.\nexec amont __AMONT_BIN__\n",
+            "#!/bin/sh\n# git-templates hook shim.\nexec amont __GREENGATE_BIN__\n",
         )
         .expect("write");
     }
@@ -712,7 +712,7 @@ fn checkout_template_dir(s: &Sandbox) -> Option<std::path::PathBuf> {
     init_repo(&checkout);
     let hooks = checkout.join("templates/hooks");
     std::fs::create_dir_all(&hooks).expect("mkdir");
-    std::fs::write(hooks.join("pre-commit"), "precious __AMONT_BIN__\n").expect("write");
+    std::fs::write(hooks.join("pre-commit"), "precious __GREENGATE_BIN__\n").expect("write");
     git(&checkout, &["add", "-A"]);
     git(&checkout, &["commit", "-qm", "seed"]);
 

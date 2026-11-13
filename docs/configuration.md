@@ -507,7 +507,7 @@ The dependency audits (`pre-push-audit-{go,js,python,rust}`) depend on the
 day's advisories, not only on the tree, so they are never stamped. Wherever
 one runs on the content being pushed — land's pre-stage, a rehearsal,
 `greengate run --stamp`, an `inline` push of a clean HEAD — its report is
-recorded in `refs/notes/amont-audit` (local, never pushed), keyed by the
+recorded in `refs/notes/greengate-audit` (local, never pushed), keyed by the
 lockfiles' content for a branch push and by the tree for a `v*` tag. A push
 with a fresh record replays it, judged against today's waivers and that
 push's stakes, without running the tool. A record answers for
@@ -1108,7 +1108,7 @@ pruned by the cluster. Unix only.
 `greengate cluster sign [--watch]` runs in a pod in the cluster, not on a
 laptop. It signs finished detached runs from what Kubernetes recorded. Each
 pass makes one batched read of the Workflows and pods carrying `greengate.run`
-in `greengate-gates` and `amont-gates`. It considers a Workflow that is
+in `greengate-gates`. It considers a Workflow that is
 finished, has no ConfigMap yet, and was submitted by greengate: it carries its
 tree and gate ids as greengate writes them. Each gate is judged on its pod with
 the same rules as collect's, above. Only a pod that the Workflow owns, by

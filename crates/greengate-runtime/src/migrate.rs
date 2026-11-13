@@ -435,6 +435,9 @@ pub fn migrate_repo(
     for dir in &dirs {
         moved.state += move_state(dir, direction)?;
     }
+    if direction == Direction::Forward {
+        drop_old_audit_ref(repo, git)?;
+    }
     // A config file that names no section of the namespace being moved
     // holds no key of it: skip git. This keeps the first run of a
     // repository without 3.x keys free of any extra process.
@@ -464,6 +467,22 @@ pub fn migrate_repo(
         remove_if_present(&reversed)?;
     }
     Ok(moved)
+}
+
+/// Deletes `refs/notes/amont-audit`, the release audit's 24-hour local cache
+/// (never pushed; the new one is `refs/notes/greengate-audit`), so the next
+/// tag push audits once. Absent is no error, and no process is spawned unless
+/// the ref is there: it is looked for as a loose file and in `packed-refs`.
+fn drop_old_audit_ref(repo: &Repo, git: &GitFn<'_>) -> Result<(), MigrateError> {
+    let name = format!("refs/notes/{}", old::AUDIT_REF);
+    let present = repo.common.join(&name).exists()
+        || std::fs::read_to_string(repo.common.join("packed-refs"))
+            .is_ok_and(|t| t.lines().any(|l| l.ends_with(&format!(" {name}"))));
+    if present {
+        run_git(git, Some(&repo.common), &["update-ref", "-d", &name])?;
+        eprintln!("removed the old audit cache; the next tag push audits once");
+    }
+    Ok(())
 }
 
 fn remove_if_present(path: &Path) -> Result<(), MigrateError> {
@@ -1115,6 +1134,92 @@ mod tests {
             std::fs::read_to_string(wt.join(n::SKEW_MARKER)).unwrap(),
             "greengate-skew-v1\n3.0.0\n"
         );
+    }
+
+    #[test]
+    fn the_old_audit_cache_ref_is_deleted_and_an_absent_one_is_no_error() {
+        let root = scratch("auditref");
+        init(&root);
+        let git = git_in(&root);
+        let repo = Repo::locate_with(&root, None).unwrap();
+        // Absent: no error, no ref.
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        for args in [
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "x",
+            ],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "notes",
+                "--ref",
+                "amont-audit",
+                "add",
+                "-m",
+                "n",
+                "HEAD",
+            ],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "notes",
+                "--ref",
+                "greengate-audit",
+                "add",
+                "-m",
+                "n",
+                "HEAD",
+            ],
+        ] {
+            git(None, &args).unwrap();
+        }
+        // `greengate migrate` clears the done-marker first; so does this.
+        std::fs::remove_file(repo.marker()).unwrap();
+        let refs = || {
+            git(None, &["for-each-ref", "refs/notes"])
+                .unwrap()
+                .unwrap_or_default()
+        };
+        assert!(refs().contains("refs/notes/amont-audit"), "{}", refs());
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        assert!(!refs().contains("amont-audit"), "{}", refs());
+        assert!(
+            refs().contains("refs/notes/greengate-audit"),
+            "the new one stays"
+        );
+        // And again, with it packed: still deleted.
+        git(
+            None,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "notes",
+                "--ref",
+                "amont-audit",
+                "add",
+                "-fm",
+                "n",
+                "HEAD",
+            ],
+        )
+        .unwrap();
+        git(None, &["pack-refs", "--all"]).unwrap();
+        std::fs::remove_file(repo.marker()).unwrap();
+        migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();
+        assert!(!refs().contains("amont-audit"), "{}", refs());
     }
 
     #[test]

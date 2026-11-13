@@ -170,3 +170,16 @@ fn outside_a_repository_it_writes_nothing_and_says_so() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The generated block names the `greengate` command, under the new heading.
+#[test]
+fn the_block_names_greengate_and_not_amont() {
+    let r = Repo::new();
+    r.commit("init");
+    let (code, _, _) = run_agents_md(&r, &[]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(r.path("AGENTS.md")).expect("read");
+    assert!(content.contains("## Git hooks (greengate)"), "{content}");
+    assert!(content.contains("greengate list --json"), "{content}");
+    assert!(!content.contains("amont"), "{content}");
+}

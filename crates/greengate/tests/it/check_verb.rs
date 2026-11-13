@@ -100,7 +100,11 @@ fn json_is_versioned_and_carries_the_position() {
     let repo = Repo::new();
     repo.write("app.js", "\n\n  debugger;\n");
     let run = repo.run(&["check", "app.js", "--format", "json"]);
-    assert!(run.says(r#""format":"amont-check-v1""#), "{}", run.output());
+    assert!(
+        run.says(r#""format":"greengate-check-v1""#),
+        "{}",
+        run.output()
+    );
     assert!(run.says(r#""line":3,"column":3"#), "{}", run.output());
     assert!(run.says(r#""severity":"error""#), "{}", run.output());
 }

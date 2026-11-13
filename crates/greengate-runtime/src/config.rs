@@ -651,7 +651,7 @@ impl Scope {
             Scope::Global => "global",
             Scope::System => "system",
             Scope::CommandLine => "command line",
-            Scope::Policy => "amont.conf",
+            Scope::Policy => crate::names::MANIFEST,
             Scope::Other => "other",
         }
     }

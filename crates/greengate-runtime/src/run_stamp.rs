@@ -494,16 +494,24 @@ impl Drop for Detached {
 /// identity and date, so the same tree is the same commit; nothing refers to
 /// it and gc takes it.
 fn commit_of_tree(tree: &str) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["commit-tree", tree, "-m", "amont stamps"])
-        .env("GIT_AUTHOR_NAME", "amont")
-        .env("GIT_AUTHOR_EMAIL", "amont@localhost")
-        .env("GIT_COMMITTER_NAME", "amont")
-        .env("GIT_COMMITTER_EMAIL", "amont@localhost")
+    commit_of_tree_in(tree, None)
+}
+
+/// [`commit_of_tree`] in `dir` (the current directory when `None`).
+fn commit_of_tree_in(tree: &str, dir: Option<&std::path::Path>) -> Option<String> {
+    use crate::names::{GIT_AUTHOR, GIT_EMAIL};
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["commit-tree", tree, "-m", crate::names::STAMP_MESSAGE])
+        .env("GIT_AUTHOR_NAME", GIT_AUTHOR)
+        .env("GIT_AUTHOR_EMAIL", GIT_EMAIL)
+        .env("GIT_COMMITTER_NAME", GIT_AUTHOR)
+        .env("GIT_COMMITTER_EMAIL", GIT_EMAIL)
         .env("GIT_AUTHOR_DATE", "@0 +0000")
-        .env("GIT_COMMITTER_DATE", "@0 +0000")
-        .output()
-        .ok()?;
+        .env("GIT_COMMITTER_DATE", "@0 +0000");
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let out = cmd.output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -639,4 +647,42 @@ pub fn stamps_command(
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The throwaway commit made for a bare tree id is authored by greengate.
+    #[test]
+    fn a_stamp_commit_is_authored_by_greengate() {
+        let dir = std::env::temp_dir().join(format!(
+            "{}-stamp-author-{}",
+            crate::names::BIN,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir); // a stale scratch dir from an earlier run may not exist
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        let tree = git(&["write-tree"]);
+        let commit = commit_of_tree_in(&tree, Some(&dir)).expect("a commit");
+        assert_eq!(
+            git(&["log", "-1", "--format=%an <%ae> %s", &commit]),
+            "greengate <greengate@localhost> greengate stamps"
+        );
+        assert_eq!(
+            git(&["log", "-1", "--format=%cn <%ce>", &commit]),
+            "greengate <greengate@localhost>"
+        );
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: scratch in the temp dir
+    }
 }

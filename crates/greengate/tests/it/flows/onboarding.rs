@@ -229,7 +229,7 @@ fn the_init_journey() {
     let first = read(&hooks.join("pre-commit"));
     step!(
         "init",
-        !first.contains("__AMONT_BIN__"),
+        !first.contains("__GREENGATE_BIN__"),
         "shim was not baked:\n{first}"
     );
     step!(
@@ -344,7 +344,7 @@ fn the_install_journey() {
     let first = read(&hooks.join("pre-commit"));
     step!(
         "install",
-        !first.contains("__AMONT_BIN__"),
+        !first.contains("__GREENGATE_BIN__"),
         "shim was not baked"
     );
     step!(
@@ -394,7 +394,7 @@ fn the_install_journey() {
     );
     step!(
         "agents-md",
-        agents.contains("amont list --json"),
+        agents.contains("greengate list --json"),
         "{agents}"
     );
     let (code, out) = m.amont(&repo, &["agents-md", "--check"]);
@@ -854,7 +854,7 @@ fn unbaked_shims(m: &Machine) {
     if vacuous {
         println!("  ! amont on {MINIMAL_PATH} — skipping the not-found steps");
     }
-    let token = r.dir.join("__AMONT_BIN__");
+    let token = r.dir.join("__GREENGATE_BIN__");
 
     // The clone plants an executable named for the placeholder token.
     install_hook(&template);
@@ -924,7 +924,7 @@ fn unbaked_shims(m: &Machine) {
         ),
     );
     chmod(&fake);
-    install_hook(&template.replace("__AMONT_BIN__", &fake.display().to_string()));
+    install_hook(&template.replace("__GREENGATE_BIN__", &fake.display().to_string()));
     let out = run(MINIMAL_PATH);
     step!(
         "baked absolute",
@@ -949,7 +949,7 @@ fn unbaked_shims(m: &Machine) {
     if !vacuous {
         let sentinel = m.path("ran-relative");
         payload(&r.dir.join("tools").join("amont"), &sentinel);
-        install_hook(&template.replace("__AMONT_BIN__", "tools/amont"));
+        install_hook(&template.replace("__GREENGATE_BIN__", "tools/amont"));
         let out = run(MINIMAL_PATH);
         step!(
             "relative baked",

@@ -17,7 +17,7 @@
 //! Entropy heuristics are where secret scanners get noisy, and a noisy
 //! blocker is a blocker people learn to delete. A line that is a KNOWN
 //! false positive (a test fixture, documentation) opts out with the pragma
-//! `amont:allow-secret` on the same line — visible in review, greppable,
+//! `greengate:allow-secret` on the same line — visible in review, greppable,
 //! and narrower than skipping the whole check.
 //!
 //! Findings are REDACTED: the report names the kind and the place, never
@@ -36,7 +36,7 @@ use crate::pushrefs::PushRef;
 use super::common;
 
 /// Skip lines carrying this pragma — the surgical opt-out for fixtures.
-const ALLOW: &str = "amont:allow-secret";
+const ALLOW: &str = crate::names::ALLOW_SECRET;
 
 /// Per-file ceiling: a secret in the first two megabytes is a secret found,
 /// and a generated bundle beyond it is noise this check has no business in.
@@ -232,12 +232,26 @@ pub fn findings(file: &str, text: &str) -> Vec<Finding> {
     scan(text)
         .into_iter()
         .map(|(line, kind)| {
+            // A line still carrying the old pragma gets its fix in the same
+            // message. It names the pragma, never the line.
+            let hint = if line
+                .checked_sub(1)
+                .and_then(|i| text.lines().nth(i))
+                .is_some_and(|l| l.contains(crate::names::old::ALLOW_SECRET))
+            {
+                format!(
+                    "; `{}` no longer waives, use `{ALLOW}`",
+                    crate::names::old::ALLOW_SECRET
+                )
+            } else {
+                String::new()
+            };
             Finding::new(
                 NAME,
                 crate::ui::sanitize(file),
                 Severity::Block,
                 format!(
-                    "{} — unstage it; once pushed it is not history, it is an incident",
+                    "{} — unstage it; once pushed it is not history, it is an incident{hint}",
                     kind.name()
                 ),
             )
@@ -247,7 +261,7 @@ pub fn findings(file: &str, text: &str) -> Vec<Finding> {
 }
 
 /// Is this worth reading as text at all? git's own binary heuristic, plus the
-/// per-file ceiling. Shared so `amont check` skips exactly what the hook skips.
+/// per-file ceiling. Shared so `greengate check` skips exactly what the hook skips.
 pub fn is_scannable(bytes: &[u8]) -> bool {
     !looks_binary(bytes) && bytes.len() <= MAX_BYTES
 }

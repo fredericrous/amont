@@ -684,7 +684,7 @@ is that place, and the hooks improved on the way past:
 editor's error parser already reads it and every modern terminal makes it
 clickable — which is what lets `efm-langserver`, `nvim-lint`, a VS Code
 `problemMatcher` or `flycheck` consume greengate with **no editor-side code in this
-repository**. `--format json` (`amont-check-v1`) is there for anything that
+repository**. `--format json` (`greengate-check-v1`) is there for anything that
 would rather not parse a line.
 
 ### What is deliberately not in it

@@ -27,11 +27,6 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "the --help footer saying greengate was formerly amont",
     ),
     (
-        "greengate-runtime/src/agents_md.rs",
-        10,
-        "the frozen AGENTS.md block (3a-1 keeps it byte-stable)",
-    ),
-    (
         "greengate-runtime/src/hookfile.rs",
         3,
         "test fixtures: shims a 2.x install wrote",
@@ -40,21 +35,6 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "greengate-runtime/src/hooks/audit.rs",
         8,
         "test fixtures: cargo tree output naming the old crate",
-    ),
-    (
-        "greengate-runtime/src/install.rs",
-        1,
-        "the offer quoting the frozen AGENTS.md block",
-    ),
-    (
-        "greengate-runtime/src/run_stamp.rs",
-        1,
-        "a commit-tree message stored in git",
-    ),
-    (
-        "greengate-runtime/src/trust.rs",
-        2,
-        "a --json reason value, unchanged in 3a-1",
     ),
 ];
 
@@ -96,11 +76,6 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "the amont-snapshots repository (a later step)",
     ),
     (
-        "greengate-runtime/src/finding.rs",
-        2,
-        "the editor format, an outside contract",
-    ),
-    (
         "greengate-runtime/src/gate_identity.rs",
         1,
         "the cluster contract (plan 3a-3)",
@@ -109,11 +84,6 @@ const ALLOWED_DATA: &[(&str, usize, &str)] = &[
         "greengate-runtime/src/gate_stamp.rs",
         16,
         "the legacy notes name set, read beside the green one until the census (ADR-0068, 3a-3)",
-    ),
-    (
-        "greengate-runtime/src/hooks/audit.rs",
-        3,
-        "the audit notes namespace (3a-3)",
     ),
     (
         "greengate-runtime/src/staged_only.rs",
@@ -247,17 +217,16 @@ fn hits(text: &str) -> usize {
     old_spellings
 }
 
-/// Old data names in one literal's text: `AMONT_X` (not the shim's
-/// `__AMONT_BIN__` placeholder), `amont.<key>` (not the `amont.conf`,
+/// Old data names in one literal's text: `AMONT_X` (the shim placeholder is
+/// `__GREENGATE_BIN__` since 4.3), `amont.<key>` (not the `amont.conf`,
 /// `amont.pack` and `amont.exe` file names), `amont-<name>` (not the
 /// binaries `amont-fleet` and `amont-agent`), and `amont:start`/`amont:end`.
 fn data_hits(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut found = 0;
     for (at, _) in text.match_indices("AMONT_") {
-        let placeholder = text[..at].ends_with("__") && text[at..].starts_with("AMONT_BIN__");
         let word_start = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
-        if word_start && !placeholder {
+        if word_start {
             found += 1;
         }
     }
@@ -399,7 +368,7 @@ fn each_planted_data_name_is_counted() {
     assert_eq!(count_with(r#"let d = format!("amont-{x}");"#, data_hits), 1);
     assert_eq!(
         count_with(
-            r#"let a = "amont.conf"; let b = "amont-fleet"; let c = "__AMONT_BIN__"; let d = "greengate.timeout";"#,
+            r#"let a = "amont.conf"; let b = "amont-fleet"; let c = "__GREENGATE_BIN__"; let d = "greengate.timeout";"#,
             data_hits
         ),
         0
