@@ -201,9 +201,50 @@ fleet's shims are re-baked.
   `homelab/services/forgejo-runner/Dockerfile` (old `amont` version pins),
   `decisions/docs/principles/ci-attested.md` (then `aval pack --write`),
   and the `audit-go` gate's toolchain (it must run govulncheck under
-  go.mod's version, not the machine's).
+  go.mod's version, not the machine's). Added by plan `2026-11-13-greengates-last-amont-names.md`:
+  - the fallback reads of the old pack markers (`pack.rs`), the old
+    `.amont-audit-waivers` (`hooks/audit.rs`) and the legacy stash suffixes
+    (`staged_only.rs`);
+  - the six waiver files that `greengate migrate --tracked` renames, in
+    activity-vision, adr-lint, duro-app, duro-design-system,
+    duro-lexical-multi and ticket-vision;
+  - this repository's own `greengate.conf`, whose `amont:pack` adr-lint
+    block is re-added with `greengate add`;
+  - `refs/notes/amont-audit` in repositories 4.0–4.2 migrated (removed by
+    an explicit `greengate migrate`);
+  - greengate-pack-homelab's `.amont-homelab.yaml` and
+    `amont-homelab: unreferenced-ok` fallbacks, which go in a pack release;
+  - the decisions corpus's mentions (ADR-0018, HEADS, the vendored pack).
+
+  `Apicil/archi-mcp`: the person said on 2026-11-12 that they do not care
+  about it, so it keeps its old names and is not swept; the precondition
+  holds.
 
 ## Decision log
+
+- 2026-11-13 — the Outcome check passed, observed a day after the sweep:
+  - Every repository reads its manifest. The sweep had missed
+    ticket-vision: it read `amont.conf` through the fallback, was swept
+    on 11-13, and ticket-vision#29 is merged.
+  - The host has one slot queue: `greengate slots` shows 0 of 3 held, 0
+    waiting.
+  - No 3.x held store is left: 156 git dirs were scanned for `amont-held`.
+  - `greengate doctor` reports no 3.x names.
+  - The 29 Phase-3 sweep landings and three releases (relais v0.58.0,
+    greenpiste v3.33.0, greengate v4.2.0) ran on 4.1.0 without a changed
+    verdict.
+
+  The second homelab change was split by its implementation and platform
+  reviews, so the fence is never absent:
+  - **Part A, homelab#1208, merged:** it adds `greengate-workflow-fence`
+    beside the old one and drops `amont-gates` from Argo. Both fences were
+    observed, and 127 of 127 Kustomizations were Ready.
+  - **Part B:** removes the app, the signer's Roles there, the Forgejo
+    lists and the image pin. It waits until homelab#1210 (open
+    at this record) is merged and the signer Deployment runs that image,
+    which lists only `greengate-gates`. The one
+    Succeeded 3.x Workflow left in `amont-gates` is a finished run, not one
+    in flight, and goes with the namespace.
 
 - 2026-11-11 — the person chose a hard rename of greengate's data names
   with a one-time migration, over the reviewed read-both plan: greengate
@@ -467,6 +508,7 @@ fleet's shims are re-baked.
   - The detached lane on a real repository: proven in the install window on a real repository's snapshot, as the Phase 4 log entry asked.
   - The sweep: expected every own repository merged by pull request; actual merged in all but happier (landed on `dev` directly, see the Decision log) and `Apicil/archi-mcp` (excluded, the employer's).
   - Not observed yet, so Phase 5 keeps these as its remainder: the Outcome check (a day after the sweep) and the second homelab change.
+  - 2026-11-13: the Outcome check passed (see the Decision log). Second homelab change: part A is merged (homelab#1208). Part B is open and tracked under Phase 4's "removed by the second" item, not Phase 5.
 
 ## Outcome
 
