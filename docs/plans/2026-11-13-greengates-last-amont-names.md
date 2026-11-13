@@ -257,6 +257,7 @@ finds only the allowed names, and homelab's hooks run the pack as
 - backend: approve-with-changes, then approve. Fixed: overlapping blocks refused, the stale audit ref noted in CHANGELOG, and the in-flight amont branches named in the PR.
 - lang:rust: approve-with-changes ×2, then approve. Fixed: names constants, the typed `Span`, `cuts`, `Waivers.file`, and a pure `findings`. Deliberate: the proven `unreachable!` arm.
 - unix: approve-with-changes, then approve. Fixed: `--json` format named as breaking, and the old-pragma hint.
+- CI fix (918428f0): the unwrapped second `notes add` had no git identity on runners (exit 128); it now passes `-c user.*` like the test's other calls; it passes under an empty HOME. implementation-review approve (f1adf751).
 - tui: approve-with-changes, then approve. Fixed: the unpaired message, the undo hint, the audit-cache line and the wording. architect: approve (names constants applied).
 
 ## Decision log
