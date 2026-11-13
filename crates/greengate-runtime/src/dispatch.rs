@@ -93,7 +93,7 @@ fn selected_during<'a>(
         .into_iter()
         .partition(|c| !skips.iter().any(|s| crate::skip_suppresses(c.name(), s)));
     let names: Vec<&str> = dropped.iter().map(|c| c.name()).collect();
-    announce_skips(settings, &names);
+    announce_skips(settings, manifest.file_name(), &names);
 
     // Announced separately from `hook.skip`, and with the operation named: "not
     // during a rebase" is a property of the moment and will be true again in a
@@ -138,10 +138,11 @@ fn selected_during<'a>(
         .partition(|check| check.reach() == crate::check::Reach::Safety);
     if !held.is_empty() {
         println!(
-            "{} {} convention check(s) held back — no amont.conf here and \
+            "{} {} convention check(s) held back — no {} here and \
              greengate.conventions is `declared`; the safety net still runs",
             warning_sign(),
             held.len(),
+            manifest.file_name(),
         );
     }
     kept
@@ -247,13 +248,13 @@ fn ordered_by_evidence<'a>(
 /// One line, only when something was actually skipped, so a normal commit is
 /// unchanged. This reaches every skip however it was created — hand-edited
 /// config included — which no dashboard can claim.
-fn announce_skips(settings: &crate::config::Settings, dropped: &[&str]) {
+fn announce_skips(settings: &crate::config::Settings, manifest_file: &str, dropped: &[&str]) {
     if dropped.is_empty() {
         return;
     }
     // Two lines, not one: "you decided this" (hook.skip on this machine)
     // and "your team decided this" (a skip line in the committed
-    // amont.conf) are different things to be told — the same reason paused
+    // greengate.conf) are different things to be told — the same reason paused
     // and held-back get their own sentences. A name both sources suppress
     // is announced as the machine's: the local decision is the nearer one.
     let (machine, _policy) = crate::skips_by_source(settings);
@@ -274,7 +275,7 @@ fn announce_skips(settings: &crate::config::Settings, dropped: &[&str]) {
         );
     };
     say(&yours, "hook.skip");
-    say(&theirs, "amont.conf");
+    say(&theirs, manifest_file);
 }
 
 /// Say, once per stage, what the manifest's policy could not do — withheld

@@ -36,7 +36,7 @@ use crate::pushrefs::PushRef;
 use super::common;
 
 /// Skip lines carrying this pragma — the surgical opt-out for fixtures.
-const ALLOW: &str = "greengate:allow-secret";
+const ALLOW: &str = crate::names::ALLOW_SECRET;
 
 /// Per-file ceiling: a secret in the first two megabytes is a secret found,
 /// and a generated bundle beyond it is noise this check has no business in.
@@ -232,6 +232,19 @@ pub fn findings(file: &str, text: &str) -> Vec<Finding> {
     scan(text)
         .into_iter()
         .map(|(line, kind)| {
+            // Only a line reported as a secret gets the hint, so it costs
+            // nothing otherwise. It names the pragma, never the line.
+            if text
+                .lines()
+                .nth(line - 1)
+                .is_some_and(|l| l.contains(crate::names::old::ALLOW_SECRET))
+            {
+                eprintln!(
+                    "{}:{line}: `{}` no longer waives; use `{ALLOW}`",
+                    crate::ui::sanitize(file),
+                    crate::names::old::ALLOW_SECRET
+                );
+            }
             Finding::new(
                 NAME,
                 crate::ui::sanitize(file),

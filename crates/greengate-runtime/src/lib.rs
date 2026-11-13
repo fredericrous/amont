@@ -323,18 +323,20 @@ pub fn gather_checks(
             } else if skipped {
                 // Which source? Policy skips read differently from machine
                 // skips — the legend and the fleet detail pane echo this
-                // wording, so the three move together.
+                // wording, so the three move together. The legend and the
+                // pane name only `hook.skip`; the policy source is the
+                // manifest's own file name.
                 let via = if settings
                     .policy()
                     .skips
                     .iter()
                     .any(|s| skip_suppresses(name, s))
                 {
-                    "skipped via amont.conf"
+                    format!("skipped via {}", manifest.file_name())
                 } else {
-                    "skipped via hook.skip"
+                    "skipped via hook.skip".to_string()
                 };
-                (Status::Skipped, via.to_string())
+                (Status::Skipped, via)
             } else if applies {
                 (Status::Runs, String::new())
             } else {
@@ -871,8 +873,9 @@ pub fn list_checks(opts: ListOptions) -> i32 {
         print_downgrades(&downgrades);
         if !conventions_apply {
             println!(
-                "\n  ! conventions held back — no amont.conf here and greengate.conventions \
-                 is `declared`; only the safety net runs"
+                "\n  ! conventions held back — no {} here and greengate.conventions \
+                 is `declared`; only the safety net runs",
+                manifest.file_name()
             );
         }
     }

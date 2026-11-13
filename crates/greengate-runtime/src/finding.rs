@@ -169,7 +169,7 @@ pub fn to_json(findings: &[Finding]) -> String {
         .collect();
     format!(
         "{{{},\"findings\":[{}]}}",
-        crate::json::string_field("format", "greengate-check-v1"),
+        crate::json::string_field("format", crate::names::CHECK_FORMAT),
         items.join(",")
     )
 }
@@ -220,7 +220,10 @@ mod tests {
     fn json_is_versioned_and_escapes_its_input() {
         assert_eq!(
             to_json(&[]),
-            "{\"format\":\"greengate-check-v1\",\"findings\":[]}"
+            format!(
+                "{{\"format\":\"{}\",\"findings\":[]}}",
+                crate::names::CHECK_FORMAT
+            )
         );
         let f = Finding::new("ban-terms", "a\"b.js", Severity::Block, "x").at_line(2);
         let json = to_json(&[f]);

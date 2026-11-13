@@ -501,7 +501,7 @@ fn commit_of_tree(tree: &str) -> Option<String> {
 fn commit_of_tree_in(tree: &str, dir: Option<&std::path::Path>) -> Option<String> {
     use crate::names::{GIT_AUTHOR, GIT_EMAIL};
     let mut cmd = std::process::Command::new("git");
-    cmd.args(["commit-tree", tree, "-m", "greengate stamps"])
+    cmd.args(["commit-tree", tree, "-m", crate::names::STAMP_MESSAGE])
         .env("GIT_AUTHOR_NAME", GIT_AUTHOR)
         .env("GIT_AUTHOR_EMAIL", GIT_EMAIL)
         .env("GIT_COMMITTER_NAME", GIT_AUTHOR)
@@ -656,8 +656,12 @@ mod tests {
     /// The throwaway commit made for a bare tree id is authored by greengate.
     #[test]
     fn a_stamp_commit_is_authored_by_greengate() {
-        let dir = std::env::temp_dir().join(format!("gg-stamp-author-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = std::env::temp_dir().join(format!(
+            "{}-stamp-author-{}",
+            crate::names::BIN,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir); // a stale scratch dir from an earlier run may not exist
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
@@ -679,6 +683,6 @@ mod tests {
             git(&["log", "-1", "--format=%cn <%ce>", &commit]),
             "greengate <greengate@localhost>"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // best-effort: scratch in the temp dir
     }
 }

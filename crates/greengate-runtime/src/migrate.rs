@@ -480,6 +480,7 @@ fn drop_old_audit_ref(repo: &Repo, git: &GitFn<'_>) -> Result<(), MigrateError> 
             .is_ok_and(|t| t.lines().any(|l| l.ends_with(&format!(" {name}"))));
     if present {
         run_git(git, Some(&repo.common), &["update-ref", "-d", &name])?;
+        eprintln!("removed the old audit cache; the next tag push audits once");
     }
     Ok(())
 }
@@ -1202,7 +1203,7 @@ mod tests {
             None,
             &["notes", "--ref", "amont-audit", "add", "-fm", "n", "HEAD"],
         )
-        .ok();
+        .unwrap();
         git(None, &["pack-refs", "--all"]).unwrap();
         std::fs::remove_file(repo.marker()).unwrap();
         migrate_repo(&repo, Direction::Forward, &git, NOW).unwrap();

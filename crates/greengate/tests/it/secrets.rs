@@ -101,6 +101,10 @@ fn the_old_allow_pragma_no_longer_waives() {
     );
     let (code, out) = run_check(&r, "pre-commit-secrets", None);
     assert_ne!(code, 0, "{out}");
+    assert!(
+        out.contains("use `greengate:allow-secret`"),
+        "the hint names the new pragma: {out}"
+    );
 }
 
 /// The push half is why the check exists twice: a secret committed with

@@ -521,14 +521,14 @@ fn migrate_tracked(cwd: &Path) -> Result<(), String> {
         eprintln!("renamed the manifest in .github/attest-inputs");
     }
     if staged.changed() {
-        eprintln!("staged; review with `git diff --cached`, then commit");
+        eprintln!("staged; review with `git diff --cached`, then commit; undo with `git reset`");
     } else {
-        eprintln!("nothing committed here carries greengate 3.x's names");
+        eprintln!("nothing committed here uses the old names");
     }
     if staged.leftover_count > 0 {
         eprintln!(
-            "{} tracked line(s) still name {}, {} or an {}* variable; \
-             these need reading, not a substitution:",
+            "{} tracked line(s) name {}, {} or an {}* variable; \
+             these lines still use an old name; edit them by hand:",
             staged.leftover_count,
             old::MANIFEST,
             old::PACK_FILE,

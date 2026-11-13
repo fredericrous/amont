@@ -1108,7 +1108,7 @@ pruned by the cluster. Unix only.
 `greengate cluster sign [--watch]` runs in a pod in the cluster, not on a
 laptop. It signs finished detached runs from what Kubernetes recorded. Each
 pass makes one batched read of the Workflows and pods carrying `greengate.run`
-in `greengate-gates` and `amont-gates`. It considers a Workflow that is
+in `greengate-gates`. It considers a Workflow that is
 finished, has no ConfigMap yet, and was submitted by greengate: it carries its
 tree and gate ids as greengate writes them. Each gate is judged on its pod with
 the same rules as collect's, above. Only a pod that the Workflow owns, by

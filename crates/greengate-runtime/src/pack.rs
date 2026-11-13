@@ -294,10 +294,10 @@ pub fn rows(text: &str) -> Result<Vec<String>, String> {
 /// pack by deleting a block. `#` keeps them invisible to the parser, which
 /// skips comments.
 fn start_marker(label: &str) -> String {
-    format!("# greengate:pack:start {label}")
+    format!("{} {label}", crate::names::PACK_START)
 }
 fn end_marker(label: &str) -> String {
-    format!("# greengate:pack:end {label}")
+    format!("{} {label}", crate::names::PACK_END)
 }
 /// The markers before greengate 4.3, read until the fleet census.
 fn old_start_marker(label: &str) -> String {
@@ -318,20 +318,44 @@ pub fn block(label: &str, id: &str, rows: &[String]) -> String {
     out
 }
 
-/// Where one spelling's block for `label` sits: `Ok(Some((start, end)))` with
-/// `end` past its trailing newline, `Ok(None)` when neither marker is there,
-/// and an error when only one is, or they are inverted.
-fn block_range(manifest: &str, start: &str, end: &str) -> Result<Option<(usize, usize)>, ()> {
+/// Where one spelling's block for a label sits.
+#[derive(Debug, PartialEq, Eq)]
+enum Span {
+    /// Neither marker is there.
+    Absent,
+    /// Both are, in order: the block, `end` past its trailing newline.
+    Found { start: usize, end: usize },
+    /// One marker has no partner (or the pair is inverted): the marker that
+    /// is out of place, and its line.
+    Unpaired { marker: String, line: usize },
+}
+
+fn line_of(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
+
+fn block_range(manifest: &str, start: &str, end: &str) -> Span {
     match (manifest.find(start), manifest.find(end)) {
         (Some(s), Some(e)) if e > s => {
             let mut tail = e + end.len();
             if manifest[tail..].starts_with('\n') {
                 tail += 1;
             }
-            Ok(Some((s, tail)))
+            Span::Found {
+                start: s,
+                end: tail,
+            }
         }
-        (None, None) => Ok(None),
-        _ => Err(()),
+        (None, None) => Span::Absent,
+        (Some(s), None) => Span::Unpaired {
+            marker: start.to_string(),
+            line: line_of(manifest, s),
+        },
+        // An end alone, or before its start.
+        (_, Some(e)) => Span::Unpaired {
+            marker: end.to_string(),
+            line: line_of(manifest, e),
+        },
     }
 }
 
@@ -343,48 +367,69 @@ fn block_range(manifest: &str, start: &str, end: &str) -> Result<Option<(usize, 
 /// half-rewritten. The markers before 4.3 (`amont:pack:*`) are read too, until
 /// the census: an old block is replaced in place and comes back under the new
 /// markers. When both spellings of one label exist, the old block is removed,
-/// the new one replaced, and the warning says so.
+/// the new one replaced, and the warning says so. Blocks that overlap are
+/// refused before anything is cut.
 pub fn splice(
     manifest: &str,
     label: &str,
     id: &str,
     rows: &[String],
 ) -> Result<(String, Option<String>), String> {
-    let unpaired = || {
-        format!(
-            "{MANIFEST}: has an unpaired `greengate:pack` or `{}:pack` marker for {label} — \
-             fix or remove it by hand",
-            crate::names::OLD_BIN
-        )
-    };
-    let new =
-        block_range(manifest, &start_marker(label), &end_marker(label)).map_err(|()| unpaired())?;
-    let old = block_range(manifest, &old_start_marker(label), &old_end_marker(label))
-        .map_err(|()| unpaired())?;
+    use crate::names::{old, PACK_STEM};
+    let new = block_range(manifest, &start_marker(label), &end_marker(label));
+    let old_span = block_range(manifest, &old_start_marker(label), &old_end_marker(label));
+    let lone: Vec<String> = [&new, &old_span]
+        .into_iter()
+        .filter_map(|s| match s {
+            Span::Unpaired { marker, line } => Some(format!("`{marker}` at line {line}")),
+            _ => None,
+        })
+        .collect();
+    if !lone.is_empty() {
+        let (verb, what) = if lone.len() == 1 {
+            ("has", "that line")
+        } else {
+            ("have", "those lines")
+        };
+        return Err(format!(
+            "{MANIFEST}: {} {verb} no partner; delete {what}, then run `{} add {label}` again",
+            lone.join(" and "),
+            crate::names::BIN
+        ));
+    }
     let fresh = block(label, id, rows);
-    match (new, old) {
-        (Some((s, e)), Some((os, oe))) => {
+    match (new, old_span) {
+        (Span::Found { start: s, end: e }, Span::Found { start: os, end: oe }) => {
+            if s < oe && os < e {
+                return Err(format!(
+                    "{MANIFEST}: the `{PACK_STEM}` and `{}` blocks for {label} overlap; \
+                     separate them by hand, then run `{} add {label}` again",
+                    old::PACK_STEM,
+                    crate::names::BIN
+                ));
+            }
             // Cut the later range first so the earlier offsets stay true.
             let mut out = manifest.to_string();
-            let mut cuts = [(s, e, Some(fresh.as_str())), (os, oe, None)];
+            let mut cuts = [(s, e, fresh.as_str()), (os, oe, "")];
             cuts.sort_by_key(|c| std::cmp::Reverse(c.0));
             for (from, to, with) in cuts {
-                out.replace_range(from..to, with.unwrap_or(""));
+                out.replace_range(from..to, with);
             }
             Ok((
                 out,
                 Some(format!(
-                    "{MANIFEST}: has both `greengate:pack` and `{}:pack` blocks for \
-                     {label} — the {} one was removed",
-                    crate::names::OLD_BIN,
-                    crate::names::OLD_BIN
+                    "{MANIFEST}: has both `{PACK_STEM}` and `{}` blocks for \
+                     {label} — the `{}` one was removed",
+                    old::PACK_STEM,
+                    old::PACK_STEM
                 )),
             ))
         }
-        (Some((s, e)), None) | (None, Some((s, e))) => {
+        (Span::Found { start: s, end: e }, Span::Absent)
+        | (Span::Absent, Span::Found { start: s, end: e }) => {
             Ok((format!("{}{fresh}{}", &manifest[..s], &manifest[e..]), None))
         }
-        (None, None) => {
+        _ => {
             let mut out = manifest.to_string();
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
@@ -628,6 +673,37 @@ mod tests {
             assert_eq!(parsed.len(), 1, "{out}");
             assert!(matches!(parsed[0], Line::Usable(_)), "{out}");
         }
+    }
+
+    /// An old block nested inside a new one (or the reverse) is refused before
+    /// anything is cut, and the error says how to fix it.
+    #[test]
+    fn overlapping_old_and_new_blocks_are_refused() {
+        let rows0 = vec!["pre-commit  b  *  block  true".to_string()];
+        let nested = "# greengate:pack:start github:acme/p 1\n\
+                      # amont:pack:start github:acme/p 2\n\
+                      pre-commit  a  *  block  true\n\
+                      # amont:pack:end github:acme/p\n\
+                      # greengate:pack:end github:acme/p\n";
+        let err = splice(nested, "github:acme/p", "3", &rows0).unwrap_err();
+        assert!(err.contains("overlap"), "{err}");
+        assert!(err.contains("greengate add github:acme/p"), "{err}");
+    }
+
+    /// The error names the lone marker, its line and the fix.
+    #[test]
+    fn the_unpaired_error_names_the_marker_line_and_fix() {
+        let rows0 = vec!["pre-commit  a  *  block  true".to_string()];
+        let text = "pre-commit  mine  *  block  true\n# amont:pack:start github:acme/p 1\n";
+        let err = splice(text, "github:acme/p", "2", &rows0).unwrap_err();
+        assert!(
+            err.contains("`# amont:pack:start github:acme/p` at line 2 has no partner"),
+            "{err}"
+        );
+        assert!(
+            err.contains("delete that line, then run `greengate add github:acme/p` again"),
+            "{err}"
+        );
     }
 
     /// Two packs coexist without either disturbing the other's block.

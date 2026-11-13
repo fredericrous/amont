@@ -107,6 +107,21 @@ pub const REHEARSAL_FORMAT: &str = "greengate-rehearsal-v1";
 /// The cold-cache warm worker's log under `$GIT_DIR`.
 pub const WARM_LOG: &str = "greengate-warm.log";
 
+/// The markers around a pack's block in the manifest, and the stem messages
+/// quote.
+pub const PACK_STEM: &str = "greengate:pack";
+pub const PACK_START: &str = "# greengate:pack:start";
+pub const PACK_END: &str = "# greengate:pack:end";
+
+/// The `format` field of `greengate check --format json`.
+pub const CHECK_FORMAT: &str = "greengate-check-v1";
+
+/// The inline comment that waives a secret finding on its line.
+pub const ALLOW_SECRET: &str = "greengate:allow-secret";
+
+/// The message of the throwaway commit made for a stamped tree.
+pub const STAMP_MESSAGE: &str = concat!(bin!(), " stamps");
+
 /// The committed audit waivers file.
 pub const AUDIT_WAIVERS: &str = ".greengate-audit-waivers";
 
@@ -221,7 +236,10 @@ pub mod old {
     pub const AUDIT_WAIVERS: &str = ".amont-audit-waivers";
     /// The audit cache ref before 4.3, deleted by `migrate`.
     pub const AUDIT_REF: &str = "amont-audit";
-    /// The pack block markers before 4.3, read until the census.
+    /// The inline secret waiver before 4.3: it waives nothing any more.
+    pub const ALLOW_SECRET: &str = "amont:allow-secret";
+    /// The pack block stem and markers before 4.3, read until the census.
+    pub const PACK_STEM: &str = "amont:pack";
     pub const PACK_START: &str = "# amont:pack:start";
     pub const PACK_END: &str = "# amont:pack:end";
     /// The AGENTS.md markers before 4.0, read until the sweep.

@@ -94,7 +94,7 @@ fn conclude_waivable(
                     common::warn(&format!(
                         "{tool}: known vulnerabilities shipped under a reviewed waiver \
                          ({}) — not blocking this release: {}",
-                        waivers.file,
+                        waivers.file.unwrap_or(WAIVERS_FILE),
                         ids.iter()
                             .map(|id| waivers.describe(id))
                             .collect::<Vec<_>>()
@@ -131,7 +131,7 @@ fn conclude_waivable(
                     "{tool}: known vulnerabilities ({}) — covered by a reviewed waiver \
                      ({}), so a v* tag push will pass while it holds: {}",
                     what.join(", "),
-                    waivers.file,
+                    waivers.file.unwrap_or(WAIVERS_FILE),
                     ids.iter()
                         .map(|id| waivers.describe(id))
                         .collect::<Vec<_>>()
@@ -190,8 +190,9 @@ struct Waiver {
 struct Waivers {
     entries: Vec<Waiver>,
     problems: Vec<String>,
-    /// The file these were read from, for messages to quote.
-    file: &'static str,
+    /// The file these were read from, for messages to quote; `None` when no
+    /// file was read.
+    file: Option<&'static str>,
 }
 
 impl Waivers {
@@ -209,7 +210,7 @@ impl Waivers {
         }
         match got {
             Ok(text) => Self {
-                file,
+                file: Some(file),
                 ..Self::parse(&text, today)
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
@@ -218,7 +219,7 @@ impl Waivers {
                 problems: vec![format!(
                     "{file} could not be read ({e}) — it waives nothing"
                 )],
-                file,
+                file: Some(file),
             },
         }
     }

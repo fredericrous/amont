@@ -18,8 +18,8 @@ missing here.
     `:end`. A block under the old `# amont:pack:` markers is still read, and
     a re-`add` of the same source replaces it in place under the new markers.
     When both spellings of one source exist, the old block is removed and a
-    warning says so. A marker with only one spelling of start or end is an
-    unpaired error naming both.
+    warning says so. A marker with no partner is an error naming it, its line
+    and the fix, and blocks that overlap are refused before anything is cut.
   - The release audit's waivers file is `.greengate-audit-waivers`.
     `.amont-audit-waivers` is read only when the new file is absent; with
     both, the new one wins and the old one is named in a warning. Waiver
@@ -29,10 +29,15 @@ missing here.
     `greengate.conf` stays trusted.
   - The audit's local cache ref is `refs/notes/greengate-audit` (format
     `greengate-audit-v1`); `greengate migrate` deletes
-    `refs/notes/amont-audit` (one extra audit on the next tag push).
+    `refs/notes/amont-audit` and says so (one extra audit on the next tag
+    push). A repository that 4.0 to 4.2 already migrated keeps that ref until
+    an explicit `greengate migrate`; it is harmless and never read.
   - The inline secret waiver is `greengate:allow-secret`; `amont:allow-secret`
-    no longer waives (no fallback: only greengate's own repository used it).
-  - `--format json` reports `greengate-check-v1`.
+    no longer waives (no fallback: only greengate's own repository used it);
+    a line reported as a secret that holds the old pragma gets a one-line
+    stderr hint naming the new one.
+  - `--format json` reports `greengate-check-v1` instead of `amont-check-v1`:
+    a breaking change to that output (a fleet grep found no reader).
   - Stamp commits are authored `greengate <greengate@localhost>` with the
     message `greengate stamps`, and a rehearsal's host-slot holder is named
     `greengate`.
