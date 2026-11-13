@@ -655,14 +655,14 @@ A **pack** is any git repository with an `greengate.pack` at its root, written i
 exactly the syntax above:
 
 ```text
-# amont-pack-java — Spotless for a JVM repository, Maven or Gradle
+# greengate-pack-java — Spotless for a JVM repository, Maven or Gradle
 pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
 pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 ```
 
 ```console
-$ greengate add github:fredericrous/amont-pack-java@v1
-github:fredericrous/amont-pack-java @ 2f5dbd9 declares:
+$ greengate add github:fredericrous/greengate-pack-java@v1.1.0
+github:fredericrous/greengate-pack-java @ e72a544 declares:
     pre-commit  spotless-maven   *.java+pom.xml                        block  mvn -q spotless:check
     pre-commit  spotless-gradle  *.java+build.gradle,build.gradle.kts  block  ./gradlew -q spotlessCheck
 
@@ -675,7 +675,7 @@ including a local path, which is all a test fixture needs. `--dry-run` shows
 without writing.
 
 That pack is real, and it is the worked example for everything below:
-[fredericrous/amont-pack-java](https://github.com/fredericrous/amont-pack-java).
+[fredericrous/greengate-pack-java](https://github.com/fredericrous/greengate-pack-java).
 Its README is the long-form version of this section.
 
 ### What ships is text, not execution
@@ -746,7 +746,7 @@ no registry to join, no build step. The example above is three files, and two
 of them are the README and the licence:
 
 ```text
-amont-pack-java/
+greengate-pack-java/
 ├── greengate.pack
 ├── README.md
 └── LICENSE
