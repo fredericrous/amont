@@ -8,6 +8,8 @@ missing here.
 
 ## Unreleased
 
+## v4.4.0
+
 ### Changed
 
 - **greengate signs and writes its notes under green names** (plan
