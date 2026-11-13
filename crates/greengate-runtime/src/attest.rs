@@ -475,8 +475,15 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut signed: Vec<PathBuf> = Vec::new();
     for rec in found {
-        let Ok(sig) = git_attest::sign::sign(PROVENANCE_NAMESPACE, &rec.payload, &key) else {
-            continue;
+        let sig = match git_attest::sign::sign(PROVENANCE_NAMESPACE, &rec.payload, &key) {
+            Ok(sig) => sig,
+            Err(e) => {
+                crate::say!(
+                    "  provenance for {} not signed: {e}; kept for the next push",
+                    &rec.commit[..rec.commit.len().min(7)]
+                );
+                continue;
+            }
         };
         let body = block(&rec.payload, &sig);
         blocks.push((rec.tree, body.clone()));
@@ -484,8 +491,7 @@ fn provenance_push_from(dir: &std::path::Path, remote: &str, refs: &[PushRef]) {
         signed.push(rec.file);
     }
     if blocks.is_empty() {
-        crate::say!("  provenance not signed: the signer refused");
-        return;
+        return; // each record that failed was named above
     }
     if publish(remote, PROVENANCE_REF, &blocks) {
         for file in &signed {

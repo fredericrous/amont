@@ -35,7 +35,8 @@ missing here.
   - The signing key is `~/.ssh/greengate-attest`. While it is absent,
     `~/.ssh/amont-attest` is used, and `greengate doctor` prints one line
     saying how to rename it (`mv ~/.ssh/amont-attest ~/.ssh/greengate-attest`)
-    and exits 1 until it is renamed. Doctor also lists any
+    and exits 1 until it is renamed: rename it right after installing, so a
+    script that runs `greengate doctor` keeps passing. Doctor also lists any
     `refs/notes/attest-local/amont-*` signer ref an older greengate left; they
     are no longer read.
     It is the same key: `allowed_signers` keys do not change, but each line
